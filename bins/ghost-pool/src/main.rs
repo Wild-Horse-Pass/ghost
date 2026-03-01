@@ -1411,22 +1411,9 @@ async fn main() -> Result<()> {
 
                 match handler_for_proposals.propose_checkpoint() {
                     Ok(Some(proposal)) => {
-                        // Broadcast the checkpoint proposal
-                        let payload = match serde_json::to_vec(&proposal) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                tracing::warn!(error = %e, "Failed to serialize checkpoint proposal");
-                                continue;
-                            }
-                        };
-                        // The handler's broadcast_fn sends it to the mesh
-                        if let Err(e) = handler_for_proposals.handle_checkpoint_proposal(&proposal)
-                        {
-                            tracing::warn!(error = %e, "Failed to handle own checkpoint proposal");
+                        if let Err(e) = handler_for_proposals.propose_and_broadcast(&proposal) {
+                            tracing::warn!(error = %e, "Failed to broadcast checkpoint proposal");
                         }
-                        // Also broadcast to network
-                        // (broadcast_fn is already set, use it via the mesh relay)
-                        let _ = payload; // proposal already handled locally, broadcast via MessageHandler
                     }
                     Ok(None) => {
                         // Not our turn to propose

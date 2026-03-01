@@ -728,6 +728,40 @@ impl NullifierRouteHandler {
         Ok(Some(vote))
     }
 
+    /// Broadcast a checkpoint proposal to the network and handle it locally.
+    ///
+    /// This is the proposer's entry point — it:
+    /// 1. Broadcasts the proposal to all peers (L2CheckpointBlock)
+    /// 2. Validates and votes on our own proposal (handle_checkpoint_proposal)
+    /// 3. Records our own vote locally (handle_checkpoint_vote)
+    /// 4. Broadcasts our vote to all peers (L2CheckpointVote)
+    pub fn propose_and_broadcast(
+        &self,
+        proposal: &L2CheckpointBlockMessage,
+    ) -> GhostResult<()> {
+        // 1. Broadcast proposal to network
+        if let Some(ref broadcast) = *self.broadcast_fn.read() {
+            let payload = serde_json::to_vec(proposal)
+                .map_err(|e| GhostError::Serialization(e.to_string()))?;
+            broadcast(MessageType::L2CheckpointBlock, payload)?;
+        }
+
+        // 2. Handle locally — validate and create our vote
+        if let Some(vote) = self.handle_checkpoint_proposal(proposal)? {
+            // 3. Record our own vote locally (enables single-node quorum)
+            self.handle_checkpoint_vote(&vote)?;
+
+            // 4. Broadcast our vote to peers
+            if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                let payload = serde_json::to_vec(&vote)
+                    .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                broadcast(MessageType::L2CheckpointVote, payload)?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Handle a checkpoint vote
     ///
     /// Returns true if the checkpoint reached quorum and was finalized.
