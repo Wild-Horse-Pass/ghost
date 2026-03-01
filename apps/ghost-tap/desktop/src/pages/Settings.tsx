@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   getConnectionStatus,
   setConnectionMode,
@@ -10,6 +12,7 @@ import {
   hasPin,
   setPin,
   verifyPin,
+  getMnemonic,
   type ConnectionStatus,
 } from "../api/commands";
 import { useToast } from "../components/ToastProvider";
@@ -110,6 +113,34 @@ export default function Settings() {
       setPinError(String(e));
       setPinMode("new");
       setPendingPin("");
+    }
+  };
+
+  const handleBackup = async () => {
+    try {
+      const mnemonic = await getMnemonic();
+      const path = await save({
+        defaultPath: "ghosttap-backup.txt",
+        filters: [{ name: "Text", extensions: ["txt"] }],
+      });
+      if (path) {
+        const content = [
+          "GhostTap Wallet Backup",
+          "======================",
+          "",
+          "Recovery Phrase:",
+          mnemonic,
+          "",
+          "WARNING: Anyone with these words can access your funds.",
+          "Store this file securely and delete it after writing down the words.",
+          "",
+          `Backup Date: ${new Date().toISOString()}`,
+        ].join("\n");
+        await writeTextFile(path, content);
+        toast("Wallet backup saved", "success");
+      }
+    } catch (e: unknown) {
+      toast(String(e), "error");
     }
   };
 
@@ -234,6 +265,17 @@ export default function Settings() {
             )}
           </div>
         )}
+      </div>
+
+      <div className="card" style={{ maxWidth: 500 }}>
+        <h2>Wallet Backup</h2>
+        <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16 }}>
+          Export your recovery phrase to a file. Store it securely — anyone with
+          these words can access your funds.
+        </p>
+        <button className="btn-secondary" onClick={handleBackup} style={{ width: "100%" }}>
+          Export Recovery Phrase
+        </button>
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use ghost_tap_core::network::connection::ConnectionMode;
 use ghost_tap_core::network::NodeConfig;
@@ -54,5 +54,24 @@ pub fn get_connection_status(state: State<'_, AppState>) -> ConnectionStatus {
 #[tauri::command]
 pub async fn sync(state: State<'_, AppState>) -> AppResult<()> {
     state.connection.sync().await?;
+
+    // Persist wallet state after sync
+    let guard = state.wallet.lock();
+    if let Some(instance) = guard.as_ref() {
+        let wallet = instance
+            .wallet
+            .lock()
+            .map_err(|e| AppError::from(e.to_string()))?;
+        let storage = instance
+            .storage
+            .lock()
+            .map_err(|e| AppError::from(e.to_string()))?;
+
+        storage.save_utxos(wallet.get_utxos())?;
+        for entry in wallet.get_history() {
+            storage.save_history_entry(entry)?;
+        }
+    }
+
     Ok(())
 }

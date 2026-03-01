@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   createInvoice,
+  listInvoices,
+  deleteInvoice,
   newReceiveAddress,
   formatGhost,
   type InvoiceResponse,
   type LineItemInput,
 } from "../api/commands";
+import { useToast } from "../components/ToastProvider";
 import QrCode from "../components/QrCode";
 
 export default function Invoices() {
+  const { toast } = useToast();
   const [invoices, setInvoices] = useState<InvoiceResponse[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [amount, setAmount] = useState("");
@@ -18,11 +22,13 @@ export default function Invoices() {
   const [itemDesc, setItemDesc] = useState("");
   const [itemAmount, setItemAmount] = useState("");
   const [selected, setSelected] = useState<InvoiceResponse | null>(null);
-  const [error, setError] = useState("");
+
+  useEffect(() => {
+    listInvoices().then(setInvoices).catch((e) => toast(String(e), "error"));
+  }, [toast]);
 
   const handleCreate = async () => {
     try {
-      setError("");
       const address = await newReceiveAddress();
       const amountSats = Math.floor(parseFloat(amount) * 100_000_000);
       const invoice = await createInvoice(
@@ -38,8 +44,19 @@ export default function Invoices() {
       setAmount("");
       setMemo("");
       setItems([]);
+      toast("Invoice created", "success");
     } catch (e: unknown) {
-      setError(String(e));
+      toast(String(e), "error");
+    }
+  };
+
+  const handleDelete = async (invoiceId: string) => {
+    try {
+      await deleteInvoice(invoiceId);
+      setInvoices(invoices.filter((i) => i.invoice_id !== invoiceId));
+      toast("Invoice deleted", "info");
+    } catch (e: unknown) {
+      toast(String(e), "error");
     }
   };
 
@@ -121,7 +138,6 @@ export default function Invoices() {
               </div>
             ))}
           </div>
-          {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}
           <button className="btn-primary" onClick={handleCreate} disabled={!amount} style={{ width: "100%" }}>
             Create
           </button>
@@ -135,7 +151,7 @@ export default function Invoices() {
               <th>Invoice</th>
               <th>Amount</th>
               <th>Status</th>
-              <th>Action</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -156,9 +172,14 @@ export default function Invoices() {
                     </span>
                   </td>
                   <td>
-                    <button className="btn-secondary btn-small" onClick={() => setSelected(inv)}>
-                      View
-                    </button>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="btn-secondary btn-small" onClick={() => setSelected(inv)}>
+                        View
+                      </button>
+                      <button className="btn-secondary btn-small" onClick={() => handleDelete(inv.invoice_id)} style={{ color: "var(--danger)" }}>
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))

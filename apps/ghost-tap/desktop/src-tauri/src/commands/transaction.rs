@@ -85,6 +85,25 @@ pub async fn sign_and_broadcast(
 
     let txid = state.connection.send_payment(&signed.raw_tx).await?;
 
+    // Persist updated wallet state after broadcast
+    {
+        let guard = state.wallet.lock();
+        if let Some(instance) = guard.as_ref() {
+            let wallet = instance
+                .wallet
+                .lock()
+                .map_err(|e| AppError::from(e.to_string()))?;
+            let storage = instance
+                .storage
+                .lock()
+                .map_err(|e| AppError::from(e.to_string()))?;
+            storage.save_utxos(wallet.get_utxos())?;
+            for entry in wallet.get_history() {
+                storage.save_history_entry(entry)?;
+            }
+        }
+    }
+
     Ok(BroadcastResponse {
         txid,
         size: signed.size,

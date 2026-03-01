@@ -46,6 +46,8 @@ pub fn run() {
             // Merchant
             commands::merchant::compute_dashboard,
             commands::merchant::create_invoice,
+            commands::merchant::list_invoices,
+            commands::merchant::delete_invoice,
             commands::merchant::generate_receipt,
             commands::merchant::export_csv,
             commands::merchant::export_html,

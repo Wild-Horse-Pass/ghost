@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 
+
 #[derive(Serialize)]
 pub struct BalanceResponse {
     pub confirmed: u64,
@@ -66,6 +67,15 @@ pub fn create_wallet(state: State<'_, AppState>, word_count: u8) -> AppResult<St
         s.set_encrypted("mnemonic", mnemonic_str.as_bytes())?;
     }
 
+    // Attach storage to wash queue for persistence
+    {
+        let mut washer = state
+            .washer
+            .lock()
+            .map_err(|e| AppError::from(e.to_string()))?;
+        washer.attach_storage(storage.clone());
+    }
+
     let instance = WalletInstance {
         wallet: Arc::new(std::sync::Mutex::new(wallet)),
         mnemonic,
@@ -95,6 +105,15 @@ pub fn restore_wallet(state: State<'_, AppState>, mnemonic: String) -> AppResult
     {
         let s = storage.lock().map_err(|e| AppError::from(e.to_string()))?;
         s.set_encrypted("mnemonic", mnemonic.as_bytes())?;
+    }
+
+    // Attach storage to wash queue for persistence
+    {
+        let mut washer = state
+            .washer
+            .lock()
+            .map_err(|e| AppError::from(e.to_string()))?;
+        washer.attach_storage(storage.clone());
     }
 
     let instance = WalletInstance {
@@ -309,7 +328,31 @@ pub fn load_wallet(state: State<'_, AppState>, pin: String) -> AppResult<()> {
         .map_err(|e| AppError::from(format!("Invalid mnemonic data: {e}")))?;
 
     let secret = SecretString::new(mnemonic_str);
-    let wallet = Wallet::from_mnemonic(&secret, None)?;
+    let mut wallet = Wallet::from_mnemonic(&secret, None)?;
+
+    // Restore UTXOs and history from storage
+    {
+        let s = storage.lock().map_err(|e| AppError::from(e.to_string()))?;
+        if let Ok(utxos) = s.load_utxos() {
+            for utxo in utxos {
+                wallet.add_utxo(utxo);
+            }
+        }
+        if let Ok(entries) = s.load_all_history() {
+            for entry in entries {
+                wallet.add_history(entry);
+            }
+        }
+    }
+
+    // Attach storage to the wash queue so it loads persisted requests
+    {
+        let mut washer = state
+            .washer
+            .lock()
+            .map_err(|e| AppError::from(e.to_string()))?;
+        washer.attach_storage(storage.clone());
+    }
 
     let instance = WalletInstance {
         wallet: Arc::new(std::sync::Mutex::new(wallet)),

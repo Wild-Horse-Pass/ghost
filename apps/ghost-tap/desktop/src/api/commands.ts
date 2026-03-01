@@ -247,6 +247,14 @@ export async function createInvoice(
   return invoke("create_invoice", { address, amount, businessName, memo, dueDate, items });
 }
 
+export async function listInvoices(): Promise<InvoiceResponse[]> {
+  return invoke("list_invoices");
+}
+
+export async function deleteInvoice(invoiceId: string): Promise<void> {
+  return invoke("delete_invoice", { invoiceId });
+}
+
 export async function generateReceipt(
   txid: string,
   amount: number,
