@@ -1333,14 +1333,14 @@ async fn main() -> Result<()> {
                 .build()
                 .expect("Failed to create HTTP client for ghost-pay finalize");
             let finalize_fn: ghost_consensus::nullifier_route_handler::FinalizeFn =
-                Arc::new(move |height: u64, state_root: [u8; 32], tx_count: u32| {
+                Arc::new(move |height: u64, state_root: [u8; 32], nullifiers: Vec<[u8; 32]>| {
                     let client = finalize_client.clone();
                     tokio::spawn(async move {
                         let body = serde_json::json!({
                             "height": height,
                             "state_root": hex::encode(state_root),
-                            "attestation_count": tx_count,
-                            "included_tx_ids": [],
+                            "attestation_count": nullifiers.len(),
+                            "included_tx_ids": nullifiers.iter().map(hex::encode).collect::<Vec<_>>(),
                         });
                         match client
                             .post("http://127.0.0.1:8800/api/v1/l2/finalize")

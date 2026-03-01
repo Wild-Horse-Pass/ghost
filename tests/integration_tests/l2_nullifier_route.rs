@@ -874,17 +874,17 @@ fn test_894_finalize_fn_called_on_checkpoint() {
     // Wire FinalizeFn on the proposer (will be determined below)
     let finalize_height = Arc::new(std::sync::Mutex::new(0u64));
     let finalize_root = Arc::new(std::sync::Mutex::new([0u8; 32]));
-    let finalize_count = Arc::new(std::sync::Mutex::new(0u32));
+    let finalize_nullifiers = Arc::new(std::sync::Mutex::new(Vec::<[u8; 32]>::new()));
 
     // Set FinalizeFn on both nodes (one of them will be the proposer)
     for (_, _, handler) in &nodes {
         let fh = finalize_height.clone();
         let fr = finalize_root.clone();
-        let fc = finalize_count.clone();
-        handler.set_finalize_fn(Arc::new(move |h, r, c| {
+        let fn_ = finalize_nullifiers.clone();
+        handler.set_finalize_fn(Arc::new(move |h, r, nullifiers| {
             *fh.lock().unwrap() = h;
             *fr.lock().unwrap() = r;
-            *fc.lock().unwrap() = c;
+            *fn_.lock().unwrap() = nullifiers;
         }));
     }
 
@@ -997,7 +997,7 @@ fn test_895_external_submit_through_finalization() {
         .collect();
     for (i, (_, _, handler)) in nodes.iter().enumerate() {
         let fh = finalized_heights[i].clone();
-        handler.set_finalize_fn(Arc::new(move |h, _r, _c| {
+        handler.set_finalize_fn(Arc::new(move |h, _r, _nullifiers| {
             *fh.lock().unwrap() = h;
         }));
     }

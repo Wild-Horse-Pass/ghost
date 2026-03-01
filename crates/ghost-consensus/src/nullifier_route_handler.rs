@@ -59,9 +59,10 @@ const SYNC_REQUEST_COOLDOWN_SECS: u64 = 60;
 pub type SignFn = Arc<dyn Fn(&[u8]) -> [u8; 64] + Send + Sync>;
 
 /// Checkpoint finalization callback type.
-/// Called after a checkpoint is finalized with (height, state_root, tx_count).
+/// Called after a checkpoint is finalized with (height, state_root, nullifiers).
+/// Nullifiers identify which transactions were included; callers derive tx_count from `.len()`.
 /// Used to notify ghost-pay of finalized L2 blocks.
-pub type FinalizeFn = Arc<dyn Fn(u64, [u8; 32], u32) + Send + Sync>;
+pub type FinalizeFn = Arc<dyn Fn(u64, [u8; 32], Vec<[u8; 32]>) + Send + Sync>;
 
 /// Configuration for the nullifier route handler
 #[derive(Debug, Clone)]
@@ -870,9 +871,12 @@ impl NullifierRouteHandler {
         // Clean up old vote states
         self.prune_vote_states(height);
 
-        // Notify ghost-pay of finalized checkpoint
+        // Notify ghost-pay of finalized checkpoint (MEDIUM-2: pass nullifiers for tx identification)
         if let Some(ref finalize_fn) = *self.finalize_fn.read() {
-            finalize_fn(height, new_root, tx_count as u32);
+            let nullifiers: Vec<[u8; 32]> = proposal
+                .map(|p| p.transactions.iter().map(|tx| tx.nullifier).collect())
+                .unwrap_or_default();
+            finalize_fn(height, new_root, nullifiers);
         }
 
         debug!(height, tx_count, "Checkpoint finalized");
