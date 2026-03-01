@@ -148,6 +148,22 @@ export async function hasWallet(): Promise<boolean> {
   return invoke("has_wallet");
 }
 
+export async function setPin(pin: string): Promise<void> {
+  return invoke("set_pin", { pin });
+}
+
+export async function verifyPin(pin: string): Promise<boolean> {
+  return invoke("verify_pin", { pin });
+}
+
+export async function hasPin(): Promise<boolean> {
+  return invoke("has_pin");
+}
+
+export async function loadWallet(pin: string): Promise<void> {
+  return invoke("load_wallet", { pin });
+}
+
 // --- Transaction ---
 
 export async function buildTransaction(

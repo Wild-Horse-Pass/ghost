@@ -1,34 +1,45 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { getHistory, type HistoryEntry } from "../api/commands";
+import { useToast } from "../components/ToastProvider";
 import TransactionRow from "../components/TransactionRow";
 
 const PAGE_SIZE = 20;
+const REFRESH_INTERVAL = 15_000; // 15 seconds
 
 export default function History() {
+  const { toast } = useToast();
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
-  const [error, setError] = useState("");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  const load = async (off: number) => {
+  const load = useCallback(async (off: number) => {
     try {
-      setError("");
       const result = await getHistory(off, PAGE_SIZE);
       setEntries(result);
       setHasMore(result.length === PAGE_SIZE);
+      setLastUpdated(new Date());
     } catch (e: unknown) {
-      setError(String(e));
+      toast(String(e), "error");
     }
-  };
+  }, [toast]);
 
   useEffect(() => {
     load(offset);
-  }, [offset]);
+    const id = setInterval(() => load(offset), REFRESH_INTERVAL);
+    return () => clearInterval(id);
+  }, [offset, load]);
 
   return (
     <div className="page">
-      <h1>Transaction History</h1>
-      {error && <div className="error-text" style={{ marginBottom: 16 }}>{error}</div>}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+        <h1 style={{ marginBottom: 0 }}>Transaction History</h1>
+        {lastUpdated && (
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            Updated {lastUpdated.toLocaleTimeString()}
+          </span>
+        )}
+      </div>
 
       <div className="card" style={{ padding: 0 }}>
         <table>

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { hasWallet } from "./api/commands";
+import { hasWallet, hasPin, loadWallet, verifyPin } from "./api/commands";
+import ToastProvider from "./components/ToastProvider";
+import PinEntry from "./components/PinEntry";
 import Layout from "./components/Layout";
 import WalletSetup from "./pages/WalletSetup";
 import Dashboard from "./pages/Dashboard";
@@ -14,20 +16,98 @@ import Export from "./pages/Export";
 import WraithWash from "./pages/WraithWash";
 import Settings from "./pages/Settings";
 
+type AppState = "loading" | "setup" | "pin" | "ready";
+
 function AppRoutes() {
-  const [walletExists, setWalletExists] = useState<boolean | null>(null);
+  const [appState, setAppState] = useState<AppState>("loading");
+  const [pinError, setPinError] = useState("");
 
   useEffect(() => {
-    hasWallet().then(setWalletExists);
+    (async () => {
+      const walletExists = await hasWallet();
+      if (!walletExists) {
+        setAppState("setup");
+        return;
+      }
+      const pinSet = await hasPin();
+      if (pinSet) {
+        setAppState("pin");
+      } else {
+        // No PIN — load wallet with default PIN
+        try {
+          await loadWallet("000000");
+        } catch {
+          // Storage doesn't exist yet or wrong key — go to setup
+        }
+        setAppState("ready");
+      }
+    })();
   }, []);
 
-  if (walletExists === null) {
-    return null; // loading
+  const handlePinSubmit = async (pin: string) => {
+    setPinError("");
+    const valid = await verifyPin(pin);
+    if (!valid) {
+      setPinError("Incorrect PIN");
+      return;
+    }
+    try {
+      await loadWallet(pin);
+      setAppState("ready");
+    } catch {
+      setPinError("Failed to decrypt wallet");
+    }
+  };
+
+  if (appState === "loading") {
+    return null;
+  }
+
+  if (appState === "pin") {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100vh",
+          flexDirection: "column",
+        }}
+      >
+        <h1
+          style={{
+            color: "var(--accent)",
+            fontSize: 28,
+            marginBottom: 8,
+          }}
+        >
+          GhostTap
+        </h1>
+        <p
+          style={{
+            color: "var(--text-secondary)",
+            marginBottom: 32,
+            fontSize: 13,
+          }}
+        >
+          Merchant Terminal
+        </p>
+        <PinEntry onSubmit={handlePinSubmit} label="Enter PIN to unlock" />
+        {pinError && (
+          <div className="error-text" style={{ marginTop: 16 }}>
+            {pinError}
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
     <Routes>
-      <Route path="/setup" element={<WalletSetup />} />
+      <Route
+        path="/setup"
+        element={<WalletSetup onComplete={() => setAppState("ready")} />}
+      />
       <Route element={<Layout />}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/terminal" element={<Terminal />} />
@@ -42,7 +122,12 @@ function AppRoutes() {
       </Route>
       <Route
         path="*"
-        element={<Navigate to={walletExists ? "/dashboard" : "/setup"} replace />}
+        element={
+          <Navigate
+            to={appState === "ready" ? "/dashboard" : "/setup"}
+            replace
+          />
+        }
       />
     </Routes>
   );
@@ -50,8 +135,10 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AppRoutes />
-    </BrowserRouter>
+    <ToastProvider>
+      <BrowserRouter>
+        <AppRoutes />
+      </BrowserRouter>
+    </ToastProvider>
   );
 }

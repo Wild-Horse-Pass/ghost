@@ -3279,11 +3279,14 @@ dependencies = [
 name = "ghost-tap-desktop"
 version = "1.8.0"
 dependencies = [
+ "dirs 6.0.0",
  "ghost-tap-core",
+ "hex",
  "parking_lot",
  "secrecy",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

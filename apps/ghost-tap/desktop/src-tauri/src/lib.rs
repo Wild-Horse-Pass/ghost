@@ -26,6 +26,10 @@ pub fn run() {
             commands::wallet::unlock_wallet,
             commands::wallet::is_locked,
             commands::wallet::has_wallet,
+            commands::wallet::set_pin,
+            commands::wallet::verify_pin,
+            commands::wallet::has_pin,
+            commands::wallet::load_wallet,
             // Transaction
             commands::transaction::build_transaction,
             commands::transaction::sign_and_broadcast,

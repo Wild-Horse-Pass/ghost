@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::state::{AppState, WalletInstance};
+use ghost_tap_core::storage::WalletStorage;
 use ghost_tap_core::wallet::{Wallet, WordCount};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
@@ -24,6 +25,19 @@ pub struct HistoryEntryResponse {
     pub memo: Option<String>,
 }
 
+/// Default PIN used when no PIN is set yet (wallet setup before PIN is chosen).
+const DEFAULT_PIN: &str = "000000";
+
+fn open_storage(state: &AppState, pin: &str) -> AppResult<Arc<std::sync::Mutex<WalletStorage>>> {
+    let key = AppState::derive_key(pin);
+    let db_path = state.wallet_db_path();
+    let path_str = db_path
+        .to_str()
+        .ok_or_else(|| AppError::from("Invalid database path"))?;
+    let storage = WalletStorage::open(path_str, &key)?;
+    Ok(Arc::new(std::sync::Mutex::new(storage)))
+}
+
 #[tauri::command]
 pub fn create_wallet(state: State<'_, AppState>, word_count: u8) -> AppResult<String> {
     let wc = match word_count {
@@ -34,10 +48,28 @@ pub fn create_wallet(state: State<'_, AppState>, word_count: u8) -> AppResult<St
     let (wallet, mnemonic) = Wallet::generate(wc)?;
     let mnemonic_str = mnemonic.expose_secret().clone();
 
+    // Open storage with default PIN (user sets real PIN after setup)
+    let pin = state.pin_hash.lock();
+    let actual_pin = if pin.is_some() {
+        // Shouldn't happen during first create, but handle it
+        return Err("Wallet already exists".into());
+    } else {
+        DEFAULT_PIN
+    };
+    drop(pin);
+
+    let storage = open_storage(&state, actual_pin)?;
+
+    // Save mnemonic encrypted
+    {
+        let s = storage.lock().map_err(|e| AppError::from(e.to_string()))?;
+        s.set_encrypted("mnemonic", mnemonic_str.as_bytes())?;
+    }
+
     let instance = WalletInstance {
         wallet: Arc::new(std::sync::Mutex::new(wallet)),
         mnemonic,
-        storage: None,
+        storage,
     };
 
     *state.wallet.lock() = Some(instance);
@@ -46,13 +78,29 @@ pub fn create_wallet(state: State<'_, AppState>, word_count: u8) -> AppResult<St
 
 #[tauri::command]
 pub fn restore_wallet(state: State<'_, AppState>, mnemonic: String) -> AppResult<()> {
-    let secret = SecretString::new(mnemonic);
+    let secret = SecretString::new(mnemonic.clone());
     let wallet = Wallet::from_mnemonic(&secret, None)?;
+
+    let pin = state.pin_hash.lock();
+    let actual_pin = if pin.is_some() {
+        return Err("Wallet already exists".into());
+    } else {
+        DEFAULT_PIN
+    };
+    drop(pin);
+
+    let storage = open_storage(&state, actual_pin)?;
+
+    // Save mnemonic encrypted
+    {
+        let s = storage.lock().map_err(|e| AppError::from(e.to_string()))?;
+        s.set_encrypted("mnemonic", mnemonic.as_bytes())?;
+    }
 
     let instance = WalletInstance {
         wallet: Arc::new(std::sync::Mutex::new(wallet)),
         mnemonic: secret,
-        storage: None,
+        storage,
     };
 
     *state.wallet.lock() = Some(instance);
@@ -172,5 +220,103 @@ pub fn is_locked(state: State<'_, AppState>) -> bool {
 
 #[tauri::command]
 pub fn has_wallet(state: State<'_, AppState>) -> bool {
-    state.wallet.lock().is_some()
+    // Check in-memory first
+    if state.wallet.lock().is_some() {
+        return true;
+    }
+    // Check on disk
+    state.wallet_db_path().exists()
+}
+
+// --- PIN Management ---
+
+#[tauri::command]
+pub fn set_pin(state: State<'_, AppState>, pin: String) -> AppResult<()> {
+    if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
+        return Err("PIN must be exactly 6 digits".into());
+    }
+
+    let new_hash = AppState::hash_pin(&pin);
+    let new_key = AppState::derive_key(&pin);
+
+    // Re-encrypt the wallet database with the new PIN-derived key
+    let guard = state.wallet.lock();
+    if let Some(instance) = guard.as_ref() {
+        // Read the mnemonic from the current storage
+        let mnemonic_bytes = {
+            let s = instance
+                .storage
+                .lock()
+                .map_err(|e| AppError::from(e.to_string()))?;
+            s.get("mnemonic")?
+        };
+
+        // Open a new storage with the new key and re-save
+        let db_path = state.wallet_db_path();
+        let path_str = db_path
+            .to_str()
+            .ok_or_else(|| AppError::from("Invalid database path"))?;
+        let new_storage = WalletStorage::open(path_str, &new_key)?;
+        new_storage.set_encrypted("mnemonic", &mnemonic_bytes)?;
+    }
+    drop(guard);
+
+    // Save PIN hash to disk
+    let pin_path = state.data_dir.join("pin.hash");
+    std::fs::write(&pin_path, &new_hash)
+        .map_err(|e| AppError::from(format!("Failed to save PIN: {e}")))?;
+
+    *state.pin_hash.lock() = Some(new_hash);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn verify_pin(state: State<'_, AppState>, pin: String) -> AppResult<bool> {
+    let stored = state.pin_hash.lock();
+    match stored.as_ref() {
+        Some(hash) => Ok(&AppState::hash_pin(&pin) == hash),
+        None => Ok(true), // No PIN set, always valid
+    }
+}
+
+#[tauri::command]
+pub fn has_pin(state: State<'_, AppState>) -> bool {
+    state.pin_hash.lock().is_some()
+}
+
+/// Load wallet from disk using PIN for decryption.
+#[tauri::command]
+pub fn load_wallet(state: State<'_, AppState>, pin: String) -> AppResult<()> {
+    // Verify PIN first
+    {
+        let stored = state.pin_hash.lock();
+        if let Some(hash) = stored.as_ref() {
+            if AppState::hash_pin(&pin) != *hash {
+                return Err("Invalid PIN".into());
+            }
+        }
+    }
+
+    let storage = open_storage(&state, &pin)?;
+
+    // Load mnemonic from encrypted storage
+    let mnemonic_bytes = {
+        let s = storage.lock().map_err(|e| AppError::from(e.to_string()))?;
+        s.get("mnemonic")?
+    };
+
+    let mnemonic_str = String::from_utf8(mnemonic_bytes)
+        .map_err(|e| AppError::from(format!("Invalid mnemonic data: {e}")))?;
+
+    let secret = SecretString::new(mnemonic_str);
+    let wallet = Wallet::from_mnemonic(&secret, None)?;
+
+    let instance = WalletInstance {
+        wallet: Arc::new(std::sync::Mutex::new(wallet)),
+        mnemonic: secret,
+        storage,
+    };
+
+    *state.wallet.lock() = Some(instance);
+    Ok(())
 }

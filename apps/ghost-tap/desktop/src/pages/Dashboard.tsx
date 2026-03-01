@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   computeDashboard,
   getBalance,
@@ -6,6 +6,7 @@ import {
   type DashboardSummary,
   type BalanceResponse,
 } from "../api/commands";
+import { useToast } from "../components/ToastProvider";
 
 type Period = "today" | "week" | "month" | "all";
 
@@ -23,23 +24,46 @@ function periodRange(period: Period): [number, number] {
   }
 }
 
+const REFRESH_INTERVAL = 30_000; // 30 seconds
+
 export default function Dashboard() {
+  const { toast } = useToast();
   const [period, setPeriod] = useState<Period>("month");
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [balance, setBalance] = useState<BalanceResponse | null>(null);
-  const [error, setError] = useState("");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [since, until] = periodRange(period);
+      const [s, b] = await Promise.all([
+        computeDashboard(since, until),
+        getBalance(),
+      ]);
+      setSummary(s);
+      setBalance(b);
+      setLastUpdated(new Date());
+    } catch (e: unknown) {
+      toast(String(e), "error");
+    }
+  }, [period, toast]);
 
   useEffect(() => {
-    const [since, until] = periodRange(period);
-    computeDashboard(since, until).then(setSummary).catch((e) => setError(String(e)));
-    getBalance().then(setBalance).catch(() => {});
-  }, [period]);
+    refresh();
+    const id = setInterval(refresh, REFRESH_INTERVAL);
+    return () => clearInterval(id);
+  }, [refresh]);
 
   return (
     <div className="page">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <h1 style={{ marginBottom: 0 }}>Dashboard</h1>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {lastUpdated && (
+            <span style={{ fontSize: 11, color: "var(--text-muted)", marginRight: 8 }}>
+              Updated {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
           {(["today", "week", "month", "all"] as const).map((p) => (
             <button
               key={p}
@@ -51,8 +75,6 @@ export default function Dashboard() {
           ))}
         </div>
       </div>
-
-      {error && <div className="error-text" style={{ marginBottom: 16 }}>{error}</div>}
 
       {balance && (
         <div className="card" style={{ marginBottom: 24 }}>

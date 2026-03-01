@@ -1,15 +1,23 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { createWallet, restoreWallet } from "../api/commands";
+import { createWallet, restoreWallet, setPin } from "../api/commands";
+import PinEntry from "../components/PinEntry";
+import { useToast } from "../components/ToastProvider";
 
-export default function WalletSetup() {
+interface Props {
+  onComplete: () => void;
+}
+
+export default function WalletSetup({ onComplete }: Props) {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"choose" | "create" | "restore">("choose");
+  const { toast } = useToast();
+  const [mode, setMode] = useState<"choose" | "create" | "restore" | "pin" | "pin-confirm">("choose");
   const [mnemonic, setMnemonic] = useState("");
   const [restoreInput, setRestoreInput] = useState("");
   const [wordCount, setWordCount] = useState(12);
   const [error, setError] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [pinFirst, setPinFirst] = useState("");
 
   const handleCreate = async () => {
     try {
@@ -26,13 +34,44 @@ export default function WalletSetup() {
     try {
       setError("");
       await restoreWallet(restoreInput.trim());
-      navigate("/dashboard");
+      setMode("pin");
     } catch (e: unknown) {
       setError(String(e));
     }
   };
 
-  const handleConfirm = () => {
+  const handleConfirmMnemonic = () => {
+    setMode("pin");
+  };
+
+  const handlePinFirst = (pin: string) => {
+    setPinFirst(pin);
+    setMode("pin-confirm");
+  };
+
+  const handlePinConfirm = async (pin: string) => {
+    if (pin !== pinFirst) {
+      setError("PINs do not match");
+      setMode("pin");
+      setPinFirst("");
+      return;
+    }
+    try {
+      setError("");
+      await setPin(pin);
+      toast("Wallet created and secured with PIN", "success");
+      onComplete();
+      navigate("/dashboard");
+    } catch (e: unknown) {
+      setError(String(e));
+      setMode("pin");
+      setPinFirst("");
+    }
+  };
+
+  const handleSkipPin = () => {
+    toast("Wallet created (no PIN set)", "info");
+    onComplete();
     navigate("/dashboard");
   };
 
@@ -120,11 +159,47 @@ export default function WalletSetup() {
           <button
             className="btn-primary"
             disabled={!confirmed}
-            onClick={handleConfirm}
+            onClick={handleConfirmMnemonic}
             style={{ marginTop: 16, width: "100%" }}
           >
-            Continue to Dashboard
+            Continue
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "pin") {
+    return (
+      <div className="page" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center" }}>
+          <h1>Set a PIN</h1>
+          <p style={{ color: "var(--text-secondary)", marginBottom: 32, fontSize: 13 }}>
+            Choose a 6-digit PIN to protect your wallet.
+          </p>
+          {error && <div className="error-text" style={{ marginBottom: 16 }}>{error}</div>}
+          <PinEntry onSubmit={handlePinFirst} label="Enter new PIN" />
+          <button
+            className="btn-secondary"
+            onClick={handleSkipPin}
+            style={{ marginTop: 24, fontSize: 12 }}
+          >
+            Skip for now
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "pin-confirm") {
+    return (
+      <div className="page" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center" }}>
+          <h1>Confirm PIN</h1>
+          <p style={{ color: "var(--text-secondary)", marginBottom: 32, fontSize: 13 }}>
+            Enter the same PIN again to confirm.
+          </p>
+          <PinEntry onSubmit={handlePinConfirm} label="Confirm PIN" />
         </div>
       </div>
     );
