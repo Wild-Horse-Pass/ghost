@@ -58,6 +58,9 @@ members = [
     "bins/ghost-node-tui",
     # Registry service for load balancing
     "bins/ghost-registry",
+    # Mobile Apps
+    "apps/ghost-tap/core",
+    "apps/ghost-tap/tests/integration",
 ]
 exclude = [
     # sv2-apps has its own workspace structure
@@ -98,6 +101,8 @@ ghost-mpc = { path = "crates/ghost-mpc" }
 ghost-gsp-proto = { path = "crates/ghost-gsp-proto" }
 ghost-gsp = { path = "crates/ghost-gsp" }
 ghost-light-wallet = { path = "crates/ghost-light-wallet" }
+# Mobile Apps
+ghost-tap-core = { path = "apps/ghost-tap/core" }
 # Async runtime
 tokio = { version = "1.36", features = ["full"] }
 
@@ -127,7 +132,7 @@ lru = "0.12"
 tmq = "0.5"
 axum = { version = "0.7", features = ["ws"] }
 http = "1.1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 tower = { version = "0.4", features = ["limit", "timeout"] }
 tower-http = { version = "0.5", features = ["cors", "trace", "limit", "timeout"] }
 tower_governor = "0.4"
@@ -166,6 +171,8 @@ scrypt = "0.11"
 
 # BIP standards
 bip39 = "2.0"
+bip32 = "0.5"
+secp256k1 = { version = "0.29", features = ["rand", "global-context", "serde"] }
 
 # JWT
 jsonwebtoken = "9.0"
@@ -183,6 +190,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 
 # Additional crypto
+k256 = { version = "0.13", features = ["ecdsa"] }
 blstrs = "0.7"
 chacha20poly1305 = "0.10"
 zeroize = { version = "1.7", features = ["derive"] }
@@ -203,6 +211,10 @@ proptest = "1.4"
 
 # Encoding
 bech32 = "0.11"
+bs58 = "0.5"
+
+# FFI
+uniffi = "0.27"
 
 # Workspace-level package for integration tests
 [package]

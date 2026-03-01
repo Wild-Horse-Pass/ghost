@@ -1,0 +1,12 @@
+[package]
+name = "ghost-tap-integration"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ghost-tap-core.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio-test.workspace = true
+serde_json.workspace = true
+secrecy.workspace = true

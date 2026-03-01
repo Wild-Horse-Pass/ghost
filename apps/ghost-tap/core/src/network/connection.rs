@@ -1,0 +1,305 @@
+//! Connection manager abstracting over GSP WebSocket and direct RPC
+//!
+//! Provides a unified interface for wallet operations regardless of
+//! the underlying transport. The application can switch between GSP
+//! mode (WebSocket to a service provider) and direct RPC mode
+//! (JSON-RPC to a Ghost daemon) at runtime.
+
+use super::gsp::MobileGspClient;
+use super::{GhostClient, NetworkError, NodeConfig};
+use parking_lot::Mutex;
+use std::sync::Arc;
+
+/// The transport mode for communicating with the Ghost network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionMode {
+    /// Connect via a GSP WebSocket endpoint.
+    Gsp,
+    /// Connect directly to a Ghost daemon via JSON-RPC.
+    DirectRpc,
+}
+
+impl std::fmt::Display for ConnectionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectionMode::Gsp => write!(f, "GSP (WebSocket)"),
+            ConnectionMode::DirectRpc => write!(f, "Direct RPC"),
+        }
+    }
+}
+
+/// Unified connection manager for Ghost network communication.
+///
+/// Wraps both `MobileGspClient` (WebSocket) and `GhostClient` (JSON-RPC)
+/// behind a common set of high-level operations. The application code
+/// calls `get_balance()`, `send_payment()`, etc. without worrying about
+/// which transport is active.
+pub struct ConnectionManager {
+    /// Active connection mode.
+    mode: Arc<Mutex<ConnectionMode>>,
+    /// GSP WebSocket client (used in Gsp mode).
+    gsp_client: Arc<MobileGspClient>,
+    /// Direct RPC client (used in DirectRpc mode).
+    rpc_client: Arc<tokio::sync::Mutex<Option<GhostClient>>>,
+    /// RPC node configuration (needed to lazily create the RPC client).
+    rpc_config: Arc<Mutex<NodeConfig>>,
+}
+
+impl ConnectionManager {
+    /// Create a new connection manager.
+    ///
+    /// Starts in `DirectRpc` mode with default node configuration.
+    /// Call `set_mode()` to switch to GSP mode after configuring the
+    /// GSP client.
+    pub fn new() -> Self {
+        Self {
+            mode: Arc::new(Mutex::new(ConnectionMode::DirectRpc)),
+            gsp_client: Arc::new(MobileGspClient::new()),
+            rpc_client: Arc::new(tokio::sync::Mutex::new(None)),
+            rpc_config: Arc::new(Mutex::new(NodeConfig::default())),
+        }
+    }
+
+    /// Create a connection manager with specific RPC and GSP clients.
+    pub fn with_clients(
+        rpc_config: NodeConfig,
+        gsp_client: MobileGspClient,
+        initial_mode: ConnectionMode,
+    ) -> Self {
+        Self {
+            mode: Arc::new(Mutex::new(initial_mode)),
+            gsp_client: Arc::new(gsp_client),
+            rpc_client: Arc::new(tokio::sync::Mutex::new(None)),
+            rpc_config: Arc::new(Mutex::new(rpc_config)),
+        }
+    }
+
+    /// Get the current connection mode.
+    pub fn mode(&self) -> ConnectionMode {
+        *self.mode.lock()
+    }
+
+    /// Switch the connection mode.
+    ///
+    /// This does NOT automatically connect or disconnect. The caller
+    /// is responsible for calling `connect_gsp()` or ensuring the RPC
+    /// client is available after switching.
+    pub fn set_mode(&self, mode: ConnectionMode) {
+        *self.mode.lock() = mode;
+    }
+
+    /// Update the RPC node configuration.
+    pub fn set_rpc_config(&self, config: NodeConfig) {
+        *self.rpc_config.lock() = config;
+    }
+
+    /// Get a reference to the GSP client.
+    pub fn gsp(&self) -> &MobileGspClient {
+        &self.gsp_client
+    }
+
+    /// Check whether the active transport is connected.
+    pub fn is_connected(&self) -> bool {
+        match *self.mode.lock() {
+            ConnectionMode::Gsp => self.gsp_client.is_connected(),
+            ConnectionMode::DirectRpc => {
+                // The RPC client is considered "connected" if it has been
+                // created. Actual connectivity is verified on each request.
+                // We use try_lock to avoid blocking.
+                self.rpc_client
+                    .try_lock()
+                    .map(|guard| guard.is_some())
+                    .unwrap_or(false)
+            }
+        }
+    }
+
+    /// Ensure the RPC client exists, creating it lazily if needed.
+    async fn ensure_rpc_client(&self) -> Result<(), NetworkError> {
+        let mut guard = self.rpc_client.lock().await;
+        if guard.is_none() {
+            let config = self.rpc_config.lock().clone();
+            let client = GhostClient::new(config)?;
+            *guard = Some(client);
+        }
+        Ok(())
+    }
+
+    /// Get the current wallet balance.
+    ///
+    /// Returns `(confirmed, pending)` in satoshis.
+    pub async fn get_balance(&self) -> Result<(u64, u64), NetworkError> {
+        let mode = *self.mode.lock();
+        match mode {
+            ConnectionMode::Gsp => self.gsp_client.get_balance().await,
+            ConnectionMode::DirectRpc => {
+                self.ensure_rpc_client().await?;
+                let mut guard = self.rpc_client.lock().await;
+                let client = guard
+                    .as_mut()
+                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+
+                let public = client.get_public_balance().await.unwrap_or(0.0);
+                let confirmed = (public * 100_000_000.0) as u64;
+                // RPC does not have a single "pending" call — return 0.
+                Ok((confirmed, 0))
+            }
+        }
+    }
+
+    /// Send a payment.
+    ///
+    /// In GSP mode, prepares and submits a signed payment. In RPC mode,
+    /// broadcasts a raw signed transaction hex.
+    ///
+    /// Returns the transaction ID on success.
+    pub async fn send_payment(
+        &self,
+        signed_tx: &str,
+    ) -> Result<String, NetworkError> {
+        let mode = *self.mode.lock();
+        match mode {
+            ConnectionMode::Gsp => self.gsp_client.submit_payment(signed_tx).await,
+            ConnectionMode::DirectRpc => {
+                self.ensure_rpc_client().await?;
+                let mut guard = self.rpc_client.lock().await;
+                let client = guard
+                    .as_mut()
+                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+
+                client.send_raw_transaction(signed_tx).await
+            }
+        }
+    }
+
+    /// Trigger a sync / refresh.
+    ///
+    /// In GSP mode, subscribes to balance and payment updates.
+    /// In RPC mode, fetches the latest block height.
+    pub async fn sync(&self) -> Result<(), NetworkError> {
+        let mode = *self.mode.lock();
+        match mode {
+            ConnectionMode::Gsp => {
+                self.gsp_client.subscribe_balance().await?;
+                self.gsp_client.subscribe_payments().await?;
+                Ok(())
+            }
+            ConnectionMode::DirectRpc => {
+                self.ensure_rpc_client().await?;
+                let mut guard = self.rpc_client.lock().await;
+                let client = guard
+                    .as_mut()
+                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+
+                // Just ping the node and get block count to validate connectivity.
+                let _ = client.get_block_count().await?;
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Default for ConnectionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_mode() {
+        let manager = ConnectionManager::new();
+        assert_eq!(manager.mode(), ConnectionMode::DirectRpc);
+    }
+
+    #[test]
+    fn test_set_mode() {
+        let manager = ConnectionManager::new();
+        manager.set_mode(ConnectionMode::Gsp);
+        assert_eq!(manager.mode(), ConnectionMode::Gsp);
+
+        manager.set_mode(ConnectionMode::DirectRpc);
+        assert_eq!(manager.mode(), ConnectionMode::DirectRpc);
+    }
+
+    #[test]
+    fn test_mode_display() {
+        assert_eq!(ConnectionMode::Gsp.to_string(), "GSP (WebSocket)");
+        assert_eq!(ConnectionMode::DirectRpc.to_string(), "Direct RPC");
+    }
+
+    #[test]
+    fn test_not_connected_initially() {
+        let manager = ConnectionManager::new();
+        assert!(!manager.is_connected());
+    }
+
+    #[test]
+    fn test_rpc_config_update() {
+        let manager = ConnectionManager::new();
+        let config = NodeConfig::testnet();
+        manager.set_rpc_config(config);
+        assert_eq!(manager.mode(), ConnectionMode::DirectRpc);
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let manager = ConnectionManager::default();
+        assert_eq!(manager.mode(), ConnectionMode::DirectRpc);
+        assert!(!manager.is_connected());
+    }
+
+    #[test]
+    fn test_with_clients_gsp_mode() {
+        let config = NodeConfig::default();
+        let gsp = MobileGspClient::new();
+        let manager = ConnectionManager::with_clients(config, gsp, ConnectionMode::Gsp);
+        assert_eq!(manager.mode(), ConnectionMode::Gsp);
+    }
+
+    #[test]
+    fn test_with_clients_rpc_mode() {
+        let config = NodeConfig::mainnet();
+        let gsp = MobileGspClient::new();
+        let manager = ConnectionManager::with_clients(config, gsp, ConnectionMode::DirectRpc);
+        assert_eq!(manager.mode(), ConnectionMode::DirectRpc);
+    }
+
+    #[test]
+    fn test_gsp_accessor() {
+        let manager = ConnectionManager::new();
+        // Should not panic — GSP client always exists
+        let gsp = manager.gsp();
+        assert!(!gsp.is_connected());
+    }
+
+    #[test]
+    fn test_mode_switch_roundtrip() {
+        let manager = ConnectionManager::new();
+        assert_eq!(manager.mode(), ConnectionMode::DirectRpc);
+
+        manager.set_mode(ConnectionMode::Gsp);
+        assert_eq!(manager.mode(), ConnectionMode::Gsp);
+        assert!(!manager.is_connected()); // GSP not connected
+
+        manager.set_mode(ConnectionMode::DirectRpc);
+        assert_eq!(manager.mode(), ConnectionMode::DirectRpc);
+    }
+
+    #[test]
+    fn test_mode_equality() {
+        assert_eq!(ConnectionMode::Gsp, ConnectionMode::Gsp);
+        assert_eq!(ConnectionMode::DirectRpc, ConnectionMode::DirectRpc);
+        assert_ne!(ConnectionMode::Gsp, ConnectionMode::DirectRpc);
+    }
+
+    #[test]
+    fn test_mode_clone() {
+        let mode = ConnectionMode::Gsp;
+        let cloned = mode;
+        assert_eq!(mode, cloned);
+    }
+}

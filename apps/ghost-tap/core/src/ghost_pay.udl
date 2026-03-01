@@ -1,0 +1,56 @@
+// UniFFI interface definition for Ghost Pay
+// This file defines the API exposed to Swift and Kotlin
+
+namespace ghost_pay {
+    // Initialize the library
+    [Throws=GhostPayException]
+    void ghost_pay_init();
+
+    // Get library version
+    string ghost_pay_version();
+
+    // Validate a mnemonic phrase
+    boolean wallet_validate_mnemonic(string mnemonic);
+};
+
+[Error]
+enum GhostPayException {
+    "WalletError",
+    "NetworkError",
+    "StorageError",
+    "CryptoError",
+};
+
+// Wallet handle - opaque reference to a wallet instance
+interface WalletHandle {
+    // Get the mnemonic phrase
+    string get_mnemonic();
+
+    // Get current balance
+    u64 get_balance();
+
+    // Check if locked
+    boolean is_locked();
+
+    // Lock the wallet
+    void lock();
+};
+
+// Balance information
+dictionary Balance {
+    u64 confirmed;
+    u64 pending_incoming;
+    u64 pending_outgoing;
+};
+
+// Transaction history entry
+dictionary HistoryEntry {
+    string txid;
+    string direction;
+    u64 amount;
+    u64? fee;
+    string address;
+    string status;
+    u64 timestamp;
+    string? memo;
+};

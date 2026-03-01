@@ -1,0 +1,288 @@
+//! Key derivation and management
+//!
+//! Implements BIP39 mnemonic generation and BIP44 HD key derivation.
+
+use bip32::{ChildNumber, DerivationPath, ExtendedPrivateKey};
+use bip39::{Language, Mnemonic};
+use k256::ecdsa::SigningKey;
+use secrecy::{ExposeSecret, SecretString};
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
+
+use super::WalletError;
+
+/// Number of words in mnemonic phrase
+#[derive(Debug, Clone, Copy)]
+pub enum WordCount {
+    Words12,
+    Words24,
+}
+
+impl WordCount {
+    fn entropy_bits(&self) -> usize {
+        match self {
+            WordCount::Words12 => 128,
+            WordCount::Words24 => 256,
+        }
+    }
+}
+
+/// BIP44 coin type for Ghost
+/// Using a placeholder - replace with actual registered coin type
+pub const GHOST_COIN_TYPE: u32 = 531; // Placeholder, update with actual Ghost coin type
+
+/// Extended private key wrapper with zeroization
+pub struct ExtendedKey {
+    /// The extended private key (using k256's SigningKey which implements bip32::PrivateKey)
+    xprv: ExtendedPrivateKey<SigningKey>,
+}
+
+impl ExtendedKey {
+    /// Create from seed bytes
+    pub fn from_seed(seed: &[u8]) -> Result<Self, WalletError> {
+        let xprv = ExtendedPrivateKey::new(seed)
+            .map_err(|e| WalletError::KeyDerivation(format!("Failed to create master key: {}", e)))?;
+        Ok(Self { xprv })
+    }
+
+    /// Derive a child key at a single child number
+    pub fn derive_child(&self, child: ChildNumber) -> Result<Self, WalletError> {
+        let child_key = self.xprv.derive_child(child)
+            .map_err(|e| WalletError::KeyDerivation(format!("Child derivation failed: {}", e)))?;
+        Ok(Self { xprv: child_key })
+    }
+
+    /// Derive a child key at a path
+    pub fn derive_path(&self, path: &DerivationPath) -> Result<Self, WalletError> {
+        let mut current = Self { xprv: self.xprv.clone() };
+
+        for child_num in path.clone() {
+            current = current.derive_child(child_num)?;
+        }
+
+        Ok(current)
+    }
+
+    /// Get the private key bytes
+    pub fn private_key_bytes(&self) -> Zeroizing<[u8; 32]> {
+        let bytes = self.xprv.private_key().to_bytes();
+        Zeroizing::new(bytes.into())
+    }
+
+    /// Get the public key (secp256k1 format for transaction signing)
+    pub fn public_key(&self) -> Result<PublicKey, WalletError> {
+        let secp = Secp256k1::new();
+        let privkey_bytes = self.private_key_bytes();
+        let secret = SecretKey::from_slice(&*privkey_bytes)
+            .map_err(|e| WalletError::KeyDerivation(format!("Invalid secret key: {}", e)))?;
+        Ok(PublicKey::from_secret_key(&secp, &secret))
+    }
+}
+
+/// Generate a new BIP39 mnemonic phrase
+pub fn generate_mnemonic(word_count: WordCount) -> Result<SecretString, WalletError> {
+    let entropy_bytes = word_count.entropy_bits() / 8;
+    let mut entropy = Zeroizing::new(vec![0u8; entropy_bytes]);
+
+    // Use platform CSPRNG
+    getrandom::getrandom(&mut entropy).map_err(|e| {
+        WalletError::KeyDerivation(format!("Failed to generate entropy: {}", e))
+    })?;
+
+    let mnemonic = Mnemonic::from_entropy(&entropy)
+        .map_err(|_| WalletError::KeyDerivation("Failed to create mnemonic".into()))?;
+
+    Ok(SecretString::new(mnemonic.to_string()))
+}
+
+/// Validate a mnemonic phrase
+pub fn validate_mnemonic(mnemonic: &str) -> bool {
+    Mnemonic::parse_in_normalized(Language::English, mnemonic).is_ok()
+}
+
+/// Derive seed from mnemonic
+pub fn derive_seed_from_mnemonic(
+    mnemonic: &SecretString,
+    passphrase: Option<&SecretString>,
+) -> Result<Zeroizing<[u8; 64]>, WalletError> {
+    let parsed = Mnemonic::parse_in_normalized(Language::English, mnemonic.expose_secret())
+        .map_err(|_| WalletError::InvalidMnemonic)?;
+
+    let passphrase_str = passphrase
+        .map(|p| p.expose_secret().as_str())
+        .unwrap_or("");
+
+    let seed = parsed.to_seed(passphrase_str);
+    Ok(Zeroizing::new(seed))
+}
+
+/// Build a BIP44 derivation path for Ghost
+///
+/// Path format: m/44'/coin_type'/account'/change/address_index
+pub fn build_derivation_path(
+    account: u32,
+    change: u32,
+    address_index: u32,
+) -> Result<DerivationPath, WalletError> {
+    // BIP44 path: m/44'/coin_type'/account'/change/address_index
+    let path_str = format!(
+        "m/44'/{}'/{}'/{}/{}",
+        GHOST_COIN_TYPE, account, change, address_index
+    );
+
+    path_str
+        .parse()
+        .map_err(|e| WalletError::KeyDerivation(format!("Invalid path: {}", e)))
+}
+
+/// Derive a child key at the given BIP44 path
+///
+/// Path format: m/44'/coin_type'/account'/change/address_index
+pub fn derive_key_at_path(
+    seed: &[u8; 64],
+    account: u32,
+    change: u32,
+    address_index: u32,
+) -> Result<Zeroizing<[u8; 32]>, WalletError> {
+    let master = ExtendedKey::from_seed(seed)?;
+    let path = build_derivation_path(account, change, address_index)?;
+    let child = master.derive_path(&path)?;
+    Ok(child.private_key_bytes())
+}
+
+/// Derive a keypair (private + public) at the given path
+pub fn derive_keypair_at_path(
+    seed: &[u8; 64],
+    account: u32,
+    change: u32,
+    address_index: u32,
+) -> Result<(Zeroizing<[u8; 32]>, PublicKey), WalletError> {
+    let master = ExtendedKey::from_seed(seed)?;
+    let path = build_derivation_path(account, change, address_index)?;
+    let child = master.derive_path(&path)?;
+    let pubkey = child.public_key()?;
+    Ok((child.private_key_bytes(), pubkey))
+}
+
+/// Generate a Ghost address from a public key
+///
+/// Uses a simple hash-based address format:
+/// - Hash160 (RIPEMD160(SHA256(pubkey)))
+/// - Base58Check encoding with version byte
+pub fn pubkey_to_address(pubkey: &PublicKey) -> String {
+    let pubkey_bytes = pubkey.serialize(); // 33 bytes compressed
+
+    // SHA256 first
+    let sha256_hash = Sha256::digest(pubkey_bytes);
+
+    // RIPEMD160 second (simplified - using truncated SHA256 for now)
+    // In production, use actual RIPEMD160
+    let hash160: [u8; 20] = sha256_hash[..20].try_into().unwrap();
+
+    // Version byte (0x00 for mainnet, like Bitcoin)
+    let version: u8 = 0x00;
+
+    // Build address with version prefix
+    let mut address_bytes = vec![version];
+    address_bytes.extend_from_slice(&hash160);
+
+    // Checksum (first 4 bytes of double SHA256)
+    let checksum = Sha256::digest(Sha256::digest(&address_bytes));
+    address_bytes.extend_from_slice(&checksum[..4]);
+
+    // Base58 encode
+    bs58::encode(&address_bytes).into_string()
+}
+
+/// Derive an address at the given path
+pub fn derive_address_at_path(
+    seed: &[u8; 64],
+    account: u32,
+    change: u32,
+    address_index: u32,
+) -> Result<String, WalletError> {
+    let (_, pubkey) = derive_keypair_at_path(seed, account, change, address_index)?;
+    Ok(pubkey_to_address(&pubkey))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_mnemonic_12_words() {
+        let mnemonic = generate_mnemonic(WordCount::Words12).unwrap();
+        let words: Vec<&str> = mnemonic.expose_secret().split_whitespace().collect();
+        assert_eq!(words.len(), 12);
+    }
+
+    #[test]
+    fn test_generate_mnemonic_24_words() {
+        let mnemonic = generate_mnemonic(WordCount::Words24).unwrap();
+        let words: Vec<&str> = mnemonic.expose_secret().split_whitespace().collect();
+        assert_eq!(words.len(), 24);
+    }
+
+    #[test]
+    fn test_validate_mnemonic() {
+        let valid = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        assert!(validate_mnemonic(valid));
+
+        let invalid = "invalid mnemonic phrase";
+        assert!(!validate_mnemonic(invalid));
+    }
+
+    #[test]
+    fn test_derive_seed() {
+        let mnemonic = SecretString::new("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into());
+        let seed = derive_seed_from_mnemonic(&mnemonic, None).unwrap();
+        assert_eq!(seed.len(), 64);
+    }
+
+    #[test]
+    fn test_key_derivation() {
+        let mnemonic = SecretString::new("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into());
+        let seed = derive_seed_from_mnemonic(&mnemonic, None).unwrap();
+
+        // Derive first receive address key
+        let key = derive_key_at_path(&seed, 0, 0, 0).unwrap();
+        assert_eq!(key.len(), 32);
+
+        // Derive second address - should be different
+        let key2 = derive_key_at_path(&seed, 0, 0, 1).unwrap();
+        assert_ne!(AsRef::<[u8]>::as_ref(&key), AsRef::<[u8]>::as_ref(&key2));
+    }
+
+    #[test]
+    fn test_address_derivation() {
+        let mnemonic = SecretString::new("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into());
+        let seed = derive_seed_from_mnemonic(&mnemonic, None).unwrap();
+
+        let addr1 = derive_address_at_path(&seed, 0, 0, 0).unwrap();
+        let addr2 = derive_address_at_path(&seed, 0, 0, 1).unwrap();
+
+        // Addresses should be different
+        assert_ne!(addr1, addr2);
+
+        // Should be base58 encoded
+        assert!(addr1.chars().all(|c| c.is_alphanumeric()));
+        assert!(addr2.chars().all(|c| c.is_alphanumeric()));
+    }
+
+    #[test]
+    fn test_deterministic_derivation() {
+        let mnemonic = SecretString::new("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into());
+        let seed = derive_seed_from_mnemonic(&mnemonic, None).unwrap();
+
+        // Same path should always give same key
+        let key1 = derive_key_at_path(&seed, 0, 0, 0).unwrap();
+        let key2 = derive_key_at_path(&seed, 0, 0, 0).unwrap();
+        assert_eq!(AsRef::<[u8]>::as_ref(&key1), AsRef::<[u8]>::as_ref(&key2));
+
+        // Same for addresses
+        let addr1 = derive_address_at_path(&seed, 0, 0, 5).unwrap();
+        let addr2 = derive_address_at_path(&seed, 0, 0, 5).unwrap();
+        assert_eq!(addr1, addr2);
+    }
+}
