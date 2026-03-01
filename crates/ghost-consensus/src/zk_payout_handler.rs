@@ -178,10 +178,6 @@ impl ZkPayoutProposalState {
         }
     }
 
-    #[allow(dead_code)]
-    fn total_votes(&self) -> u32 {
-        (self.approvals.len() + self.rejections.len()) as u32
-    }
 }
 
 /// ZK Payout Vote Handler - manages ZK-BFT consensus for payout validity

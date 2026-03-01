@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 23;
+const SCHEMA_VERSION: u32 = 24;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -79,6 +79,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (21, migrate_v21),
         (22, migrate_v22),
         (23, migrate_v23),
+        (24, migrate_v24),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1592,6 +1593,31 @@ fn migrate_v23(conn: &Connection) -> GhostResult<()> {
     Ok(())
 }
 
+/// v24: Drop unused elder_bonds/elder_slashing tables, add burned_elder_numbers
+fn migrate_v24(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v24: Drop elder bonding tables, add burned elder positions");
+
+    conn.execute_batch(
+        r#"
+        -- Remove invented bonding/slashing tables (not in spec, zero callers)
+        DROP TABLE IF EXISTS elder_bonds;
+        DROP TABLE IF EXISTS elder_slashing;
+
+        -- Burned elder positions: revoked slots are never reassigned
+        CREATE TABLE IF NOT EXISTS burned_elder_numbers (
+            elder_position INTEGER PRIMARY KEY,
+            revoked_node_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            revoked_at INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Dropped elder_bonds/elder_slashing, added burned_elder_numbers table");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1697,8 +1723,6 @@ mod tests {
             "wraith_participants",
             "reconciliation_entries",
             "withdrawal_requests",
-            "elder_bonds",
-            "elder_slashing",
         ];
 
         for table in &tables_with_cascade {
@@ -1811,7 +1835,55 @@ mod tests {
         let pragma_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(pragma_version, 23);
+        assert_eq!(pragma_version, 24);
+    }
+
+    #[test]
+    fn test_v24_burned_elder_positions() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let tables = get_table_names(&conn);
+        assert!(
+            tables.contains(&"burned_elder_numbers".to_string()),
+            "v24 burned_elder_numbers table missing. Found: {:?}",
+            tables
+        );
+
+        // elder_bonds and elder_slashing should be gone
+        assert!(
+            !tables.contains(&"elder_bonds".to_string()),
+            "elder_bonds table should have been dropped by v24"
+        );
+        assert!(
+            !tables.contains(&"elder_slashing".to_string()),
+            "elder_slashing table should have been dropped by v24"
+        );
+
+        // Verify burned_elder_numbers is functional
+        conn.execute(
+            "INSERT INTO burned_elder_numbers (elder_position, revoked_node_id, reason, revoked_at)
+             VALUES (3, 'abc123', 'ExtendedOffline(10d)', 1709312400)",
+            [],
+        )
+        .unwrap();
+
+        let count: u32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM burned_elder_numbers",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Position is PK — duplicate should fail
+        let result = conn.execute(
+            "INSERT INTO burned_elder_numbers (elder_position, revoked_node_id, reason, revoked_at)
+             VALUES (3, 'def456', 'duplicate', 1709312500)",
+            [],
+        );
+        assert!(result.is_err(), "Duplicate elder_position should fail");
     }
 
     #[test]

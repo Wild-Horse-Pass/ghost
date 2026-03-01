@@ -24,13 +24,6 @@ pub struct BalanceTree {
     depth: usize,
     /// Leaf values: index -> balance
     leaves: HashMap<u64, u64>,
-    /// Cached intermediate nodes for faster proof generation
-    /// Key: (level, index), Value: hash
-    #[allow(dead_code)]
-    cache: HashMap<(usize, u64), [u8; 32]>,
-    /// Whether the cache is valid
-    #[allow(dead_code)]
-    cache_valid: bool,
 }
 
 impl BalanceTree {
@@ -39,8 +32,6 @@ impl BalanceTree {
         Self {
             depth,
             leaves: HashMap::new(),
-            cache: HashMap::new(),
-            cache_valid: false,
         }
     }
 
@@ -49,8 +40,6 @@ impl BalanceTree {
         Self {
             depth,
             leaves: balances,
-            cache: HashMap::new(),
-            cache_valid: false,
         }
     }
 
@@ -71,7 +60,6 @@ impl BalanceTree {
         } else {
             self.leaves.insert(index, balance);
         }
-        self.cache_valid = false;
     }
 
     /// Get merkle proof for a leaf

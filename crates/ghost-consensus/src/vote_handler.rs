@@ -531,6 +531,10 @@ pub type ExecuteFn = Arc<dyn Fn(ConsensusResult) -> GhostResult<()> + Send + Syn
 /// Called when proposals arrive via P2P so all nodes have proposal data
 pub type ProposalStoreFn = Arc<dyn Fn(PayoutProposal) + Send + Sync>;
 
+/// Callback for executing elder revocation when consensus reaches 67%+
+/// Arguments: (revoked_node_id_hex, elder_position, reason)
+pub type RevocationFn = Arc<dyn Fn(&str, u32, &str) -> GhostResult<()> + Send + Sync>;
+
 /// Rate limit configuration for P2P messages
 ///
 /// Default: 100 messages burst, 20/second sustained per node
@@ -621,6 +625,10 @@ pub struct VoteHandler {
     /// Callback to store proposals in the template processor
     /// Ensures all nodes (not just proposer) have proposal data for coinbase construction
     proposal_store_fn: Option<ProposalStoreFn>,
+    /// Callback for executing elder revocation when BFT consensus reaches 67%+
+    revocation_fn: Option<RevocationFn>,
+    /// Tracked revocation proposals: proposal_hash -> (node_id_hex, reason)
+    revocation_proposals: RwLock<HashMap<[u8; 32], (String, String)>>,
 }
 
 impl VoteHandler {
@@ -655,6 +663,8 @@ impl VoteHandler {
             rate_limiter_persist_key: None,
             known_best_height: RwLock::new(None),
             proposal_store_fn: None,
+            revocation_fn: None,
+            revocation_proposals: RwLock::new(HashMap::new()),
         }
     }
 
@@ -933,6 +943,112 @@ impl VoteHandler {
     pub fn with_proposal_store(mut self, f: ProposalStoreFn) -> Self {
         self.proposal_store_fn = Some(f);
         self
+    }
+
+    /// Set revocation executor callback
+    pub fn with_revocation_executor(mut self, f: RevocationFn) -> Self {
+        self.revocation_fn = Some(f);
+        self
+    }
+
+    /// Propose revocation of an offline elder.
+    /// Creates a deterministic VotingSession, casts our approve vote, and
+    /// returns a serialized VoteMessage for broadcast. Returns None if
+    /// the session already exists (already proposed).
+    pub fn propose_revocation(
+        &self,
+        target_node_id_hex: &str,
+        offline_days: u64,
+    ) -> GhostResult<Option<Vec<u8>>> {
+        let reason = format!("ExtendedOffline({}d)", offline_days);
+
+        // Deterministic proposal_hash: all nodes derive the same value
+        let epoch_day = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            / 86400;
+        let mut hasher = Sha256::new();
+        hasher.update(b"elder_revocation:");
+        hasher.update(target_node_id_hex.as_bytes());
+        hasher.update(b":");
+        hasher.update(epoch_day.to_be_bytes());
+        let hash = hasher.finalize();
+        let proposal_hash: [u8; 32] = hash.into();
+
+        // Deterministic round_id
+        let round_id = u64::from_be_bytes(proposal_hash[..8].try_into().unwrap());
+
+        // Track the revocation proposal
+        {
+            let mut proposals = self.revocation_proposals.write();
+            proposals.insert(proposal_hash, (target_node_id_hex.to_string(), reason.clone()));
+        }
+
+        // Create voting session if it doesn't already exist
+        let voters: HashSet<NodeId> = self.elders.read().clone();
+        if voters.len() < self.config.min_voters_for_bft {
+            debug!(
+                voters = voters.len(),
+                min = self.config.min_voters_for_bft,
+                "Not enough elders for revocation vote"
+            );
+            return Ok(None);
+        }
+
+        match VotingSession::new(
+            round_id,
+            proposal_hash,
+            VoteType::ElderRevocation,
+            voters,
+            self.config.vote_timeout_ms,
+            self.config.min_voters_for_bft,
+        ) {
+            Ok(session) => {
+                self.voting_manager.start_session(session);
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to create revocation voting session");
+                return Ok(None);
+            }
+        }
+
+        // Cast our approve vote
+        let approve = true;
+        let signing_msg = compute_vote_signing_message(
+            round_id,
+            &proposal_hash,
+            &self.identity.node_id(),
+            approve,
+        );
+        let signature = self.identity.sign(&signing_msg);
+
+        let vote = Vote::new(self.identity.node_id(), approve, signature);
+        let result = self.voting_manager.vote(round_id, proposal_hash, vote);
+
+        // Check for immediate consensus (unlikely with only our vote)
+        if let Some(VoteResult::Decided(consensus_result)) = result {
+            self.handle_decision(round_id, proposal_hash, consensus_result)?;
+        }
+
+        // Build VoteMessage for broadcast
+        let vote_msg = VoteMessage {
+            round_id,
+            proposal_hash,
+            approve,
+            signature,
+        };
+        let payload = serde_json::to_vec(&vote_msg)
+            .map_err(|e| ghost_common::error::GhostError::Serialization(e.to_string()))?;
+
+        info!(
+            target = %&target_node_id_hex[..8.min(target_node_id_hex.len())],
+            offline_days,
+            round_id,
+            "Proposed elder revocation vote"
+        );
+
+        Ok(Some(payload))
     }
 
     /// Set elder nodes
@@ -1427,9 +1543,36 @@ impl VoteHandler {
         );
 
         // Execute if approved
-        if let ConsensusResult::Approved { .. } = &result {
-            if let Some(ref execute) = self.execute_fn {
-                execute(result.clone())?;
+        if let ConsensusResult::Approved { approval_count, total_nodes, .. } = &result {
+            // Check if this is a revocation vote
+            let revocation_info = self.revocation_proposals.read().get(&proposal_hash).cloned();
+
+            if let Some((node_id_hex, reason)) = revocation_info {
+                // Elder revocation approved
+                // Remove from in-memory elder set
+                if let Ok(bytes) = hex::decode(&node_id_hex) {
+                    if let Ok(node_id) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                        self.remove_elder(&node_id);
+                    }
+                }
+                if let Some(ref revocation_fn) = self.revocation_fn {
+                    info!(
+                        target = %&node_id_hex[..8.min(node_id_hex.len())],
+                        approvals = approval_count,
+                        total = total_nodes,
+                        reason = %reason,
+                        "Elder revocation approved by BFT consensus"
+                    );
+                    // Position is looked up by the callback from mpc_contributions
+                    revocation_fn(&node_id_hex, 0, &reason)?;
+                }
+                // Clean up tracked proposal
+                self.revocation_proposals.write().remove(&proposal_hash);
+            } else {
+                // Normal payout approval
+                if let Some(ref execute) = self.execute_fn {
+                    execute(result.clone())?;
+                }
             }
 
             // Keep in pending_proposals for dedup — cleanup_stale_proposals() handles expiry.

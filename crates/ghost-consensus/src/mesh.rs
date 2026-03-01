@@ -169,26 +169,6 @@ pub trait MessageHandler: Send + Sync {
     async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()>;
 }
 
-/// ZMQ socket collection for a mesh node
-/// Note: Currently unused - sockets managed through channels. Reserved for direct ZMQ integration.
-#[allow(dead_code)]
-pub struct MeshSockets {
-    /// Publisher socket for broadcasting (tmq::publish::Publish)
-    pub_socket: Option<tmq::publish::Publish>,
-    /// Subscriber sockets for receiving (keyed by peer address)
-    sub_sockets: HashMap<String, tmq::subscribe::Subscribe>,
-}
-
-#[allow(dead_code)]
-impl MeshSockets {
-    fn new() -> Self {
-        Self {
-            pub_socket: None,
-            sub_sockets: HashMap::new(),
-        }
-    }
-}
-
 /// Channel for outbound messages
 pub type OutboundSender = mpsc::Sender<(String, Vec<u8>)>;
 pub type OutboundReceiver = mpsc::Receiver<(String, Vec<u8>)>;

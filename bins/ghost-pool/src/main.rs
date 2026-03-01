@@ -1040,7 +1040,30 @@ async fn main() -> Result<()> {
         .with_proposal_store(proposal_store_fn)
         .with_ban_manager(Arc::clone(&ban_manager))
         .with_database(Arc::clone(&db))
-        .with_rate_limiter_persistence(rate_limiter_path),
+        .with_rate_limiter_persistence(rate_limiter_path)
+        .with_revocation_executor({
+            let db_for_revoke = Arc::clone(&db);
+            Arc::new(move |node_id_hex: &str, _position: u32, reason: &str| {
+                // 1. Remove from mpc_contributions and get position
+                let pos = db_for_revoke.revoke_mpc_elder(node_id_hex)?;
+                if let Some(position) = pos {
+                    // 2. Burn the elder position
+                    db_for_revoke.burn_elder_position(position, node_id_hex, reason)?;
+                    tracing::warn!(
+                        node_id = %&node_id_hex[..8.min(node_id_hex.len())],
+                        position,
+                        reason,
+                        "Elder revoked and position burned"
+                    );
+                } else {
+                    tracing::warn!(
+                        node_id = %&node_id_hex[..8.min(node_id_hex.len())],
+                        "Elder revocation: node not found in MPC contributions"
+                    );
+                }
+                Ok(())
+            })
+        }),
     );
     // Start the background persistence task (persists every 60 seconds)
     vote_handler.start_persistence_task();
@@ -3260,6 +3283,78 @@ async fn main() -> Result<()> {
         }
     });
     info!("Ban manager cleanup task started (60s interval)");
+
+    // Elder offline revocation checker — runs hourly, detects elders offline >7 days
+    // and proposes BFT revocation votes (burned slots are never reassigned)
+    {
+        let db_for_revoke = Arc::clone(&db);
+        let vh_for_revoke = Arc::clone(&vote_handler);
+        let hh_for_revoke = Arc::clone(&health_handler);
+        let mesh_for_revoke = Arc::clone(&mesh);
+        let mut revoke_shutdown = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            // Skip immediate first tick
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // 1. Get all current MPC elders from DB
+                        let elders = match db_for_revoke.get_all_mpc_elders() {
+                            Ok(e) => e,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to get elders for revocation check");
+                                continue;
+                            }
+                        };
+
+                        // Convert to NodeId array
+                        let elder_ids: Vec<[u8; 32]> = elders.iter().filter_map(|(hex, _)| {
+                            hex::decode(hex).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+                        }).collect();
+
+                        // 2. Detect which are offline > 7 days
+                        let offline = hh_for_revoke.detect_offline_elders(&elder_ids);
+
+                        // 3. For each offline elder, propose revocation vote
+                        for (node_id, offline_days) in offline {
+                            let node_id_hex = hex::encode(node_id);
+                            tracing::info!(
+                                target = %&node_id_hex[..8],
+                                offline_days,
+                                "Detected offline elder, proposing revocation"
+                            );
+
+                            match vh_for_revoke.propose_revocation(&node_id_hex, offline_days) {
+                                Ok(Some(payload)) => {
+                                    // Broadcast the vote
+                                    if let Ok(envelope) = mesh_for_revoke.create_envelope_raw(
+                                        ghost_consensus::message::MessageType::Vote,
+                                        payload,
+                                    ) {
+                                        if let Err(e) = mesh_for_revoke.broadcast(envelope).await {
+                                            tracing::warn!(error = %e, "Failed to broadcast revocation vote");
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    tracing::debug!("Revocation proposal skipped (session exists or not enough elders)");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Failed to propose elder revocation");
+                                }
+                            }
+                        }
+                    }
+                    _ = revoke_shutdown.recv() => {
+                        tracing::info!("Elder revocation checker shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+        info!("Elder revocation checker started (hourly)");
+    }
 
     // M-MINE-2: Start rate limit cleanup task for RoundManager
     // Periodically cleans up old rate limit entries to prevent memory growth

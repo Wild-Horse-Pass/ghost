@@ -156,50 +156,6 @@ pub struct NodeRecord {
     pub payout_address: Option<String>,
 }
 
-/// Elder bond record (for nothing-at-stake prevention)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ElderBondRecord {
-    /// Node ID (hex)
-    pub node_id: String,
-    /// Transaction ID of the bond UTXO
-    pub txid: String,
-    /// Output index
-    pub vout: u32,
-    /// Amount locked (satoshis)
-    pub amount_sats: u64,
-    /// Script pubkey (hex)
-    pub script_pubkey: String,
-    /// Block height where bond was confirmed
-    pub confirmation_height: Option<u64>,
-    /// Transaction ID that spent the bond (if slashed/withdrawn)
-    pub spent_txid: Option<String>,
-    /// Status: pending, confirmed, spent
-    pub status: String,
-    /// Creation timestamp
-    pub created_at: i64,
-    /// Last update timestamp
-    pub updated_at: i64,
-}
-
-/// Elder slashing record
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ElderSlashingRecord {
-    /// Auto-increment ID
-    pub id: i64,
-    /// Node ID that was slashed
-    pub node_id: String,
-    /// Reason for slashing
-    pub reason: String,
-    /// Hash of evidence (e.g., conflicting votes)
-    pub evidence_hash: String,
-    /// Amount slashed (satoshis)
-    pub slashed_amount_sats: u64,
-    /// Transaction ID of slashing tx
-    pub slashing_txid: Option<String>,
-    /// Creation timestamp
-    pub created_at: i64,
-}
-
 /// Miner record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MinerRecord {

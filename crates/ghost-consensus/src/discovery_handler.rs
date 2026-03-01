@@ -158,7 +158,6 @@ impl RateLimiter {
     }
 
     /// Cleanup old entries (call periodically to prevent memory growth)
-    #[allow(dead_code)]
     fn cleanup(&self, max_age: Duration) {
         let cutoff = Instant::now() - max_age;
         let mut buckets = self.buckets.write();
@@ -578,6 +577,8 @@ pub struct DiscoveryHandler {
     /// M-10: Rate limiter for address registration attempts (per address)
     /// Prevents attackers from repeatedly claiming the same address
     address_rate_limiter: AddressRateLimiter,
+    /// Message counter for periodic rate limiter cleanup
+    message_count: std::sync::atomic::AtomicU64,
 }
 
 impl DiscoveryHandler {
@@ -601,6 +602,7 @@ impl DiscoveryHandler {
                 ADDRESS_RATE_LIMIT,
                 ADDRESS_MAX_BUCKETS,
             ),
+            message_count: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -751,6 +753,12 @@ impl DiscoveryHandler {
 
     /// Handle a discovery message
     async fn handle_discovery(&self, envelope: &MessageEnvelope) -> GhostResult<()> {
+        // Periodic rate limiter cleanup to prevent memory growth
+        let count = self.message_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count.is_multiple_of(100) {
+            self.rate_limiter.cleanup(Duration::from_secs(600));
+        }
+
         // M-P2P-3: Silently ignore discovery messages from banned nodes
         if self.is_banned(&envelope.sender) {
             return Ok(()); // Silently ignore banned nodes

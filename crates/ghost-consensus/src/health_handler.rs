@@ -901,6 +901,39 @@ impl HealthPingHandler {
 
         Ok(())
     }
+
+    /// Check for elders that have been offline > ELDER_OFFLINE_THRESHOLD_DAYS.
+    /// Returns list of (node_id, offline_days) for elders exceeding the threshold.
+    /// Skips our own node_id (don't propose revocation of self).
+    pub fn detect_offline_elders(&self, elder_node_ids: &[NodeId]) -> Vec<(NodeId, u64)> {
+        let all_peers = self.peers.get_all_peers();
+        let peer_map: HashMap<NodeId, &crate::peer::Peer> =
+            all_peers.iter().map(|p| (p.node_id, p)).collect();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let threshold_secs = ghost_common::constants::ELDER_OFFLINE_THRESHOLD_DAYS * 86400;
+        let our_id = self.peers.our_node_id();
+
+        let mut offline = Vec::new();
+        for elder_id in elder_node_ids {
+            if *elder_id == our_id {
+                continue;
+            }
+            if let Some(peer) = peer_map.get(elder_id) {
+                if peer.last_seen > 0 {
+                    let offline_secs = now.saturating_sub(peer.last_seen);
+                    if offline_secs > threshold_secs {
+                        let offline_days = offline_secs / 86400;
+                        offline.push((*elder_id, offline_days));
+                    }
+                }
+            }
+            // Elder not in peer table at all — no evidence of how long offline, skip
+        }
+        offline
+    }
 }
 
 #[async_trait]

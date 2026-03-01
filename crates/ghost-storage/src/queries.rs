@@ -1405,224 +1405,102 @@ impl Database {
     }
 
     // =========================================================================
-    // ELDER BOND MANAGEMENT (Nothing-at-Stake Prevention)
+    // ELDER REVOCATION (Offline >7 days → BFT vote → burned slot)
     // =========================================================================
 
-    /// Minimum bond required to be eligible as an elder (0.001 BTC = 100k sats)
-    /// This is enough to have skin in the game without being prohibitive
-    pub const MIN_ELDER_BOND_SATS: u64 = 100_000;
-
-    /// Register an elder bond UTXO
-    /// The bond must be confirmed before the node becomes eligible for elder status
-    pub fn register_elder_bond(
-        &self,
-        node_id: &str,
-        txid: &str,
-        vout: u32,
-        amount_sats: u64,
-        script_pubkey: &str,
-    ) -> GhostResult<()> {
+    /// Record a burned elder position after successful revocation vote
+    pub fn burn_elder_position(&self, position: u32, node_id: &str, reason: &str) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
-
         self.with_connection(|conn| {
-            // Insert or update the bond
             conn.execute(
-                "INSERT INTO elder_bonds (node_id, txid, vout, amount_sats, script_pubkey, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)
-                 ON CONFLICT(node_id) DO UPDATE SET
-                     txid = excluded.txid,
-                     vout = excluded.vout,
-                     amount_sats = excluded.amount_sats,
-                     script_pubkey = excluded.script_pubkey,
-                     status = 'pending',
-                     confirmation_height = NULL,
-                     spent_txid = NULL,
-                     updated_at = excluded.updated_at",
-                params![node_id, txid, vout, amount_sats, script_pubkey, now, now],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // Also update the node's elder_bond_sats and elder_bond_txid
-            conn.execute(
-                "UPDATE nodes SET elder_bond_sats = ?1, elder_bond_txid = ?2 WHERE node_id = ?3",
-                params![amount_sats, txid, node_id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            tracing::info!(
-                node_id = %&node_id[..8.min(node_id.len())],
-                txid = %&txid[..16.min(txid.len())],
-                amount_sats,
-                "Elder bond registered"
-            );
-
-            Ok(())
-        })
-    }
-
-    /// Confirm an elder bond (called when UTXO is confirmed on-chain)
-    pub fn confirm_elder_bond(&self, node_id: &str, confirmation_height: u64) -> GhostResult<bool> {
-        let now = chrono::Utc::now().timestamp();
-
-        self.with_connection(|conn| {
-            let updated = conn.execute(
-                "UPDATE elder_bonds SET status = 'confirmed', confirmation_height = ?1, updated_at = ?2
-                 WHERE node_id = ?3 AND status = 'pending'",
-                params![confirmation_height, now, node_id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            if updated > 0 {
-                tracing::info!(
-                    node_id = %&node_id[..8.min(node_id.len())],
-                    height = confirmation_height,
-                    "Elder bond confirmed"
-                );
-            }
-
-            Ok(updated > 0)
-        })
-    }
-
-    /// Check if a node has a sufficient confirmed bond
-    pub fn has_valid_elder_bond(&self, node_id: &str) -> GhostResult<bool> {
-        self.with_connection(|conn| {
-            let amount: Option<u64> = conn
-                .query_row(
-                    "SELECT amount_sats FROM elder_bonds
-                     WHERE node_id = ?1 AND status = 'confirmed' AND spent_txid IS NULL",
-                    [node_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            Ok(amount.unwrap_or(0) >= Self::MIN_ELDER_BOND_SATS)
-        })
-    }
-
-    /// Mark an elder bond as spent (slashed or withdrawn)
-    ///
-    /// H-13: This operation is wrapped in a transaction to ensure atomicity.
-    /// Both the elder_bonds table and nodes table must be updated together,
-    /// or neither should be updated (in case of failure).
-    pub fn spend_elder_bond(&self, node_id: &str, spent_txid: &str) -> GhostResult<()> {
-        let now = chrono::Utc::now().timestamp();
-        let node_id = node_id.to_string();
-        let spent_txid = spent_txid.to_string();
-
-        // H-13: Use transaction to ensure atomic update of both tables
-        self.transaction(|tx| {
-            tx.execute(
-                "UPDATE elder_bonds SET status = 'spent', spent_txid = ?1, updated_at = ?2
-                 WHERE node_id = ?3 AND status = 'confirmed'",
-                params![spent_txid, now, node_id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // Update node's bond info - must be atomic with above
-            tx.execute(
-                "UPDATE nodes SET elder_bond_sats = 0, elder_bond_txid = NULL WHERE node_id = ?1",
-                params![node_id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            Ok(())
-        })
-    }
-
-    /// Record a slashing event for an elder
-    /// This is called when an elder is caught misbehaving (e.g., double-voting)
-    ///
-    /// H-13: This operation is wrapped in a transaction to ensure atomicity.
-    /// The slashing record and node status update must happen together,
-    /// or neither should happen (in case of failure).
-    pub fn record_elder_slashing(
-        &self,
-        node_id: &str,
-        reason: &str,
-        evidence_hash: &str,
-        slashed_amount_sats: u64,
-        slashing_txid: Option<&str>,
-    ) -> GhostResult<()> {
-        let now = chrono::Utc::now().timestamp();
-        let node_id = node_id.to_string();
-        let reason = reason.to_string();
-        let evidence_hash = evidence_hash.to_string();
-        let slashing_txid = slashing_txid.map(|s| s.to_string());
-
-        // H-13: Use transaction to ensure atomic insert and update
-        self.transaction(|tx| {
-            // Record the slashing event
-            tx.execute(
-                "INSERT INTO elder_slashing (node_id, reason, evidence_hash, slashed_amount_sats, slashing_txid, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![node_id, reason, evidence_hash, slashed_amount_sats, slashing_txid, now],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // Mark the node as slashed and remove elder status - must be atomic with above
-            tx.execute(
-                "UPDATE nodes SET is_elder = 0, elder_order = NULL, slashed_at = ?1 WHERE node_id = ?2",
-                params![now, node_id],
+                "INSERT OR IGNORE INTO burned_elder_numbers (elder_position, revoked_node_id, reason, revoked_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![position, node_id, reason, now],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
             tracing::warn!(
+                position,
                 node_id = %&node_id[..8.min(node_id.len())],
-                reason = %reason,
-                slashed_amount_sats,
-                "Elder slashed for misbehavior"
+                reason,
+                "Elder position burned (revoked)"
             );
-
             Ok(())
         })
     }
 
-    /// Check if a node has been slashed
-    pub fn is_node_slashed(&self, node_id: &str) -> GhostResult<bool> {
+    /// Check if an elder position has been burned
+    pub fn is_position_burned(&self, position: u32) -> GhostResult<bool> {
         self.with_connection(|conn| {
-            let slashed_at: Option<i64> = conn
+            let exists: bool = conn
                 .query_row(
-                    "SELECT slashed_at FROM nodes WHERE node_id = ?1",
+                    "SELECT EXISTS(SELECT 1 FROM burned_elder_numbers WHERE elder_position = ?1)",
+                    [position],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(exists)
+        })
+    }
+
+    /// Get all burned elder positions
+    pub fn get_burned_positions(&self) -> GhostResult<Vec<(u32, String, String, i64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT elder_position, revoked_node_id, reason, revoked_at
+                     FROM burned_elder_numbers ORDER BY elder_position ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row.map_err(|e| GhostError::Database(e.to_string()))?);
+            }
+            Ok(results)
+        })
+    }
+
+    /// Remove an elder from mpc_contributions after revocation.
+    /// Returns the position that was revoked, or None if not found.
+    pub fn revoke_mpc_elder(&self, node_id: &str) -> GhostResult<Option<u32>> {
+        self.with_connection(|conn| {
+            let position: Option<i64> = conn
+                .query_row(
+                    "SELECT elder_position FROM mpc_contributions WHERE contributor_node_id = ?1",
                     [node_id],
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(|e| GhostError::Database(e.to_string()))?
-                .flatten();
-
-            Ok(slashed_at.is_some())
-        })
-    }
-
-    /// Get elder bond info for a node
-    pub fn get_elder_bond(&self, node_id: &str) -> GhostResult<Option<ElderBondRecord>> {
-        self.with_connection(|conn| {
-            let record: Option<ElderBondRecord> = conn
-                .query_row(
-                    "SELECT node_id, txid, vout, amount_sats, script_pubkey, confirmation_height, spent_txid, status, created_at, updated_at
-                     FROM elder_bonds WHERE node_id = ?1",
-                    [node_id],
-                    |row| {
-                        Ok(ElderBondRecord {
-                            node_id: row.get(0)?,
-                            txid: row.get(1)?,
-                            vout: row.get(2)?,
-                            amount_sats: row.get(3)?,
-                            script_pubkey: row.get(4)?,
-                            confirmation_height: row.get(5)?,
-                            spent_txid: row.get(6)?,
-                            status: row.get(7)?,
-                            created_at: row.get(8)?,
-                            updated_at: row.get(9)?,
-                        })
-                    },
-                )
-                .optional()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            Ok(record)
+            if let Some(pos) = position {
+                conn.execute(
+                    "DELETE FROM mpc_contributions WHERE contributor_node_id = ?1",
+                    [node_id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                tracing::warn!(
+                    node_id = %&node_id[..8.min(node_id.len())],
+                    position = pos,
+                    "Revoked MPC elder from contributions"
+                );
+                Ok(Some(pos as u32))
+            } else {
+                Ok(None)
+            }
         })
     }
 

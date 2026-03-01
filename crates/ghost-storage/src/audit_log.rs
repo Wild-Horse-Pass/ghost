@@ -197,31 +197,6 @@ impl AuditLog {
         })
     }
 
-    /// Get the hash of the last entry (for chaining)
-    /// Note: Used by verify_chain() for chain integrity checks
-    #[allow(dead_code)]
-    fn get_last_hash(&self) -> GhostResult<String> {
-        self.db.with_connection(|conn| {
-            let result: Result<String, _> = conn.query_row(
-                "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            );
-
-            match result {
-                Ok(hash) => Ok(hash),
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    // Genesis hash for empty log
-                    Ok(
-                        "0000000000000000000000000000000000000000000000000000000000000000"
-                            .to_string(),
-                    )
-                }
-                Err(e) => Err(GhostError::Database(e.to_string())),
-            }
-        })
-    }
-
     /// Compute hash of an entry
     fn compute_hash(
         timestamp: i64,

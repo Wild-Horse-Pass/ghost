@@ -285,6 +285,15 @@ impl MpcHandler {
             return Ok(());
         }
 
+        // Reject contributions for burned (revoked) positions
+        if let Ok(true) = self.db.is_position_burned(msg.elder_position) {
+            warn!(
+                position = msg.elder_position,
+                "Rejecting MPC contribution for burned elder position"
+            );
+            return Ok(());
+        }
+
         // Store as pending
         let contribution_hash = msg.contribution_hash();
         {
