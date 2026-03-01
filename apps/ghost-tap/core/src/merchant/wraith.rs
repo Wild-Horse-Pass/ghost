@@ -291,6 +291,27 @@ impl WraithWasher {
         }
     }
 
+    /// Attach persistent storage after construction.
+    ///
+    /// Loads any existing wash requests from the database and merges
+    /// them into the current queue. Future mutations will be persisted.
+    pub fn attach_storage(&mut self, storage: Arc<Mutex<WalletStorage>>) {
+        let persisted = storage
+            .lock()
+            .ok()
+            .and_then(|s| s.load_wash_queue().ok())
+            .unwrap_or_default();
+
+        // Merge: add persisted items not already in our queue
+        for req in persisted {
+            if !self.queue.iter().any(|r| r.txid == req.txid) {
+                self.queue.push(req);
+            }
+        }
+
+        self.storage = Some(storage);
+    }
+
     /// Remove completed and failed requests older than `max_age` seconds.
     pub fn prune(&mut self, now: u64, max_age: u64) {
         // Collect txids to delete from DB

@@ -252,7 +252,163 @@ pub fn nfc_set_rate(rate: f64) -> u64 {
     limits.max_amount_sats
 }
 
+// --- QR Payment URI ---
+
+/// Payment request parsed from a ghost: URI
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiPaymentRequest {
+    pub address: String,
+    pub amount: Option<u64>,
+    pub memo: Option<String>,
+    pub label: Option<String>,
+    pub exp: Option<u64>,
+    pub network: Option<String>,
+}
+
+/// Validated payment request with non-fatal warnings
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiParsedPaymentRequest {
+    pub request: FfiPaymentRequest,
+    pub warnings: Vec<String>,
+}
+
+/// Parse a ghost: URI into a payment request.
+#[uniffi::export]
+pub fn parse_payment_uri(uri: String) -> Result<FfiPaymentRequest, GhostTapFfiError> {
+    let req = crate::payment::qr::PaymentRequest::from_uri(&uri)
+        .map_err(|e| GhostTapFfiError::OperationFailed { message: e.to_string() })?;
+    Ok(FfiPaymentRequest {
+        address: req.address,
+        amount: req.amount,
+        memo: req.memo,
+        label: req.label,
+        exp: req.exp,
+        network: req.net,
+    })
+}
+
+/// Parse a ghost: URI with expiry and network validation.
+#[uniffi::export]
+pub fn parse_payment_uri_checked(
+    uri: String,
+    now_unix: u64,
+    expected_network: Option<String>,
+) -> Result<FfiParsedPaymentRequest, GhostTapFfiError> {
+    let parsed = crate::payment::qr::PaymentRequest::from_uri_checked(
+        &uri,
+        now_unix,
+        expected_network.as_deref(),
+    )
+    .map_err(|e| GhostTapFfiError::OperationFailed { message: e.to_string() })?;
+
+    let warnings: Vec<String> = parsed.warnings.iter().map(|w| w.to_string()).collect();
+
+    Ok(FfiParsedPaymentRequest {
+        request: FfiPaymentRequest {
+            address: parsed.request.address,
+            amount: parsed.request.amount,
+            memo: parsed.request.memo,
+            label: parsed.request.label,
+            exp: parsed.request.exp,
+            network: parsed.request.net,
+        },
+        warnings,
+    })
+}
+
+/// Create a ghost: URI string from payment parameters.
+#[uniffi::export]
+pub fn create_payment_uri(
+    address: String,
+    amount: Option<u64>,
+    memo: Option<String>,
+    label: Option<String>,
+    exp: Option<u64>,
+    network: Option<String>,
+) -> String {
+    let mut req = crate::payment::qr::PaymentRequest::new(address);
+    if let Some(a) = amount { req = req.with_amount(a); }
+    if let Some(m) = memo { req = req.with_memo(m); }
+    if let Some(l) = label { req = req.with_label(l); }
+    if let Some(e) = exp { req = req.with_expiry(e); }
+    if let Some(n) = network { req = req.with_network(n); }
+    req.to_uri()
+}
+
+// --- NFC Protocol Encoding/Decoding ---
+
+/// NFC payment response decoded from binary protocol
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiNfcPaymentResponse {
+    pub txid: String,
+    pub status: u8,
+}
+
+/// Encode an NFC payment request into the binary wire format.
+#[uniffi::export]
+pub fn nfc_encode_payment_request(
+    address: String,
+    amount: u64,
+    memo: Option<String>,
+) -> Vec<u8> {
+    use crate::payment::nfc::{
+        encode_nfc_payment_request, NfcPaymentRequest,
+        PROTOCOL_VERSION, MSG_TYPE_PAYMENT_REQUEST,
+    };
+
+    let req = NfcPaymentRequest {
+        version: PROTOCOL_VERSION,
+        msg_type: MSG_TYPE_PAYMENT_REQUEST,
+        amount,
+        address,
+        memo,
+    };
+    encode_nfc_payment_request(&req)
+}
+
+/// Decode an NFC payment response from binary wire format.
+#[uniffi::export]
+pub fn nfc_decode_payment_response(
+    bytes: Vec<u8>,
+) -> Result<FfiNfcPaymentResponse, GhostTapFfiError> {
+    let resp = crate::payment::nfc::decode_nfc_payment_response(&bytes)
+        .map_err(|e| GhostTapFfiError::OperationFailed { message: e.to_string() })?;
+
+    Ok(FfiNfcPaymentResponse {
+        txid: resp.txid,
+        status: resp.status,
+    })
+}
+
 // --- WalletHandle ---
+
+/// A single wash request visible to mobile UIs
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiWashRequest {
+    pub txid: String,
+    pub amount: u64,
+    /// "queued", "in_progress", "completed", or "failed"
+    pub status: String,
+    pub wraith_in_txid: Option<String>,
+    pub wraith_out_txid: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub retry_count: u32,
+}
+
+/// Wash queue summary statistics
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiWashStats {
+    pub queued: u32,
+    pub queued_amount: u64,
+    pub in_progress: u32,
+    pub in_progress_amount: u64,
+    pub completed: u32,
+    pub completed_amount: u64,
+    pub failed: u32,
+    pub failed_amount: u64,
+    pub total_count: u32,
+}
 
 /// Opaque handle to a wallet instance
 #[derive(uniffi::Object)]
@@ -261,6 +417,8 @@ pub struct WalletHandle {
     mnemonic: String,
     storage: Mutex<Option<WalletStorage>>,
     connection: Arc<ConnectionManager>,
+    washer: Arc<Mutex<crate::merchant::wraith::WraithWasher>>,
+    wash_processor: Mutex<Option<crate::merchant::wash_task::WashProcessorHandle>>,
 }
 
 impl WalletHandle {
@@ -270,6 +428,8 @@ impl WalletHandle {
             mnemonic,
             storage: Mutex::new(None),
             connection: Arc::new(ConnectionManager::new()),
+            washer: Arc::new(Mutex::new(crate::merchant::wraith::WraithWasher::new())),
+            wash_processor: Mutex::new(None),
         }
     }
 
@@ -795,6 +955,142 @@ impl WalletHandle {
             }
         })
     }
+
+    // --- Wraith Wash ---
+
+    /// Queue a payment for Wraith washing.
+    pub fn wash_payment(&self, txid: String, amount: u64) -> Result<(), GhostTapFfiError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+        washer.wash_payment(txid, amount, now);
+        Ok(())
+    }
+
+    /// Get the current wash queue.
+    pub fn get_wash_queue(&self) -> Result<Vec<FfiWashRequest>, GhostTapFfiError> {
+        let washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+        Ok(washer
+            .get_queue()
+            .iter()
+            .map(|r| FfiWashRequest {
+                txid: r.txid.clone(),
+                amount: r.amount,
+                status: match r.status {
+                    crate::merchant::wraith::WashStatus::Queued => "queued".into(),
+                    crate::merchant::wraith::WashStatus::InProgress => "in_progress".into(),
+                    crate::merchant::wraith::WashStatus::Completed => "completed".into(),
+                    crate::merchant::wraith::WashStatus::Failed => "failed".into(),
+                },
+                wraith_in_txid: r.wraith_in_txid.clone(),
+                wraith_out_txid: r.wraith_out_txid.clone(),
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+                retry_count: r.retry_count,
+            })
+            .collect())
+    }
+
+    /// Get wash queue summary statistics.
+    pub fn get_wash_stats(&self) -> Result<FfiWashStats, GhostTapFfiError> {
+        let washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+        let s = washer.stats();
+        Ok(FfiWashStats {
+            queued: s.queued as u32,
+            queued_amount: s.queued_amount,
+            in_progress: s.in_progress as u32,
+            in_progress_amount: s.in_progress_amount,
+            completed: s.completed as u32,
+            completed_amount: s.completed_amount,
+            failed: s.failed as u32,
+            failed_amount: s.failed_amount,
+            total_count: s.total_count() as u32,
+        })
+    }
+
+    /// Start the background wash processor. No-op if already running.
+    pub fn start_wash_processor(&self) -> Result<(), GhostTapFfiError> {
+        let mut guard = self.wash_processor.lock().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+
+        if guard.is_some() {
+            return Ok(());
+        }
+
+        let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: format!("Failed to create runtime: {e}"),
+        })?;
+
+        let washer = Arc::clone(&self.washer);
+        let connection = Arc::clone(&self.connection);
+
+        let handle = rt.block_on(async {
+            crate::merchant::wash_task::spawn_wash_processor(washer, connection)
+        });
+
+        *guard = Some(handle);
+        // Keep the runtime alive so the background task continues running
+        std::mem::forget(rt);
+        Ok(())
+    }
+
+    /// Stop the background wash processor.
+    pub fn stop_wash_processor(&self) -> Result<(), GhostTapFfiError> {
+        let mut guard = self.wash_processor.lock().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+        if let Some(handle) = guard.take() {
+            handle.stop();
+        }
+        Ok(())
+    }
+
+    /// Retry a failed wash request.
+    pub fn retry_wash(&self, txid: String) -> Result<bool, GhostTapFfiError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+        Ok(washer.retry_failed(&txid, now))
+    }
+
+    /// Initialize the wash queue with persistent storage backing.
+    /// Opens a separate SQLite connection for the washer and loads
+    /// any previously persisted wash requests.
+    pub fn init_wash_storage(
+        &self,
+        db_path: String,
+        encryption_key: Vec<u8>,
+    ) -> Result<(), GhostTapFfiError> {
+        if encryption_key.len() != 32 {
+            return Err(GhostTapFfiError::OperationFailed {
+                message: "Encryption key must be 32 bytes".into(),
+            });
+        }
+
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&encryption_key);
+
+        let wash_storage = Arc::new(Mutex::new(WalletStorage::open(&db_path, &key)?));
+
+        let mut washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+        washer.attach_storage(wash_storage);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -861,5 +1157,112 @@ mod tests {
         let handle = WalletHandle::generate_12().unwrap();
         let history = handle.get_history(0, 50).unwrap();
         assert!(history.is_empty());
+    }
+
+    // --- QR FFI Tests ---
+
+    #[test]
+    fn test_parse_payment_uri_roundtrip() {
+        let uri = create_payment_uri(
+            "GhTestAddr".into(),
+            Some(50_000),
+            Some("Coffee".into()),
+            None,
+            None,
+            None,
+        );
+        let parsed = parse_payment_uri(uri).unwrap();
+        assert_eq!(parsed.address, "GhTestAddr");
+        assert_eq!(parsed.amount, Some(50_000));
+        assert_eq!(parsed.memo.as_deref(), Some("Coffee"));
+    }
+
+    #[test]
+    fn test_parse_payment_uri_invalid() {
+        let result = parse_payment_uri("bitcoin:addr".into());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_payment_uri_checked_expired() {
+        let uri = create_payment_uri(
+            "GhAddr".into(), None, None, None, Some(1000), None,
+        );
+        let result = parse_payment_uri_checked(uri, 2000, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_payment_uri_checked_network_warning() {
+        let uri = create_payment_uri(
+            "GhAddr".into(), None, None, None, None, Some("bitcoin".into()),
+        );
+        let parsed = parse_payment_uri_checked(uri, 0, Some("ghost".into())).unwrap();
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(parsed.warnings[0].contains("mismatch"));
+    }
+
+    // --- NFC FFI Tests ---
+
+    #[test]
+    fn test_nfc_encode_payment_request_format() {
+        let encoded = nfc_encode_payment_request(
+            "GhTestAddr".into(),
+            100_000,
+            Some("Coffee".into()),
+        );
+        assert!(!encoded.is_empty());
+        assert_eq!(encoded[0], 1); // version
+        assert_eq!(encoded[1], 0x01); // MSG_TYPE_PAYMENT_REQUEST
+    }
+
+    #[test]
+    fn test_nfc_decode_response_roundtrip() {
+        use crate::payment::nfc::{encode_nfc_payment_response, NfcPaymentResponse};
+        let resp = NfcPaymentResponse {
+            txid: "deadbeef".to_string(),
+            status: 0x00,
+        };
+        let bytes = encode_nfc_payment_response(&resp);
+        let decoded = nfc_decode_payment_response(bytes).unwrap();
+        assert_eq!(decoded.txid, "deadbeef");
+        assert_eq!(decoded.status, 0x00);
+    }
+
+    #[test]
+    fn test_nfc_decode_response_invalid() {
+        let result = nfc_decode_payment_response(vec![0x00, 0x00]);
+        assert!(result.is_err());
+    }
+
+    // --- Wraith Wash FFI Tests ---
+
+    #[test]
+    fn test_wash_payment_and_stats() {
+        let handle = WalletHandle::generate_12().unwrap();
+        handle.wash_payment("tx_test".into(), 100_000).unwrap();
+
+        let queue = handle.get_wash_queue().unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].txid, "tx_test");
+        assert_eq!(queue[0].status, "queued");
+
+        let stats = handle.get_wash_stats().unwrap();
+        assert_eq!(stats.queued, 1);
+        assert_eq!(stats.queued_amount, 100_000);
+        assert_eq!(stats.total_count, 1);
+    }
+
+    #[test]
+    fn test_retry_wash_nonexistent() {
+        let handle = WalletHandle::generate_12().unwrap();
+        let result = handle.retry_wash("nonexistent".into()).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_stop_processor_when_not_running() {
+        let handle = WalletHandle::generate_12().unwrap();
+        assert!(handle.stop_wash_processor().is_ok());
     }
 }

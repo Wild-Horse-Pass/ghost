@@ -232,6 +232,91 @@ impl ConnectionManager {
             }
         }
     }
+
+    // --- Wraith Protocol Operations ---
+
+    /// Generate a new stealth address for Wraith protocol.
+    pub async fn get_stealth_address(&self) -> Result<String, NetworkError> {
+        let mode = *self.mode.lock();
+        match mode {
+            ConnectionMode::Gsp => Err(NetworkError::ConnectionFailed(
+                "Wraith operations not supported over GSP".into(),
+            )),
+            ConnectionMode::DirectRpc => {
+                self.ensure_rpc_client().await?;
+                let mut guard = self.rpc_client.lock().await;
+                let client = guard
+                    .as_mut()
+                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let stealth = client.get_stealth_address(None).await?;
+                Ok(stealth.address)
+            }
+        }
+    }
+
+    /// Send from public to private (enter Wraith). Returns txid.
+    pub async fn send_public_to_private(
+        &self,
+        stealth_address: &str,
+        amount_sats: u64,
+    ) -> Result<String, NetworkError> {
+        let mode = *self.mode.lock();
+        match mode {
+            ConnectionMode::Gsp => Err(NetworkError::ConnectionFailed(
+                "Wraith operations not supported over GSP".into(),
+            )),
+            ConnectionMode::DirectRpc => {
+                self.ensure_rpc_client().await?;
+                let mut guard = self.rpc_client.lock().await;
+                let client = guard
+                    .as_mut()
+                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let amount_ghost = amount_sats as f64 / 100_000_000.0;
+                client.send_public_to_private(stealth_address, amount_ghost).await
+            }
+        }
+    }
+
+    /// Send from private to public (exit Wraith). Returns txid.
+    pub async fn send_private_to_public(
+        &self,
+        to_address: &str,
+        amount_sats: u64,
+    ) -> Result<String, NetworkError> {
+        let mode = *self.mode.lock();
+        match mode {
+            ConnectionMode::Gsp => Err(NetworkError::ConnectionFailed(
+                "Wraith operations not supported over GSP".into(),
+            )),
+            ConnectionMode::DirectRpc => {
+                self.ensure_rpc_client().await?;
+                let mut guard = self.rpc_client.lock().await;
+                let client = guard
+                    .as_mut()
+                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let amount_ghost = amount_sats as f64 / 100_000_000.0;
+                client.send_private_to_public(to_address, amount_ghost).await
+            }
+        }
+    }
+
+    /// Get a new public receive address (for the exit leg of a wash).
+    pub async fn get_new_address(&self) -> Result<String, NetworkError> {
+        let mode = *self.mode.lock();
+        match mode {
+            ConnectionMode::Gsp => Err(NetworkError::ConnectionFailed(
+                "Address generation not supported over GSP".into(),
+            )),
+            ConnectionMode::DirectRpc => {
+                self.ensure_rpc_client().await?;
+                let mut guard = self.rpc_client.lock().await;
+                let client = guard
+                    .as_mut()
+                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                client.get_new_address(Some("wash")).await
+            }
+        }
+    }
 }
 
 impl Default for ConnectionManager {
