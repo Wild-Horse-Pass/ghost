@@ -28,7 +28,7 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::circuit::commitment::pedersen_commit_native;
 use crate::circuit::mimc::field_to_bytes;
 use crate::circuit::note_spend::{
-    compute_note_root_native, compute_nullifier_with_epoch_native, NoteSpendCircuit,
+    compute_note_root_native, compute_nullifier_with_epoch_native, GhostNoteSpendCircuit,
 };
 use crate::errors::{ZkError, ZkResult};
 use crate::field_utils::bytes_to_field;
@@ -36,7 +36,7 @@ use crate::types::GROTH16_PROOF_SIZE;
 
 /// Public inputs for a note spend proof (4 field elements as bytes)
 #[derive(Debug, Clone)]
-pub struct NoteSpendPublicInputs {
+pub struct GhostNoteSpendPublicInputs {
     pub commitment_root: [u8; 32],
     pub nullifier: [u8; 32],
     pub change_commitment: [u8; 32],
@@ -45,7 +45,7 @@ pub struct NoteSpendPublicInputs {
 
 /// Witness data for generating a note spend proof
 #[derive(Debug, Clone)]
-pub struct NoteSpendWitness {
+pub struct GhostNoteSpendWitness {
     pub spending_key: [u8; 32],
     pub note_value: u64,
     pub note_blinding: [u8; 32],
@@ -57,7 +57,7 @@ pub struct NoteSpendWitness {
     pub recipient_blinding: [u8; 32],
 }
 
-impl NoteSpendWitness {
+impl GhostNoteSpendWitness {
     /// Validate witness data
     pub fn validate(&self) -> ZkResult<()> {
         if self.amount > self.note_value {
@@ -72,13 +72,13 @@ impl NoteSpendWitness {
 
 /// Proof of a valid note spend (192 bytes Groth16)
 #[derive(Debug, Clone)]
-pub struct NoteSpendProof {
-    pub public_inputs: NoteSpendPublicInputs,
+pub struct GhostNoteSpendProof {
+    pub public_inputs: GhostNoteSpendPublicInputs,
     pub proof: Vec<u8>,
     pub prover_id: [u8; 32],
 }
 
-impl NoteSpendProof {
+impl GhostNoteSpendProof {
     /// Check if this is a real Groth16 proof (192 bytes)
     pub fn is_real_proof(&self) -> bool {
         self.proof.len() == GROTH16_PROOF_SIZE
@@ -86,14 +86,14 @@ impl NoteSpendProof {
 }
 
 /// Generates ZK proofs for note spends
-pub struct NoteProver {
+pub struct GhostNoteProver {
     params: Option<Arc<Parameters<Bls12>>>,
     prepared_vk: Option<Arc<PreparedVerifyingKey<Bls12>>>,
     tree_depth: usize,
     prover_id: [u8; 32],
 }
 
-impl NoteProver {
+impl GhostNoteProver {
     /// Create a new note prover without Groth16 parameters
     pub fn new(tree_depth: usize) -> Self {
         let prover_id = compute_prover_id(tree_depth);
@@ -120,8 +120,8 @@ impl NoteProver {
     /// Create a prover with full Groth16 setup (TESTING ONLY)
     #[cfg(not(feature = "zk-production"))]
     pub fn new_with_setup(tree_depth: usize) -> ZkResult<Self> {
-        error!("SECURITY WARNING: Using random trusted setup for NoteSpendCircuit. INSECURE.");
-        let dummy_circuit = NoteSpendCircuit::<Fr>::dummy(tree_depth);
+        error!("SECURITY WARNING: Using random trusted setup for GhostNoteSpendCircuit. INSECURE.");
+        let dummy_circuit = GhostNoteSpendCircuit::<Fr>::dummy(tree_depth);
         let params =
             generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::rngs::OsRng)
                 .map_err(|e| {
@@ -165,7 +165,7 @@ impl NoteProver {
 
     /// Generate a proof for a note spend
     #[instrument(skip_all)]
-    pub fn prove(&self, witness: &NoteSpendWitness) -> ZkResult<NoteSpendProof> {
+    pub fn prove(&self, witness: &GhostNoteSpendWitness) -> ZkResult<GhostNoteSpendProof> {
         let start = Instant::now();
 
         witness.validate()?;
@@ -224,7 +224,7 @@ impl NoteProver {
                 }
 
                 debug!(
-                    "NoteSpendCircuit satisfied with {} constraints",
+                    "GhostNoteSpendCircuit satisfied with {} constraints",
                     cs.num_constraints()
                 );
 
@@ -239,14 +239,14 @@ impl NoteProver {
             proof_bytes.len()
         );
 
-        Ok(NoteSpendProof {
+        Ok(GhostNoteSpendProof {
             public_inputs,
             proof: proof_bytes,
             prover_id: self.prover_id,
         })
     }
 
-    fn build_circuit(&self, witness: &NoteSpendWitness) -> ZkResult<NoteSpendCircuit<Fr>> {
+    fn build_circuit(&self, witness: &GhostNoteSpendWitness) -> ZkResult<GhostNoteSpendCircuit<Fr>> {
         let spending_key: Fr = bytes_to_field(&witness.spending_key)?;
         let note_blinding: Fr = bytes_to_field(&witness.note_blinding)?;
         let change_blinding: Fr = bytes_to_field(&witness.change_blinding)?;
@@ -275,7 +275,7 @@ impl NoteProver {
             note_commitment,
         );
 
-        Ok(NoteSpendCircuit {
+        Ok(GhostNoteSpendCircuit {
             commitment_root: Some(commitment_root),
             nullifier: Some(nullifier),
             change_commitment: Some(change_commitment_val),
@@ -294,7 +294,7 @@ impl NoteProver {
         })
     }
 
-    fn compute_public_inputs(&self, witness: &NoteSpendWitness) -> ZkResult<NoteSpendPublicInputs> {
+    fn compute_public_inputs(&self, witness: &GhostNoteSpendWitness) -> ZkResult<GhostNoteSpendPublicInputs> {
         let spending_key: Fr = bytes_to_field(&witness.spending_key)?;
         let note_blinding: Fr = bytes_to_field(&witness.note_blinding)?;
         let change_blinding: Fr = bytes_to_field(&witness.change_blinding)?;
@@ -321,7 +321,7 @@ impl NoteProver {
             note_commitment,
         );
 
-        Ok(NoteSpendPublicInputs {
+        Ok(GhostNoteSpendPublicInputs {
             commitment_root: field_to_bytes(commitment_root),
             nullifier: field_to_bytes(nullifier),
             change_commitment: field_to_bytes(change_commitment_val),
@@ -332,7 +332,7 @@ impl NoteProver {
     #[cfg(test)]
     fn generate_simulated_proof(
         &self,
-        witness: &NoteSpendWitness,
+        witness: &GhostNoteSpendWitness,
         num_constraints: usize,
     ) -> Vec<u8> {
         let mut hasher = Sha256::new();
@@ -363,13 +363,13 @@ fn compute_prover_id(tree_depth: usize) -> [u8; 32] {
 mod tests {
     use super::*;
 
-    fn create_test_witness(tree_depth: usize) -> NoteSpendWitness {
+    fn create_test_witness(tree_depth: usize) -> GhostNoteSpendWitness {
         let spending_key = Fr::from(42u64);
         let note_blinding = Fr::from(111u64);
         let change_blinding = Fr::from(222u64);
         let recipient_blinding = Fr::from(333u64);
 
-        NoteSpendWitness {
+        GhostNoteSpendWitness {
             spending_key: field_to_bytes(spending_key),
             note_value: 1000,
             note_blinding: field_to_bytes(note_blinding),
@@ -384,14 +384,14 @@ mod tests {
 
     #[test]
     fn test_prover_creation() {
-        let prover = NoteProver::new(40);
-        assert_eq!(prover.tree_depth(), 40);
+        let prover = GhostNoteProver::new(20);
+        assert_eq!(prover.tree_depth(), 20);
         assert!(!prover.has_groth16_params());
     }
 
     #[test]
     fn test_prove_valid_spend() {
-        let prover = NoteProver::new(4);
+        let prover = GhostNoteProver::new(4);
         let witness = create_test_witness(4);
         let result = prover.prove(&witness);
         assert!(result.is_ok(), "Proof should succeed: {:?}", result.err());
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_prove_insufficient_funds() {
-        let prover = NoteProver::new(4);
+        let prover = GhostNoteProver::new(4);
         let mut witness = create_test_witness(4);
         witness.amount = 2000; // more than note_value
         let result = prover.prove(&witness);
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_public_inputs_non_zero() {
-        let prover = NoteProver::new(4);
+        let prover = GhostNoteProver::new(4);
         let witness = create_test_witness(4);
         let proof = prover.prove(&witness).unwrap();
 
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     #[ignore] // Expensive ~10-30s
     fn test_groth16_prove_roundtrip() {
-        let prover = NoteProver::new_with_setup(4).expect("Setup should succeed");
+        let prover = GhostNoteProver::new_with_setup(4).expect("Setup should succeed");
         assert!(prover.has_groth16_params());
         let witness = create_test_witness(4);
         let proof = prover.prove(&witness).expect("Proof should succeed");
@@ -432,12 +432,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Expensive — production depth 40 param gen + proof (~2s total)
-    fn test_groth16_prove_depth40_benchmark() {
+    #[ignore] // Expensive — production depth 20 param gen + proof (~2s total)
+    fn test_groth16_prove_depth20_benchmark() {
         use std::time::Instant;
 
-        let prover = NoteProver::new_with_setup(40).expect("Setup should succeed");
-        let witness = create_test_witness(40);
+        let prover = GhostNoteProver::new_with_setup(20).expect("Setup should succeed");
+        let witness = create_test_witness(20);
 
         // Warm-up
         prover.prove(&witness).expect("Proof should succeed");
@@ -451,6 +451,6 @@ mod tests {
         }
 
         let avg = times.iter().sum::<std::time::Duration>() / times.len() as u32;
-        eprintln!("Average NoteSpend proof time (depth 40): {:?}", avg);
+        eprintln!("Average NoteSpend proof time (depth 20): {:?}", avg);
     }
 }

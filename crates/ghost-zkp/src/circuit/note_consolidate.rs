@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn test_dummy_synthesizes() {
-        let circuit = NoteConsolidateCircuit::<Fr>::dummy(40);
+        let circuit = NoteConsolidateCircuit::<Fr>::dummy(20);
         let mut cs = TestConstraintSystem::<Fr>::new();
         let result = circuit.synthesize(&mut cs);
         assert!(
@@ -793,22 +793,22 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Expensive: 4 inputs × depth-40 merkle paths
-    fn test_consolidate_depth_40() {
-        let circuit = build_valid_circuit(40, 2);
+    #[ignore] // Expensive: 4 inputs × depth-20 merkle paths
+    fn test_consolidate_depth_20() {
+        let circuit = build_valid_circuit(20, 2);
         let mut cs = TestConstraintSystem::<Fr>::new();
         let result = circuit.synthesize(&mut cs);
 
         assert!(result.is_ok());
         assert!(
             cs.is_satisfied(),
-            "Depth-40 consolidation must satisfy: {:?}",
+            "Depth-20 consolidation must satisfy: {:?}",
             cs.which_is_unsatisfied()
         );
 
         let n = cs.num_constraints();
         println!(
-            "NoteConsolidateCircuit (depth=40, 2 inputs) constraints: {}",
+            "NoteConsolidateCircuit (depth=20, 2 inputs) constraints: {}",
             n
         );
         // 4 inputs * ~3700 constraints each + overhead ≈ 15000

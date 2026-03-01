@@ -257,16 +257,16 @@ impl CeremonyManager {
             return Ok(false);
         }
 
-        // Generate genesis parameters using NoteSpendCircuit (sender-side proofs)
+        // Generate genesis parameters using GhostNoteSpendCircuit (sender-side proofs)
         use bellperson::groth16::generate_random_parameters;
         use blstrs::Scalar as Fr;
         use ghost_zkp::circuit::payout::PayoutCircuit;
-        use ghost_zkp::circuit::NoteSpendCircuit;
+        use ghost_zkp::circuit::GhostNoteSpendCircuit;
         use rand::rngs::OsRng;
 
-        tracing::info!("MPC: Generating genesis parameters for note spend + payout circuits...");
+        tracing::info!("MPC: Generating genesis parameters for note spend (depth=20) + payout circuits...");
 
-        let dummy_note = NoteSpendCircuit::<Fr>::dummy(40);
+        let dummy_note = GhostNoteSpendCircuit::<Fr>::dummy(20);
         let note_params = generate_random_parameters::<Bls12, _, _>(dummy_note, &mut OsRng)
             .map_err(|e| {
                 MpcError::Internal(format!(
@@ -285,9 +285,9 @@ impl CeremonyManager {
                 ))
             })?;
 
-        // NoteSpendCircuit replaces both BlockCircuit and ConfidentialTransferCircuit.
+        // GhostNoteSpendCircuit replaces both BlockCircuit and ConfidentialTransferCircuit.
         // Use note_params for both slots to maintain the multi-params API.
-        let dummy_note2 = NoteSpendCircuit::<Fr>::dummy(40);
+        let dummy_note2 = GhostNoteSpendCircuit::<Fr>::dummy(20);
         let note_params2 = generate_random_parameters::<Bls12, _, _>(dummy_note2, &mut OsRng)
             .map_err(|e| {
                 MpcError::Internal(format!(
@@ -322,11 +322,13 @@ impl CeremonyManager {
     }
 
     /// Get current confidential transfer parameters for proving
+    #[deprecated(note = "Use note_spend params instead")]
     pub fn confidential_params(&self) -> Option<Arc<Parameters<Bls12>>> {
         self.confidential_params.read().clone()
     }
 
     /// Get current confidential transfer verifying key
+    #[deprecated(note = "Use note_spend VK instead")]
     pub fn confidential_vk(&self) -> Option<Arc<PreparedVerifyingKey<Bls12>>> {
         self.confidential_vk.read().clone()
     }

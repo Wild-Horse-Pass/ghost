@@ -114,23 +114,17 @@ Faster but less private:
 
 ## Transfer (Within L2)
 
-Transfers are instant and private:
+Transfers use sender-side NoteSpend proofs for instant, private transfers:
 
 ```
-1. Create transfer request
-   ├── Recipient's Ghost ID
-   ├── Amount
-   └── ZK proof of sufficient balance
-
-2. Submit to L2 validators
-   └── Proof verified (not contents)
-
-3. State updated
-   ├── Sender balance decreased
-   └── Recipient balance increased
-
-4. Confirmation
-   └── Next virtual block (~10 seconds)
+1. Wallet selects unspent note, gets Merkle proof, generates GhostNoteSpendWitness
+2. Wallet generates Groth16 proof locally (~170ms) via NoteSpendClientProver
+3. Submit to ghost-pay POST /api/v1/confidential/transfer
+4. ghost-pay verifies via GhostNoteVerifier (~5ms), updates tree
+5. ghost-pay relays to ghost-pool POST /api/v1/l2/submit
+6. NullifierRouteHandler.submit_external_transfer() validates + mesh broadcast
+7. BFT checkpoint (every 10s, 67% threshold) finalizes
+8. Finalization callback: ghost-pool POSTs to ghost-pay /api/v1/l2/finalize
 ```
 
 ### Transfer Privacy
@@ -182,10 +176,10 @@ If L2 fails, you can always exit via Ghost Lock recovery:
 
 ### Note/UTXO Model (February 2026 Redesign)
 
-L2 uses a **note/UTXO model** rather than an account model. Each deposit or transfer creates notes (commitments) stored in a Merkle commitment tree (depth 40, MiMC 82 rounds). Notes are spent by revealing a nullifier and providing a Groth16 proof (NoteSpendCircuit).
+L2 uses a **note/UTXO model** rather than an account model. Each deposit or transfer creates notes (commitments) stored in a Merkle commitment tree (depth 20, MiMC 82 rounds). Notes are spent by revealing a nullifier and providing a Groth16 proof (GhostNoteSpendCircuit).
 
 ```
-Commitment Tree (depth-40, ~1 trillion capacity):
+Commitment Tree (depth-20, ~1M capacity):
 ├── Note 0: commit(value=1.5M, pubkey, randomness, epoch)
 ├── Note 1: commit(value=250K, pubkey, randomness, epoch)
 ├── Note 2: commit(value=10M, pubkey, randomness, epoch)
@@ -193,7 +187,7 @@ Commitment Tree (depth-40, ~1 trillion capacity):
 ```
 
 **Spending a note:**
-1. Sender generates NoteSpendCircuit proof locally (~170ms)
+1. Sender generates GhostNoteSpendCircuit proof locally (~170ms)
 2. Proof reveals: nullifier (prevents double-spend), change commitment, recipient commitment
 3. NullifierRouteHandler verifies proof (~5ms) and routes by nullifier prefix
 4. BFT checkpoint confirms transaction (every 10 seconds, all-node, 67% threshold)
@@ -225,10 +219,10 @@ Recipients use Ghost Keys for unlinkable addresses:
 
 ### ZK Proofs (Sender-Side)
 
-Transfers use sender-side Groth16 proofs (NoteSpendCircuit):
+Transfers use sender-side Groth16 proofs (GhostNoteSpendCircuit):
 - Senders prove note ownership and balance sufficiency locally (~170ms)
 - Validators verify proof only (~5ms), never see amounts or balances
-- ~12,675 constraints at depth-40 Merkle tree, MiMC 82 rounds
+- ~12,675 constraints at depth-20 Merkle tree, MiMC 82 rounds
 - Nullifiers prevent double-spending and enable deterministic routing
 
 ### Wraith Mixing
@@ -270,6 +264,53 @@ Nodes running Ghost Pay earn:
 - +4 shares in node reward pool
 - Share of L2 fee income
 - Only among Ghost Pay nodes
+
+## L2 API Endpoints
+
+| Endpoint | Method | Service | Purpose |
+|----------|--------|---------|---------|
+| `/api/v1/confidential/transfer` | POST | ghost-pay | NoteSpend proof submission from wallets |
+| `/api/v1/l2/submit` | POST | ghost-pool | Mesh relay (called by ghost-pay after verification) |
+| `/api/v1/l2/finalize` | POST | ghost-pay | Consensus finalization callback (from ghost-pool) |
+| `/api/v1/mpc/params` | GET | ghost-pool | MPC parameter download for light wallets |
+| `/api/v1/confidential/tree` | GET | ghost-pay | Current commitment tree state (root, next_index) |
+| `/api/v1/confidential/shield` | POST | ghost-pay | Shield plaintext balance into commitment |
+
+## ParamsCache Flow
+
+Light wallets use `ParamsCache` to download and cache NoteSpend MPC proving parameters:
+
+```
+ParamsCache::ensure_params(host, port)
+    │
+    ├── Cache hit: ~/.ghost/wallet/params/note_spend_params_current.bin exists (≥100KB)
+    │   └── Return cached path immediately
+    │
+    └── Cache miss:
+        ├── GET http://{host}:{port}/api/v1/mpc/params
+        ├── Validate response ≥ MIN_PARAMS_SIZE (100KB)
+        ├── Atomic write: temp file → rename (prevents partial downloads)
+        └── Return cached path
+```
+
+- Cache location: `~/.ghost/wallet/params/`
+- Filename: `note_spend_params_current.bin`
+- Minimum valid size: 100,000 bytes (~1.4MB expected)
+- HTTP timeout: 60 seconds
+
+## Finalization Callback
+
+When a BFT checkpoint reaches 67% quorum, ghost-pool invokes the finalization callback to notify ghost-pay:
+
+```rust
+type FinalizeFn = Arc<dyn Fn(u64, [u8; 32], u32) + Send + Sync>;
+//                       height  state_root  tx_count
+```
+
+- Wired when `config.ghost_pay.is_some()` in ghost-pool startup
+- ghost-pay applies finalized transfers to its balance tree
+- Persists updated state and deletes pending transfer records
+- Ensures ghost-pay state stays in sync with L2 consensus
 
 ## User Wallet Integration
 

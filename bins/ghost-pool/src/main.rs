@@ -1197,6 +1197,9 @@ async fn main() -> Result<()> {
     // ZK consensus handlers (optional feature)
     // DEFERRED INITIALIZATION: ZK parameter generation is memory-intensive and can take minutes.
     // We spawn it in a background task so the node can start serving immediately.
+    #[allow(unused_assignments, unused_mut)]
+    let mut l2_submit_fn_opt: Option<ghost_verification::L2SubmitFn> = None;
+
     #[cfg(feature = "zk-consensus")]
     {
         use ghost_consensus::epoch_manager::{EpochManager, EpochManagerConfig};
@@ -1310,6 +1313,64 @@ async fn main() -> Result<()> {
             identity_for_sign.sign(msg)
         }));
 
+        // Wire L2 submit callback for ghost-pay relay
+        let nh_for_l2 = Arc::clone(&nullifier_handler);
+        l2_submit_fn_opt = Some(Arc::new(move |data: Vec<u8>| {
+            let msg: ghost_consensus::message::L2ConfidentialTransferMessage =
+                serde_json::from_slice(&data).map_err(|e| {
+                    ghost_common::error::GhostError::Serialization(format!(
+                        "Invalid L2ConfidentialTransferMessage: {}",
+                        e
+                    ))
+                })?;
+            nh_for_l2.submit_external_transfer(&msg)
+        }));
+
+        // Wire finalization callback to notify ghost-pay when checkpoints are finalized
+        if config.ghost_pay.is_some() {
+            let finalize_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .expect("Failed to create HTTP client for ghost-pay finalize");
+            let finalize_fn: ghost_consensus::nullifier_route_handler::FinalizeFn =
+                Arc::new(move |height: u64, state_root: [u8; 32], tx_count: u32| {
+                    let client = finalize_client.clone();
+                    tokio::spawn(async move {
+                        let body = serde_json::json!({
+                            "height": height,
+                            "state_root": hex::encode(state_root),
+                            "attestation_count": tx_count,
+                            "included_tx_ids": [],
+                        });
+                        match client
+                            .post("http://127.0.0.1:8800/api/v1/l2/finalize")
+                            .json(&body)
+                            .send()
+                            .await
+                        {
+                            Ok(resp) if resp.status().is_success() => {
+                                tracing::debug!(height, "Ghost-pay finalization notified");
+                            }
+                            Ok(resp) => {
+                                tracing::warn!(
+                                    height,
+                                    status = %resp.status(),
+                                    "Ghost-pay finalization returned non-success"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    height,
+                                    error = %e,
+                                    "Failed to notify ghost-pay of finalization"
+                                );
+                            }
+                        }
+                    });
+                });
+            nullifier_handler.set_finalize_fn(finalize_fn);
+        }
+
         // Create payout handler (unchanged)
         let zk_payout_handler = Arc::new(
             ZkPayoutVoteHandler::new(Arc::clone(&identity))
@@ -1344,7 +1405,7 @@ async fn main() -> Result<()> {
                 interval.tick().await;
 
                 if !handler_for_proposals.has_verifier() {
-                    tracing::debug!("NoteVerifier not ready yet, skipping checkpoint proposal");
+                    tracing::debug!("GhostNoteVerifier not ready yet, skipping checkpoint proposal");
                     continue;
                 }
 
@@ -1381,14 +1442,14 @@ async fn main() -> Result<()> {
         let nullifier_handler_for_init = Arc::clone(&nullifier_handler);
         let zk_payout_handler_for_init = Arc::clone(&zk_payout_handler);
         tokio::spawn(async move {
-            use ghost_zkp::{NoteProver, NoteVerifier, PayoutProver, PayoutVerifier};
+            use ghost_zkp::{GhostNoteProver, GhostNoteVerifier, PayoutProver, PayoutVerifier};
 
             info!("ZK parameter generation starting in background...");
             let start = std::time::Instant::now();
 
             // Generate note prover/verifier - prefer MPC-generated params when available
             #[cfg(feature = "mpc-ceremony")]
-            let note_prover_result: Result<NoteProver, String> = {
+            let note_prover_result: Result<GhostNoteProver, String> = {
                 let mpc_dir = std::path::PathBuf::from(
                     std::env::var("MPC_PARAMS_PATH").unwrap_or_else(|_| {
                         format!(
@@ -1402,34 +1463,34 @@ async fn main() -> Result<()> {
                     match ghost_mpc::params::load_parameters(&note_spend_path) {
                         Ok(params) => {
                             info!("Using MPC-generated note_spend parameters");
-                            Ok(NoteProver::new_with_params(Arc::new(params), 40))
+                            Ok(GhostNoteProver::new_with_params(Arc::new(params), 20))
                         }
                         Err(e) => {
                             warn!(error = %e, "Failed to load MPC note_spend params, falling back to random setup");
-                            NoteProver::new_with_setup(40).map_err(|e| format!("{}", e))
+                            GhostNoteProver::new_with_setup(20).map_err(|e| format!("{}", e))
                         }
                     }
                 } else {
                     warn!("No MPC note_spend params on disk, using random trusted setup");
-                    NoteProver::new_with_setup(40).map_err(|e| format!("{}", e))
+                    GhostNoteProver::new_with_setup(20).map_err(|e| format!("{}", e))
                 }
             };
             #[cfg(not(feature = "mpc-ceremony"))]
-            let note_prover_result: Result<NoteProver, String> =
-                NoteProver::new_with_setup(40).map_err(|e| format!("{}", e));
+            let note_prover_result: Result<GhostNoteProver, String> =
+                GhostNoteProver::new_with_setup(20).map_err(|e| format!("{}", e));
 
             match note_prover_result {
                 Ok(note_prover) => {
                     // Extract prepared VK for the verifier
                     if let Some(pvk) = note_prover.prepared_verifying_key() {
-                        let verifier = Arc::new(NoteVerifier::new(pvk, note_prover.prover_id()));
+                        let verifier = Arc::new(GhostNoteVerifier::new(pvk, note_prover.prover_id()));
                         nullifier_handler_for_init.set_verifier(verifier);
                         info!(
                             elapsed_secs = start.elapsed().as_secs(),
-                            "L2 note verifier initialized (depth=40)"
+                            "L2 note verifier initialized (depth=20)"
                         );
                     } else {
-                        error!("NoteProver has no prepared verifying key");
+                        error!("GhostNoteProver has no prepared verifying key");
                     }
                 }
                 Err(e) => {
@@ -2547,6 +2608,11 @@ async fn main() -> Result<()> {
     // This allows the dashboard to modify settings via POST /api/internal/config/update
     verification_state =
         verification_state.with_full_node_config(config.clone(), args.config.clone());
+
+    // Wire L2 submit callback if ZK consensus is enabled
+    if let Some(l2_submit_fn) = l2_submit_fn_opt {
+        verification_state = verification_state.with_l2_submit(l2_submit_fn);
+    }
 
     // Configure internal API authentication (AUTH4-1 security fix)
     if let Some(ref secret_hex) = config.network.internal_api_secret {

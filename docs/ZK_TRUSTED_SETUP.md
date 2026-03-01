@@ -57,7 +57,7 @@ The solution is a **Multi-Party Computation ceremony** where:
 
 ### Ceremony Requirements
 
-For Ghost's ZK circuits (NoteSpendCircuit and PayoutCircuit):
+For Ghost's ZK circuits (GhostNoteSpendCircuit and PayoutCircuit):
 
 1. **Minimum Participants**: At least 10 independent parties (Ghost supports up to 101)
 2. **Geographic Distribution**: Participants from different jurisdictions
@@ -75,8 +75,8 @@ Ghost implements a **rolling MPC ceremony** (not a one-time event):
    - Produces curve-wide parameters
 
 2. **Phase 2 (Circuit-Specific)**
-   - Specific to Ghost's NoteSpendCircuit (~12,675 constraints, depth-40 merkle, MiMC 82 rounds)
-   - Uses `NoteSpendCircuit::dummy(40)` for parameter generation (~3-4 seconds per contribution)
+   - Specific to Ghost's GhostNoteSpendCircuit (~12,675 constraints, depth-20 merkle, MiMC 82 rounds)
+   - Uses `GhostNoteSpendCircuit::dummy(20)` for parameter generation (~3-4 seconds per contribution)
    - The first 101 contributors become Elders (+1 share)
    - Parameters ossify permanently after 101 contributions
 
@@ -93,7 +93,7 @@ Ghost can leverage existing Powers of Tau ceremonies:
 ### Before Production Deployment
 
 - [x] Rolling MPC ceremony implemented (up to 101 contributors)
-- [x] NoteSpendCircuit parameter generation via `NoteSpendCircuit::dummy(40)`
+- [x] GhostNoteSpendCircuit parameter generation via `GhostNoteSpendCircuit::dummy(20)`
 - [x] Toxic waste zeroed automatically via `ZeroizeOnDrop`
 - [x] Parameters stored in `~/.ghost/mpc_params/` with versioned files
 - [x] P2P contributor sync via `/api/v1/mpc/contributors`

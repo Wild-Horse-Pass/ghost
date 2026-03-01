@@ -410,11 +410,11 @@ The encryption framework used for sensitive P2P communication between Ghost node
 The digital signature algorithm used for node identity. Each node has a 32-byte Ed25519 public key as its NodeId. All consensus messages are Ed25519-signed with sender, timestamp, and payload.
 
 ### Groth16
-The zero-knowledge proof system used by Ghost Pay. SNARK (Succinct Non-Interactive Argument of Knowledge) over the BLS12-381 curve. Proof size: 192 bytes (A: 48 G1, B: 96 G2, C: 48 G1). Used for NoteSpendCircuit (note spending / transfer validity) and PayoutCircuit (payout distribution validity). Requires a trusted setup (MPC ceremony) to generate proving and verifying keys.
+The zero-knowledge proof system used by Ghost Pay. SNARK (Succinct Non-Interactive Argument of Knowledge) over the BLS12-381 curve. Proof size: 192 bytes (A: 48 G1, B: 96 G2, C: 48 G1). Used for GhostNoteSpendCircuit (note spending / transfer validity) and PayoutCircuit (payout distribution validity). Requires a trusted setup (MPC ceremony) to generate proving and verifying keys.
 - Source: `crates/ghost-zkp/src/`
 
-### NoteSpendCircuit
-A Groth16 ZK circuit that proves a sender is authorized to spend a note in the L2 commitment tree. ~12,675 constraints at depth-40 merkle tree. Uses MiMC (82 rounds) for hashing. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Senders generate proofs locally (~170ms); validators verify in ~5ms. Replaced the earlier BlockCircuit design (February 2026 L2 redesign).
+### GhostNoteSpendCircuit
+A Groth16 ZK circuit that proves a sender is authorized to spend a note in the L2 commitment tree. ~12,675 constraints at depth-20 merkle tree. Uses MiMC (82 rounds) for hashing. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Senders generate proofs locally (~170ms); validators verify in ~5ms. Replaced the earlier BlockCircuit design (February 2026 L2 redesign).
 - Source: `crates/ghost-zkp/src/circuit/note_spend.rs`
 
 ### NullifierRouteHandler
@@ -426,11 +426,11 @@ Manages L2 epoch lifecycle: tree compaction, epoch transitions, proposer rotatio
 - Source: `crates/ghost-consensus/src/epoch_manager.rs`
 
 ### CommitmentTree
-A sparse Merkle tree (depth 40, ~1 trillion leaf capacity) that stores note commitments for the L2 note/UTXO model. Uses `precompute_zero_hashes()` for efficient sparse tree operations — without it, computing the root is O(2^depth). MiMC (82 rounds) is the hash function. Critical implementation detail: `get_node_hash()` short-circuits on zero subtrees.
+A sparse Merkle tree (depth 20, ~1M leaf capacity) that stores note commitments for the L2 note/UTXO model. Uses `precompute_zero_hashes()` for efficient sparse tree operations — without it, computing the root is O(2^depth). MiMC (82 rounds) is the hash function. Critical implementation detail: `get_node_hash()` short-circuits on zero subtrees.
 - Source: `crates/ghost-zkp/src/commitment_tree.rs`
 
 ### MiMC
-A hash function used in Ghost's ZK circuits. Uses 82 rounds of Feistel-mode hashing with SHA-256-derived round constants over BLS12-381. Provides ≥128-bit security against algebraic attacks. Used for note commitments, nullifier derivation, and Merkle tree construction within NoteSpendCircuit.
+A hash function used in Ghost's ZK circuits. Uses 82 rounds of Feistel-mode hashing with SHA-256-derived round constants over BLS12-381. Provides ≥128-bit security against algebraic attacks. Used for note commitments, nullifier derivation, and Merkle tree construction within GhostNoteSpendCircuit.
 - Source: `crates/ghost-zkp/src/circuit/mimc.rs`
 - Constant: `MIMC_ROUNDS = 82`
 

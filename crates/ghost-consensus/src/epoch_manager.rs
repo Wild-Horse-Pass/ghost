@@ -35,8 +35,8 @@ pub const EPOCH_LENGTH: u64 = 100_000;
 /// During this window, both old and new epoch roots are valid
 pub const TRANSITION_WINDOW: u64 = 100;
 
-/// Tree depth (supports ~1 trillion notes per epoch)
-pub const TREE_DEPTH: usize = 40;
+/// Tree depth (~1M notes per epoch)
+pub const TREE_DEPTH: usize = 20;
 
 /// Maximum number of valid roots to keep in memory
 pub const MAX_VALID_ROOTS: usize = 256;

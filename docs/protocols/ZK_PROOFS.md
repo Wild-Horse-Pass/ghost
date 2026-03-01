@@ -54,8 +54,8 @@ Ghost Pay uses **Groth16** SNARKs (Succinct Non-interactive ARguments of Knowled
 | Property | Value |
 |----------|-------|
 | Proof size | 192 bytes (constant) |
-| Verification time | ~5ms (NoteSpendCircuit) |
-| Proving time | ~170ms (NoteSpendCircuit, sender-side) |
+| Verification time | ~5ms (GhostNoteSpendCircuit) |
+| Proving time | ~170ms (GhostNoteSpendCircuit, sender-side) |
 | Hash function | MiMC (82 rounds, ≥128-bit security) |
 | Setup | Rolling MPC ceremony (up to 101 contributors) |
 
@@ -68,7 +68,11 @@ Ghost Pay uses **Groth16** SNARKs (Succinct Non-interactive ARguments of Knowled
 
 ## Use Cases in Ghost Pay
 
-### 1. Balance Verification
+### 1. Balance Verification (Legacy — ConfidentialTransfer)
+
+> **Deprecation Notice:** Use Cases 1-2 describe the legacy ConfidentialTransfer account-model
+> approach. The current L2 uses the NoteSpend/UTXO model (GhostNoteSpendCircuit). See
+> "Circuit Design" section below for the current approach.
 
 Prove you have sufficient balance for a transfer without revealing your total balance.
 
@@ -159,12 +163,12 @@ Statement proven:
 
 ## Circuit Design
 
-### NoteSpendCircuit (Current — February 2026 L2 Redesign)
+### GhostNoteSpendCircuit (Current — February 2026 L2 Redesign)
 
 The L2 uses a **note/UTXO model** with **sender-side proofs**. Senders generate Groth16 proofs locally; validators only verify.
 
 ```rust
-pub struct NoteSpendCircuit<F: PrimeField> {
+pub struct GhostNoteSpendCircuit<F: PrimeField> {
     // Private inputs (witness)
     pub note_value: Option<F>,         // Value of the note being spent
     pub spending_key: Option<F>,       // Proves ownership
@@ -175,17 +179,17 @@ pub struct NoteSpendCircuit<F: PrimeField> {
     pub recipient_pubkey: Option<F>,   // Recipient's public key
     pub change_randomness: Option<F>,  // Randomness for change note
     pub recipient_randomness: Option<F>, // Randomness for recipient note
-    pub merkle_siblings: Vec<Option<F>>, // Merkle path (40 levels)
+    pub merkle_siblings: Vec<Option<F>>, // Merkle path (20 levels)
     pub commitment_root: Option<F>,    // Public: tree root
-    pub tree_depth: usize,             // 40 (default)
+    pub tree_depth: usize,             // 20 (default)
 }
 ```
 
-**Constraints (~12,675 at depth-40):**
+**Constraints (~12,675 at depth-20):**
 1. Spent note commitment correctly formed (MiMC Pedersen)
 2. Note ID incorporates index, epoch, and commitment
 3. Nullifier proves ownership via spending key
-4. Merkle inclusion in commitment tree (40 levels)
+4. Merkle inclusion in commitment tree (20 levels)
 5. Balance conservation: change = note_value - amount
 6. Change and recipient commitments correctly formed
 7. Range proofs: amount in [0, 2^64), change in [0, 2^64)
@@ -234,7 +238,7 @@ Anyone can verify the setup was performed correctly:
 
 | Circuit | Constraints | Proving Time | Params Size |
 |---------|-------------|--------------|-------------|
-| NoteSpendCircuit (depth=40) | ~12,675 | ~170ms | ~1.4 MB |
+| GhostNoteSpendCircuit (depth=20) | ~12,675 | ~170ms | ~1.4 MB |
 | PayoutCircuit | ~2,500 | ~1 second | ~200 KB |
 
 ### Proof Verification (Validator-Side)
@@ -305,9 +309,9 @@ Only the recipient (with their scan key) can detect that a payment is theirs.
 ```
 1. Sender wants to transfer 0.1 BTC from their note
 
-2. Sender's wallet generates NoteSpendCircuit proof locally (~170ms):
+2. Sender's wallet generates GhostNoteSpendCircuit proof locally (~170ms):
    ├── Proves ownership of note via spending key → nullifier
-   ├── Proves note is in commitment tree via Merkle path (depth 40)
+   ├── Proves note is in commitment tree via Merkle path (depth 20)
    ├── Proves balance conservation: change = note_value - amount
    └── Creates change + recipient commitments
 
@@ -316,7 +320,7 @@ Only the recipient (with their scan key) can detect that a payment is theirs.
    └── Routed by nullifier prefix to deterministic validator
 
 4. Validator verifies:
-   ├── Check NoteSpendCircuit proof (~5ms)
+   ├── Check GhostNoteSpendCircuit proof (~5ms)
    ├── Check nullifier not already spent (double-spend prevention)
    └── Add new commitments to tree, record nullifier
 
@@ -382,7 +386,7 @@ Ghost Pay doesn't need this because:
 ### Block Finalization Flow
 
 ```
-1. Senders generate NoteSpendCircuit proofs locally (~170ms each)
+1. Senders generate GhostNoteSpendCircuit proofs locally (~170ms each)
 2. Submit transaction + proof to NullifierRouteHandler
 3. NullifierRouteHandler verifies proof (~5ms) and routes by nullifier prefix
 4. All-node BFT checkpoint every 10 seconds (67% threshold)
@@ -480,14 +484,29 @@ Future versions may use recursive proofs:
 ```rust
 #[test]
 fn test_note_spend_circuit() {
-    let circuit = NoteSpendCircuit::<Fr>::dummy(40);
+    let circuit = GhostNoteSpendCircuit::<Fr>::dummy(20);
     let cs = TestConstraintSystem::<Fr>::new();
     circuit.synthesize(&mut cs).unwrap();
-    // ~12,675 constraints at depth-40
+    // ~12,675 constraints at depth-20
     assert!(cs.num_constraints() > 5000);
     assert!(cs.num_constraints() < 20000);
 }
 ```
+
+## Deprecated Types
+
+The following types remain in the codebase for backward compatibility but are deprecated.
+New code must use the NoteSpend equivalents:
+
+| Deprecated Type | Replacement | Notes |
+|----------------|-------------|-------|
+| `ConfidentialTransferCircuit` | `GhostNoteSpendCircuit` | Account-model → UTXO model |
+| `ConfidentialProver` | `GhostNoteProver` | Server-side → sender-side proofs |
+| `ConfidentialVerifier` | `GhostNoteVerifier` | Verify NoteSpend proofs (~5ms) |
+| `ClientProver` | `NoteSpendClientProver` | Wallet-side proof generation |
+| `ConfidentialTransferResult` | `NoteSpendTransferResult` | Proof output with nullifier + commitments |
+
+All deprecated types carry `#[deprecated]` attributes and will emit compiler warnings.
 
 ## Related Documentation
 

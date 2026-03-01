@@ -1,4 +1,4 @@
-//! NoteSpendCircuit — sender-side Groth16 proof for spending a single note
+//! GhostNoteSpendCircuit — sender-side Groth16 proof for spending a single note
 //!
 //! Part of the L2 note/UTXO model. Senders generate this proof locally (~2-3s)
 //! before submitting transactions. Validators verify in ~5ms.
@@ -9,11 +9,11 @@
 //! 3. `change_commitment` — sender's new note (remaining balance)
 //! 4. `recipient_commitment` — recipient's new note (transfer amount)
 //!
-//! **Constraints (~3,700 for depth=40):**
+//! **Constraints (~3,700 for depth=20):**
 //! 1. Spent note commitment correctly formed (MiMC Pedersen)
 //! 2. Note ID incorporates index, epoch, and commitment
 //! 3. Nullifier proves ownership via spending key
-//! 4. Merkle inclusion in commitment tree (40 levels)
+//! 4. Merkle inclusion in commitment tree (20 levels)
 //! 5. Balance conservation: change = note_value - amount
 //! 6. Change and recipient commitments correctly formed
 //! 7. Range proofs: amount in [0, 2^64), change in [0, 2^64)
@@ -30,11 +30,11 @@ use super::mimc::{mimc_hash, mimc_hash_native};
 use super::range_proof::enforce_range;
 use super::BALANCE_BITS;
 
-/// Default tree depth for note commitment trees (2^40 ~ 1 trillion notes per epoch)
-pub const NOTE_TREE_DEPTH: usize = 40;
+/// Default tree depth for note commitment trees (2^20 ~ 1M notes per epoch)
+pub const NOTE_TREE_DEPTH: usize = 20;
 
 /// Circuit proving a single note spend is valid
-pub struct NoteSpendCircuit<F: PrimeField> {
+pub struct GhostNoteSpendCircuit<F: PrimeField> {
     // Public inputs
     pub commitment_root: Option<F>,
     pub nullifier: Option<F>,
@@ -63,7 +63,7 @@ pub struct NoteSpendCircuit<F: PrimeField> {
     pub is_dummy: bool,
 }
 
-impl<F: PrimeField> NoteSpendCircuit<F> {
+impl<F: PrimeField> GhostNoteSpendCircuit<F> {
     /// Create a dummy circuit for MPC parameter generation.
     ///
     /// Witness values are zero but the constraint structure is identical
@@ -89,7 +89,7 @@ impl<F: PrimeField> NoteSpendCircuit<F> {
     }
 }
 
-impl<F: PrimeField> Circuit<F> for NoteSpendCircuit<F> {
+impl<F: PrimeField> Circuit<F> for GhostNoteSpendCircuit<F> {
     fn synthesize<CS: ConstraintSystem<F>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
         let tree_depth = self.tree_depth;
 
@@ -504,8 +504,8 @@ mod tests {
     use blstrs::Scalar as Fr;
     use ff::Field;
 
-    /// Build a valid NoteSpendCircuit with consistent witness data
-    fn build_valid_circuit(tree_depth: usize) -> NoteSpendCircuit<Fr> {
+    /// Build a valid GhostNoteSpendCircuit with consistent witness data
+    fn build_valid_circuit(tree_depth: usize) -> GhostNoteSpendCircuit<Fr> {
         let note_value = 1000u64;
         let note_blinding = Fr::from(111u64);
         let spending_key = Fr::from(42u64);
@@ -533,7 +533,7 @@ mod tests {
         let change_commitment_val = pedersen_commit_native(Fr::from(change_value), change_blinding);
         let recipient_commitment_val = pedersen_commit_native(Fr::from(amount), recipient_blinding);
 
-        NoteSpendCircuit {
+        GhostNoteSpendCircuit {
             commitment_root: Some(commitment_root),
             nullifier: Some(nullifier),
             change_commitment: Some(change_commitment_val),
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_dummy_synthesizes() {
-        let circuit = NoteSpendCircuit::<Fr>::dummy(40);
+        let circuit = GhostNoteSpendCircuit::<Fr>::dummy(20);
         let mut cs = TestConstraintSystem::<Fr>::new();
         let result = circuit.synthesize(&mut cs);
         assert!(
@@ -578,26 +578,26 @@ mod tests {
         );
 
         println!(
-            "NoteSpendCircuit (depth=4) constraints: {}",
+            "GhostNoteSpendCircuit (depth=4) constraints: {}",
             cs.num_constraints()
         );
     }
 
     #[test]
-    fn test_valid_spend_depth_40() {
-        let circuit = build_valid_circuit(40);
+    fn test_valid_spend_depth_20() {
+        let circuit = build_valid_circuit(20);
         let mut cs = TestConstraintSystem::<Fr>::new();
         let result = circuit.synthesize(&mut cs);
 
         assert!(result.is_ok());
         assert!(
             cs.is_satisfied(),
-            "Valid spend depth=40 must satisfy: {:?}",
+            "Valid spend depth=20 must satisfy: {:?}",
             cs.which_is_unsatisfied()
         );
 
         let n = cs.num_constraints();
-        println!("NoteSpendCircuit (depth=40) constraints: {}", n);
+        println!("GhostNoteSpendCircuit (depth=20) constraints: {}", n);
         // ~12,700 with 82-round MiMC, range proofs on note_value, and index_bits consistency
         assert!(n > 5000, "Expected > 5000 constraints, got {}", n);
         assert!(n < 20000, "Expected < 20000 constraints, got {}", n);
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_public_input_count() {
-        let circuit = NoteSpendCircuit::<Fr>::dummy(4);
+        let circuit = GhostNoteSpendCircuit::<Fr>::dummy(4);
         let mut cs = TestConstraintSystem::<Fr>::new();
         let _ = circuit.synthesize(&mut cs);
 
@@ -681,7 +681,7 @@ mod tests {
         let change_commitment_val = pedersen_commit_native(Fr::from(note_value), change_blinding);
         let recipient_commitment_val = pedersen_commit_native(Fr::from(amount), recipient_blinding);
 
-        let circuit = NoteSpendCircuit {
+        let circuit = GhostNoteSpendCircuit {
             commitment_root: Some(commitment_root),
             nullifier: Some(nullifier),
             change_commitment: Some(change_commitment_val),
@@ -729,7 +729,7 @@ mod tests {
         let change_commitment_val = pedersen_commit_native(Fr::from(0u64), change_blinding);
         let recipient_commitment_val = pedersen_commit_native(Fr::from(amount), recipient_blinding);
 
-        let circuit = NoteSpendCircuit {
+        let circuit = GhostNoteSpendCircuit {
             commitment_root: Some(commitment_root),
             nullifier: Some(nullifier),
             change_commitment: Some(change_commitment_val),

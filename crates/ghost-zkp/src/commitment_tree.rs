@@ -17,6 +17,7 @@ use blstrs::Scalar as Fr;
 use crate::circuit::commitment::pedersen_commit_native;
 use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
 use crate::errors::{ZkError, ZkResult};
+#[allow(deprecated)]
 use crate::types::{ConfidentialTransferWitness, MerkleProof};
 
 /// Sparse merkle tree storing commitments as leaves
@@ -171,7 +172,7 @@ impl CommitmentTree {
     /// 4. Replaces recipient's commitment with new commitment
     /// 5. Records the nullifier
     /// 6. Returns witness with all proofs
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, deprecated)]
     pub fn apply_transfer(
         &mut self,
         sender_index: u64,
@@ -563,15 +564,15 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_40_tree_is_fast() {
-        // Depth 40 = ~1 trillion leaves. Without zero-subtree optimization,
-        // root() would traverse 2^40 nodes and never complete.
-        let tree = CommitmentTree::new(40);
+    fn test_depth_20_tree_is_fast() {
+        // Depth 20 = ~1M leaves. Without zero-subtree optimization,
+        // root() would traverse 2^20 nodes and never complete.
+        let tree = CommitmentTree::new(20);
         let root = tree.root().unwrap();
         assert_ne!(root, [0u8; 32]); // MiMC of zeros is non-zero
 
         // Insert a single note and verify root changes
-        let mut tree2 = CommitmentTree::new(40);
+        let mut tree2 = CommitmentTree::new(20);
         tree2.insert_note(0, 1000, Fr::from(42u64));
         let root2 = tree2.root().unwrap();
         assert_ne!(root, root2);

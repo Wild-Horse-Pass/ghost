@@ -1449,25 +1449,40 @@ Two-phase CoinJoin mixing with Schnorr blind signatures for private entry into G
 
 ### 16.6 ZK Proofs
 
-Zero-Knowledge proofs are used for:
+L2 transfers use the **NoteSpend/UTXO model** with sender-side Groth16 proofs (GhostNoteSpendCircuit):
 
-1. **Balance Verification**: Prove sufficient balance without revealing amount
-2. **Transfer Validity**: Prove transfer is valid without revealing parties
-3. **Settlement Batching**: Prove batch is correct without revealing individual txs
-4. **Wraith Mixing**: Additional privacy layer for mixing proofs
+1. **NoteSpend Transfer**: Wallet generates proof locally (~170ms), validator verifies (~5ms)
+2. **Settlement Batching**: Epoch-end compaction and L1 state commitment
+3. **Wraith Mixing**: Additional privacy layer for mixing proofs
+4. **Payout Validity**: PayoutCircuit proves distribution correctness
 
-**ZK System**: Groth16 or similar SNARK for efficiency
+> **Deprecation Note:** The earlier account-model ConfidentialTransfer approach (balance
+> commitments, server-side verification) has been replaced by the NoteSpend UTXO model.
+> Legacy types (`ConfidentialProver`, `ClientProver`) remain but are deprecated.
+
+**ZK System**: Groth16 SNARKs via bellperson (BLS12-381), MPC-generated parameters
 
 ```
-User wants to transfer:
-1. Create ZK proof of:
-   - Balance ≥ amount + fee
-   - No double-spend
-   - Valid signature
-2. Submit proof + encrypted transfer
-3. Validators verify proof (not contents)
-4. Transfer executed privately
+NoteSpend Transfer Flow:
+1. Wallet selects unspent note, gets Merkle proof from commitment tree
+2. Generates GhostNoteSpendCircuit proof locally (~170ms):
+   ├── Proves ownership via spending key → nullifier
+   ├── Proves inclusion in commitment tree (depth-20 Merkle path)
+   ├── Proves balance conservation: change = note_value - amount
+   └── Creates change + recipient commitments
+3. Submit to ghost-pay POST /api/v1/confidential/transfer
+4. ghost-pay verifies proof (~5ms), relays to ghost-pool
+5. BFT checkpoint finalizes (67% threshold, every 10 seconds)
 ```
+
+**L2 API Endpoints:**
+
+| Endpoint | Service | Purpose |
+|----------|---------|---------|
+| `POST /api/v1/confidential/transfer` | ghost-pay | NoteSpend proof submission |
+| `POST /api/v1/l2/submit` | ghost-pool | Mesh relay from ghost-pay |
+| `POST /api/v1/l2/finalize` | ghost-pay | Finalization callback |
+| `GET /api/v1/mpc/params` | ghost-pool | MPC param download |
 
 ### 16.7 L2 Fee Distribution
 
@@ -2291,14 +2306,14 @@ Ghost uses Groth16 proofs over BLS12-381 with a sender-side proof architecture:
 
 | Proof Type | Purpose | Public Inputs | Constraints | Size |
 |-----------|---------|---------------|-------------|------|
-| NoteSpend | Note spending / transfer validity | commitment_root, nullifier, change_commitment, recipient_commitment | ~12,675 (depth-40) | 192 bytes |
+| NoteSpend | Note spending / transfer validity | commitment_root, nullifier, change_commitment, recipient_commitment | ~12,675 (depth-20) | 192 bytes |
 | Payout | Distribution validity | epoch, totals | ~2,500 | 192 bytes |
 
 Proof structure: A (48 bytes, G1) + B (96 bytes, G2) + C (48 bytes, G1).
 
 ### 21.2 Circuit Design
 
-**NoteSpendCircuit**: Sender-side proof for spending a note in the L2 commitment tree. Uses MiMC (82 rounds) for hashing, depth-40 Merkle inclusion proofs. Senders generate proofs locally (~170ms); validators verify in ~5ms. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Replaced the earlier BlockCircuit (February 2026 L2 redesign).
+**GhostNoteSpendCircuit**: Sender-side proof for spending a note in the L2 commitment tree. Uses MiMC (82 rounds) for hashing, depth-20 Merkle inclusion proofs. Senders generate proofs locally (~170ms); validators verify in ~5ms. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Replaced the earlier BlockCircuit (February 2026 L2 redesign).
 
 **PayoutCircuit**: Proves payout distribution preserves sum (miners + nodes + treasury = total) with 64-bit amount bounds.
 
@@ -2308,7 +2323,7 @@ Proof structure: A (48 bytes, G1) + B (96 bytes, G2) + C (48 bytes, G1).
 
 ### 21.3 MPC Ceremony
 
-Parameters are generated through a rolling Multi-Party Computation ceremony. See [MPC Ceremony](protocols/MPC_CEREMONY.md) for the full specification. MPC uses `NoteSpendCircuit::dummy(40)` for parameter generation (~3-4s per contribution).
+Parameters are generated through a rolling Multi-Party Computation ceremony. See [MPC Ceremony](protocols/MPC_CEREMONY.md) for the full specification. MPC uses `GhostNoteSpendCircuit::dummy(20)` for parameter generation (~3-4s per contribution).
 
 Summary:
 - First 101 contributors become Elders (+1 share)

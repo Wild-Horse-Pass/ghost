@@ -319,12 +319,12 @@ On startup, `ghost-pool` checks the `mpc_contributions` table to set `capabiliti
 
 The MPC ceremony generates parameters for two circuit types:
 
-### 9.1 NoteSpendCircuit
+### 9.1 GhostNoteSpendCircuit
 
 Proves a sender is authorized to spend a note in the L2 commitment tree:
 
 ```rust
-pub struct NoteSpendCircuit<F: PrimeField> {
+pub struct GhostNoteSpendCircuit<F: PrimeField> {
     pub note_value: Option<F>,
     pub spending_key: Option<F>,
     pub randomness: Option<F>,
@@ -341,13 +341,13 @@ pub struct NoteSpendCircuit<F: PrimeField> {
 ```
 
 Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`
-~12,675 constraints at depth-40. Uses MiMC (82 rounds) for hashing.
+~12,675 constraints at depth-20. Uses MiMC (82 rounds) for hashing.
 Proof size: 192 bytes (A: 48 G1, B: 96 G2, C: 48 G1)
 Proving time: ~170ms (sender-side). Verification: ~5ms.
 
 ### 9.2 PayoutCircuit
 
-Proves payout distribution validity:
+Proves payout distribution validity (~2,500 constraints vs NoteSpend's ~12,675):
 - Sum preservation: miners + nodes + treasury = total
 - All amounts fit in 64 bits
 - Metadata commitment (epoch, counts)
@@ -413,7 +413,7 @@ curl http://localhost:8800/api/v1/mpc/contributors | jq length
 | `crates/ghost-consensus/src/mesh.rs` | Noise encryption routing for MPC messages |
 | `crates/ghost-consensus/src/message.rs` | MPC message structs (MPC-C1 through MPC-C4) |
 | `crates/ghost-zkp/src/ceremony.rs` | CeremonyManager, parameter generation |
-| `crates/ghost-zkp/src/circuit/note_spend.rs` | NoteSpendCircuit definition |
+| `crates/ghost-zkp/src/circuit/note_spend.rs` | GhostNoteSpendCircuit definition |
 | `crates/ghost-zkp/src/payout.rs` | PayoutCircuit definition |
 | `crates/ghost-zkp/src/verifier.rs` | BlockVerifier, proof verification |
 | `crates/ghost-storage/src/queries.rs` | `is_mpc_elder()`, `get_mpc_elder_position()`, `get_mpc_elder_count()` |

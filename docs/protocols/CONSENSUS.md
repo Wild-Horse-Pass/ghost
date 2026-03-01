@@ -417,18 +417,82 @@ Every 10 seconds:
 4. On approval: transactions finalized, commitment tree updated
 ```
 
+### External Submission Path (ghost-pay → ghost-pool → mesh)
+
+When a wallet submits a NoteSpend transfer to ghost-pay, the verified transaction flows through:
+
+```
+Wallet                  ghost-pay                   ghost-pool                All Nodes
+  │                        │                           │                        │
+  ├─ POST /transfer ──────►│                           │                        │
+  │                        ├─ verify proof (~5ms)      │                        │
+  │                        ├─ check nullifier          │                        │
+  │                        ├─ update local tree        │                        │
+  │                        ├─ POST /api/v1/l2/submit ─►│                        │
+  │                        │                           ├─ submit_external_     │
+  │                        │                           │  transfer()            │
+  │                        │                           ├─ handle_transfer()     │
+  │                        │                           ├─ broadcast to mesh ───►│
+  │                        │                           │                        │
+  │                        │                           │   (checkpoint cycle)   │
+  │                        │                           │◄── votes ──────────────┤
+  │                        │                           ├─ 67% quorum reached   │
+  │                        │                           │                        │
+  │                        │◄─ POST /api/v1/l2/finalize│                        │
+  │                        ├─ apply to balance tree    │                        │
+  │                        ├─ persist state            │                        │
+  │                        ├─ delete pending           │                        │
+```
+
+### NullifierRouteHandler.submit_external_transfer()
+
+Entry point for externally-verified L2 transactions (from ghost-pay):
+
+1. Calls `handle_transfer()` for proof validation and nullifier checking
+2. If confirmed, broadcasts `L2TransferConfirmationMessage` to mesh
+3. Broadcasts signed `L2TransferBroadcastMessage` for all-node replication
+4. Transaction enters `confirmed_pool` on all nodes, awaiting next checkpoint
+
+### Full 8-Step Checkpoint Lifecycle
+
+```
+1. Transactions accumulate in confirmed_pool (via broadcast)
+2. Every 10 seconds, designated proposer calls propose_checkpoint()
+3. Checkpoint includes all confirmed txs; pool is drained
+4. Proposal broadcast to all nodes
+5. Non-proposers validate via handle_checkpoint_proposal() → produce vote
+6. Votes collected via handle_checkpoint_vote()
+7. At 67% quorum → checkpoint finalized:
+   ├── Nullifiers persisted to DB
+   ├── Commitment tree root updated
+   ├── Checkpoint record stored (height, epoch, state_root)
+   └── FinalizeFn callback invoked: finalize_fn(height, state_root, tx_count)
+8. ghost-pay receives finalization → applies transfers, persists, cleans up
+```
+
+### FinalizeFn Callback
+
+```rust
+type FinalizeFn = Arc<dyn Fn(u64, [u8; 32], u32) + Send + Sync>;
+//                       height  state_root  tx_count
+```
+
+- Wired at startup when `config.ghost_pay.is_some()`
+- Called once per finalized checkpoint with the committed state
+- ghost-pay uses this to apply finalized transfers to its balance tree
+
 ### EpochManager
 
 The EpochManager handles L2 epoch lifecycle:
 - **Tree compaction**: Prunes spent notes from commitment tree
 - **Epoch transitions**: Advances epoch counter, triggers settlement
 - **Proposer rotation**: Different node proposes each checkpoint
-- **Commitment tree**: Maintains depth-40 MiMC Merkle tree
+- **Commitment tree**: Maintains depth-20 MiMC Merkle tree
 
 ### NullifierRouteHandler
 
 Replaces the earlier ZkVoteHandler and L2BlockProducer:
-- Validates sender-side Groth16 proofs (NoteSpendCircuit, ~5ms each)
+- Validates sender-side Groth16 proofs (GhostNoteSpendCircuit, ~5ms each)
 - Routes transactions by nullifier prefix for deterministic validator assignment
 - Manages checkpoint proposals and BFT voting
 - Produces epoch transition proposals
@@ -443,4 +507,4 @@ Replaces the earlier ZkVoteHandler and L2BlockProducer:
 - [Mining Pool](MINING_POOL.md) - Share handling
 - [Economics](ECONOMICS.md) - Payout calculation
 - [Ghost Pay](GHOST_PAY.md) - L2 payment network
-- [ZK Proofs](ZK_PROOFS.md) - NoteSpendCircuit details
+- [ZK Proofs](ZK_PROOFS.md) - GhostNoteSpendCircuit details
