@@ -172,6 +172,41 @@ impl ConnectionManager {
         }
     }
 
+    /// Estimate fee rate in sat/vB for a given confirmation target.
+    ///
+    /// In GSP mode, delegates to the GSP. In RPC mode, calls
+    /// `estimatesmartfee`. Returns `None` if the estimate is unavailable.
+    pub async fn estimate_fee(&self, conf_target: u32) -> Result<Option<u64>, NetworkError> {
+        let mode = *self.mode.lock();
+        match mode {
+            ConnectionMode::Gsp => {
+                // GSP does not currently support fee estimation — return None.
+                Ok(None)
+            }
+            ConnectionMode::DirectRpc => {
+                self.ensure_rpc_client().await?;
+                let mut guard = self.rpc_client.lock().await;
+                let client = guard
+                    .as_mut()
+                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+
+                match client.estimate_fee(conf_target).await {
+                    Ok(estimate) => {
+                        // FeeEstimate.feerate is in BTC/kB. Convert to sat/vB:
+                        // sat/vB = feerate * 100_000_000 / 1000
+                        if estimate.feerate > 0.0 {
+                            let sat_per_vb = (estimate.feerate * 100_000.0).round() as u64;
+                            Ok(Some(sat_per_vb.max(1)))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    Err(_) => Ok(None),
+                }
+            }
+        }
+    }
+
     /// Trigger a sync / refresh.
     ///
     /// In GSP mode, subscribes to balance and payment updates.

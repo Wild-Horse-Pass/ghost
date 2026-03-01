@@ -19,7 +19,7 @@ use std::sync::{atomic::{AtomicI64, Ordering}, Mutex};
 use once_cell::sync::Lazy;
 
 // ---------------------------------------------------------------------------
-// Wallet handle registry
+// Wallet handle registry + Connection singleton
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "android")]
@@ -28,6 +28,10 @@ static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
 #[cfg(target_os = "android")]
 static WALLETS: Lazy<Mutex<HashMap<jlong, crate::wallet::Wallet>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(target_os = "android")]
+static CONNECTION: Lazy<Mutex<Option<crate::network::connection::ConnectionManager>>> =
+    Lazy::new(|| Mutex::new(None));
 
 #[cfg(target_os = "android")]
 fn insert_wallet(wallet: crate::wallet::Wallet) -> jlong {
@@ -299,11 +303,50 @@ pub extern "system" fn Java_com_ghost_tap_RustBridge_createTransaction<'a>(
     output.into_raw()
 }
 
-/// Broadcast a signed transaction.  Returns txid or null.
+/// Initialise the connection manager with an RPC endpoint.
 ///
-/// NOTE: Without a live node connection this is a stub that returns the
-/// transaction hash derived from the raw hex.  A real implementation would
-/// call `client.send_raw_transaction()`.
+/// Must be called before `broadcastTransaction`.  The endpoint should be
+/// a full URL like `http://127.0.0.1:8332`.  Optional auth can be passed
+/// as `user:password` or empty string for no auth.
+#[no_mangle]
+#[cfg(target_os = "android")]
+pub extern "system" fn Java_com_ghost_tap_RustBridge_initConnection(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    auth: JString,
+) -> jboolean {
+    use crate::network::client::NodeConfig;
+    use crate::network::connection::ConnectionManager;
+
+    let ep: String = match env.get_string(&endpoint) {
+        Ok(s) => s.into(),
+        Err(_) => return JNI_FALSE,
+    };
+
+    let mut config = NodeConfig {
+        endpoints: vec![ep],
+        ..NodeConfig::default()
+    };
+
+    if !auth.is_null() {
+        if let Ok(auth_str) = env.get_string(&auth) {
+            let auth_str: String = auth_str.into();
+            if let Some((user, pass)) = auth_str.split_once(':') {
+                config = config.with_auth(user, pass);
+            }
+        }
+    }
+
+    let mgr = ConnectionManager::new();
+    mgr.set_rpc_config(config);
+    *CONNECTION.lock().unwrap() = Some(mgr);
+    JNI_TRUE
+}
+
+/// Broadcast a signed transaction via the connection manager.
+///
+/// Returns the txid from the RPC response, or null on failure.
 #[no_mangle]
 #[cfg(target_os = "android")]
 pub extern "system" fn Java_com_ghost_tap_RustBridge_broadcastTransaction<'a>(
@@ -311,21 +354,26 @@ pub extern "system" fn Java_com_ghost_tap_RustBridge_broadcastTransaction<'a>(
     _class: JClass,
     raw_tx: JString,
 ) -> jstring {
-    use sha2::{Digest, Sha256};
-
     let tx_hex: String = match env.get_string(&raw_tx) {
         Ok(s) => s.into(),
         Err(_) => return std::ptr::null_mut(),
     };
 
-    // Compute txid as double-SHA256 of the raw bytes (reversed).
-    let raw_bytes = match hex::decode(&tx_hex) {
-        Ok(b) => b,
+    let guard = CONNECTION.lock().unwrap();
+    let conn = match guard.as_ref() {
+        Some(c) => c,
+        None => return std::ptr::null_mut(),
+    };
+
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(r) => r,
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let hash = Sha256::digest(&Sha256::digest(&raw_bytes));
-    let txid = hex::encode(hash.iter().rev().copied().collect::<Vec<_>>());
+    let txid = match rt.block_on(conn.send_payment(&tx_hex)) {
+        Ok(id) => id,
+        Err(_) => return std::ptr::null_mut(),
+    };
 
     let output = env
         .new_string(&txid)

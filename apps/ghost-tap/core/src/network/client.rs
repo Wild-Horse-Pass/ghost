@@ -4,6 +4,7 @@
 
 use super::types::*;
 use super::NetworkError;
+use ghost_common::constants::{BITCOIN_RPC_PORT_MAINNET, BITCOIN_RPC_PORT_SIGNET};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::Duration;
 
@@ -22,19 +23,23 @@ pub struct NodeConfig {
     pub retry_count: u32,
     /// Whether to use SSL/TLS
     pub use_tls: bool,
+    /// DER-encoded certificate for TLS pinning.
+    /// When set, only this certificate is trusted (built-in roots are disabled).
+    pub pinned_cert_der: Option<Vec<u8>>,
 }
 
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
             endpoints: vec![
-                "http://127.0.0.1:51725".into(), // Ghost mainnet default RPC port
+                format!("http://127.0.0.1:{}", BITCOIN_RPC_PORT_MAINNET),
             ],
             rpc_user: None,
             rpc_password: None,
             timeout_ms: 30_000,
             retry_count: 3,
             use_tls: false,
+            pinned_cert_der: None,
         }
     }
 }
@@ -43,7 +48,7 @@ impl NodeConfig {
     /// Create config for Ghost mainnet
     pub fn mainnet() -> Self {
         Self {
-            endpoints: vec!["http://127.0.0.1:51725".into()],
+            endpoints: vec![format!("http://127.0.0.1:{}", BITCOIN_RPC_PORT_MAINNET)],
             ..Default::default()
         }
     }
@@ -51,7 +56,7 @@ impl NodeConfig {
     /// Create config for Ghost testnet
     pub fn testnet() -> Self {
         Self {
-            endpoints: vec!["http://127.0.0.1:51925".into()],
+            endpoints: vec![format!("http://127.0.0.1:{}", BITCOIN_RPC_PORT_SIGNET)],
             ..Default::default()
         }
     }
@@ -60,6 +65,14 @@ impl NodeConfig {
     pub fn with_auth(mut self, user: &str, password: &str) -> Self {
         self.rpc_user = Some(user.to_string());
         self.rpc_password = Some(password.to_string());
+        self
+    }
+
+    /// Pin a specific DER-encoded certificate for TLS connections.
+    /// When set, only this certificate is trusted.
+    pub fn with_pinned_cert(mut self, cert_der: Vec<u8>) -> Self {
+        self.pinned_cert_der = Some(cert_der);
+        self.use_tls = true;
         self
     }
 }
@@ -105,8 +118,16 @@ pub struct GhostClient {
 impl GhostClient {
     /// Create a new Ghost client
     pub fn new(config: NodeConfig) -> Result<Self, NetworkError> {
-        let builder = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms));
+
+        if let Some(ref cert_der) = config.pinned_cert_der {
+            let cert = reqwest::Certificate::from_der(cert_der)
+                .map_err(|e| NetworkError::ConnectionFailed(format!("invalid pinned cert: {e}")))?;
+            builder = builder
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(cert);
+        }
 
         let client = builder
             .build()
@@ -603,13 +624,13 @@ mod tests {
     #[test]
     fn test_node_config_mainnet() {
         let config = NodeConfig::mainnet();
-        assert!(config.endpoints[0].contains("51725"));
+        assert!(config.endpoints[0].contains("8332"));
     }
 
     #[test]
     fn test_node_config_testnet() {
         let config = NodeConfig::testnet();
-        assert!(config.endpoints[0].contains("51925"));
+        assert!(config.endpoints[0].contains("38332"));
     }
 
     #[test]
@@ -617,5 +638,16 @@ mod tests {
         let config = NodeConfig::default().with_auth("user", "pass");
         assert_eq!(config.rpc_user, Some("user".to_string()));
         assert_eq!(config.rpc_password, Some("pass".to_string()));
+    }
+
+    #[test]
+    fn test_node_config_pinned_cert() {
+        let config = NodeConfig::default();
+        assert!(config.pinned_cert_der.is_none());
+
+        let cert_bytes = vec![0xDE, 0xAD];
+        let config = config.with_pinned_cert(cert_bytes.clone());
+        assert_eq!(config.pinned_cert_der, Some(cert_bytes));
+        assert!(config.use_tls);
     }
 }

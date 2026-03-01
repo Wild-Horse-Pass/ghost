@@ -61,10 +61,19 @@ pub async fn register(
     endpoint: &str,
     pubkey: &[u8],
 ) -> Result<String, NetworkError> {
+    register_with_client(&reqwest::Client::new(), endpoint, pubkey).await
+}
+
+/// Like `register()` but uses a pre-configured `reqwest::Client`
+/// (e.g. one with certificate pinning enabled).
+pub async fn register_with_client(
+    client: &reqwest::Client,
+    endpoint: &str,
+    pubkey: &[u8],
+) -> Result<String, NetworkError> {
     let url = format!("{}/api/v1/wallet/register", endpoint.trim_end_matches('/'));
     let pubkey_hex = hex::encode(pubkey);
 
-    let client = reqwest::Client::new();
     let resp = client
         .post(&url)
         .json(&RegisterRequest {
@@ -107,11 +116,20 @@ pub async fn create_session(
     wallet_id: &str,
     privkey: &[u8; 32],
 ) -> Result<String, NetworkError> {
+    create_session_with_client(&reqwest::Client::new(), endpoint, wallet_id, privkey).await
+}
+
+/// Like `create_session()` but uses a pre-configured `reqwest::Client`.
+pub async fn create_session_with_client(
+    client: &reqwest::Client,
+    endpoint: &str,
+    wallet_id: &str,
+    privkey: &[u8; 32],
+) -> Result<String, NetworkError> {
     let base = endpoint.trim_end_matches('/');
 
     // Step 1: Request a challenge.
     let challenge_url = format!("{}/api/v1/wallet/{}/challenge", base, wallet_id);
-    let client = reqwest::Client::new();
     let challenge_resp = client
         .get(&challenge_url)
         .send()

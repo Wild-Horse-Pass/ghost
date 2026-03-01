@@ -3,6 +3,7 @@
 //! Exports wallet transaction history as CSV or an HTML report
 //! suitable for conversion to PDF.
 
+use super::util::{csv_escape, days_to_ymd, format_ghost_amount, html_escape};
 use crate::wallet::{HistoryEntry, TxDirection, TxStatus};
 
 /// Transaction exporter with date-range filtering.
@@ -26,25 +27,13 @@ impl TransactionExporter {
             .collect()
     }
 
-    /// Format a satoshi amount as a GHOST decimal string.
-    fn format_amount(sats: u64) -> String {
-        let whole = sats / 100_000_000;
-        let frac = sats % 100_000_000;
-        format!("{}.{:08}", whole, frac)
-    }
-
     /// Format a unix timestamp as an ISO-8601 date string.
     fn format_date(ts: u64) -> String {
-        let secs_per_day = 86400u64;
-        let secs_per_hour = 3600u64;
-        let secs_per_min = 60u64;
-
-        let days = ts / secs_per_day;
-        let time_of_day = ts % secs_per_day;
-        let hours = time_of_day / secs_per_hour;
-        let minutes = (time_of_day % secs_per_hour) / secs_per_min;
-        let seconds = time_of_day % secs_per_min;
-
+        let days = ts / 86400;
+        let time_of_day = ts % 86400;
+        let hours = time_of_day / 3600;
+        let minutes = (time_of_day % 3600) / 60;
+        let seconds = time_of_day % 60;
         let (year, month, day) = days_to_ymd(days);
         format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
@@ -82,7 +71,7 @@ impl TransactionExporter {
 
         for entry in &filtered {
             let fee_str = match entry.fee {
-                Some(f) => Self::format_amount(f),
+                Some(f) => format_ghost_amount(f),
                 None => String::new(),
             };
             let memo_str = entry
@@ -96,7 +85,7 @@ impl TransactionExporter {
                 Self::format_date(entry.timestamp),
                 &entry.txid,
                 Self::format_direction(entry.direction),
-                Self::format_amount(entry.amount),
+                format_ghost_amount(entry.amount),
                 fee_str,
                 csv_escape(&entry.address),
                 Self::format_status(&entry.status),
@@ -140,7 +129,7 @@ impl TransactionExporter {
         let mut rows_html = String::new();
         for entry in &filtered {
             let fee_str = match entry.fee {
-                Some(f) => Self::format_amount(f),
+                Some(f) => format_ghost_amount(f),
                 None => "-".to_string(),
             };
             let memo_str = entry.memo.as_deref().unwrap_or("-");
@@ -164,7 +153,7 @@ impl TransactionExporter {
                 txid = html_escape(&entry.txid),
                 dir_class = direction_class,
                 direction = Self::format_direction(entry.direction),
-                amount = Self::format_amount(entry.amount),
+                amount = format_ghost_amount(entry.amount),
                 fee = fee_str,
                 address = html_escape(&entry.address),
                 status = Self::format_status(&entry.status),
@@ -256,9 +245,9 @@ impl TransactionExporter {
             from_date = Self::format_date(from),
             to_date = Self::format_date(to),
             tx_count = tx_count,
-            total_in = Self::format_amount(total_incoming),
-            total_out = Self::format_amount(total_outgoing),
-            total_fees = Self::format_amount(total_fees),
+            total_in = format_ghost_amount(total_incoming),
+            total_out = format_ghost_amount(total_outgoing),
+            total_fees = format_ghost_amount(total_fees),
             rows = rows_html,
         )
     }
@@ -268,49 +257,6 @@ impl Default for TransactionExporter {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Convert days since Unix epoch to (year, month, day).
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    days += 719468;
-    let era = days / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
-/// Escape a value for safe embedding in CSV.
-///
-/// If the value contains commas, quotes, or newlines, wrap it in double
-/// quotes and double any existing double-quote characters.
-fn csv_escape(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
-}
-
-/// Minimal HTML escaping.
-fn html_escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -392,10 +338,4 @@ mod tests {
         assert!(html.contains("<!DOCTYPE html>"));
     }
 
-    #[test]
-    fn test_csv_escape() {
-        assert_eq!(csv_escape("simple"), "simple");
-        assert_eq!(csv_escape("has, comma"), "\"has, comma\"");
-        assert_eq!(csv_escape("has \"quote\""), "\"has \"\"quote\"\"\"");
-    }
 }

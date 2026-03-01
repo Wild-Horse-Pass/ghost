@@ -22,6 +22,7 @@ bip32.workspace = true
 secp256k1.workspace = true
 k256.workspace = true
 sha2.workspace = true
+ripemd.workspace = true
 aes-gcm.workspace = true
 rand.workspace = true
 getrandom.workspace = true

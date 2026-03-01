@@ -27,8 +27,8 @@ pub enum KeychainAccess {
 /// iOS implements via Keychain Services + LAContext.
 /// Desktop provides an insecure fallback for testing.
 pub trait PlatformKeychain: Send + Sync {
-    /// Store a secret value
-    fn store(&self, key: &str, value: &[u8]) -> Result<(), StorageError>;
+    /// Store a secret value with the given access level
+    fn store(&self, key: &str, value: &[u8], access: KeychainAccess) -> Result<(), StorageError>;
 
     /// Retrieve a secret value
     fn retrieve(&self, key: &str) -> Result<Vec<u8>, StorageError>;
@@ -66,7 +66,7 @@ pub struct Keychain {
     /// Service identifier
     pub(crate) service: String,
     /// Access level (passed to platform implementation as metadata)
-    _access: KeychainAccess,
+    access: KeychainAccess,
 }
 
 impl Keychain {
@@ -74,8 +74,13 @@ impl Keychain {
     pub fn new(service: &str, access: KeychainAccess) -> Self {
         Self {
             service: service.to_string(),
-            _access: access,
+            access,
         }
+    }
+
+    /// Get the access level
+    pub fn access(&self) -> KeychainAccess {
+        self.access
     }
 
     fn prefixed_key(&self, key: &str) -> String {
@@ -84,7 +89,7 @@ impl Keychain {
 
     /// Store a secret in the keychain
     pub fn store(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
-        get_keychain().store(&self.prefixed_key(key), value)
+        get_keychain().store(&self.prefixed_key(key), value, self.access)
     }
 
     /// Retrieve a secret from the keychain
@@ -124,7 +129,7 @@ impl DesktopFallbackKeychain {
 }
 
 impl PlatformKeychain for DesktopFallbackKeychain {
-    fn store(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
+    fn store(&self, key: &str, value: &[u8], _access: KeychainAccess) -> Result<(), StorageError> {
         self.store
             .lock()
             .map_err(|e| StorageError::Keychain(e.to_string()))?
@@ -171,7 +176,7 @@ mod tests {
     #[test]
     fn test_desktop_fallback_roundtrip() {
         let kc = DesktopFallbackKeychain::new();
-        kc.store("test_key", b"secret_value").unwrap();
+        kc.store("test_key", b"secret_value", KeychainAccess::WhenUnlocked).unwrap();
         let retrieved = kc.retrieve("test_key").unwrap();
         assert_eq!(retrieved, b"secret_value");
         kc.delete("test_key").unwrap();

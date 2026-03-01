@@ -36,8 +36,8 @@ pub struct NfcLimits {
 
 impl NfcLimits {
     /// Default placeholder satoshi cap (before a real exchange rate is available).
-    /// 250 GHOST (25_000_000_000 sats) is a conservative placeholder.
-    const DEFAULT_SAT_CAP: u64 = 25_000_000_000;
+    /// 500_000 sats (~0.005 GHOST) is conservative to limit risk when no rate is known.
+    const DEFAULT_SAT_CAP: u64 = 500_000;
 
     /// Create a new NfcLimits with default placeholder cap.
     pub fn new() -> Self {
@@ -75,6 +75,11 @@ impl NfcLimits {
             let ghost_amount = self.fiat_limit / rate;
             self.max_amount_sats = (ghost_amount * 100_000_000.0) as u64;
         }
+    }
+
+    /// Whether a real exchange rate has been set (as opposed to the default cap).
+    pub fn has_exchange_rate(&self) -> bool {
+        self.exchange_rate.is_some()
     }
 
     /// Check if an amount (in satoshis) is within the NFC limit.
@@ -150,7 +155,16 @@ mod tests {
     #[test]
     fn test_default_cap() {
         let limits = NfcLimits::new();
-        assert_eq!(limits.max_amount_sats, NfcLimits::DEFAULT_SAT_CAP);
-        assert!(limits.exchange_rate.is_none());
+        assert_eq!(limits.max_amount_sats, 500_000);
+        assert!(!limits.has_exchange_rate());
+    }
+
+    #[test]
+    fn test_has_exchange_rate() {
+        let limits = NfcLimits::new();
+        assert!(!limits.has_exchange_rate());
+
+        let limits = NfcLimits::with_rate(2.50);
+        assert!(limits.has_exchange_rate());
     }
 }

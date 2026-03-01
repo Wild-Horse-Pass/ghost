@@ -3,6 +3,7 @@
 //! Produces styled HTML receipts suitable for rendering in a WebView
 //! or conversion to PDF via a print/share dialog.
 
+use super::util::{days_to_ymd, format_ghost_amount, html_escape};
 use serde::{Deserialize, Serialize};
 
 /// A single line item on a receipt.
@@ -77,30 +78,15 @@ impl Receipt {
         self
     }
 
-    /// Format a satoshi amount as a human-readable GHOST string (8 decimal places).
-    fn format_amount(sats: u64) -> String {
-        let whole = sats / 100_000_000;
-        let frac = sats % 100_000_000;
-        format!("{}.{:08}", whole, frac)
-    }
-
     /// Format a unix timestamp as a human-readable date/time string.
     fn format_timestamp(ts: u64) -> String {
-        // Simple UTC formatting without pulling in chrono for receipts.
-        // Returns ISO-8601-ish: "YYYY-MM-DD HH:MM:SS UTC"
-        let secs_per_min = 60u64;
-        let secs_per_hour = 3600u64;
         let secs_per_day = 86400u64;
-
         let days_since_epoch = ts / secs_per_day;
         let time_of_day = ts % secs_per_day;
-        let hours = time_of_day / secs_per_hour;
-        let minutes = (time_of_day % secs_per_hour) / secs_per_min;
-        let seconds = time_of_day % secs_per_min;
-
-        // Compute year/month/day from days since 1970-01-01.
+        let hours = time_of_day / 3600;
+        let minutes = (time_of_day % 3600) / 60;
+        let seconds = time_of_day % 60;
         let (year, month, day) = days_to_ymd(days_since_epoch);
-
         format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
             year, month, day, hours, minutes, seconds
@@ -117,7 +103,7 @@ impl Receipt {
             items_html.push_str(&format!(
                 r#"<tr><td class="item-desc">{}</td><td class="item-amt">{} GHOST</td></tr>"#,
                 html_escape(&item.description),
-                Self::format_amount(item.amount),
+                format_ghost_amount(item.amount),
             ));
         }
 
@@ -204,42 +190,10 @@ impl Receipt {
             date = Self::format_timestamp(self.timestamp),
             memo_section = memo_section,
             items_html = items_html,
-            total = Self::format_amount(self.amount),
+            total = format_ghost_amount(self.amount),
             txid = html_escape(&self.txid),
         )
     }
-}
-
-/// Convert days since Unix epoch to (year, month, day).
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    // Algorithm adapted from Howard Hinnant's chrono-compatible date lib.
-    days += 719468;
-    let era = days / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
-/// Minimal HTML escaping for untrusted text in receipts.
-fn html_escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -292,9 +246,9 @@ mod tests {
 
     #[test]
     fn test_format_amount() {
-        assert_eq!(Receipt::format_amount(100_000_000), "1.00000000");
-        assert_eq!(Receipt::format_amount(50_000), "0.00050000");
-        assert_eq!(Receipt::format_amount(0), "0.00000000");
+        assert_eq!(format_ghost_amount(100_000_000), "1.00000000");
+        assert_eq!(format_ghost_amount(50_000), "0.00050000");
+        assert_eq!(format_ghost_amount(0), "0.00000000");
     }
 
     #[test]

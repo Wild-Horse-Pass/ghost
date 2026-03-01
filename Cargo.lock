@@ -2690,6 +2690,7 @@ dependencies = [
  "parking_lot",
  "rand 0.8.5",
  "reqwest",
+ "ripemd",
  "rusqlite",
  "secp256k1 0.29.1",
  "secrecy",

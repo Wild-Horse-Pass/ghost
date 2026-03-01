@@ -3,9 +3,9 @@
 //! Supports creating invoices with line items, rendering to HTML,
 //! and generating ghost: payment URIs for QR code display.
 
-use serde::{Deserialize, Serialize};
-
 use super::receipt::LineItem;
+use super::util::{days_to_ymd, format_ghost_amount, html_escape};
+use serde::{Deserialize, Serialize};
 use crate::payment::qr::PaymentRequest;
 
 /// A single payment received against an invoice.
@@ -158,17 +158,9 @@ impl Invoice {
         req.to_uri()
     }
 
-    /// Format a satoshi amount as a human-readable GHOST string.
-    fn format_amount(sats: u64) -> String {
-        let whole = sats / 100_000_000;
-        let frac = sats % 100_000_000;
-        format!("{}.{:08}", whole, frac)
-    }
-
     /// Format a unix timestamp to a date string.
     fn format_date(ts: u64) -> String {
-        let secs_per_day = 86400u64;
-        let days = ts / secs_per_day;
+        let days = ts / 86400;
         let (year, month, day) = days_to_ymd(days);
         format!("{:04}-{:02}-{:02}", year, month, day)
     }
@@ -183,7 +175,7 @@ impl Invoice {
             items_html.push_str(&format!(
                 r#"<tr><td class="item-desc">{}</td><td class="item-amt">{} GHOST</td></tr>"#,
                 html_escape(&item.description),
-                Self::format_amount(item.amount),
+                format_ghost_amount(item.amount),
             ));
         }
 
@@ -195,7 +187,7 @@ impl Invoice {
                 rows.push_str(&format!(
                     r#"<tr><td class="item-desc">{}</td><td class="item-amt">{} GHOST</td></tr>"#,
                     html_escape(&p.txid),
-                    Self::format_amount(p.amount),
+                    format_ghost_amount(p.amount),
                 ));
             }
             format!(
@@ -209,8 +201,8 @@ impl Invoice {
     <div><strong>Remaining:</strong> {remaining} GHOST</div>
   </div>"#,
                 rows = rows,
-                paid = Self::format_amount(self.amount_paid()),
-                remaining = Self::format_amount(self.amount_remaining()),
+                paid = format_ghost_amount(self.amount_paid()),
+                remaining = format_ghost_amount(self.amount_remaining()),
             )
         };
 
@@ -318,42 +310,11 @@ impl Invoice {
             due_date = Self::format_date(self.due_date),
             memo_section = memo_section,
             items_html = items_html,
-            total = Self::format_amount(self.amount),
+            total = format_ghost_amount(self.amount),
             payments_section = payments_section,
             ghost_address = html_escape(&self.ghost_address),
         )
     }
-}
-
-/// Convert days since Unix epoch to (year, month, day).
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    days += 719468;
-    let era = days / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
-/// Minimal HTML escaping.
-fn html_escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

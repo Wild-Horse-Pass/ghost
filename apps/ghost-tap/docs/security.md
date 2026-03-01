@@ -52,9 +52,9 @@ BIP39 Mnemonic (12 or 24 words)
         ▼ BIP32 master key derivation
     Master Key (xprv)
         │
-        ├─► m/44'/531'/0'  ── Ghost account key
-        │       ├─► m/44'/531'/0'/0/n  ── Receive addresses
-        │       └─► m/44'/531'/0'/1/n  ── Change addresses
+        ├─► m/44'/0'/0'  ── Ghost account key
+        │       ├─► m/44'/0'/0'/0/n  ── Receive addresses
+        │       └─► m/44'/0'/0'/1/n  ── Change addresses
         │
         ├─► m/44'/0'/0'    ── Bitcoin account key (planned)
         │       ├─► m/84'/0'/0'/0/n   ── Native SegWit receive
@@ -280,9 +280,11 @@ If the user adds or removes a fingerprint/face:
 
 ### 6.3 Certificate Pinning
 
-Not implemented in v1. Relies on system certificate store.
-
-> **TODO:** Consider certificate pinning for production GSP endpoints.
+Certificate pinning is supported via `NodeConfig::with_pinned_cert(der_bytes)`. When a
+pinned certificate is set, the `reqwest` TLS client disables built-in root certificates
+and trusts only the pinned DER-encoded cert. GSP authentication functions (`register`,
+`create_session`) accept a pre-configured `reqwest::Client` via `_with_client` variants
+so the same pinning policy can be applied to GSP HTTP calls.
 
 ## 7. NFC Security
 
@@ -361,7 +363,7 @@ let mnemonic: Secret<String> = Secret::new(mnemonic_string);
 | uniffi | Mozilla | Used in Firefox |
 | zeroize | RustCrypto project | Audited for correctness |
 
-> **TODO:** Run `cargo audit` regularly. Consider `cargo-vet` for supply chain verification.
+Run `cargo audit` regularly. Consider `cargo-vet` for supply chain verification.
 
 ## 10. Resolved Design Decisions
 
@@ -374,4 +376,3 @@ let mnemonic: Secret<String> = Secret::new(mnemonic_string);
 ## 11. Open Questions
 
 - [ ] SQLCipher (full-database encryption) vs current per-value AES — TBD based on performance testing
-- [ ] Certificate pinning for known GSP endpoints — TBD based on deployment model

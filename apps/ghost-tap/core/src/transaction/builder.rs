@@ -84,6 +84,15 @@ impl TransactionBuilder {
         self
     }
 
+    /// Override the fee rate with a value fetched from the network.
+    ///
+    /// This sets `FeePriority::Custom(sat_per_vbyte)`, bypassing the
+    /// hardcoded Low/Medium/High defaults.
+    pub fn with_fetched_fee_rate(mut self, sat_per_vbyte: u64) -> Self {
+        self.fee_priority = FeePriority::Custom(sat_per_vbyte);
+        self
+    }
+
     /// Set change address (if not set, a new one will be derived)
     pub fn change_address(mut self, address: String) -> Self {
         self.change_address = Some(address);

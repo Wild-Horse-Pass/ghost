@@ -228,6 +228,47 @@ impl Wallet {
     }
 }
 
+/// Create an encrypted backup of a mnemonic phrase.
+///
+/// Derives an AES-256-GCM key from `password` via SHA-256 and encrypts
+/// the mnemonic bytes. The returned blob is nonce ‖ ciphertext.
+pub fn export_encrypted_backup(
+    mnemonic: &SecretString,
+    password: &str,
+) -> Result<Vec<u8>, WalletError> {
+    use secrecy::ExposeSecret;
+
+    let key = Sha256::digest(password.as_bytes());
+    let key: [u8; 32] = key.into();
+    crate::crypto::encrypt_aes_gcm(mnemonic.expose_secret().as_bytes(), &key)
+        .map_err(|e| WalletError::KeyDerivation(format!("backup encryption failed: {e}")))
+}
+
+/// Restore a wallet from an encrypted backup.
+///
+/// Decrypts the blob with the password-derived key, validates the
+/// resulting mnemonic, and returns both the wallet and mnemonic.
+pub fn from_encrypted_backup(
+    encrypted: &[u8],
+    password: &str,
+) -> Result<(Wallet, SecretString), WalletError> {
+    let key = Sha256::digest(password.as_bytes());
+    let key: [u8; 32] = key.into();
+    let plaintext = crate::crypto::decrypt_aes_gcm(encrypted, &key)
+        .map_err(|e| WalletError::KeyDerivation(format!("backup decryption failed: {e}")))?;
+
+    let mnemonic_str = String::from_utf8(plaintext)
+        .map_err(|_| WalletError::InvalidMnemonic)?;
+
+    if !validate_mnemonic(&mnemonic_str) {
+        return Err(WalletError::InvalidMnemonic);
+    }
+
+    let secret = SecretString::new(mnemonic_str);
+    let wallet = Wallet::from_mnemonic(&secret, None)?;
+    Ok((wallet, secret))
+}
+
 impl Drop for Wallet {
     fn drop(&mut self) {
         // Seed is automatically zeroized via Zeroizing wrapper
@@ -295,5 +336,31 @@ mod tests {
 
         // Same mnemonic should produce same wallet ID
         assert_eq!(wallet1.id, wallet2.id);
+    }
+
+    #[test]
+    fn test_encrypted_backup_roundtrip() {
+        use secrecy::ExposeSecret;
+
+        let mnemonic = SecretString::new(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into()
+        );
+        let password = "test-password-123";
+
+        let encrypted = export_encrypted_backup(&mnemonic, password).unwrap();
+        assert!(!encrypted.is_empty());
+
+        let (wallet, recovered) = from_encrypted_backup(&encrypted, password).unwrap();
+        assert_eq!(recovered.expose_secret(), mnemonic.expose_secret());
+        assert!(!wallet.id.is_empty());
+    }
+
+    #[test]
+    fn test_encrypted_backup_wrong_password() {
+        let mnemonic = SecretString::new(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into()
+        );
+        let encrypted = export_encrypted_backup(&mnemonic, "correct").unwrap();
+        assert!(from_encrypted_backup(&encrypted, "wrong").is_err());
     }
 }

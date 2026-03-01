@@ -200,7 +200,27 @@ Security audit, performance optimization, crash reporting, analytics, app store 
 ### Phase 8: Desktop App (Optional)
 Tauri-based desktop app reusing Rust core. QR-only payments (no NFC).
 
-## 9. Success Criteria (v1.0)
+## 9. Phase Boundaries
+
+**Current scope (Phases 1-4):** Ghost-only wallet with HD key derivation,
+QR/NFC payments, merchant mode (receipts, invoices, export), Wraith
+washing, and GSP/RPC sync. This is the scope of the initial audit
+remediation.
+
+**Phase 5 (Bitcoin on-chain):** Adds Bitcoin derivation paths
+(`m/84'/0'/0'`), Bitcoin transaction building, and Electrum/Bitcoin Core
+RPC connectivity. Not implemented in the current codebase. The Rust core
+has no Bitcoin-specific transaction builder or address types.
+
+**Phase 6 (Lightning Network):** Adds LDK-based Lightning payments via
+LSP. Not implemented. Requires separate channel management and routing
+logic.
+
+Bitcoin and Lightning support are explicitly out of scope for the current
+release. The architecture (modular network layer, trait-based connection
+manager) is designed to support them when the time comes.
+
+## 10. Success Criteria (v1.0)
 
 - [ ] Create wallet, back up mnemonic, verify backup
 - [ ] Receive Ghost payment (QR code)

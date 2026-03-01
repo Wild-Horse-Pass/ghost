@@ -11,14 +11,12 @@ Before deploying to mainnet, all GhostTap features must be tested against Ghost 
 
 ## 2. Current Infrastructure
 
-| Node | Host | Status | Notes |
-|------|------|--------|-------|
-| VM1 | TBD | Active | Genesis node |
-| VM2 | TBD | Active | |
-| VM3 | TBD | Active | |
-| VM4 | TBD | Active | |
-
-> **TODO:** Fill in hostnames/IPs, RPC ports, and network details.
+| Node | Host | RPC Port | Status | Notes |
+|------|------|----------|--------|-------|
+| VM1 | 83.136.251.162 | 38332 | Active | Genesis node |
+| VM2 | 85.9.198.212 | 38332 | Active | |
+| VM3 | 213.163.207.46 | 38332 | Active | |
+| VM4 | 95.111.221.169 | 38332 | Active | |
 
 ## 3. Node Configuration
 
@@ -55,7 +53,7 @@ From the machine where GhostTap will run:
 curl -s -u ghosttap:<password> \
   --data-binary '{"jsonrpc":"1.0","id":"test","method":"getblockchaininfo","params":[]}' \
   -H "content-type: text/plain;" \
-  http://<vm1_ip>:51925/
+  http://<vm1_ip>:38332/
 ```
 
 Expected response:
@@ -277,10 +275,10 @@ ghost-cli -signet getrawtransaction <txid> true
 
 ```bash
 # Check if RPC port is open
-nc -zv <vm1_ip> 51925
+nc -zv <vm1_ip> 38332
 
 # Test TLS (if using)
-openssl s_client -connect <vm1_ip>:51925
+openssl s_client -connect <vm1_ip>:38332
 
 # Monitor RPC calls on node
 tail -f ~/.ghost/signet/debug.log | grep "RPC"
@@ -308,3 +306,33 @@ tail -f ~/.ghost/signet/debug.log | grep "RPC"
 - [ ] Memory profiling shows no leaks (especially around key material)
 - [ ] Network traffic audit confirms no plaintext sensitive data
 - [ ] `cargo audit` shows no known vulnerabilities
+
+## 10. Known UI Gaps
+
+The following features exist in the Rust core but are not yet wired into
+the iOS/Android UI:
+
+- **QR code scanning (Finding 13):** The `payment::qr` module generates and
+  parses `ghost:` URIs, but the camera/scan UI is a native placeholder.
+  The native layer must call `PaymentRequest::parse()` with the scanned
+  string and pass the result to `build_transaction()`.
+
+- **Simulate payment button (Finding 17):** For testnet testing, the app
+  should expose a debug button that calls `wallet.add_utxo()` with a
+  synthetic UTXO so that send/receive flows can be exercised without
+  needing a faucet or mining setup.
+
+## 11. Integration Test Approach
+
+Integration tests live in `apps/ghost-tap/tests/integration/` and are run
+with `cargo test -p ghost-tap-integration`. They exercise the Rust core
+against a local signet node (or mock). Key test scenarios:
+
+1. **Wallet roundtrip:** Generate → export mnemonic → re-import → verify
+   same addresses.
+2. **Transaction lifecycle:** Build unsigned → sign → serialize → verify
+   signature → (optionally) broadcast.
+3. **Sync flow:** Register addresses → trigger sync → verify UTXOs
+   populated.
+4. **Encrypted backup:** Export → import with correct password → verify
+   same wallet ID. Import with wrong password → verify failure.
