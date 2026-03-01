@@ -27,9 +27,10 @@ use ghost_zkp::{GhostNoteSpendPublicInputs, GhostNoteVerifier};
 use crate::epoch_manager::{EpochManager, PROPOSER_GRACE_SECS};
 use crate::mesh::MessageHandler;
 use crate::message::{
-    L2CheckpointBlockMessage, L2CheckpointVoteMessage, L2ConfidentialTransferMessage,
-    L2Transaction, L2TransferBroadcastMessage, L2TransferConfirmationMessage, L2TreeSyncRequest,
-    L2TreeSyncResponse, MessageEnvelope, MessageType,
+    L2CheckpointBlockMessage, L2CheckpointVoteMessage, L2CommitmentSyncMessage,
+    L2ConfidentialTransferMessage, L2Transaction, L2TransferBroadcastMessage,
+    L2TransferConfirmationMessage, L2TreeSyncRequest, L2TreeSyncResponse, MessageEnvelope,
+    MessageType,
 };
 use crate::vote_handler::BroadcastFn;
 
@@ -295,9 +296,52 @@ impl NullifierRouteHandler {
                 }
             }
             None => {
-                // Not the assigned validator for this nullifier — recorded but not confirmed
+                // Not the assigned validator — forward to mesh for correct validator
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    let payload = serde_json::to_vec(msg)
+                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                    broadcast(MessageType::L2ConfidentialTransfer, payload)?;
+                    debug!(
+                        nullifier = %hex::encode(&msg.transaction.nullifier[..8]),
+                        "Forwarded transfer to mesh (not assigned validator)"
+                    );
+                }
             }
         }
+        Ok(())
+    }
+
+    /// Sync a commitment from ghost-pay to the L2 tree and broadcast to mesh.
+    /// Called when ghost-pay shields a note or applies a transfer.
+    pub fn sync_commitment(
+        &self,
+        commitment: [u8; 32],
+        note_index: u64,
+        block_height: u64,
+    ) -> GhostResult<()> {
+        self.epoch_manager
+            .insert_commitment_at(note_index, commitment, block_height)?;
+        let root = self.epoch_manager.current_root()?;
+        self.epoch_manager.add_valid_root(root, block_height)?;
+
+        // Broadcast to mesh so all nodes sync
+        if let Some(ref broadcast) = *self.broadcast_fn.read() {
+            let msg = L2CommitmentSyncMessage {
+                sender: self.our_id,
+                commitment,
+                note_index,
+                block_height,
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            };
+            let payload = serde_json::to_vec(&msg)
+                .map_err(|e| GhostError::Serialization(e.to_string()))?;
+            broadcast(MessageType::L2TreeSync, payload)?;
+        }
+        debug!(
+            index = note_index,
+            height = block_height,
+            "Synced commitment to tree + mesh"
+        );
         Ok(())
     }
 
@@ -1191,8 +1235,26 @@ impl MessageHandler for NullifierRouteHandler {
             }
 
             MessageType::L2TreeSync => {
-                // Try to parse as request first, then as response
-                if let Ok(request) = serde_json::from_slice::<L2TreeSyncRequest>(&envelope.payload)
+                // Try commitment sync first (lightweight, most common in production)
+                if let Ok(sync_msg) =
+                    serde_json::from_slice::<L2CommitmentSyncMessage>(&envelope.payload)
+                {
+                    if sync_msg.sender != self.our_id {
+                        self.epoch_manager.insert_commitment_at(
+                            sync_msg.note_index,
+                            sync_msg.commitment,
+                            sync_msg.block_height,
+                        )?;
+                        let root = self.epoch_manager.current_root()?;
+                        self.epoch_manager
+                            .add_valid_root(root, sync_msg.block_height)?;
+                        debug!(
+                            index = sync_msg.note_index,
+                            "Applied commitment sync from peer"
+                        );
+                    }
+                } else if let Ok(request) =
+                    serde_json::from_slice::<L2TreeSyncRequest>(&envelope.payload)
                 {
                     if let Some(response) = self.handle_tree_sync_request(&request)? {
                         if let Some(ref broadcast) = *self.broadcast_fn.read() {

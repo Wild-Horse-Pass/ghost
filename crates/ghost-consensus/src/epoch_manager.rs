@@ -330,6 +330,24 @@ impl EpochManager {
         Ok(index)
     }
 
+    /// Insert a commitment at a specific index (used by commitment sync from peers).
+    /// Unlike append_commitment, this does NOT auto-assign from next_index().
+    pub fn insert_commitment_at(
+        &self,
+        index: u64,
+        commitment: [u8; 32],
+        block_height: u64,
+    ) -> GhostResult<()> {
+        let epoch = self.current_epoch();
+        {
+            let mut tree = self.commitment_tree.write();
+            tree.insert(index, commitment);
+        }
+        self.db
+            .insert_l2_note(epoch, index, &commitment, block_height)?;
+        Ok(())
+    }
+
     /// Atomically check and insert a nullifier (marks a note as spent).
     ///
     /// Uses a single write lock to prevent TOCTOU race conditions.

@@ -708,6 +708,10 @@ pub type BlockFoundFn = Arc<dyn Fn(BlockFoundInfo) + Send + Sync>;
 /// Takes serialized L2ConfidentialTransferMessage JSON bytes, returns Ok(()) on success.
 pub type L2SubmitFn = Arc<dyn Fn(Vec<u8>) -> GhostResult<()> + Send + Sync>;
 
+/// Callback for syncing a commitment to the L2 tree and broadcasting to mesh.
+/// Params: (commitment, note_index, block_height)
+pub type L2SyncCommitmentFn = Arc<dyn Fn([u8; 32], u64, u64) -> GhostResult<()> + Send + Sync>;
+
 /// Parse user_identity string to extract payout address and worker name.
 /// Format: <payout_address>.<worker_name>
 /// Returns (payout_address, worker_name) or (user_identity, "default") if no dot found.
@@ -904,6 +908,8 @@ pub struct VerificationState {
     pub metrics: Option<Arc<Metrics>>,
     /// Callback to submit L2 NoteSpend transactions to the consensus mesh
     pub l2_submit_fn: Option<L2SubmitFn>,
+    /// Callback to sync a commitment to the L2 tree and broadcast to mesh
+    pub l2_sync_commitment_fn: Option<L2SyncCommitmentFn>,
 }
 
 /// Archive handler trait
@@ -1026,12 +1032,19 @@ impl VerificationState {
             debug_endpoints_frozen: AtomicBool::new(debug_enabled),
             metrics: None,
             l2_submit_fn: None,
+            l2_sync_commitment_fn: None,
         }
     }
 
     /// Set the L2 NoteSpend submission callback
     pub fn with_l2_submit(mut self, f: L2SubmitFn) -> Self {
         self.l2_submit_fn = Some(f);
+        self
+    }
+
+    /// Set the L2 commitment sync callback
+    pub fn with_l2_sync_commitment(mut self, f: L2SyncCommitmentFn) -> Self {
+        self.l2_sync_commitment_fn = Some(f);
         self
     }
 

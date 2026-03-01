@@ -776,7 +776,8 @@ struct AppState {
     /// L2 balance tree for state transition witnesses
     balance_tree: RwLock<BalanceTree>,
     /// Groth16 NoteSpend verifier (None if MPC params not available)
-    note_spend_verifier: Option<Arc<GhostNoteVerifier>>,
+    /// Wrapped in RwLock for hot-reload when MPC ceremony completes after startup.
+    note_spend_verifier: RwLock<Option<Arc<GhostNoteVerifier>>>,
     /// HTTP client for relaying verified transactions to ghost-pool
     pool_http_client: reqwest::Client,
     /// Ghost-pool API URL for L2 transaction relay
@@ -1057,10 +1058,52 @@ async fn main() -> Result<()> {
         rpc,
         commitment_tree: RwLock::new(commitment_tree),
         balance_tree: RwLock::new(balance_tree),
-        note_spend_verifier,
+        note_spend_verifier: RwLock::new(note_spend_verifier),
         pool_http_client,
         pool_api_url,
     });
+
+    // Spawn periodic VK hot-reload task (picks up MPC ceremony completions without restart)
+    {
+        let state_for_vk = Arc::clone(&state);
+        let vk_path = {
+            let mpc_dir = if let Some(ref dir) = state.config.mpc_params_dir {
+                dir.clone()
+            } else {
+                let data_path = std::path::PathBuf::from(&state.config.data_dir);
+                if let Some(parent) = data_path.parent() {
+                    parent.join("mpc_params")
+                } else {
+                    std::path::PathBuf::from("mpc_params")
+                }
+            };
+            mpc_dir.join("note_spend_vk.bin")
+        };
+        let mut last_modified = std::fs::metadata(&vk_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let current = std::fs::metadata(&vk_path)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+                if current != last_modified && vk_path.exists() {
+                    match ghost_zkp::load_note_spend_verifier(&vk_path, COMMITMENT_TREE_DEPTH) {
+                        Ok(v) => {
+                            *state_for_vk.note_spend_verifier.write() = Some(Arc::new(v));
+                            info!(path = %vk_path.display(), "Reloaded NoteSpend VK");
+                            last_modified = current;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to reload NoteSpend VK");
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     // H-PAY-2 FIX: Load existing keys from database with encryption support
     // Try encrypted keys first (new format), fall back to legacy plaintext for migration
@@ -1326,6 +1369,10 @@ async fn main() -> Result<()> {
         .route("/verify/ghostpay", get(verify_ghostpay))
         // Confidential transfer read-only endpoints
         .route("/api/v1/confidential/tree", get(get_tree_state))
+        .route(
+            "/api/v1/confidential/proof/:index",
+            get(get_confidential_proof),
+        )
         .route(
             "/api/v1/confidential/notes/:owner_pubkey",
             get(get_confidential_notes),
@@ -2671,7 +2718,7 @@ async fn submit_confidential_transfer(
     }
 
     // Step 3: Verify NoteSpend Groth16 proof
-    let verifier = state.note_spend_verifier.as_ref().ok_or_else(|| {
+    let verifier = state.note_spend_verifier.read().as_ref().cloned().ok_or_else(|| {
         (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "NoteSpend verifier not initialized (MPC params unavailable)"})))
     })?;
 
@@ -2816,6 +2863,25 @@ async fn submit_confidential_transfer(
         "NoteSpend transfer applied"
     );
 
+    // Step 5b: Sync commitments to ghost-pool tree BEFORE relay (so root is valid)
+    let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
+    for (idx, comm) in [
+        (req.sender_index, change_commitment),
+        (req.recipient_index, recipient_commitment),
+    ] {
+        let body = serde_json::json!({
+            "commitment": hex::encode(comm),
+            "note_index": idx,
+            "block_height": current_height,
+        });
+        let _ = state
+            .pool_http_client
+            .post(&sync_url)
+            .json(&body)
+            .send()
+            .await;
+    }
+
     // Step 6: Relay to ghost-pool for L2 consensus broadcast
     // Construct L2ConfidentialTransferMessage JSON (matches ghost-consensus message format)
     let timestamp = std::time::SystemTime::now()
@@ -2853,9 +2919,12 @@ async fn submit_confidential_transfer(
             info!(transfer_id = %transfer_id, "L2 transaction relayed to ghost-pool");
         }
         Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
             warn!(
                 transfer_id = %transfer_id,
-                status = %resp.status(),
+                status = %status,
+                body = %body,
                 "Ghost-pool relay returned non-success status"
             );
         }
@@ -2950,6 +3019,20 @@ async fn shield_balance(
         "Balance shielded into commitment"
     );
 
+    // Sync commitment to ghost-pool tree (fire-and-forget)
+    let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
+    let sync_body = serde_json::json!({
+        "commitment": hex::encode(commitment),
+        "note_index": note_index,
+        "block_height": current_height,
+    });
+    let client = state.pool_http_client.clone();
+    tokio::spawn(async move {
+        if let Err(e) = client.post(&sync_url).json(&sync_body).send().await {
+            tracing::warn!(error = %e, "Failed to sync shield commitment to ghost-pool");
+        }
+    });
+
     Ok(Json(serde_json::json!({
         "note_index": note_index,
         "commitment": hex::encode(commitment),
@@ -2970,6 +3053,28 @@ async fn get_tree_state(State(state): State<Arc<AppState>>) -> Json<serde_json::
         "tree_depth": 20,
         "nullifier_count": nullifier_count,
     }))
+}
+
+/// Get Merkle inclusion proof for a note at the given tree index
+async fn get_confidential_proof(
+    State(state): State<Arc<AppState>>,
+    Path(index): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let tree = state.commitment_tree.read();
+    let proof = tree.get_proof(index).map_err(|e| {
+        error!(error = %e, index = index, "Failed to generate proof");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let root = tree.root().map_err(|e| {
+        error!(error = %e, "Failed to compute tree root");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(serde_json::json!({
+        "leaf_index": proof.leaf_index,
+        "siblings": proof.siblings.iter().map(hex::encode).collect::<Vec<_>>(),
+        "tree_root": hex::encode(root),
+        "tree_depth": proof.depth(),
+    })))
 }
 
 /// Get confidential notes for an owner

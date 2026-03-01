@@ -1638,6 +1638,18 @@ pub struct L2TreeSyncResponse {
     pub timestamp: u64,
 }
 
+/// L2: Commitment sync (ghost-pay shield/transfer → all nodes)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2CommitmentSyncMessage {
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub sender: NodeId,
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub commitment: [u8; 32],
+    pub note_index: u64,
+    pub block_height: u64,
+    pub timestamp: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

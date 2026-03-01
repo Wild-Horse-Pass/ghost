@@ -308,6 +308,11 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         )
         // L2 NoteSpend submission endpoint
         .route("/api/v1/l2/submit", post(api_l2_submit_handler))
+        // L2 commitment sync endpoint (ghost-pay → ghost-pool tree sync)
+        .route(
+            "/api/v1/l2/sync-commitment",
+            post(api_l2_sync_commitment_handler),
+        )
         // MPC ceremony endpoints
         .route("/api/v1/mpc/params", get(api_mpc_params_handler))
         .route(
@@ -4508,6 +4513,54 @@ async fn api_l2_submit_handler(
         ),
         Err(e) => (
             StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{}", e)})),
+        ),
+    }
+}
+
+/// POST /api/v1/l2/sync-commitment — Sync a commitment to the L2 tree
+///
+/// Called by ghost-pay after shielding a note or applying a transfer.
+/// Inserts the commitment into the ghost-pool epoch tree and broadcasts to mesh.
+async fn api_l2_sync_commitment_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let sync_fn = match &state.l2_sync_commitment_fn {
+        Some(f) => f.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "L2 commitment sync not configured"})),
+            );
+        }
+    };
+
+    let commitment_hex = body["commitment"].as_str().unwrap_or_default();
+    let note_index = body["note_index"].as_u64().unwrap_or(0);
+    let block_height = body["block_height"].as_u64().unwrap_or(0);
+
+    let commitment = match hex::decode(commitment_hex) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            arr
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid commitment hex (need 32 bytes)"})),
+            );
+        }
+    };
+
+    match sync_fn(commitment, note_index, block_height) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "synced"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("{}", e)})),
         ),
     }

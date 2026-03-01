@@ -1222,6 +1222,8 @@ async fn main() -> Result<()> {
     // We spawn it in a background task so the node can start serving immediately.
     #[allow(unused_assignments, unused_mut)]
     let mut l2_submit_fn_opt: Option<ghost_verification::L2SubmitFn> = None;
+    #[allow(unused_assignments, unused_mut)]
+    let mut l2_sync_commitment_fn_opt: Option<ghost_verification::L2SyncCommitmentFn> = None;
 
     #[cfg(feature = "zk-consensus")]
     {
@@ -1348,6 +1350,14 @@ async fn main() -> Result<()> {
                 })?;
             nh_for_l2.submit_external_transfer(&msg)
         }));
+
+        // Wire L2 commitment sync callback for ghost-pay tree sync
+        let nh_for_sync = Arc::clone(&nullifier_handler);
+        l2_sync_commitment_fn_opt = Some(Arc::new(
+            move |commitment: [u8; 32], note_index: u64, block_height: u64| {
+                nh_for_sync.sync_commitment(commitment, note_index, block_height)
+            },
+        ));
 
         // Wire finalization callback to notify ghost-pay when checkpoints are finalized
         if config.ghost_pay.is_some() {
@@ -1695,6 +1705,11 @@ async fn main() -> Result<()> {
                                                         {
                                                             tracing::warn!(error = %e, "MPC params_callback: Failed to rename params");
                                                             continue;
+                                                        }
+                                                        // Save updated VK alongside params
+                                                        let vk_path = params_dir.join("note_spend_vk.bin");
+                                                        if let Err(e) = ghost_mpc::params::save_verifying_key(&vk_path, &params.vk) {
+                                                            tracing::warn!(error = %e, "MPC params_callback: Failed to save VK");
                                                         }
                                                         if let Err(e) =
                                                             ceremony_mgr.load_current_params()
@@ -2622,6 +2637,11 @@ async fn main() -> Result<()> {
     // Wire L2 submit callback if ZK consensus is enabled
     if let Some(l2_submit_fn) = l2_submit_fn_opt {
         verification_state = verification_state.with_l2_submit(l2_submit_fn);
+    }
+
+    // Wire L2 commitment sync callback if ZK consensus is enabled
+    if let Some(l2_sync_fn) = l2_sync_commitment_fn_opt {
+        verification_state = verification_state.with_l2_sync_commitment(l2_sync_fn);
     }
 
     // Configure internal API authentication (AUTH4-1 security fix)
