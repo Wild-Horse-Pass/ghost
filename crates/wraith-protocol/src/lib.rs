@@ -79,7 +79,10 @@ pub use executor::{
     MergeTransaction, SplitTransaction, WraithInput, WraithOutput, WraithTransactionBuilder,
 };
 pub use phase::{Phase, PhaseExecution, PhaseState};
-pub use session::{SessionConfig, SessionRegistry, SessionState, WraithSession};
+pub use session::{
+    FileSessionPersistence, PersistentSessionRegistry, SessionConfig, SessionPersistence,
+    SessionRegistry, SessionState, WraithSession,
+};
 pub use tier::{ParticipantTier, WraithMode};
 
 /// Session type determines fee structure

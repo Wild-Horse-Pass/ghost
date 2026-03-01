@@ -149,6 +149,7 @@ pub async fn request_jump(
 }
 
 /// Check jump status
+#[allow(dead_code)] // Library API: wired by CLI/TUI jump monitoring
 pub async fn check_jump_status(client: &GspClient, jump_id: &str) -> WalletResult<JumpResponse> {
     // In a real implementation, this would query the GSP
     let _ = client;

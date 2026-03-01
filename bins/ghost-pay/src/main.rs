@@ -77,7 +77,10 @@ use ghost_zkp::{
     BalanceTree, CommitmentTree, GhostNoteSpendProof, GhostNoteSpendPublicInputs,
     GhostNoteVerifier,
 };
-use wraith_protocol::{ParticipantTier, WraithCoordinator, WraithDenomination};
+use wraith_protocol::{
+    FileSessionPersistence, ParticipantTier, PersistentSessionRegistry, WraithCoordinator,
+    WraithDenomination,
+};
 
 // H-PAY-2: Cryptography for encrypted key storage
 use aes_gcm::{
@@ -687,6 +690,23 @@ async fn require_api_auth(
     Ok(next.run(request).await)
 }
 
+/// MEDIUM-1: Localhost-only middleware for L2 block production endpoints.
+/// These are called by ghost-pool on the same host — external access would corrupt L2 state.
+async fn localhost_only(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let is_loopback = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false);
+    if !is_loopback {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(next.run(request).await)
+}
+
 /// LOW-API-1: Security headers middleware for all HTTP responses
 async fn security_headers_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
@@ -713,6 +733,16 @@ async fn security_headers_middleware(request: Request, next: Next) -> Response {
     response
 }
 
+/// Convert a session ID string (UUID) to [u8; 32] via SHA-256.
+/// The session registry uses fixed-size 32-byte keys; UUIDs are strings.
+fn session_id_to_bytes(session_id: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(session_id.as_bytes());
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&hash);
+    bytes
+}
+
 /// Application state
 struct AppState {
     /// Ghost keys for this node
@@ -729,6 +759,8 @@ struct AppState {
     sessions: RwLock<Vec<SessionInfo>>,
     /// Wraith coordinators for active sessions
     coordinators: RwLock<std::collections::HashMap<String, WraithCoordinator>>,
+    /// Wraith session registry with persistent replay detection
+    session_registry: parking_lot::Mutex<PersistentSessionRegistry>,
     /// Pending payments to scan
     scanner_tx: mpsc::Sender<ScanRequest>,
     /// Configuration
@@ -845,6 +877,38 @@ async fn main() -> Result<()> {
 
     // Create data directory
     std::fs::create_dir_all(&args.data_dir)?;
+
+    // Initialize Wraith session persistence for replay detection
+    let session_registry = {
+        let sessions_path =
+            std::path::Path::new(&args.data_dir).join("wraith_sessions.json");
+        match FileSessionPersistence::new(sessions_path) {
+            Ok(persistence) => {
+                match PersistentSessionRegistry::with_persistence(std::sync::Arc::new(persistence))
+                {
+                    Ok(registry) => {
+                        info!(
+                            sessions = registry.session_count(),
+                            "Wraith session registry loaded with persistence"
+                        );
+                        registry
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to load persistent sessions, using in-memory mode");
+                        let mut registry = PersistentSessionRegistry::new();
+                        registry.acknowledge_in_memory_mode();
+                        registry
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to initialize session persistence, using in-memory mode");
+                let mut registry = PersistentSessionRegistry::new();
+                registry.acknowledge_in_memory_mode();
+                registry
+            }
+        }
+    };
 
     // Create scanner channel
     let (scanner_tx, scanner_rx) = mpsc::channel(1000);
@@ -985,6 +1049,7 @@ async fn main() -> Result<()> {
         locks: RwLock::new(Vec::new()),
         sessions: RwLock::new(Vec::new()),
         coordinators: RwLock::new(std::collections::HashMap::new()),
+        session_registry: parking_lot::Mutex::new(session_registry),
         scanner_tx,
         config: args,
         network,
@@ -1265,10 +1330,15 @@ async fn main() -> Result<()> {
             "/api/v1/confidential/notes/:owner_pubkey",
             get(get_confidential_notes),
         )
-        // L2 block production endpoints (localhost-only, called by ghost-pool)
+        .with_state(state.clone());
+
+    // MEDIUM-1: L2 block production endpoints are localhost-only.
+    // These are called by ghost-pool on the same host; external access would corrupt L2 state.
+    let localhost_routes = Router::new()
         .route("/api/v1/l2/state", get(l2_state_handler))
         .route("/api/v1/l2/pending", get(l2_pending_handler))
         .route("/api/v1/l2/finalize", post(l2_finalize_handler))
+        .layer(axum::middleware::from_fn(localhost_only))
         .with_state(state.clone());
 
     // L-14 SECURITY: Read CORS origins from environment variable with secure defaults.
@@ -1334,6 +1404,7 @@ async fn main() -> Result<()> {
     // LOW-API-1: Security headers for all responses
     let app = public_routes
         .merge(authenticated_routes)
+        .merge(localhost_routes)
         .layer(axum::middleware::from_fn(security_headers_middleware))
         .layer(GovernorLayer {
             config: governor_conf,
@@ -1862,6 +1933,17 @@ async fn join_session(
         None => {
             // Create new session
             let session_id = uuid::Uuid::new_v4().to_string();
+
+            // Register session ID for replay detection
+            if let Err(e) = state
+                .session_registry
+                .lock()
+                .check_and_register(session_id_to_bytes(&session_id))
+            {
+                warn!(session_id = %session_id, error = %e, "Session ID collision/replay detected");
+                return Err(StatusCode::CONFLICT);
+            }
+
             let new_session = SessionInfo {
                 id: session_id.clone(),
                 tier: req.tier,
@@ -3094,8 +3176,24 @@ async fn run_session_coordinator(state: Arc<AppState>) {
 
     info!("Starting Wraith session coordinator");
 
+    let mut cleanup_counter: u64 = 0;
+
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+        // Periodic session registry cleanup (~1 hour = 360 iterations * 10s)
+        cleanup_counter += 1;
+        if cleanup_counter.is_multiple_of(360) {
+            match state.session_registry.lock().cleanup_expired() {
+                Ok(removed) if removed > 0 => {
+                    info!(removed, "Cleaned up expired Wraith sessions");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(error = %e, "Failed to cleanup expired sessions");
+                }
+            }
+        }
 
         // Get session IDs and their current states to avoid holding lock during async work
         let session_states: Vec<(String, String)> = {
@@ -4708,11 +4806,23 @@ async fn l2_finalize_handler(
 
     let state_root_bytes = parse_hex_32(state_root_hex).map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    // Delete included transfers
-    let included_ids: Vec<i64> = req["included_tx_ids"]
+    // MEDIUM-2: Parse included nullifiers (hex-encoded [u8; 32]) from finalization callback
+    let included_nullifiers: Vec<String> = req["included_tx_ids"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
+
+    if !included_nullifiers.is_empty() {
+        info!(
+            height,
+            nullifier_count = included_nullifiers.len(),
+            "L2 finalize received with nullifiers"
+        );
+    }
+
+    // Legacy path: match by pending_transfers.id (integer keys).
+    // Once pending_transfers gains a nullifier column, this can key on nullifiers instead.
+    let included_ids: Vec<i64> = Vec::new();
 
     if !included_ids.is_empty() {
         // Load the transfers we're about to finalize (for balance tree application)

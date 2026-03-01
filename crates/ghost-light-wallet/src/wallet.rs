@@ -31,10 +31,14 @@ use tracing::info;
 
 use ghost_gsp_proto::WalletId;
 
+use crate::confidential::{NoteSpendClientProver, ParamsCache};
 use crate::error::{LightWalletError, WalletResult};
 use crate::gsp::GspClient;
 use crate::keys::MasterKey;
 use crate::state::WalletCache;
+
+/// Tree depth for NoteSpend circuits (matches ghost-zkp::NOTE_TREE_DEPTH)
+const NOTE_TREE_DEPTH: usize = 20;
 
 /// Wallet configuration
 #[derive(Debug, Clone)]
@@ -53,6 +57,10 @@ pub struct WalletConfig {
 
     /// Reconnection interval in seconds
     pub reconnect_interval_secs: u64,
+
+    /// Ghost-pool node for downloading NoteSpend MPC params (host, port).
+    /// Defaults to ("127.0.0.1", 8080) when None.
+    pub params_node: Option<(String, u16)>,
 }
 
 impl Default for WalletConfig {
@@ -63,6 +71,7 @@ impl Default for WalletConfig {
             gsp_urls: vec!["wss://localhost:8900/ws/v1".to_string()],
             auto_reconnect: true,
             reconnect_interval_secs: 5,
+            params_node: None,
         }
     }
 }
@@ -124,6 +133,12 @@ pub struct LightWallet {
 
     /// Cached balance
     balance: Arc<RwLock<WalletBalance>>,
+
+    /// NoteSpend MPC params cache (handles download + local storage)
+    params_cache: ParamsCache,
+
+    /// Lazily-initialized NoteSpend prover (loaded on first use)
+    prover: Arc<RwLock<Option<NoteSpendClientProver>>>,
 }
 
 impl LightWallet {
@@ -148,6 +163,8 @@ impl LightWallet {
 
         info!("Created new wallet from mnemonic");
 
+        let params_cache = ParamsCache::new(config.data_dir.join("params"));
+
         // WalletCache contains rusqlite::Connection which is not Sync by design.
         // The Arc is still useful for shared ownership even in single-threaded async.
         #[allow(clippy::arc_with_non_send_sync)]
@@ -158,6 +175,8 @@ impl LightWallet {
             cache: Arc::new(cache),
             status: Arc::new(RwLock::new(WalletStatus::Disconnected)),
             balance: Arc::new(RwLock::new(WalletBalance::default())),
+            params_cache,
+            prover: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -185,6 +204,8 @@ impl LightWallet {
 
         info!("Opened existing wallet");
 
+        let params_cache = ParamsCache::new(config.data_dir.join("params"));
+
         // WalletCache contains rusqlite::Connection which is not Sync by design.
         // The Arc is still useful for shared ownership even in single-threaded async.
         #[allow(clippy::arc_with_non_send_sync)]
@@ -195,6 +216,8 @@ impl LightWallet {
             cache: Arc::new(cache),
             status: Arc::new(RwLock::new(WalletStatus::Disconnected)),
             balance: Arc::new(RwLock::new(WalletBalance::default())),
+            params_cache,
+            prover: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -320,6 +343,38 @@ impl LightWallet {
     /// Check if wallet is locked
     pub fn is_locked(&self) -> bool {
         self.master_key.read().is_none()
+    }
+
+    /// Ensure the NoteSpend prover is initialized, downloading MPC params if needed.
+    ///
+    /// This is a lazy operation: the first call downloads params from the configured
+    /// ghost-pool node (or uses cached params), deserializes them, and initializes the
+    /// Groth16 prover. Subsequent calls are fast (returns immediately if prover exists).
+    pub async fn ensure_prover(&self) -> WalletResult<()> {
+        // Fast path: prover already loaded
+        if self.prover.read().is_some() {
+            return Ok(());
+        }
+
+        let (host, port) = self
+            .config
+            .params_node
+            .as_ref()
+            .map(|(h, p)| (h.as_str(), *p))
+            .unwrap_or(("127.0.0.1", 8080));
+
+        let params_path = self.params_cache.ensure_params(host, port).await?;
+
+        let prover = NoteSpendClientProver::from_params_file(&params_path, NOTE_TREE_DEPTH)?;
+        info!("NoteSpend prover initialized from MPC params");
+
+        *self.prover.write() = Some(prover);
+        Ok(())
+    }
+
+    /// Check if NoteSpend MPC params are cached locally (no download needed)
+    pub fn has_cached_params(&self) -> bool {
+        self.params_cache.has_cached_params()
     }
 
     /// Generate a receive address
@@ -550,6 +605,7 @@ mod tests {
             gsp_urls: vec![],
             auto_reconnect: false,
             reconnect_interval_secs: 5,
+            params_node: None,
         };
         (config, temp)
     }

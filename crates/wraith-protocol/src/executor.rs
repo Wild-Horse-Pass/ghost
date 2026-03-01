@@ -219,7 +219,7 @@ impl WraithTransactionBuilder {
         let merge_vsize = self.estimate_merge_vsize_for_count(self.inputs.len());
         let merge_fee = merge_vsize * self.fee_rate;
         let total_intermediates = (self.inputs.len() * self.outputs_per_participant) as u64;
-        let fee_pad = (merge_fee + total_intermediates - 1) / total_intermediates;
+        let fee_pad = merge_fee.div_ceil(total_intermediates);
         let intermediate_amount = base_intermediate + fee_pad;
 
         let mut tx_inputs = Vec::new();
@@ -569,7 +569,7 @@ impl WraithTransactionBuilder {
         let total_vsize = split_vsize + merge_vsize;
         let total_fee = total_vsize * self.fee_rate;
         // Each user pays their share of the total mining cost
-        (total_fee + participant_count as u64 - 1) / participant_count as u64
+        total_fee.div_ceil(participant_count as u64)
     }
 }
 

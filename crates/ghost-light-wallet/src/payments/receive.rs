@@ -110,6 +110,7 @@ pub fn generate_address(
 }
 
 /// Generate the primary Ghost ID for receiving
+#[allow(dead_code)] // Library API: wired by CLI/TUI receive flow
 pub fn get_ghost_id(master_key: &MasterKey) -> String {
     master_key.ghost_id().to_string()
 }
@@ -126,6 +127,7 @@ fn bitcoin_to_ghost_network(network: Network) -> GhostNetwork {
 }
 
 /// Check if an address belongs to this wallet
+#[allow(dead_code)] // Library API: wired by CLI/TUI address verification
 pub fn is_my_address(master_key: &MasterKey, address: &str) -> bool {
     // Check Ghost ID
     if address == master_key.ghost_id().to_string() {

@@ -211,7 +211,6 @@ impl SessionRegistry {
 ///
 /// Implement this trait to provide crash-safe session tracking.
 /// Without persistence, session replay attacks are possible after restarts.
-#[allow(dead_code)] // Prepared for persistence integration
 pub trait SessionPersistence: Send + Sync {
     /// Store a session ID in persistent storage
     fn store_session(&self, session_id: &[u8; 32]) -> Result<(), crate::WraithError>;
@@ -236,7 +235,6 @@ pub trait SessionPersistence: Send + Sync {
 /// 1. Load all session IDs from persistent storage
 /// 2. Populate in-memory cache
 /// 3. Acknowledge in-memory mode (automatic when persistence is available)
-#[allow(dead_code)] // Prepared for persistence integration
 pub struct PersistentSessionRegistry {
     /// In-memory cache for fast lookup
     in_memory: SessionRegistry,
@@ -262,7 +260,6 @@ impl Default for PersistentSessionRegistry {
     }
 }
 
-#[allow(dead_code)] // Prepared for persistence integration
 impl PersistentSessionRegistry {
     /// Default session expiry: 7 days (matches maximum session duration)
     const DEFAULT_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
@@ -426,7 +423,6 @@ impl PersistentSessionRegistry {
 // ============================================================================
 
 /// M-12: Serializable entry for file-based session persistence
-#[allow(dead_code)]
 #[derive(Clone, Serialize, Deserialize)]
 struct PersistedSessionEntry {
     /// Session ID as hex string
@@ -436,7 +432,6 @@ struct PersistedSessionEntry {
 }
 
 /// M-12: Serializable file format for session persistence
-#[allow(dead_code)]
 #[derive(Serialize, Deserialize)]
 struct PersistedSessionFile {
     /// All stored sessions
@@ -453,7 +448,6 @@ struct PersistedSessionFile {
 /// On `session_exists`: checks in-memory list (fast path).
 /// On `load_all_sessions`: reads from file on disk.
 /// On `cleanup_expired`: removes old entries and rewrites file.
-#[allow(dead_code)]
 pub struct FileSessionPersistence {
     /// Path to the JSON persistence file
     path: std::path::PathBuf,
@@ -473,7 +467,6 @@ impl std::fmt::Debug for FileSessionPersistence {
     }
 }
 
-#[allow(dead_code)]
 impl FileSessionPersistence {
     /// Create a new file-backed session persistence
     ///

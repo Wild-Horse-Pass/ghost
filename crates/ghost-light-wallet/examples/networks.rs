@@ -25,6 +25,7 @@ fn main() {
             gsp_urls: vec![],
             auto_reconnect: false,
             reconnect_interval_secs: 5,
+            params_node: None,
         };
 
         match LightWallet::from_mnemonic(mnemonic, "password", config) {

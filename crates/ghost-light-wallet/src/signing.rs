@@ -74,6 +74,7 @@ pub fn create_wallet_proof(master_key: &MasterKey, action: &str) -> WalletResult
 /// Sign a transaction
 ///
 /// This signs transaction data with the wallet's spending key.
+#[allow(dead_code)] // Wired when L1 settlement signing is connected
 pub fn sign_transaction(master_key: &MasterKey, tx_data: &[u8]) -> WalletResult<[u8; 64]> {
     // Create tagged hash for transaction signing
     let tx_hash = tagged_hash(b"Ghost/TxSign/v1", tx_data);
@@ -197,6 +198,7 @@ fn sign_schnorr(master_key: &MasterKey, message_hash: &[u8; 32]) -> WalletResult
 }
 
 /// Generate a random challenge for signatures
+#[allow(dead_code)] // Wired when challenge-response auth is connected
 pub fn generate_challenge() -> WalletResult<[u8; 32]> {
     let mut challenge = [0u8; 32];
     getrandom::getrandom(&mut challenge)

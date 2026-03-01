@@ -89,6 +89,14 @@ struct Args {
     #[arg(long, global = true, default_value = "8800")]
     pay_port: u16,
 
+    /// Ghost-pool node host for downloading NoteSpend MPC params
+    #[arg(long, global = true, default_value = "127.0.0.1")]
+    params_host: String,
+
+    /// Ghost-pool node port for downloading NoteSpend MPC params
+    #[arg(long, global = true, default_value = "8080")]
+    params_port: u16,
+
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, global = true, default_value = "warn")]
     log_level: String,
@@ -342,6 +350,7 @@ async fn main() -> Result<()> {
         gsp_urls,
         auto_reconnect: true,
         reconnect_interval_secs: 5,
+        params_node: Some((args.params_host.clone(), args.params_port)),
     };
 
     // Extract API connection params before consuming args

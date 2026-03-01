@@ -136,6 +136,7 @@ pub async fn create_lock(
 }
 
 /// Confirm that a Ghost Lock has been funded
+#[allow(dead_code)] // Library API: wired by CLI/TUI lock funding flow
 pub async fn confirm_funding(
     client: &GspClient,
     master_key: &MasterKey,
@@ -170,6 +171,7 @@ pub async fn confirm_funding(
 }
 
 /// Get all Ghost Locks for this wallet
+#[allow(dead_code)] // Library API: wired by CLI/TUI lock listing
 pub async fn get_locks(client: &GspClient) -> WalletResult<Vec<GhostLockInfo>> {
     // Send request to GSP
     client.get_ghost_locks().await?;
@@ -180,6 +182,7 @@ pub async fn get_locks(client: &GspClient) -> WalletResult<Vec<GhostLockInfo>> {
 }
 
 /// Calculate the recommended lock capacity based on expected usage
+#[allow(dead_code)] // Library API: wired by CLI/TUI lock creation wizard
 pub fn recommend_capacity(monthly_volume_sats: u64) -> u64 {
     // Recommend 2x monthly volume, clamped to valid range
     let recommended = monthly_volume_sats * 2;

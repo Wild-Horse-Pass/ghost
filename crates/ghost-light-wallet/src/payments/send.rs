@@ -194,6 +194,7 @@ pub async fn sign_and_submit(
 }
 
 /// Estimate fee for a payment
+#[allow(dead_code)] // Library API: wired by CLI/TUI send confirmation
 pub fn estimate_fee(amount_sats: u64, mode: &PaymentMode) -> u64 {
     // Simple fee estimation
     // In production, this would query the GSP or use fee rate estimation

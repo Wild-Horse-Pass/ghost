@@ -76,6 +76,7 @@ struct ReadCallbacks {
     pending_prepare: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PreparedPayment>>>>,
     pending_submit: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PaymentSubmitResult>>>>,
     pending_lock_prepare: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PreparedLock>>>>,
+    #[allow(dead_code)] // Wired when lock confirm GSP response handling is connected
     pending_lock_confirm: Arc<RwLock<Option<tokio::sync::oneshot::Sender<GhostLockInfo>>>>,
     pending_jump: Arc<RwLock<Option<tokio::sync::oneshot::Sender<JumpResponse>>>>,
 }

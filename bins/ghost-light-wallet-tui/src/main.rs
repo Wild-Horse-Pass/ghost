@@ -153,6 +153,14 @@ struct Cli {
     /// GSP URL to connect to
     #[arg(long)]
     gsp: Option<String>,
+
+    /// Ghost-pool node host for downloading NoteSpend MPC params
+    #[arg(long, default_value = "127.0.0.1")]
+    params_host: String,
+
+    /// Ghost-pool node port for downloading NoteSpend MPC params
+    #[arg(long, default_value = "8080")]
+    params_port: u16,
 }
 
 #[derive(PartialEq)]
@@ -349,6 +357,7 @@ fn main() -> Result<()> {
         gsp_urls: cli.gsp.map(|g| vec![g]).unwrap_or_default(),
         auto_reconnect: true,
         reconnect_interval_secs: 5,
+        params_node: Some((cli.params_host, cli.params_port)),
     };
 
     // Create app with config
