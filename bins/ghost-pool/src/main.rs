@@ -637,7 +637,7 @@ async fn main() -> Result<()> {
     let rpc_port = args.rpc_port.unwrap_or(config.bitcoin.rpc_port);
 
     // Initialize Bitcoin RPC
-    info!("Connecting to Bitcoin Core at {}:{}", rpc_host, rpc_port);
+    info!("Connecting to Ghost Core at {}:{}", rpc_host, rpc_port);
     let mut rpc = BitcoinRpc::new(
         rpc_host,
         rpc_port,
@@ -654,12 +654,12 @@ async fn main() -> Result<()> {
                 chain = %info.chain,
                 height = info.blocks,
                 difficulty = info.difficulty,
-                "Connected to Bitcoin Core"
+                "Connected to Ghost Core"
             );
             info
         }
         Err(e) => {
-            error!(error = %e, "Failed to connect to Bitcoin Core");
+            error!(error = %e, "Failed to connect to Ghost Core");
             return Err(anyhow::anyhow!("Bitcoin RPC connection failed: {}", e));
         }
     };
@@ -1229,8 +1229,6 @@ async fn main() -> Result<()> {
     {
         use ghost_consensus::epoch_manager::{EpochManager, EpochManagerConfig};
         use ghost_consensus::nullifier_route_handler::NullifierRouteHandler;
-        use ghost_consensus::ZkPayoutVoteHandler;
-
         // Check production mode early (this is fast)
         let is_production = ghost_zkp::is_production_mode();
         let is_mainnet = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
@@ -1293,34 +1291,6 @@ async fn main() -> Result<()> {
                 l2_tx.try_send((msg_type, payload)).map_err(|e| {
                     ghost_common::error::GhostError::Internal(format!(
                         "L2 broadcast channel error: {}",
-                        e
-                    ))
-                })
-            });
-
-        // Create payout broadcast relay (separate channel)
-        let (zk_payout_tx, mut zk_payout_rx) =
-            tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(64);
-        let mesh_for_zk_payout_relay = Arc::clone(&mesh);
-        tokio::spawn(async move {
-            while let Some((msg_type, payload)) = zk_payout_rx.recv().await {
-                match mesh_for_zk_payout_relay.create_envelope_raw(msg_type, payload) {
-                    Ok(envelope) => {
-                        if let Err(e) = mesh_for_zk_payout_relay.broadcast(envelope).await {
-                            tracing::warn!(error = %e, "ZK payout Noise broadcast failed");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "ZK payout envelope creation failed");
-                    }
-                }
-            }
-        });
-        let zk_payout_broadcast: ghost_consensus::zk_payout_handler::ZkPayoutBroadcastFn =
-            Arc::new(move |msg_type, payload| {
-                zk_payout_tx.try_send((msg_type, payload)).map_err(|e| {
-                    ghost_common::error::GhostError::Internal(format!(
-                        "ZK payout broadcast channel error: {}",
                         e
                     ))
                 })
@@ -1404,25 +1374,15 @@ async fn main() -> Result<()> {
             nullifier_handler.set_finalize_fn(finalize_fn);
         }
 
-        // Create payout handler (unchanged)
-        let zk_payout_handler = Arc::new(
-            ZkPayoutVoteHandler::new(Arc::clone(&identity))
-                .with_broadcaster(zk_payout_broadcast)
-                .with_ban_manager(Arc::clone(&ban_manager)),
-        );
-
         // Initialize validators from MPC elders in DB
         let validators = db.get_mpc_elder_node_ids().unwrap_or_default();
         epoch_manager.update_active_nodes(validators.iter().copied().collect());
-        zk_payout_handler.set_validators(validators);
 
-        // Register handlers with mesh
+        // Register handler with mesh
         mesh.register_handler(Arc::clone(&nullifier_handler)
             as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
-        mesh.register_handler(Arc::clone(&zk_payout_handler)
-            as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
-        info!("L2 nullifier route handler + payout handler registered (verifiers initializing in background...)");
+        info!("L2 nullifier route handler registered (verifier initializing in background...)");
 
         // Spawn checkpoint proposal loop (every 10s)
         let handler_for_proposals = Arc::clone(&nullifier_handler);
@@ -1460,9 +1420,8 @@ async fn main() -> Result<()> {
 
         // Spawn background task to generate ZK parameters
         let nullifier_handler_for_init = Arc::clone(&nullifier_handler);
-        let zk_payout_handler_for_init = Arc::clone(&zk_payout_handler);
         tokio::spawn(async move {
-            use ghost_zkp::{GhostNoteProver, GhostNoteVerifier, PayoutProver, PayoutVerifier};
+            use ghost_zkp::{GhostNoteProver, GhostNoteVerifier};
 
             info!("ZK parameter generation starting in background...");
             let start = std::time::Instant::now();
@@ -1515,60 +1474,6 @@ async fn main() -> Result<()> {
                 }
                 Err(e) => {
                     error!(error = %e, "Failed to generate note prover parameters");
-                }
-            }
-
-            // Generate payout prover/verifier - prefer MPC-generated params when available
-            #[cfg(feature = "mpc-ceremony")]
-            let payout_prover_result: Result<std::sync::Arc<PayoutProver>, String> = {
-                let mpc_dir = std::path::PathBuf::from(
-                    std::env::var("MPC_PARAMS_PATH").unwrap_or_else(|_| {
-                        format!(
-                            "{}/.ghost/mpc_params",
-                            std::env::var("HOME").unwrap_or_default()
-                        )
-                    }),
-                );
-                let payout_path = mpc_dir.join("payout_params_current.bin");
-                if payout_path.exists() {
-                    match ghost_mpc::params::load_parameters(&payout_path) {
-                        Ok(params) => {
-                            info!("Using MPC-generated payout parameters");
-                            Ok(Arc::new(PayoutProver::default_with_params(Arc::new(params))))
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to load MPC payout params, falling back to random setup");
-                            PayoutProver::default_params_with_setup()
-                                .map(Arc::new)
-                                .map_err(|e| format!("{}", e))
-                        }
-                    }
-                } else {
-                    warn!("No MPC payout params on disk, using random trusted setup");
-                    PayoutProver::default_params_with_setup()
-                        .map(Arc::new)
-                        .map_err(|e| format!("{}", e))
-                }
-            };
-            #[cfg(not(feature = "mpc-ceremony"))]
-            let payout_prover_result: Result<std::sync::Arc<PayoutProver>, String> =
-                PayoutProver::default_params_with_setup()
-                    .map(Arc::new)
-                    .map_err(|e| format!("{}", e));
-
-            match payout_prover_result {
-                Ok(payout_prover) => {
-                    let payout_verifier = Arc::new(PayoutVerifier::for_prover(&payout_prover));
-                    zk_payout_handler_for_init.set_verifier(
-                        ghost_consensus::zk_payout_handler::create_payout_verifier(payout_verifier),
-                    );
-                    info!(
-                        elapsed_secs = start.elapsed().as_secs(),
-                        "ZK payout verifier initialized"
-                    );
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to generate ZK payout prover parameters");
                 }
             }
 
@@ -3039,7 +2944,7 @@ async fn main() -> Result<()> {
                     hash = %hex::encode(&info.block_hash[..8]),
                     height = info.height,
                     solo_mode = is_solo_mode,
-                    "Block submitted to Bitcoin Core, creating payout proposal..."
+                    "Block submitted to Ghost Core, creating payout proposal..."
                 );
 
                 // Gather data for payout proposal

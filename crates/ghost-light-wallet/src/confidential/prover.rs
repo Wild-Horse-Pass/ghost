@@ -220,6 +220,10 @@ pub struct NoteSpendTransferResult {
     pub change_note: OwnedNote,
     /// Epoch the proof was generated for
     pub epoch: u64,
+    /// ECIES-encrypted change note data (for sender's wallet)
+    pub encrypted_change: Vec<u8>,
+    /// ECIES-encrypted recipient note data (for recipient's wallet)
+    pub encrypted_recipient: Vec<u8>,
 }
 
 /// Client-side prover for NoteSpend transfers (current L2 system)
@@ -281,7 +285,8 @@ impl NoteSpendClientProver {
     /// 2. Gets merkle path from CommitmentTree
     /// 3. Generates fresh random blindings for change + recipient notes
     /// 4. Builds GhostNoteSpendWitness and calls GhostNoteProver::prove()
-    /// 5. Returns proof + metadata for submission to NullifierRouteHandler
+    /// 5. Encrypts change note for sender and recipient note for recipient
+    /// 6. Returns proof + encrypted note data for submission
     pub fn create_note_spend(
         &self,
         tree: &CommitmentTree,
@@ -290,6 +295,8 @@ impl NoteSpendClientProver {
         amount: u64,
         epoch: u64,
         block_height: u64,
+        sender_pubkey: &secp256k1::PublicKey,
+        recipient_pubkey: &secp256k1::PublicKey,
     ) -> WalletResult<NoteSpendTransferResult> {
         // Look up sender note
         let sender_note = note_store.get_note(sender_note_index).ok_or_else(|| {
@@ -348,13 +355,33 @@ impl NoteSpendClientProver {
         );
 
         // Build change note for local tracking
+        let change_value = sender_note.value - amount;
         let change_note = OwnedNote {
             index: sender_note_index, // Change reuses the sender's index (new commitment at same position)
-            value: sender_note.value - amount,
+            value: change_value,
             blinding: change_blinding,
             spent: false,
             created_height: block_height,
         };
+
+        // Encrypt note data for sender (change) and recipient
+        let encrypted_change = ghost_keys::NoteData {
+            value: change_value,
+            blinding: change_blinding,
+            note_index: sender_note_index,
+        }
+        .encrypt(sender_pubkey)
+        .map_err(|e| LightWalletError::Internal(format!("Change encryption failed: {}", e)))?;
+
+        let encrypted_recipient = ghost_keys::NoteData {
+            value: amount,
+            blinding: recipient_blinding,
+            note_index: sender_note_index, // Recipient note index is assigned by the validator
+        }
+        .encrypt(recipient_pubkey)
+        .map_err(|e| {
+            LightWalletError::Internal(format!("Recipient encryption failed: {}", e))
+        })?;
 
         Ok(NoteSpendTransferResult {
             proof_hex: hex::encode(&proof.proof),
@@ -365,6 +392,8 @@ impl NoteSpendClientProver {
             change_note,
             epoch,
             proof,
+            encrypted_change,
+            encrypted_recipient,
         })
     }
 }
@@ -538,6 +567,11 @@ mod tests {
     // NoteSpendClientProver tests
     // =========================================================================
 
+    fn test_keypair() -> (secp256k1::SecretKey, secp256k1::PublicKey) {
+        let secp = secp256k1::Secp256k1::new();
+        secp.generate_keypair(&mut rand::rngs::OsRng)
+    }
+
     #[test]
     fn test_note_spend_client_prover_creation_with_setup() {
         let prover = NoteSpendClientProver::new_with_setup(4).unwrap();
@@ -567,6 +601,9 @@ mod tests {
             created_height: 100,
         });
 
+        let (_, sender_pubkey) = test_keypair();
+        let (recipient_sk, recipient_pubkey) = test_keypair();
+
         let prover = NoteSpendClientProver::new_with_setup(depth).unwrap();
         let result = prover
             .create_note_spend(
@@ -576,6 +613,8 @@ mod tests {
                 300, // amount
                 0,   // epoch
                 101, // block_height
+                &sender_pubkey,
+                &recipient_pubkey,
             )
             .unwrap();
 
@@ -594,6 +633,14 @@ mod tests {
 
         // Proof should be real Groth16 (192 bytes)
         assert!(result.proof.is_real_proof());
+
+        // Encrypted fields should be 109 bytes (48-byte plaintext + 61-byte overhead)
+        assert_eq!(result.encrypted_change.len(), 109);
+        assert_eq!(result.encrypted_recipient.len(), 109);
+
+        // Recipient should be able to decrypt their note
+        let decrypted = ghost_keys::NoteData::decrypt(&recipient_sk, &result.encrypted_recipient).unwrap();
+        assert_eq!(decrypted.value, 300);
     }
 
     #[test]
@@ -616,8 +663,11 @@ mod tests {
             created_height: 100,
         });
 
+        let (_, sender_pk) = test_keypair();
+        let (_, recipient_pk) = test_keypair();
+
         let prover = NoteSpendClientProver::new_with_setup(depth).unwrap();
-        let result = prover.create_note_spend(&tree, &note_store, 0, 200, 0, 101);
+        let result = prover.create_note_spend(&tree, &note_store, 0, 200, 0, 101, &sender_pk, &recipient_pk);
 
         assert!(result.is_err(), "Should reject transfer exceeding note value");
         match result.unwrap_err() {
@@ -649,8 +699,11 @@ mod tests {
             created_height: 100,
         });
 
+        let (_, sender_pk) = test_keypair();
+        let (_, recipient_pk) = test_keypair();
+
         let prover = NoteSpendClientProver::new_with_setup(depth).unwrap();
-        let result = prover.create_note_spend(&tree, &note_store, 0, 300, 0, 101);
+        let result = prover.create_note_spend(&tree, &note_store, 0, 300, 0, 101, &sender_pk, &recipient_pk);
 
         assert!(result.is_err(), "Should reject already-spent notes");
         let err = result.unwrap_err().to_string();
@@ -677,9 +730,12 @@ mod tests {
             created_height: 100,
         });
 
+        let (_, sender_pk) = test_keypair();
+        let (_, recipient_pk) = test_keypair();
+
         let prover = NoteSpendClientProver::new_with_setup(depth).unwrap();
         let result = prover
-            .create_note_spend(&tree, &note_store, 0, 300, 0, 101)
+            .create_note_spend(&tree, &note_store, 0, 300, 0, 101, &sender_pk, &recipient_pk)
             .unwrap();
 
         // proof_hex should decode back to the exact same proof bytes

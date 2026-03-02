@@ -9,7 +9,7 @@
 //! Shared Ban Manager - Centralized ban state for cross-handler enforcement
 //!
 //! This module provides a thread-safe ban manager that can be shared across
-//! all message handlers (VoteHandler, HealthPingHandler, ZkPayoutVoteHandler, etc.)
+//! all message handlers (VoteHandler, HealthPingHandler, etc.)
 //! to ensure that banned nodes are rejected by ALL handlers, not just the one
 //! that detected the violation.
 //!

@@ -98,3 +98,7 @@ reqwest = { workspace = true }
 bellperson = "0.26"
 blstrs = { workspace = true }
 ff = "0.13"
+
+[features]
+# Use MPC ceremony parameters for ZK proofs (required for mainnet)
+zk-production = ["ghost-zkp/zk-production"]

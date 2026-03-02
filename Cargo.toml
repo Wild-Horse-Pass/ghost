@@ -142,7 +142,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 
 # TLS (CRIT-API-1)
 tokio-rustls = "0.26"
-rustls = "0.23"
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
 rustls-pki-types = { version = "1.14", features = ["std"] }
 rcgen = "0.13"
 

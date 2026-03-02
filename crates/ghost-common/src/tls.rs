@@ -128,8 +128,13 @@ fn generate_self_signed() -> Result<
 mod tests {
     use super::*;
 
+    fn ensure_crypto_provider() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
     #[test]
     fn test_build_server_config_self_signed() {
+        ensure_crypto_provider();
         // With no cert/key paths, should generate a self-signed cert and succeed
         let tls = TlsConfig::default();
         let result = build_server_config(&tls);
@@ -152,6 +157,7 @@ mod tests {
 
     #[test]
     fn test_build_server_config_only_cert_no_key() {
+        ensure_crypto_provider();
         // When only cert_path is set but key_path is None, should fall through
         // to self-signed generation (both must be Some to use PEM loading)
         let tls = TlsConfig {
@@ -188,6 +194,7 @@ mod tests {
 
     #[test]
     fn test_non_mainnet_allows_self_signed() {
+        ensure_crypto_provider();
         let tls = TlsConfig::default();
         let result = build_server_config_for_network(&tls, false);
         assert!(

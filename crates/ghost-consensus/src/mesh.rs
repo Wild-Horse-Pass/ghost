@@ -1389,8 +1389,6 @@ impl MeshNetwork {
             | MessageType::ElderUpdate
             | MessageType::ZkBlockProposal
             | MessageType::ZkVote
-            | MessageType::ZkPayoutProposal
-            | MessageType::ZkPayoutVote
             | MessageType::VerificationResult
             | MessageType::EquivocationProof
             | MessageType::ElderRegistrationProposal
@@ -1668,9 +1666,7 @@ impl MeshNetwork {
             MessageType::PayoutProposal => self.config.ports.payout_proposal,
             // ZK-BFT messages use consensus voting port
             MessageType::ZkBlockProposal
-            | MessageType::ZkVote
-            | MessageType::ZkPayoutProposal
-            | MessageType::ZkPayoutVote => self.config.ports.consensus_voting,
+            | MessageType::ZkVote => self.config.ports.consensus_voting,
             // Verification results use health monitoring port
             MessageType::VerificationResult => self.config.ports.health_monitoring,
             // P2P-H3: Equivocation proofs use consensus voting port
@@ -1971,8 +1967,6 @@ impl MeshNetwork {
             (topics::PAYOUT_PROPOSAL, "payout_proposal"),
             (topics::ZK_PROPOSAL, "zk_proposal"),
             (topics::ZK_VOTE, "zk_vote"),
-            (topics::ZK_PAYOUT_PROPOSAL, "zk_payout_proposal"),
-            (topics::ZK_PAYOUT_VOTE, "zk_payout_vote"),
             (topics::VERIFICATION, "verification"),
             (topics::MPC, "mpc"), // MPC ceremony messages
         ];
@@ -2499,8 +2493,6 @@ impl MeshNetwork {
             MessageType::PayoutProposal => self.config.ports.payout_proposal,
             MessageType::ZkBlockProposal
             | MessageType::ZkVote
-            | MessageType::ZkPayoutProposal
-            | MessageType::ZkPayoutVote
             | MessageType::EquivocationProof
             | MessageType::L2ConfidentialTransfer
             | MessageType::L2TransferConfirmation
@@ -3264,8 +3256,6 @@ mod tests {
                 | MessageType::ElderUpdate
                 | MessageType::ZkBlockProposal
                 | MessageType::ZkVote
-                | MessageType::ZkPayoutProposal
-                | MessageType::ZkPayoutVote
                 | MessageType::VerificationResult
                 | MessageType::EquivocationProof
                 | MessageType::ElderRegistrationProposal
@@ -3383,15 +3373,6 @@ mod tests {
             message_type_requires_noise(MessageType::ZkVote),
             "ZkVote must use Noise"
         );
-        assert!(
-            message_type_requires_noise(MessageType::ZkPayoutProposal),
-            "ZkPayoutProposal must use Noise"
-        );
-        assert!(
-            message_type_requires_noise(MessageType::ZkPayoutVote),
-            "ZkPayoutVote must use Noise"
-        );
-
         // Verification and security (MUST use Noise)
         assert!(
             message_type_requires_noise(MessageType::VerificationResult),

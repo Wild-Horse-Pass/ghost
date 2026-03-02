@@ -2782,7 +2782,7 @@ impl TemplateProcessor {
             block_size = block_data.len(),
             block_weight = total_weight,
             prev_hash = %prev_hash_from_header,
-            "Block validated, submitting to Bitcoin Core"
+            "Block validated, submitting to Ghost Core"
         );
 
         match self.rpc.submit_block(&block_hex).await {

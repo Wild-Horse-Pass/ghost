@@ -101,8 +101,6 @@ pub mod errors;
 pub mod field_utils;
 pub mod note_prover;
 pub mod note_verifier;
-pub mod payout_prover;
-pub mod payout_verifier;
 pub mod prover;
 pub mod state_tree;
 pub mod types;
@@ -122,10 +120,6 @@ pub use verifier::BlockVerifier;
 // Re-export state tree utilities
 pub use commitment_tree::{CommitmentTree, CommitmentTreeBuilder};
 pub use state_tree::{BalanceTree, BalanceTreeBuilder};
-
-// Re-export payout types
-pub use payout_prover::{PayoutProof, PayoutProver, PayoutWitness};
-pub use payout_verifier::{verify_payout, PayoutVerificationResult, PayoutVerifier};
 
 // Re-export confidential transfer types (deprecated — use NoteSpend equivalents)
 #[allow(deprecated)]
@@ -201,8 +195,8 @@ pub const ZK_PARAMS_PATH_ENV: &str = "ZK_PARAMS_PATH";
 
 /// H-1: Environment variable for expected parameter hashes (from MPC ceremony)
 ///
-/// Format: "BLOCK:sha256hex,PAYOUT:sha256hex"
-/// Example: "BLOCK:abc123...,PAYOUT:def456..."
+/// Format: "BLOCK:sha256hex"
+/// Example: "BLOCK:abc123..."
 pub const ZK_PARAMS_HASH_ENV: &str = "ZK_PARAMS_HASH";
 
 /// 2.4 HIGH: Compute SHA-256 hash of a parameters file
@@ -339,27 +333,6 @@ pub fn load_trusted_params() -> ZkResult<()> {
         }
     }
 
-    // Check payout parameters
-    let payout_params_path = base_path.join("payout_params_current.bin");
-    if payout_params_path.exists() {
-        let actual_hash = compute_params_file_hash(&payout_params_path)?;
-        if let Some(expected) = expected_hashes.get("PAYOUT") {
-            if &actual_hash != expected {
-                return Err(ZkError::InvalidParams(format!(
-                    "2.4 HIGH: Payout parameter hash mismatch! \
-                     Expected: {}, Got: {}. \
-                     Parameters may be corrupted or tampered.",
-                    hex::encode(expected),
-                    hex::encode(actual_hash)
-                )));
-            }
-            tracing::info!(
-                hash = %hex::encode(actual_hash),
-                "2.4 HIGH: Payout parameters hash verified"
-            );
-        }
-    }
-
     tracing::info!(
         path = %params_path,
         "H-1: Loaded and verified trusted setup parameters for production mode"
@@ -434,14 +407,13 @@ pub fn verify_zk_setup_for_mainnet() -> ZkResult<()> {
         )));
     }
 
-    // Step 3: Verify at least one parameter file exists
+    // Step 3: Verify note spend parameter file exists
     let note_spend_params = base_path.join("note_spend_params_current.bin");
-    let payout_params = base_path.join("payout_params_current.bin");
 
-    if !note_spend_params.exists() && !payout_params.exists() {
+    if !note_spend_params.exists() {
         return Err(ZkError::InvalidParams(format!(
-            "C-5 CRITICAL: No parameter files found in {}. \
-             Expected note_spend_params_current.bin and/or payout_params_current.bin",
+            "C-5 CRITICAL: note_spend_params_current.bin not found in {}. \
+             Complete MPC ceremony first.",
             params_path
         )));
     }
@@ -450,7 +422,7 @@ pub fn verify_zk_setup_for_mainnet() -> ZkResult<()> {
     if std::env::var(ZK_PARAMS_HASH_ENV).is_err() {
         return Err(ZkError::InvalidParams(format!(
             "C-5 CRITICAL: {} environment variable not set. \
-             Set to ceremony output hashes: BLOCK:sha256hex,PAYOUT:sha256hex",
+             Set to ceremony output hash: BLOCK:sha256hex",
             ZK_PARAMS_HASH_ENV
         )));
     }

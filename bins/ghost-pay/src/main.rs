@@ -2627,6 +2627,12 @@ struct ConfidentialTransferRequest {
     recipient_index: u64,
     recipient_owner_pubkey: String,
     epoch: u64,
+    /// ECIES-encrypted change note data (hex, for sender wallet)
+    #[serde(default)]
+    encrypted_change: String,
+    /// ECIES-encrypted recipient note data (hex, for recipient wallet)
+    #[serde(default)]
+    encrypted_recipient: String,
 }
 
 /// Submit a confidential transfer with Groth16 proof
@@ -2863,26 +2869,10 @@ async fn submit_confidential_transfer(
         "NoteSpend transfer applied"
     );
 
-    // Step 5b: Sync commitments to ghost-pool tree BEFORE relay (so root is valid)
-    let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
-    for (idx, comm) in [
-        (req.sender_index, change_commitment),
-        (req.recipient_index, recipient_commitment),
-    ] {
-        let body = serde_json::json!({
-            "commitment": hex::encode(comm),
-            "note_index": idx,
-            "block_height": current_height,
-        });
-        let _ = state
-            .pool_http_client
-            .post(&sync_url)
-            .json(&body)
-            .send()
-            .await;
-    }
-
     // Step 6: Relay to ghost-pool for L2 consensus broadcast
+    // Transfer commitments (change + recipient) are NOT synced here — they reach
+    // ghost-pool through the confirmed pool → checkpoint → append_commitment path.
+    // Syncing them would overwrite shield commitments at the same tree index.
     // Construct L2ConfidentialTransferMessage JSON (matches ghost-consensus message format)
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2897,8 +2887,8 @@ async fn submit_confidential_transfer(
             "recipient_commitment": hex::encode(recipient_commitment),
             "commitment_root": hex::encode(commitment_root),
             "proof": proof_bytes,
-            "encrypted_change": [],
-            "encrypted_recipient": [],
+            "encrypted_change": hex::decode(&req.encrypted_change).unwrap_or_default(),
+            "encrypted_recipient": hex::decode(&req.encrypted_recipient).unwrap_or_default(),
             "timestamp": timestamp,
         },
         "sender": hex::encode([0u8; 32]),
@@ -3015,23 +3005,20 @@ async fn shield_balance(
 
     info!(
         note_index = note_index,
-        amount = req.amount_sats,
         "Balance shielded into commitment"
     );
 
-    // Sync commitment to ghost-pool tree (fire-and-forget)
+    // Sync commitment to ghost-pool tree (awaited — ghost-pool must have this root
+    // before any transfer proof built against it can be relayed)
     let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
     let sync_body = serde_json::json!({
         "commitment": hex::encode(commitment),
         "note_index": note_index,
         "block_height": current_height,
     });
-    let client = state.pool_http_client.clone();
-    tokio::spawn(async move {
-        if let Err(e) = client.post(&sync_url).json(&sync_body).send().await {
-            tracing::warn!(error = %e, "Failed to sync shield commitment to ghost-pool");
-        }
-    });
+    if let Err(e) = state.pool_http_client.post(&sync_url).json(&sync_body).send().await {
+        warn!(error = %e, "Failed to sync shield commitment to ghost-pool");
+    }
 
     Ok(Json(serde_json::json!({
         "note_index": note_index,

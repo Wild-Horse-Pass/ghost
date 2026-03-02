@@ -50,10 +50,6 @@ pub const MAX_ELDER_UPDATE_SIZE: usize = 10_000;
 pub const MAX_ZK_PROPOSAL_SIZE: usize = 2_000_000;
 /// ZK vote is small (just signature + metadata)
 pub const MAX_ZK_VOTE_SIZE: usize = 1_000;
-/// ZK payout proposal includes proof + merkle root (up to 1MB)
-pub const MAX_ZK_PAYOUT_PROPOSAL_SIZE: usize = 1_000_000;
-/// ZK payout vote is small (signature + approval + optional rejection reason)
-pub const MAX_ZK_PAYOUT_VOTE_SIZE: usize = 1_000;
 /// Verification result is small (node IDs + capability + result + signature)
 pub const MAX_VERIFICATION_SIZE: usize = 5_000;
 /// P2P-H3: Equivocation proof (two votes + metadata)
@@ -243,8 +239,6 @@ pub fn extract_message_type_fast(
             7 => Some(MessageType::ShareConvergence),
             8 => Some(MessageType::ZkBlockProposal),
             9 => Some(MessageType::ZkVote),
-            10 => Some(MessageType::ZkPayoutProposal),
-            11 => Some(MessageType::ZkPayoutVote),
             12 => Some(MessageType::VerificationResult),
             13 => Some(MessageType::EquivocationProof),
             _ => None,
@@ -312,8 +306,6 @@ pub fn extract_message_type_fast(
         "ElderUpdate" => MessageType::ElderUpdate,
         "ZkBlockProposal" => MessageType::ZkBlockProposal,
         "ZkVote" => MessageType::ZkVote,
-        "ZkPayoutProposal" => MessageType::ZkPayoutProposal,
-        "ZkPayoutVote" => MessageType::ZkPayoutVote,
         "VerificationResult" => MessageType::VerificationResult,
         "EquivocationProof" => MessageType::EquivocationProof,
         _ => return Ok(None), // Unknown type
@@ -367,8 +359,6 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
         MessageType::ElderUpdate => MAX_ELDER_UPDATE_SIZE,
         MessageType::ZkBlockProposal => MAX_ZK_PROPOSAL_SIZE,
         MessageType::ZkVote => MAX_ZK_VOTE_SIZE,
-        MessageType::ZkPayoutProposal => MAX_ZK_PAYOUT_PROPOSAL_SIZE,
-        MessageType::ZkPayoutVote => MAX_ZK_PAYOUT_VOTE_SIZE,
         MessageType::VerificationResult => MAX_VERIFICATION_SIZE,
         MessageType::EquivocationProof => MAX_EQUIVOCATION_PROOF_SIZE,
         MessageType::ElderRegistrationProposal => MAX_ELDER_REGISTRATION_PROPOSAL_SIZE,

@@ -306,13 +306,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/settings/ghostpay_payout_address",
             get(api_settings_ghostpay_payout_address_handler),
         )
-        // L2 NoteSpend submission endpoint
-        .route("/api/v1/l2/submit", post(api_l2_submit_handler))
-        // L2 commitment sync endpoint (ghost-pay → ghost-pool tree sync)
-        .route(
-            "/api/v1/l2/sync-commitment",
-            post(api_l2_sync_commitment_handler),
-        )
+        // L2 read endpoints (public)
         // MPC ceremony endpoints
         .route("/api/v1/mpc/params", get(api_mpc_params_handler))
         .route(
@@ -347,6 +341,12 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
     let localhost_router = Router::new()
         .route("/api/internal/share", post(share_notification_handler))
         .route("/api/internal/shares", post(share_batch_handler))
+        // L2 mutation endpoints — localhost only (ghost-pay is colocated)
+        .route("/api/v1/l2/submit", post(api_l2_submit_handler))
+        .route(
+            "/api/v1/l2/sync-commitment",
+            post(api_l2_sync_commitment_handler),
+        )
         .layer(middleware::from_fn(localhost_only_middleware));
 
     // Internal/admin endpoints with HMAC authentication (AUTH4-1 fix)

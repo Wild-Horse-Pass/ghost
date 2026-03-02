@@ -110,6 +110,37 @@ impl NoteStore {
         self.notes.values().filter(|n| !n.spent).count()
     }
 
+    /// Try to decrypt an encrypted note and verify it matches the on-chain commitment.
+    ///
+    /// Attempts ECIES decryption with the wallet's secret key. If decryption succeeds,
+    /// verifies that `pedersen_commit(value, blinding) == commitment`. Returns an
+    /// `OwnedNote` on match, or `None` if decryption fails or commitment doesn't match.
+    ///
+    /// This is the core of wallet-side note discovery: scan L2 transactions,
+    /// try decrypting each encrypted field, and add matching notes to the store.
+    pub fn try_decrypt_received_note(
+        secret_key: &secp256k1::SecretKey,
+        encrypted: &[u8],
+        commitment: &[u8; 32],
+        block_height: u64,
+    ) -> Option<OwnedNote> {
+        let note_data = ghost_keys::NoteData::decrypt(secret_key, encrypted).ok()?;
+
+        // Verify commitment: pedersen_commit(value, blinding) should match
+        let computed = ghost_zkp::compute_commitment_bytes(note_data.value, &note_data.blinding).ok()?;
+        if &computed != commitment {
+            return None;
+        }
+
+        Some(OwnedNote {
+            index: note_data.note_index,
+            value: note_data.value,
+            blinding: note_data.blinding,
+            spent: false,
+            created_height: block_height,
+        })
+    }
+
     /// Serialize the note store to JSON for encrypted storage
     pub fn to_json(&self) -> WalletResult<String> {
         let notes: Vec<&OwnedNote> = self.notes.values().collect();

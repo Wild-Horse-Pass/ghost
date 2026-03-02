@@ -369,59 +369,57 @@ pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
 /// Apply a contribution's transformation to parameters
 ///
 /// Implements Groth16 Phase 2 transformation:
-/// - Verification key: alpha, beta, delta transformed
-/// - Proving key: h and l vectors transformed by tau
+/// - delta_g2 *= tau  (scale the witness-hiding delta)
+/// - h[i] *= tau^(-1) (compensate: h encodes 1/delta factors)
+/// - l[i] *= tau^(-1) (compensate: l encodes 1/delta factors)
 ///
-/// Note: In Groth16 phase 2, the a, b_g1, b_g2 constraint matrices are NOT
-/// transformed as they encode the circuit structure which doesn't change.
+/// Alpha, beta, gamma, ic, a, b_g1, b_g2 are NOT transformed.
+/// Alpha and beta are fixed from the initial setup; modifying them without
+/// updating the corresponding proving key elements (a, b, ic) would break
+/// the Groth16 pairing equation e(A,B) = e(α,β) · e(acc,γ) · e(C,δ).
 fn apply_contribution(
     params: &Parameters<Bls12>,
     toxic: &ToxicWaste,
 ) -> MpcResult<Parameters<Bls12>> {
     use std::sync::Arc;
 
-    // Clone the parameters
     let mut new_params = params.clone();
 
-    // Transform the verification key elements (these are not Arc-wrapped)
-    // Apply alpha transformation: alpha_g1 = alpha_g1 * alpha
-    let alpha_g1_proj = new_params.vk.alpha_g1.to_curve();
-    new_params.vk.alpha_g1 = (alpha_g1_proj * toxic.alpha).to_affine();
+    // tau^(-1): h and l encode 1/δ, so when δ *= tau, they must *= tau^(-1)
+    let tau_inv = toxic
+        .tau
+        .invert()
+        .expect("tau must be non-zero (generated from random bytes)");
 
-    // Apply beta transformations
-    // beta_g1 = beta_g1 * beta
-    let beta_g1_proj = new_params.vk.beta_g1.to_curve();
-    new_params.vk.beta_g1 = (beta_g1_proj * toxic.beta).to_affine();
+    // Transform delta: both G1 and G2 representations must stay consistent.
+    // The prover uses delta_g1 for randomization (A and C elements),
+    // the verifier uses delta_g2 for the pairing check.
+    let delta_g1_proj = new_params.vk.delta_g1.to_curve();
+    new_params.vk.delta_g1 = (delta_g1_proj * toxic.tau).to_affine();
 
-    // beta_g2 = beta_g2 * beta
-    let beta_g2_proj = new_params.vk.beta_g2.to_curve();
-    new_params.vk.beta_g2 = (beta_g2_proj * toxic.beta).to_affine();
-
-    // Apply tau to delta_g2 (accumulator)
-    // delta_g2 = delta_g2 * tau
     let delta_g2_proj = new_params.vk.delta_g2.to_curve();
     new_params.vk.delta_g2 = (delta_g2_proj * toxic.tau).to_affine();
 
-    // Transform h vector: h[i] = h[i] * tau
-    // This is the Phase 2 transformation for powers of tau
+    // Transform h vector: h[i]' = h[i] * tau^(-1)
+    // h encodes t(x)·x^i / δ, so scaling δ by tau requires scaling h by tau^(-1)
     let new_h: Vec<G1Affine> = params
         .h
         .iter()
-        .map(|h| (h.to_curve() * toxic.tau).to_affine())
+        .map(|h| (h.to_curve() * tau_inv).to_affine())
         .collect();
     new_params.h = Arc::new(new_h);
 
-    // Transform l vector: l[i] = l[i] * tau
-    // This is the Phase 2 transformation for Lagrange basis
+    // Transform l vector: l[i]' = l[i] * tau^(-1)
+    // l encodes (β·u_i(x) + α·v_i(x) + w_i(x)) / δ for private wires
     let new_l: Vec<G1Affine> = params
         .l
         .iter()
-        .map(|l| (l.to_curve() * toxic.tau).to_affine())
+        .map(|l| (l.to_curve() * tau_inv).to_affine())
         .collect();
     new_params.l = Arc::new(new_l);
 
-    // Note: a, b_g1, b_g2 are NOT transformed in Groth16 Phase 2
-    // They encode the circuit constraints and remain fixed after Phase 1
+    // a, b_g1, b_g2, alpha, beta, gamma, ic: unchanged
+    // These encode circuit structure and VK constants from initial setup
 
     Ok(new_params)
 }
@@ -597,23 +595,17 @@ pub fn verify_contribution(
     // e(delta_g1, G2) should equal e(G1, new_delta_g2)
     // This verifies the contribution applied tau correctly to delta
 
-    // Verify h vector transformation (sample check for efficiency)
-    // For mainnet, we check ALL values; for testing, sample
-    let check_all = true; // SECURITY: Always check all for production
-    let check_count = if check_all {
-        prev_params.h.len().min(new_params.h.len())
-    } else {
-        10.min(prev_params.h.len()).min(new_params.h.len())
-    };
+    // Verify h vector transformation: new_h[i] = old_h[i] * tau^(-1)
+    // Pairing check: e(new_h[i], tau_G2) == e(old_h[i], G2)
+    //   ↔ new_h_scalar * tau == old_h_scalar ↔ new_h = old_h * tau^(-1) ✓
+    let check_count = prev_params.h.len().min(new_params.h.len());
 
     for i in 0..check_count {
         let old_h = &prev_params.h[i];
         let new_h = &new_params.h[i];
 
-        // e(new_h, G2) should equal e(old_h, tau_G2)
-        // This verifies: new_h = old_h * tau
-        let lhs = blstrs::Bls12::pairing(&new_h.to_curve().to_affine(), &g2_gen);
-        let rhs = blstrs::Bls12::pairing(&old_h.to_curve().to_affine(), &tau_g2);
+        let lhs = blstrs::Bls12::pairing(&new_h.to_curve().to_affine(), &tau_g2);
+        let rhs = blstrs::Bls12::pairing(&old_h.to_curve().to_affine(), &g2_gen);
 
         if lhs != rhs {
             return Err(MpcError::InvalidProof(format!(
@@ -623,19 +615,15 @@ pub fn verify_contribution(
         }
     }
 
-    // Verify l vector transformation if present
-    let l_check_count = if check_all {
-        prev_params.l.len().min(new_params.l.len())
-    } else {
-        10.min(prev_params.l.len()).min(new_params.l.len())
-    };
+    // Verify l vector transformation: new_l[i] = old_l[i] * tau^(-1)
+    let l_check_count = prev_params.l.len().min(new_params.l.len());
 
     for i in 0..l_check_count {
         let old_l = &prev_params.l[i];
         let new_l = &new_params.l[i];
 
-        let lhs = blstrs::Bls12::pairing(&new_l.to_curve().to_affine(), &g2_gen);
-        let rhs = blstrs::Bls12::pairing(&old_l.to_curve().to_affine(), &tau_g2);
+        let lhs = blstrs::Bls12::pairing(&new_l.to_curve().to_affine(), &tau_g2);
+        let rhs = blstrs::Bls12::pairing(&old_l.to_curve().to_affine(), &g2_gen);
 
         if lhs != rhs {
             return Err(MpcError::InvalidProof(format!(

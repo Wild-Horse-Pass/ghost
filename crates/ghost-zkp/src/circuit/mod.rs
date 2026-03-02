@@ -5,7 +5,6 @@
 //! - `payment`: Single payment validity (balance check, signature)
 //! - `merkle`: Merkle tree inclusion and update proofs
 //! - `block`: Full block validity (batch of payments)
-//! - `payout`: Payout distribution validity
 //! - `state_transition`: Payment state transition with merkle proofs
 
 pub mod block;
@@ -17,7 +16,6 @@ pub mod mimc;
 pub mod note_consolidate;
 pub mod note_spend;
 pub mod payment;
-pub mod payout;
 pub mod range_proof;
 pub mod state_transition;
 
@@ -37,7 +35,6 @@ pub use note_spend::{
     compute_nullifier_with_epoch_native, GhostNoteSpendCircuit, NOTE_TREE_DEPTH,
 };
 pub use payment::{PaymentCircuit, PaymentCircuitError, PaymentOutputs};
-pub use payout::PayoutCircuit;
 pub use range_proof::enforce_range;
 pub use state_transition::{PaymentStateTransitionCircuit, StateTransitionOutputs};
 

@@ -227,6 +227,78 @@ pub fn decrypt_note_data(
     Ok(plaintext)
 }
 
+/// Structured note data for L2 encrypted transfers.
+///
+/// Contains the private information a recipient needs to discover and spend a note:
+/// value, blinding factor, and tree index. Serialized as a fixed 48-byte plaintext
+/// before ECIES encryption.
+///
+/// # Plaintext Format (48 bytes)
+///
+/// ```text
+/// [value: u64 LE (8)] [blinding: [u8; 32] (32)] [note_index: u64 LE (8)]
+/// ```
+///
+/// # Encrypted Format (~109 bytes)
+///
+/// ```text
+/// [ephemeral_pubkey: 33] [nonce: 12] [ciphertext+tag: 48+16]
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteData {
+    /// Note value in satoshis
+    pub value: u64,
+    /// Blinding factor for Pedersen commitment
+    pub blinding: [u8; 32],
+    /// Index in the commitment tree
+    pub note_index: u64,
+}
+
+/// Size of serialized NoteData plaintext
+const NOTE_DATA_SIZE: usize = 8 + 32 + 8; // 48 bytes
+
+impl NoteData {
+    /// Serialize to fixed 48-byte plaintext.
+    pub fn to_bytes(&self) -> [u8; NOTE_DATA_SIZE] {
+        let mut buf = [0u8; NOTE_DATA_SIZE];
+        buf[0..8].copy_from_slice(&self.value.to_le_bytes());
+        buf[8..40].copy_from_slice(&self.blinding);
+        buf[40..48].copy_from_slice(&self.note_index.to_le_bytes());
+        buf
+    }
+
+    /// Deserialize from 48-byte plaintext.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, GhostKeyError> {
+        if bytes.len() != NOTE_DATA_SIZE {
+            return Err(GhostKeyError::CryptoError(format!(
+                "NoteData must be {} bytes, got {}",
+                NOTE_DATA_SIZE,
+                bytes.len()
+            )));
+        }
+        let value = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        let mut blinding = [0u8; 32];
+        blinding.copy_from_slice(&bytes[8..40]);
+        let note_index = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+        Ok(Self {
+            value,
+            blinding,
+            note_index,
+        })
+    }
+
+    /// Encrypt this note data for a recipient's public key.
+    pub fn encrypt(&self, recipient_pubkey: &PublicKey) -> Result<Vec<u8>, GhostKeyError> {
+        encrypt_note_data(recipient_pubkey, &self.to_bytes())
+    }
+
+    /// Decrypt note data using the recipient's secret key.
+    pub fn decrypt(secret_key: &SecretKey, encrypted: &[u8]) -> Result<Self, GhostKeyError> {
+        let bytes = decrypt_note_data(secret_key, encrypted)?;
+        Self::from_bytes(&bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +457,59 @@ mod tests {
 
         // Different ephemeral keys + different nonces = different ciphertext
         assert_ne!(encrypted1, encrypted2);
+    }
+
+    #[test]
+    fn test_note_data_roundtrip() {
+        let data = NoteData {
+            value: 100_000,
+            blinding: [0xAB; 32],
+            note_index: 42,
+        };
+        let bytes = data.to_bytes();
+        assert_eq!(bytes.len(), 48);
+        let restored = NoteData::from_bytes(&bytes).unwrap();
+        assert_eq!(data, restored);
+    }
+
+    #[test]
+    fn test_note_data_encrypt_decrypt() {
+        let (secret_key, public_key) = generate_keypair();
+        let data = NoteData {
+            value: 500_000,
+            blinding: [0x42; 32],
+            note_index: 7,
+        };
+
+        let encrypted = data.encrypt(&public_key).unwrap();
+        // 48-byte plaintext + 61-byte overhead = 109 bytes
+        assert_eq!(encrypted.len(), 109);
+
+        let decrypted = NoteData::decrypt(&secret_key, &encrypted).unwrap();
+        assert_eq!(data, decrypted);
+    }
+
+    #[test]
+    fn test_note_data_wrong_key_fails() {
+        let (_, public_key) = generate_keypair();
+        let (wrong_key, _) = generate_keypair();
+        let data = NoteData {
+            value: 1000,
+            blinding: [1u8; 32],
+            note_index: 0,
+        };
+
+        let encrypted = data.encrypt(&public_key).unwrap();
+        let result = NoteData::decrypt(&wrong_key, &encrypted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_note_data_invalid_length() {
+        let result = NoteData::from_bytes(&[0u8; 47]);
+        assert!(result.is_err());
+        let result = NoteData::from_bytes(&[0u8; 49]);
+        assert!(result.is_err());
     }
 
     #[test]

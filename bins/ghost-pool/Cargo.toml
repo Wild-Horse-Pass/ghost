@@ -106,6 +106,8 @@ default = ["zk-consensus", "mpc-ceremony"]
 zk-consensus = ["ghost-consensus/zk-consensus", "ghost-zkp"]
 # Enable MPC ceremony for ZK parameter generation
 mpc-ceremony = ["ghost-consensus/mpc-ceremony", "ghost-mpc"]
+# Use MPC ceremony parameters for ZK proofs (required for mainnet)
+zk-production = ["ghost-zkp/zk-production"]
 
 [dependencies.ghost-zkp]
 workspace = true

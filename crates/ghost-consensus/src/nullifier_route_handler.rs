@@ -281,6 +281,12 @@ impl NullifierRouteHandler {
         // Validate root and nullifier locally (no deterministic routing needed —
         // this node acts as validator for HTTP submissions from colocated ghost-pay)
         if !self.epoch_manager.is_root_valid(&tx.commitment_root) {
+            let our_root = self.epoch_manager.current_root().unwrap_or([0u8; 32]);
+            warn!(
+                requested_root = %hex::encode(&tx.commitment_root[..8]),
+                our_current_root = %hex::encode(&our_root[..8]),
+                "submit_external_transfer: commitment root not in valid roots window"
+            );
             return Err(GhostError::InvalidInput(
                 "Invalid commitment root".into(),
             ));

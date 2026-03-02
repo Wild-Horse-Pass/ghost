@@ -481,7 +481,7 @@ impl RpcConfig {
         // TLS required for remote connections
         if !self.is_localhost() && !self.tls_enabled {
             return Err(GhostError::Config(
-                "TLS required for remote Bitcoin Core connections. \
+                "TLS required for remote Ghost Core connections. \
                  Set tls_enabled=true or use localhost."
                     .into(),
             ));
@@ -562,7 +562,7 @@ impl BitcoinRpc {
         // Warn about insecure localhost (but allow it)
         if config.is_localhost() && !config.tls_enabled {
             tracing::warn!(
-                "Using unencrypted connection to Bitcoin Core on localhost. \
+                "Using unencrypted connection to Ghost Core on localhost. \
                  Consider enabling TLS for defense in depth."
             );
         }
@@ -679,7 +679,7 @@ impl BitcoinRpc {
             // Check circuit breaker first
             if !self.circuit_breaker.is_allowed() {
                 return Err(GhostError::Rpc(
-                    "Circuit breaker open - Bitcoin Core RPC unavailable".to_string(),
+                    "Circuit breaker open - Ghost Core RPC unavailable".to_string(),
                 ));
             }
 
@@ -909,7 +909,7 @@ impl BitcoinRpc {
         // Check circuit breaker first
         if !self.circuit_breaker.is_allowed() {
             return Err(GhostError::Rpc(
-                "Circuit breaker open - Bitcoin Core RPC unavailable".to_string(),
+                "Circuit breaker open - Ghost Core RPC unavailable".to_string(),
             ));
         }
 

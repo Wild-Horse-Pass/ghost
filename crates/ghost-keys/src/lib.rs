@@ -63,7 +63,7 @@ pub use derivation::{
     tagged_hash,
 };
 // M-15/M-17: Re-export Zeroizing for callers who receive zeroizing wrappers
-pub use encryption::{decrypt_note_data, encrypt_note_data};
+pub use encryption::{decrypt_note_data, encrypt_note_data, NoteData};
 pub use error::GhostKeyError;
 pub use ghost_id::{GhostId, GhostNetwork};
 pub use keys::{GhostKeys, GhostKeysExport};
