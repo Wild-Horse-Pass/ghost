@@ -8472,4 +8472,122 @@ mod tests {
         assert_eq!(registered.len(), 1);
         assert_eq!(registered[0].ghost_id, "ghost1alice");
     }
+
+    #[test]
+    fn test_glyph_claim_has_expires_at() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+        let cm = test_commitment(&pixels, "ghost1alice");
+
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+            .expect("Insert should succeed");
+
+        let record = db
+            .get_glyph_by_ghost_id("ghost1alice")
+            .expect("Query should succeed")
+            .expect("Record should exist");
+
+        // expires_at = created_at + 86400 (24h)
+        assert_eq!(record.expires_at, Some(1000 + 86400));
+    }
+
+    #[test]
+    fn test_glyph_registration_clears_expires_at() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+        let cm = test_commitment(&pixels, "ghost1alice");
+
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+            .expect("Insert should succeed");
+
+        db.complete_glyph_registration("ghost1alice", "txid123", 2000)
+            .expect("Registration should succeed");
+
+        let record = db
+            .get_glyph_by_ghost_id("ghost1alice")
+            .expect("Query should succeed")
+            .expect("Record should exist");
+
+        // expires_at should be NULL after registration
+        assert!(record.expires_at.is_none());
+    }
+
+    #[test]
+    fn test_glyph_cleanup_expired_claims() {
+        let db = Database::in_memory().expect("Failed to create DB");
+
+        // Insert two claims: one at t=1000 (expires t=87400), one at t=100000 (expires t=186400)
+        let pixels1 = test_glyph_pixels();
+        let bh1 = test_bitmap_hash(&pixels1);
+        let cm1 = test_commitment(&pixels1, "ghost1alice");
+        db.insert_glyph_claim("ghost1alice", &pixels1, &bh1, &cm1, 1000)
+            .expect("Insert should succeed");
+
+        let mut pixels2 = vec![1u8; 256];
+        for i in 0..256 {
+            pixels2[i] = ((i + 1) % 26) as u8;
+        }
+        let bh2 = test_bitmap_hash(&pixels2);
+        let cm2 = test_commitment(&pixels2, "ghost1bob");
+        db.insert_glyph_claim("ghost1bob", &pixels2, &bh2, &cm2, 100000)
+            .expect("Insert should succeed");
+
+        // At t=90000: alice's claim expired (87400 < 90000), bob's hasn't (186400 > 90000)
+        let deleted = db.cleanup_expired_glyph_claims(90000).expect("Cleanup should succeed");
+        assert_eq!(deleted, 1);
+
+        // Alice should be gone
+        assert!(db.get_glyph_by_ghost_id("ghost1alice").expect("Query ok").is_none());
+        // Bob should still exist
+        assert!(db.get_glyph_by_ghost_id("ghost1bob").expect("Query ok").is_some());
+    }
+
+    #[test]
+    fn test_glyph_cleanup_skips_registered() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+        let cm = test_commitment(&pixels, "ghost1alice");
+
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+            .expect("Insert should succeed");
+
+        // Complete registration — sets funding_txid and clears expires_at
+        db.complete_glyph_registration("ghost1alice", "txid123", 2000)
+            .expect("Registration should succeed");
+
+        // Cleanup far in the future — should NOT delete registered claims
+        let deleted = db.cleanup_expired_glyph_claims(999999999).expect("Cleanup should succeed");
+        assert_eq!(deleted, 0);
+
+        // Record should still exist
+        assert!(db.get_glyph_by_ghost_id("ghost1alice").expect("Query ok").is_some());
+    }
+
+    #[test]
+    fn test_glyph_cleanup_frees_bitmap_for_reuse() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+        let cm = test_commitment(&pixels, "ghost1alice");
+
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+            .expect("Insert should succeed");
+
+        // Bitmap should be taken
+        assert!(!db.is_bitmap_available(&bh).expect("Query ok"));
+
+        // Expire the claim
+        db.cleanup_expired_glyph_claims(90000).expect("Cleanup should succeed");
+
+        // Bitmap should be available again
+        assert!(db.is_bitmap_available(&bh).expect("Query ok"));
+
+        // A new claim with the same bitmap should succeed
+        let cm2 = test_commitment(&pixels, "ghost1bob");
+        db.insert_glyph_claim("ghost1bob", &pixels, &bh, &cm2, 100000)
+            .expect("Re-claim should succeed after expiry");
+    }
 }

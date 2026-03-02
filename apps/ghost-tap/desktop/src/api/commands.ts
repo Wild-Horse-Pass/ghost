@@ -303,6 +303,69 @@ export async function retryWash(txid: string): Promise<boolean> {
   return invoke("retry_wash", { txid });
 }
 
+// --- GhostGlyph ---
+
+export interface GlyphClaimResult {
+  commitment: string;
+  bitmap_hash: string;
+  status: string;
+}
+
+export interface GlyphInfoResult {
+  ghost_id: string;
+  pixels: number[];
+  bitmap_hash: string;
+  commitment: string;
+  funding_txid: string | null;
+  registered_at: number | null;
+  status: string;
+}
+
+export interface PaletteColor {
+  index: number;
+  r: number;
+  g: number;
+  b: number;
+}
+
+export async function claimGlyph(
+  ghostId: string,
+  pixels: number[],
+  payUrl: string,
+): Promise<GlyphClaimResult> {
+  return invoke("claim_glyph", { ghostId, pixels, payUrl });
+}
+
+export async function getGlyph(
+  ghostId: string,
+  payUrl: string,
+): Promise<GlyphInfoResult | null> {
+  return invoke("get_glyph", { ghostId, payUrl });
+}
+
+export async function checkGlyphAvailability(
+  pixels: number[],
+  payUrl: string,
+): Promise<boolean> {
+  return invoke("check_glyph_availability", { pixels, payUrl });
+}
+
+export async function renderGlyph(
+  pixels: number[],
+  ghostId: string,
+  scale: number,
+): Promise<number[]> {
+  return invoke("render_glyph", { pixels, ghostId, scale });
+}
+
+export function getGlyphPalette(): Promise<PaletteColor[]> {
+  return invoke("get_glyph_palette");
+}
+
+export async function validateGlyphPixels(pixels: number[]): Promise<boolean> {
+  return invoke("validate_glyph_pixels", { pixels });
+}
+
 // --- Helpers ---
 
 export function formatGhost(sats: number): string {

@@ -1115,6 +1115,217 @@ impl WalletHandle {
     }
 }
 
+// --- GhostGlyph FFI ---
+
+/// Glyph claim response from Ghost Pay
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiGlyphClaimResponse {
+    pub commitment: String,
+    pub bitmap_hash: String,
+    pub status: String,
+}
+
+/// Glyph information from Ghost Pay
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiGlyphInfo {
+    pub ghost_id: String,
+    pub pixels: Vec<u8>,
+    pub bitmap_hash: String,
+    pub commitment: String,
+    pub funding_txid: Option<String>,
+    pub registered_at: Option<u64>,
+    pub status: String,
+}
+
+/// A single palette color entry
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiPaletteColor {
+    pub index: u8,
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+/// Validate a glyph pixel array (all values 0..25, length 256)
+#[uniffi::export]
+pub fn glyph_validate_pixels(pixels: Vec<u8>) -> Result<(), GhostTapFfiError> {
+    crate::glyph::GlyphManager::validate_pixels(&pixels).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })
+}
+
+/// Compute the bitmap hash for a glyph design (hex-encoded SHA-256)
+#[uniffi::export]
+pub fn glyph_compute_bitmap_hash(pixels: Vec<u8>) -> Result<String, GhostTapFfiError> {
+    if pixels.len() != crate::glyph::GLYPH_SIZE {
+        return Err(GhostTapFfiError::OperationFailed {
+            message: format!(
+                "Expected {} pixels, got {}",
+                crate::glyph::GLYPH_SIZE,
+                pixels.len()
+            ),
+        });
+    }
+    let mut arr = [0u8; crate::glyph::GLYPH_SIZE];
+    arr.copy_from_slice(&pixels);
+    Ok(hex::encode(crate::glyph::GlyphManager::compute_bitmap_hash(&arr)))
+}
+
+/// Render a glyph as RGBA pixel data at the given scale factor.
+/// Returns raw RGBA bytes (width = 16*scale, height = 16*scale, 4 bytes per pixel).
+#[uniffi::export]
+pub fn glyph_render(
+    pixels: Vec<u8>,
+    ghost_id: String,
+    scale: u32,
+) -> Result<Vec<u8>, GhostTapFfiError> {
+    if pixels.len() != crate::glyph::GLYPH_SIZE {
+        return Err(GhostTapFfiError::OperationFailed {
+            message: format!(
+                "Expected {} pixels, got {}",
+                crate::glyph::GLYPH_SIZE,
+                pixels.len()
+            ),
+        });
+    }
+    let arr: [u8; crate::glyph::GLYPH_SIZE] =
+        pixels.as_slice().try_into().map_err(|_| GhostTapFfiError::OperationFailed {
+            message: "Invalid pixel array".into(),
+        })?;
+    let glyph = crate::glyph::GhostGlyph::new(arr, ghost_id).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
+    Ok(crate::glyph::GlyphManager::render(&glyph, scale))
+}
+
+/// Get the rendered dimensions (width, height) for a given scale factor
+#[uniffi::export]
+pub fn glyph_dimensions(scale: u32) -> Vec<u32> {
+    let (w, h) = crate::glyph::GlyphManager::dimensions(scale);
+    vec![w, h]
+}
+
+/// Get the full 26-color GhostGlyph palette
+#[uniffi::export]
+pub fn glyph_get_palette() -> Vec<FfiPaletteColor> {
+    crate::glyph::PALETTE
+        .iter()
+        .enumerate()
+        .map(|(i, &(r, g, b))| FfiPaletteColor {
+            index: i as u8,
+            r,
+            g,
+            b,
+        })
+        .collect()
+}
+
+/// Submit a glyph claim to Ghost Pay (async, uses blocking runtime)
+#[uniffi::export]
+pub fn glyph_claim(
+    ghost_pay_url: String,
+    ghost_id: String,
+    pixels: Vec<u8>,
+) -> Result<FfiGlyphClaimResponse, GhostTapFfiError> {
+    let config = crate::network::PayConfig {
+        base_url: ghost_pay_url,
+        ..crate::network::PayConfig::default()
+    };
+    let manager = crate::glyph::GlyphManager::new(config).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
+    let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
+        message: format!("Failed to create runtime: {e}"),
+    })?;
+    let resp = rt
+        .block_on(manager.claim(&ghost_id, &pixels))
+        .map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+    Ok(FfiGlyphClaimResponse {
+        commitment: resp.commitment,
+        bitmap_hash: resp.bitmap_hash,
+        status: resp.status,
+    })
+}
+
+/// Get glyph info from Ghost Pay (async, uses blocking runtime)
+#[uniffi::export]
+pub fn glyph_get_info(
+    ghost_pay_url: String,
+    ghost_id: String,
+) -> Result<Option<FfiGlyphInfo>, GhostTapFfiError> {
+    let config = crate::network::PayConfig {
+        base_url: ghost_pay_url,
+        ..crate::network::PayConfig::default()
+    };
+    let manager = crate::glyph::GlyphManager::new(config).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
+    let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
+        message: format!("Failed to create runtime: {e}"),
+    })?;
+    let info = rt
+        .block_on(manager.get_glyph(&ghost_id))
+        .map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+    Ok(info.map(|g| FfiGlyphInfo {
+        ghost_id: g.ghost_id,
+        pixels: g.pixels,
+        bitmap_hash: g.bitmap_hash,
+        commitment: g.commitment,
+        funding_txid: g.funding_txid,
+        registered_at: g.registered_at,
+        status: g.status,
+    }))
+}
+
+/// Check if a glyph design is available (async, uses blocking runtime)
+#[uniffi::export]
+pub fn glyph_check_availability(
+    ghost_pay_url: String,
+    pixels: Vec<u8>,
+) -> Result<bool, GhostTapFfiError> {
+    if pixels.len() != crate::glyph::GLYPH_SIZE {
+        return Err(GhostTapFfiError::OperationFailed {
+            message: format!(
+                "Expected {} pixels, got {}",
+                crate::glyph::GLYPH_SIZE,
+                pixels.len()
+            ),
+        });
+    }
+    let arr: [u8; crate::glyph::GLYPH_SIZE] =
+        pixels.as_slice().try_into().map_err(|_| GhostTapFfiError::OperationFailed {
+            message: "Invalid pixel array".into(),
+        })?;
+    let config = crate::network::PayConfig {
+        base_url: ghost_pay_url,
+        ..crate::network::PayConfig::default()
+    };
+    let manager = crate::glyph::GlyphManager::new(config).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
+    let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
+        message: format!("Failed to create runtime: {e}"),
+    })?;
+    rt.block_on(manager.is_available(&arr))
+        .map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1291,5 +1502,61 @@ mod tests {
     fn test_stop_processor_when_not_running() {
         let handle = WalletHandle::generate_12().unwrap();
         assert!(handle.stop_wash_processor().is_ok());
+    }
+
+    // --- GhostGlyph FFI Tests ---
+
+    #[test]
+    fn test_glyph_validate_pixels_valid() {
+        let pixels = vec![0u8; crate::glyph::GLYPH_SIZE];
+        assert!(glyph_validate_pixels(pixels).is_ok());
+    }
+
+    #[test]
+    fn test_glyph_validate_pixels_invalid_value() {
+        let mut pixels = vec![0u8; crate::glyph::GLYPH_SIZE];
+        pixels[0] = 26;
+        assert!(glyph_validate_pixels(pixels).is_err());
+    }
+
+    #[test]
+    fn test_glyph_validate_pixels_wrong_size() {
+        assert!(glyph_validate_pixels(vec![0u8; 100]).is_err());
+    }
+
+    #[test]
+    fn test_glyph_compute_bitmap_hash() {
+        let pixels = vec![5u8; crate::glyph::GLYPH_SIZE];
+        let hash1 = glyph_compute_bitmap_hash(pixels.clone()).unwrap();
+        let hash2 = glyph_compute_bitmap_hash(pixels).unwrap();
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64); // 32 bytes hex-encoded
+    }
+
+    #[test]
+    fn test_glyph_compute_bitmap_hash_wrong_size() {
+        assert!(glyph_compute_bitmap_hash(vec![0u8; 10]).is_err());
+    }
+
+    #[test]
+    fn test_glyph_render() {
+        let pixels = vec![0u8; crate::glyph::GLYPH_SIZE];
+        let rgba = glyph_render(pixels, "ghost1test".to_string(), 2).unwrap();
+        // 16*2 * 16*2 * 4 bytes per pixel = 4096
+        assert_eq!(rgba.len(), 32 * 32 * 4);
+    }
+
+    #[test]
+    fn test_glyph_dimensions() {
+        let dims = glyph_dimensions(4);
+        assert_eq!(dims, vec![64, 64]);
+    }
+
+    #[test]
+    fn test_glyph_get_palette() {
+        let palette = glyph_get_palette();
+        assert_eq!(palette.len(), crate::glyph::PALETTE_SIZE);
+        assert_eq!(palette[0].index, 0);
+        assert_eq!(palette[25].index, 25);
     }
 }
