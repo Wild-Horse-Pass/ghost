@@ -221,7 +221,7 @@ fn main() {
 
     // [6/7] Double-spend check
     println!("[6/7] Verifying double-spend rejection...");
-    let (status_ds_1, _) = http_post_authed_raw(
+    let (status_ds_1, _) = http_post_authed_with_retry(
         &format!("{}/api/v1/confidential/consolidate", api_url),
         &api_secret,
         &body_1,
@@ -353,7 +353,7 @@ fn main() {
 
     // [5/6] Double-spend check
     println!("[5/6] Verifying double-spend rejection...");
-    let (status_ds_2, _) = http_post_authed_raw(
+    let (status_ds_2, _) = http_post_authed_with_retry(
         &format!("{}/api/v1/confidential/unshield", api_url),
         &api_secret,
         &body_2,
@@ -509,7 +509,7 @@ fn main() {
         "epoch": 0,
     });
 
-    let (status_xc, body_xc) = http_post_authed_raw(
+    let (status_xc, body_xc) = http_post_authed_with_retry(
         &format!("{}/api/v1/confidential/consolidate", api_url),
         &api_secret,
         &body_cross_consolidate,
@@ -534,7 +534,7 @@ fn main() {
         "destination_address": "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
     });
 
-    let (status_xu, body_xu) = http_post_authed_raw(
+    let (status_xu, body_xu) = http_post_authed_with_retry(
         &format!("{}/api/v1/confidential/unshield", api_url),
         &api_secret,
         &body_cross_unshield,
@@ -738,22 +738,64 @@ fn get_merkle_proof(api_url: &str, note_index: u64) -> (Vec<[u8; 32]>, String) {
 }
 
 fn get_tree_state(api_url: &str) -> (String, u64, u64) {
-    let state: serde_json::Value =
-        http_get(&format!("{}/api/v1/confidential/tree", api_url));
-    let root = state["root"].as_str().unwrap_or("unknown").to_string();
-    let note_count = state["note_count"].as_u64().unwrap_or(0);
-    let nullifier_count = state["nullifier_count"].as_u64().unwrap_or(0);
-    (root, note_count, nullifier_count)
+    // Retry up to 3 times — server may need a moment after tree mutations
+    for attempt in 0..3 {
+        let state = http_get(&format!("{}/api/v1/confidential/tree", api_url));
+        if state.get("root").and_then(|v| v.as_str()).is_some() {
+            let root = state["root"].as_str().unwrap().to_string();
+            let note_count = state["note_count"].as_u64().unwrap_or(0);
+            let nullifier_count = state["nullifier_count"].as_u64().unwrap_or(0);
+            return (root, note_count, nullifier_count);
+        }
+        eprintln!(
+            "  [retry {}/3] tree state returned unexpected response: {}",
+            attempt + 1,
+            state
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("Failed to get tree state after 3 attempts");
 }
 
 fn http_get(url: &str) -> serde_json::Value {
-    let output = std::process::Command::new("curl")
-        .args(["-s", url])
-        .output()
-        .expect("curl failed");
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
-        serde_json::json!({"error": "Failed to parse response"})
-    })
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        let output = std::process::Command::new("curl")
+            .args(["-s", "--max-time", "10", url])
+            .output()
+            .expect("curl failed");
+        let raw = String::from_utf8_lossy(&output.stdout);
+        if raw.contains("Too Many Requests") {
+            eprintln!("  [retry {}/5] GET rate limited, waiting 2s...", attempt + 1);
+            continue;
+        }
+        return serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            eprintln!("  [http_get] JSON parse error for {}: {} — raw: '{}'", url, e, raw);
+            serde_json::json!({"error": "Failed to parse response"})
+        });
+    }
+    panic!("GET still rate-limited after 5 retries on {}", url);
+}
+
+/// POST with retry on 429 (rate limiting). Waits 2s between retries, up to 5 attempts.
+fn http_post_authed_with_retry(
+    url: &str,
+    secret: &str,
+    body: &serde_json::Value,
+) -> (u16, String) {
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        let (status, response) = http_post_authed_raw(url, secret, body);
+        if status != 429 {
+            return (status, response);
+        }
+        eprintln!("  [retry {}/5] Rate limited (429), waiting 2s...", attempt + 1);
+    }
+    panic!("Still rate-limited after 5 retries on {}", url);
 }
 
 fn compute_hmac(secret: &str, timestamp: &str, body: &str) -> String {
@@ -764,7 +806,7 @@ fn compute_hmac(secret: &str, timestamp: &str, body: &str) -> String {
 }
 
 fn http_post_authed(url: &str, secret: &str, body: &serde_json::Value) -> serde_json::Value {
-    let (status, response) = http_post_authed_raw(url, secret, body);
+    let (status, response) = http_post_authed_with_retry(url, secret, body);
     if status != 200 {
         eprintln!("WARNING: HTTP {} from {}: {}", status, url, response);
     }
