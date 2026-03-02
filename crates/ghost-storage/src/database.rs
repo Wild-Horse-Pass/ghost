@@ -39,7 +39,7 @@ use ghost_common::error::{GhostError, GhostResult};
 /// L-14: RAII guard that restores the original umask on drop.
 /// Ensures umask is restored even if a panic occurs during file creation.
 #[cfg(unix)]
-struct UmaskGuard {
+pub struct UmaskGuard {
     old_umask: libc::mode_t,
 }
 
@@ -47,7 +47,7 @@ struct UmaskGuard {
 impl UmaskGuard {
     /// Set a restrictive umask and return a guard that restores the original on drop.
     /// umask 0o077 means: remove all permissions for group and others.
-    fn new_restrictive() -> Self {
+    pub fn new_restrictive() -> Self {
         // SAFETY: libc::umask is a POSIX standard function that:
         // 1. Atomically sets the process umask to the specified value
         // 2. Returns the previous umask value (which we store for restoration)
@@ -243,59 +243,8 @@ impl Database {
 
         Self::initialize_connection(&conn)?;
 
-        // H-DB-2 FIX: Verify permissions are correct and fix if needed
-        // This handles cases where the file existed before with wrong permissions
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            // Verify/fix main database file permissions
-            if let Ok(metadata) = std::fs::metadata(path) {
-                let perms = metadata.permissions();
-                if perms.mode() & 0o077 != 0 {
-                    warn!(
-                        path = %path.display(),
-                        mode = format!("{:o}", perms.mode()),
-                        "H-DB-2: Database file has weak permissions, fixing..."
-                    );
-                    let mut new_perms = perms;
-                    new_perms.set_mode(0o600);
-                    if let Err(e) = std::fs::set_permissions(path, new_perms) {
-                        return Err(GhostError::Database(format!(
-                            "Failed to secure database file permissions: {}",
-                            e
-                        )));
-                    }
-                }
-            }
-
-            // H-DB-2 FIX: Also secure WAL and SHM files if they exist
-            // These may be created by SQLite after our umask was restored,
-            // so we verify and fix their permissions as well.
-            for ext in ["db-wal", "db-shm"] {
-                let aux_path = path.with_extension(ext);
-                if aux_path.exists() {
-                    if let Ok(metadata) = std::fs::metadata(&aux_path) {
-                        let perms = metadata.permissions();
-                        if perms.mode() & 0o077 != 0 {
-                            warn!(
-                                path = %aux_path.display(),
-                                mode = format!("{:o}", perms.mode()),
-                                "H-DB-2: WAL/SHM file has weak permissions, fixing..."
-                            );
-                            let mut new_perms = perms;
-                            new_perms.set_mode(0o600);
-                            if let Err(e) = std::fs::set_permissions(&aux_path, new_perms) {
-                                return Err(GhostError::Database(format!(
-                                    "Failed to secure auxiliary file permissions: {}",
-                                    e
-                                )));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        Self::verify_file_permissions(path)?;
 
         let db = Self {
             inner: Arc::new(DatabaseInner {
@@ -333,6 +282,151 @@ impl Database {
         db.with_connection(run_migrations)?;
 
         Ok(db)
+    }
+
+    /// Open an encrypted database using SQLCipher.
+    ///
+    /// The key must be 32 bytes. PRAGMA key is issued before any other operations.
+    /// Existing unencrypted databases will fail — use `migrate_to_encrypted()` first.
+    pub fn open_encrypted<P: AsRef<Path>>(path: P, key: &[u8; 32]) -> GhostResult<Self> {
+        let path = path.as_ref();
+        let path_str = path.to_string_lossy().to_string();
+        info!(path = %path_str, "Opening encrypted database");
+
+        #[cfg(unix)]
+        let _umask_guard = UmaskGuard::new_restrictive();
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
+        )
+        .map_err(|e| GhostError::Database(e.to_string()))?;
+
+        #[cfg(unix)]
+        drop(_umask_guard);
+
+        // PRAGMA key MUST be the first statement after opening
+        let key_hex = hex::encode(key);
+        conn.pragma_update(None, "key", format!("x'{}'", key_hex))
+            .map_err(|e| GhostError::Database(format!("SQLCipher PRAGMA key: {}", e)))?;
+
+        // Verify key by reading sqlite_master
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+            .map_err(|_| {
+                GhostError::Database(
+                    "SQLCipher key verification failed — wrong key or unencrypted database".into(),
+                )
+            })?;
+
+        Self::initialize_connection(&conn)?;
+
+        #[cfg(unix)]
+        Self::verify_file_permissions(path)?;
+
+        let db = Self {
+            inner: Arc::new(DatabaseInner {
+                write_conn: Mutex::new(conn),
+                path: path_str,
+                in_memory: false,
+                encryption_key: RwLock::new(Some(*key)),
+            }),
+        };
+
+        db.with_connection(run_migrations)?;
+        Ok(db)
+    }
+
+    /// Migrate an existing unencrypted database to SQLCipher encryption.
+    /// Creates an encrypted copy, then atomically swaps files.
+    pub fn migrate_to_encrypted<P: AsRef<Path>>(path: P, key: &[u8; 32]) -> GhostResult<()> {
+        let path = path.as_ref();
+        let conn =
+            Connection::open(path).map_err(|e| GhostError::Database(e.to_string()))?;
+
+        // Verify it's readable as unencrypted
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+            .map_err(|e| GhostError::Database(format!("Cannot read DB: {}", e)))?;
+
+        let encrypted_path = path.with_extension("db.encrypted");
+        let key_hex = hex::encode(key);
+
+        conn.execute_batch(&format!(
+            "ATTACH DATABASE '{}' AS encrypted KEY \"x'{}'\"; \
+             SELECT sqlcipher_export('encrypted'); \
+             DETACH DATABASE encrypted;",
+            encrypted_path.display(),
+            key_hex
+        ))
+        .map_err(|e| GhostError::Database(format!("SQLCipher export: {}", e)))?;
+
+        drop(conn);
+
+        // Atomic swap
+        let backup = path.with_extension("db.unencrypted.bak");
+        std::fs::rename(path, &backup)?;
+        std::fs::rename(&encrypted_path, path)?;
+
+        info!("Migrated to SQLCipher. Backup: {}", backup.display());
+        Ok(())
+    }
+
+    /// H-DB-2: Verify and fix file permissions on database and auxiliary files.
+    #[cfg(unix)]
+    fn verify_file_permissions(path: &Path) -> GhostResult<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Verify/fix main database file permissions
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let perms = metadata.permissions();
+            if perms.mode() & 0o077 != 0 {
+                warn!(
+                    path = %path.display(),
+                    mode = format!("{:o}", perms.mode()),
+                    "H-DB-2: Database file has weak permissions, fixing..."
+                );
+                let mut new_perms = perms;
+                new_perms.set_mode(0o600);
+                if let Err(e) = std::fs::set_permissions(path, new_perms) {
+                    return Err(GhostError::Database(format!(
+                        "Failed to secure database file permissions: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        // Also secure WAL and SHM files if they exist
+        for ext in ["db-wal", "db-shm"] {
+            let aux_path = path.with_extension(ext);
+            if aux_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&aux_path) {
+                    let perms = metadata.permissions();
+                    if perms.mode() & 0o077 != 0 {
+                        warn!(
+                            path = %aux_path.display(),
+                            mode = format!("{:o}", perms.mode()),
+                            "H-DB-2: WAL/SHM file has weak permissions, fixing..."
+                        );
+                        let mut new_perms = perms;
+                        new_perms.set_mode(0o600);
+                        if let Err(e) = std::fs::set_permissions(&aux_path, new_perms) {
+                            return Err(GhostError::Database(format!(
+                                "Failed to secure auxiliary file permissions: {}",
+                                e
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Initialize connection settings

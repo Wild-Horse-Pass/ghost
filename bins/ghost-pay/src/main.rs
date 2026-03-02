@@ -355,6 +355,22 @@ fn safe_block_height_i64(height: i64) -> Result<u32, anyhow::Error> {
     Ok(height as u32)
 }
 
+/// Derive SQLCipher database key from password with domain-separated salt.
+/// Uses lower scrypt cost (log_n=14) than wallet key derivation since this runs on every startup.
+/// The fixed domain-specific salt ensures this produces a different key than the wallet encryption key.
+fn derive_db_key(password: &str) -> [u8; 32] {
+    let params = ScryptParams::new(14, 8, 1, 32).expect("scrypt params");
+    let mut key = [0u8; 32];
+    scrypt(
+        password.as_bytes(),
+        b"ghost-pay-sqlcipher-v1",
+        &params,
+        &mut key,
+    )
+    .expect("scrypt");
+    key
+}
+
 /// Derive encryption key from password using scrypt
 fn derive_encryption_key(password: &str, salt: &[u8]) -> Result<[u8; 32], anyhow::Error> {
     let params = ScryptParams::new(SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, 32)
@@ -475,32 +491,34 @@ fn get_encryption_password(args: &Args, network: Network) -> Result<String> {
 
     let password = hex::encode(random_bytes);
 
-    // Store the password with restricted permissions
-    // First, ensure the data directory exists
+    // Atomic write: umask ensures temp file is created 0o600, rename is atomic
     std::fs::create_dir_all(&args.data_dir)?;
 
-    // Write password file
-    std::fs::write(&password_path, &password).map_err(|e| {
+    #[cfg(unix)]
+    let _umask_guard = ghost_storage::UmaskGuard::new_restrictive();
+
+    let temp_suffix = {
+        let mut buf = [0u8; 4];
+        getrandom::getrandom(&mut buf).unwrap_or_default();
+        hex::encode(buf)
+    };
+    let temp_path = password_path.with_extension(format!("tmp.{}", temp_suffix));
+
+    std::fs::write(&temp_path, &password).map_err(|e| {
         anyhow::anyhow!(
-            "Failed to write password file {}: {}",
-            password_path.display(),
+            "Failed to write temp password file {}: {}",
+            temp_path.display(),
             e
         )
     })?;
 
-    // On Unix, set restrictive permissions (owner read/write only)
+    std::fs::rename(&temp_path, &password_path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp_path);
+        anyhow::anyhow!("Failed to rename password file: {}", e)
+    })?;
+
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&password_path, perms).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to set permissions on password file {}: {}",
-                password_path.display(),
-                e
-            )
-        })?;
-    }
+    drop(_umask_guard);
 
     info!(
         "Generated and stored new key password at {} (non-mainnet only)",
@@ -1022,10 +1040,25 @@ async fn main() -> Result<()> {
         _ => Network::Regtest,
     };
 
-    // Initialize database
+    // Initialize encrypted database (SQLCipher)
     let db_path = std::path::Path::new(&args.data_dir).join("ghost-pay.db");
-    let db = Arc::new(Database::open(&db_path)?);
-    info!("Database opened: {}", db_path.display());
+    let encryption_password_for_db = get_encryption_password(&args, network)?;
+    let db_key = derive_db_key(&encryption_password_for_db);
+
+    let db = if db_path.exists() {
+        match Database::open_encrypted(&db_path, &db_key) {
+            Ok(db) => Arc::new(db),
+            Err(_) => {
+                // Might be unencrypted (pre-upgrade) — migrate
+                info!("Attempting migration from unencrypted to SQLCipher...");
+                Database::migrate_to_encrypted(&db_path, &db_key)?;
+                Arc::new(Database::open_encrypted(&db_path, &db_key)?)
+            }
+        }
+    } else {
+        Arc::new(Database::open_encrypted(&db_path, &db_key)?)
+    };
+    info!("Encrypted database opened: {}", db_path.display());
 
     // Create pending_transfers table for L2 block production
     db.with_connection(|conn| {

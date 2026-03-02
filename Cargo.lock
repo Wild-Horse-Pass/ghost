@@ -3049,6 +3049,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs 5.0.1",
+ "getrandom 0.2.17",
  "ghost-common",
  "hex",
  "hmac",

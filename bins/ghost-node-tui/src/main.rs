@@ -51,6 +51,7 @@ mod api;
 mod app;
 mod config;
 mod pages;
+mod setup;
 mod theme;
 mod widgets;
 mod wizard;
@@ -261,13 +262,34 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
         match wiz.handle_key(code) {
             WizardAction::Continue => {}
             WizardAction::Submit => {
-                // Wizard completed — identify which wizard by first step id
                 let wizard_id = app
                     .active_wizard
                     .as_ref()
                     .and_then(|w| w.steps.first().map(|s| s.id))
                     .unwrap_or("");
-                app.status_message = format!("Wizard '{}' submitted", wizard_id);
+
+                if wizard_id == "welcome" {
+                    let fields = app.active_wizard.as_ref().unwrap().fields.clone();
+                    let config_dir = std::path::PathBuf::from("/etc/ghost");
+                    let data_dir = dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                        .join(".ghost/data");
+
+                    match crate::setup::apply_initial_setup(&fields, &config_dir, &data_dir) {
+                        Ok(result) => {
+                            app.status_message = format!(
+                                "Setup complete! Node: {}... Config: {}",
+                                &result.node_id_hex[..16],
+                                result.config_path.display()
+                            );
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Setup failed: {}", e);
+                        }
+                    }
+                } else {
+                    app.status_message = format!("Wizard '{}' submitted", wizard_id);
+                }
                 app.active_wizard = None;
             }
             WizardAction::Close => {
