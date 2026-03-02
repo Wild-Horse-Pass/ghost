@@ -353,6 +353,11 @@ impl Database {
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
             .map_err(|e| GhostError::Database(format!("Cannot read DB: {}", e)))?;
 
+        // Read schema version before export (PRAGMA user_version is not copied by sqlcipher_export)
+        let schema_version: u32 = conn
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .map_err(|e| GhostError::Database(format!("Read user_version: {}", e)))?;
+
         let encrypted_path = path.with_extension("db.encrypted");
         let key_hex = hex::encode(key);
 
@@ -367,12 +372,30 @@ impl Database {
 
         drop(conn);
 
+        // Set user_version on the encrypted database so migrations don't re-run
+        {
+            let enc_conn = Connection::open(&encrypted_path)
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            enc_conn
+                .pragma_update(None, "key", format!("x'{}'", key_hex))
+                .map_err(|e| GhostError::Database(format!("SQLCipher PRAGMA key: {}", e)))?;
+            enc_conn
+                .execute_batch(&format!("PRAGMA user_version = {};", schema_version))
+                .map_err(|e| {
+                    GhostError::Database(format!("Set user_version on encrypted DB: {}", e))
+                })?;
+        }
+
         // Atomic swap
         let backup = path.with_extension("db.unencrypted.bak");
         std::fs::rename(path, &backup)?;
         std::fs::rename(&encrypted_path, path)?;
 
-        info!("Migrated to SQLCipher. Backup: {}", backup.display());
+        info!(
+            schema_version,
+            "Migrated to SQLCipher. Backup: {}",
+            backup.display()
+        );
         Ok(())
     }
 
