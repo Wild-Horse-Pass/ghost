@@ -2331,7 +2331,7 @@ impl MeshNetwork {
             let pow_proof = self.identity.pow_proof().map(|p| (p.nonce, p.difficulty));
             let ping = ghost_common::types::HealthPing {
                 node_id: self.identity.node_id(),
-                public_address: self.config.public_address.clone(),
+                public_address: String::new(), // S-7: Don't broadcast IP in cleartext ZMQ
                 block_height: 0, // Would track actual height
                 round_id: 0,     // Would track current round
                 capabilities: *self.capabilities.read(),

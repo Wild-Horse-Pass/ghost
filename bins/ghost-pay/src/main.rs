@@ -3222,7 +3222,8 @@ struct ConsolidateRequest {
     commitment_root: String,
     nullifiers: [String; 4],
     output_commitment: String,
-    encrypted_output: Option<String>,
+    /// S-5: Required — encrypted note for wallet scanner discoverability
+    encrypted_output: String,
     epoch: u64,
 }
 
@@ -3244,6 +3245,20 @@ async fn submit_consolidation(
             Json(serde_json::json!({"error": "Proof must be exactly 192 bytes"})),
         ));
     }
+
+    // S-5: Validate encrypted_output (min 109 bytes = 218 hex chars: 33 ephemeral + 12 nonce + 48 plaintext + 16 tag)
+    if req.encrypted_output.len() < 218 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "encrypted_output too short (min 109 bytes hex-encoded)"})),
+        ));
+    }
+    hex::decode(&req.encrypted_output).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid encrypted_output hex"})),
+        )
+    })?;
 
     // Step 2: Parse hex fields
     let commitment_root = parse_hex_32(&req.commitment_root).map_err(|_| {
@@ -3464,7 +3479,7 @@ async fn submit_consolidation(
             "recipient_commitment": hex::encode([0u8; 32]),
             "commitment_root": hex::encode(commitment_root),
             "proof": proof_bytes,
-            "encrypted_change": hex::decode(req.encrypted_output.as_deref().unwrap_or("")).unwrap_or_default(),
+            "encrypted_change": hex::decode(&req.encrypted_output).unwrap_or_default(),
             "encrypted_recipient": [],
             "timestamp": timestamp,
         },

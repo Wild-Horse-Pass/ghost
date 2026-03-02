@@ -1,0 +1,18 @@
+[package]
+name = "ghost-setup"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Headless CLI for Ghost Pool node setup"
+
+[[bin]]
+name = "ghost-setup"
+path = "src/main.rs"
+
+[dependencies]
+ghost-common = { path = "../../crates/ghost-common" }
+clap = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+dirs = "5.0"

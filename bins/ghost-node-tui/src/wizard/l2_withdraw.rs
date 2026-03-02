@@ -6,6 +6,7 @@ use super::{FieldDef, FieldType, WizardState, WizardStepDef};
 /// 4 steps: Select lock → Destination address → Settlement class → Confirm
 pub fn create() -> WizardState {
     WizardState::new(
+        "l2_withdraw",
         "Withdraw \u{2014} Reconcile Lock",
         vec![
             WizardStepDef {

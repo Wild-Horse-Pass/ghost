@@ -2,6 +2,7 @@ use super::{FieldDef, FieldType, WizardState, WizardStepDef};
 
 pub fn create() -> WizardState {
     WizardState::new(
+        "pool_setup",
         "Setting Up a Pool",
         vec![
             WizardStepDef {

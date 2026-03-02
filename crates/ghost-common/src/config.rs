@@ -1064,6 +1064,12 @@ pub struct NetworkConfig {
     /// **MAINNET REQUIREMENT**: `tls.cert_path` MUST be set for mainnet (no self-signed).
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Ghost Mode: privacy-enhanced relay + stealth addressing
+    #[serde(default)]
+    pub ghost_mode: bool,
+    /// Ghost Shroud: random relay delay (0-5s) to prevent origin analysis
+    #[serde(default)]
+    pub shroud_enabled: bool,
 }
 
 fn default_noise_enabled() -> bool {
@@ -1088,6 +1094,8 @@ impl Default for NetworkConfig {
             internal_api_secret: None,
             noise_enabled: true,
             tls: TlsConfig::default(),
+            ghost_mode: false,
+            shroud_enabled: false,
         }
     }
 }
@@ -1206,6 +1214,16 @@ pub enum BudsTier {
     T3,
 }
 
+/// Ghost Haze storage mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HazeMode {
+    #[default]
+    Standard,
+    Hazed,
+    FullArchive,
+}
+
 /// Storage configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
@@ -1217,6 +1235,9 @@ pub struct StorageConfig {
     pub archive_mode: bool,
     /// Pruning height (blocks to keep, 0 = no pruning)
     pub prune_height: u64,
+    /// Ghost Haze storage mode
+    #[serde(default)]
+    pub haze_mode: HazeMode,
 }
 
 impl Default for StorageConfig {
@@ -1226,6 +1247,7 @@ impl Default for StorageConfig {
             wal_mode: true,
             archive_mode: false,
             prune_height: 0,
+            haze_mode: HazeMode::default(),
         }
     }
 }

@@ -60,6 +60,8 @@ members = [
     "bins/ghost-node-tui",
     # Registry service for load balancing
     "bins/ghost-registry",
+    # Headless setup CLI
+    "bins/ghost-setup",
     # Mobile Apps
     "apps/ghost-tap/core",
     "apps/ghost-tap/tests/integration",

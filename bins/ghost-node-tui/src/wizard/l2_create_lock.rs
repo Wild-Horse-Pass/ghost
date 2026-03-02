@@ -6,6 +6,7 @@ use super::{FieldDef, FieldType, WizardState, WizardStepDef};
 /// 4 steps: Denomination → Timelock → Label → Confirm
 pub fn create() -> WizardState {
     WizardState::new(
+        "l2_create_lock",
         "Create Ghost Lock",
         vec![
             WizardStepDef {

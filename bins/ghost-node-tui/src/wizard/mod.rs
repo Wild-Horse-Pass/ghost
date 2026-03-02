@@ -30,36 +30,8 @@ pub enum FieldType {
     Info(String),
 }
 
-/// Field values stored per field key
-#[derive(Debug, Clone)]
-pub enum FieldValue {
-    Text(String),
-    Bool(bool),
-    Selected(usize),
-}
-
-impl FieldValue {
-    pub fn as_text(&self) -> &str {
-        match self {
-            FieldValue::Text(s) => s,
-            _ => "",
-        }
-    }
-
-    pub fn as_bool(&self) -> bool {
-        match self {
-            FieldValue::Bool(b) => *b,
-            _ => false,
-        }
-    }
-
-    pub fn as_selected(&self) -> usize {
-        match self {
-            FieldValue::Selected(i) => *i,
-            _ => 0,
-        }
-    }
-}
+/// Field values stored per field key — re-exported from ghost-common for shared use
+pub use ghost_common::setup::FieldValue;
 
 /// Definition of a single field in a wizard step
 #[derive(Debug, Clone)]
@@ -84,6 +56,8 @@ pub type WizardSubmitFn = Box<dyn FnOnce(&HashMap<String, FieldValue>) -> String
 
 /// State machine for a multi-step wizard
 pub struct WizardState {
+    /// Unique wizard identifier for dispatch
+    pub id: &'static str,
     pub title: String,
     pub steps: Vec<WizardStepDef>,
     pub current_step: usize,
@@ -98,8 +72,8 @@ pub struct WizardState {
 }
 
 impl WizardState {
-    /// Create a new wizard with the given title and step definitions
-    pub fn new(title: impl Into<String>, steps: Vec<WizardStepDef>) -> Self {
+    /// Create a new wizard with the given id, title, and step definitions
+    pub fn new(id: &'static str, title: impl Into<String>, steps: Vec<WizardStepDef>) -> Self {
         let mut fields = HashMap::new();
         // Initialize all fields with defaults
         for step in &steps {
@@ -115,6 +89,7 @@ impl WizardState {
         }
 
         Self {
+            id,
             title: title.into(),
             steps,
             current_step: 0,

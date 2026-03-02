@@ -2,6 +2,7 @@ use super::{FieldDef, FieldType, WizardState, WizardStepDef};
 
 pub fn create() -> WizardState {
     WizardState::new(
+        "mempool_policy",
         "Mempool & Block Policy",
         vec![
             WizardStepDef {

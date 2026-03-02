@@ -3247,6 +3247,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghost-setup"
+version = "1.8.0"
+dependencies = [
+ "clap",
+ "dirs 5.0.1",
+ "getrandom 0.2.17",
+ "ghost-common",
+ "hex",
+]
+
+[[package]]
 name = "ghost-storage"
 version = "1.8.0"
 dependencies = [

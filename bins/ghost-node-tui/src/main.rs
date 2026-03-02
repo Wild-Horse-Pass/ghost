@@ -265,31 +265,38 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                 let wizard_id = app
                     .active_wizard
                     .as_ref()
-                    .and_then(|w| w.steps.first().map(|s| s.id))
+                    .map(|w| w.id)
                     .unwrap_or("");
+                let fields = app.active_wizard.as_ref().unwrap().fields.clone();
+                let config_path = std::path::PathBuf::from("/etc/ghost/pool.toml");
+                let data_dir = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                    .join(".ghost/data");
 
-                if wizard_id == "welcome" {
-                    let fields = app.active_wizard.as_ref().unwrap().fields.clone();
-                    let config_dir = std::path::PathBuf::from("/etc/ghost");
-                    let data_dir = dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                        .join(".ghost/data");
-
-                    match crate::setup::apply_initial_setup(&fields, &config_dir, &data_dir) {
-                        Ok(result) => {
-                            app.status_message = format!(
+                let result = match wizard_id {
+                    "initial_setup" => {
+                        let config_dir = std::path::PathBuf::from("/etc/ghost");
+                        crate::setup::apply_initial_setup(&fields, &config_dir, &data_dir)
+                            .map(|r| format!(
                                 "Setup complete! Node: {}... Config: {}",
-                                &result.node_id_hex[..16],
-                                result.config_path.display()
-                            );
-                        }
-                        Err(e) => {
-                            app.status_message = format!("Setup failed: {}", e);
-                        }
+                                &r.node_id_hex[..16],
+                                r.config_path.display()
+                            ))
                     }
-                } else {
-                    app.status_message = format!("Wizard '{}' submitted", wizard_id);
-                }
+                    "change_setup" => crate::setup::apply_change_setup(&fields, &config_path),
+                    "reaper" => crate::setup::apply_reaper(&fields, &config_path),
+                    "pool_setup" => crate::setup::apply_pool_setup(&fields, &config_path),
+                    "ghost_mode" => crate::setup::apply_ghost_mode(&fields, &config_path),
+                    "shroud" => crate::setup::apply_shroud(&fields, &config_path),
+                    "haze" => crate::setup::apply_haze(&fields, &config_path),
+                    "mempool_policy" => crate::setup::apply_mempool_policy(&fields, &config_path),
+                    _ => Ok(format!("Wizard '{}' submitted (no backend)", wizard_id)),
+                };
+
+                app.status_message = match result {
+                    Ok(msg) => msg,
+                    Err(e) => format!("Failed: {}", e),
+                };
                 app.active_wizard = None;
             }
             WizardAction::Close => {

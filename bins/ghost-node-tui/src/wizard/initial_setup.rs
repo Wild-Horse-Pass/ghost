@@ -7,6 +7,7 @@ use super::{FieldDef, FieldType, FieldValue, WizardState, WizardStepDef};
 /// they don't want during the wizard.
 pub fn create() -> WizardState {
     let mut wizard = WizardState::new(
+        "initial_setup",
         "Initial Node Setup",
         vec![
             WizardStepDef {

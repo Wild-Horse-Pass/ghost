@@ -2,6 +2,7 @@ use super::{FieldDef, FieldType, WizardState, WizardStepDef};
 
 pub fn create() -> WizardState {
     WizardState::new(
+        "reaper",
         "Reaper \u{2014} Mempool Policy",
         vec![
             WizardStepDef {

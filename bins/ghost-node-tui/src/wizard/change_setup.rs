@@ -2,6 +2,7 @@ use super::{FieldDef, FieldType, FieldValue, WizardState, WizardStepDef};
 
 pub fn create() -> WizardState {
     WizardState::new(
+        "change_setup",
         "Change Node Setup",
         vec![
             WizardStepDef {

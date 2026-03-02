@@ -6,6 +6,7 @@ use super::{FieldDef, FieldType, WizardState, WizardStepDef};
 /// 3 steps: Info → Generate → Display
 pub fn create() -> WizardState {
     WizardState::new(
+        "l2_ghost_id",
         "Ghost ID \u{2014} L2 Identity",
         vec![
             WizardStepDef {

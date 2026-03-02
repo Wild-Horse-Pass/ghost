@@ -42,6 +42,7 @@ pub mod metrics;
 pub mod rpc;
 pub mod sanitize;
 pub mod serde_hex;
+pub mod setup;
 pub mod signer;
 pub mod template_verifier;
 pub mod tls;
