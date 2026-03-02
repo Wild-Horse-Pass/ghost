@@ -928,25 +928,38 @@ mod tests {
 
     #[test]
     fn test_timestamp_validation_edge_case() {
-        // Exactly at the boundary should be valid
+        // Test values safely inside the boundary (100ms buffer avoids TOCTOU race
+        // between our Utc::now() and validate_timestamp's internal Utc::now())
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let boundary_future = now_ms + MAX_TIMESTAMP_DRIFT_MS;
-        let boundary_past = now_ms - MAX_TIMESTAMP_DRIFT_MS;
+        let inside_future = now_ms + MAX_TIMESTAMP_DRIFT_MS - 100;
+        let inside_past = now_ms - MAX_TIMESTAMP_DRIFT_MS + 100;
 
-        // Boundary should be valid (or just barely invalid due to timing)
-        // We allow a small tolerance for test timing
-        let future_result = validate_timestamp(boundary_future);
-        let past_result = validate_timestamp(boundary_past);
-
-        // At least one of these should pass (timing dependent)
-        // The test verifies the boundary logic works
         assert!(
-            future_result.is_ok()
-                || matches!(future_result, Err(MessageValidationError::TimestampInFuture(d)) if d < 1000)
+            validate_timestamp(inside_future).is_ok(),
+            "100ms inside future boundary should be valid"
         );
         assert!(
-            past_result.is_ok()
-                || matches!(past_result, Err(MessageValidationError::TimestampInPast(d)) if d < 1000)
+            validate_timestamp(inside_past).is_ok(),
+            "100ms inside past boundary should be valid"
+        );
+
+        // Test values clearly outside the boundary
+        let outside_future = now_ms + MAX_TIMESTAMP_DRIFT_MS + 1000;
+        let outside_past = now_ms - MAX_TIMESTAMP_DRIFT_MS - 1000;
+
+        assert!(
+            matches!(
+                validate_timestamp(outside_future),
+                Err(MessageValidationError::TimestampInFuture(_))
+            ),
+            "1s outside future boundary should be rejected"
+        );
+        assert!(
+            matches!(
+                validate_timestamp(outside_past),
+                Err(MessageValidationError::TimestampInPast(_))
+            ),
+            "1s outside past boundary should be rejected"
         );
     }
 
