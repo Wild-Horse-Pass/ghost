@@ -5,6 +5,7 @@
 
 pub mod crypto;
 pub mod ffi;
+pub mod glyph;
 pub mod merchant;
 pub mod network;
 pub mod payment;

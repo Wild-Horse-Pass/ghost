@@ -1,0 +1,16 @@
+[package]
+name = "ghost-glyph"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "GhostGlyph visual identity system - permanent 16x16 pixel ghost bitmaps bound to Ghost IDs"
+
+[dependencies]
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]

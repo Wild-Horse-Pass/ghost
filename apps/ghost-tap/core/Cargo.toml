@@ -15,6 +15,7 @@ uniffi-cli = ["uniffi/cli"]
 [dependencies]
 # Internal crates
 ghost-common.workspace = true
+ghost-glyph.workspace = true
 
 # Crypto
 bip39.workspace = true

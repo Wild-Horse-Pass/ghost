@@ -418,7 +418,7 @@ A Groth16 ZK circuit that proves a sender is authorized to spend a note in the L
 - Source: `crates/ghost-zkp/src/circuit/note_spend.rs`
 
 ### NullifierRouteHandler
-The L2 transaction validator that replaces the earlier ZkVoteHandler and L2BlockProducer. Validates sender-side Groth16 proofs, routes transactions by nullifier prefix for deterministic validator assignment, manages BFT checkpoints (every 10 seconds, all-node, 67% threshold), and produces epoch transition proposals.
+The L2 transaction validator. Validates sender-side Groth16 proofs, routes transactions by nullifier prefix for deterministic validator assignment, manages BFT checkpoints (every 10 seconds, all-node, 67% threshold), and produces epoch transition proposals.
 - Source: `crates/ghost-consensus/src/nullifier_route_handler.rs`
 
 ### EpochManager

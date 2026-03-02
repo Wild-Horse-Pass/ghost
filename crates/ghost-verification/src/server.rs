@@ -712,6 +712,14 @@ pub type L2SubmitFn = Arc<dyn Fn(Vec<u8>) -> GhostResult<()> + Send + Sync>;
 /// Params: (commitment, note_index, block_height)
 pub type L2SyncCommitmentFn = Arc<dyn Fn([u8; 32], u64, u64) -> GhostResult<()> + Send + Sync>;
 
+/// Callback for relaying a glyph claim to the mesh.
+/// Takes serialized GhostGlyphClaimMessage JSON bytes.
+pub type GlyphClaimRelayFn = Arc<dyn Fn(Vec<u8>) -> GhostResult<()> + Send + Sync>;
+
+/// Callback for relaying a glyph registration to the mesh.
+/// Takes serialized GhostGlyphRegisteredMessage JSON bytes.
+pub type GlyphRegisteredRelayFn = Arc<dyn Fn(Vec<u8>) -> GhostResult<()> + Send + Sync>;
+
 /// Parse user_identity string to extract payout address and worker name.
 /// Format: <payout_address>.<worker_name>
 /// Returns (payout_address, worker_name) or (user_identity, "default") if no dot found.
@@ -910,6 +918,10 @@ pub struct VerificationState {
     pub l2_submit_fn: Option<L2SubmitFn>,
     /// Callback to sync a commitment to the L2 tree and broadcast to mesh
     pub l2_sync_commitment_fn: Option<L2SyncCommitmentFn>,
+    /// Callback to relay glyph claims to the mesh
+    pub glyph_claim_relay_fn: Option<GlyphClaimRelayFn>,
+    /// Callback to relay glyph registrations to the mesh
+    pub glyph_registered_relay_fn: Option<GlyphRegisteredRelayFn>,
 }
 
 /// Archive handler trait
@@ -1033,6 +1045,8 @@ impl VerificationState {
             metrics: None,
             l2_submit_fn: None,
             l2_sync_commitment_fn: None,
+            glyph_claim_relay_fn: None,
+            glyph_registered_relay_fn: None,
         }
     }
 
@@ -1045,6 +1059,18 @@ impl VerificationState {
     /// Set the L2 commitment sync callback
     pub fn with_l2_sync_commitment(mut self, f: L2SyncCommitmentFn) -> Self {
         self.l2_sync_commitment_fn = Some(f);
+        self
+    }
+
+    /// Set the glyph claim relay callback
+    pub fn with_glyph_claim_relay(mut self, f: GlyphClaimRelayFn) -> Self {
+        self.glyph_claim_relay_fn = Some(f);
+        self
+    }
+
+    /// Set the glyph registered relay callback
+    pub fn with_glyph_registered_relay(mut self, f: GlyphRegisteredRelayFn) -> Self {
+        self.glyph_registered_relay_fn = Some(f);
         self
     }
 

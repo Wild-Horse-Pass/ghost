@@ -24,7 +24,9 @@ use blstrs::Bls12;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
+use ghost_keys::NoteData;
 use ghost_zkp::{GhostNoteProver, GhostNoteSpendWitness, GhostNoteVerifier};
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -213,6 +215,34 @@ fn main() {
         .expect("tree state should have next_index");
     println!("  Recipient note will be at index {}", recipient_index);
 
+    // Encrypt note data for sender (change) and recipient
+    let secp = Secp256k1::new();
+    let sender_sk = SecretKey::from_slice(&deterministic_blinding(100))
+        .expect("valid sender secret key");
+    let sender_pk = PublicKey::from_secret_key(&secp, &sender_sk);
+    let recipient_sk = SecretKey::from_slice(&deterministic_blinding(101))
+        .expect("valid recipient secret key");
+    let recipient_pk = PublicKey::from_secret_key(&secp, &recipient_sk);
+
+    let change_note = NoteData {
+        value: sender_amount - transfer_amount,
+        blinding: change_blinding,
+        note_index: sender_index,
+    };
+    let recipient_note = NoteData {
+        value: transfer_amount,
+        blinding: recipient_new_blinding,
+        note_index: recipient_index,
+    };
+    let encrypted_change = hex::encode(
+        change_note.encrypt(&sender_pk).expect("change encryption"),
+    );
+    let encrypted_recipient = hex::encode(
+        recipient_note.encrypt(&recipient_pk).expect("recipient encryption"),
+    );
+    println!("  Encrypted change: {} bytes", encrypted_change.len() / 2);
+    println!("  Encrypted recipient: {} bytes", encrypted_recipient.len() / 2);
+
     let body = serde_json::json!({
         "proof_hex": hex::encode(&proof.proof),
         "commitment_root": hex::encode(proof.public_inputs.commitment_root),
@@ -223,6 +253,8 @@ fn main() {
         "recipient_index": recipient_index,
         "recipient_owner_pubkey": hex::encode(recipient_owner),
         "epoch": 0,
+        "encrypted_change": encrypted_change,
+        "encrypted_recipient": encrypted_recipient,
     });
 
     let result = http_post_authed(

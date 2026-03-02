@@ -41,6 +41,7 @@ ghost-storage = { workspace = true }
 ghost-reconciliation = { workspace = true }
 ghost-zkp = { workspace = true }
 wraith-protocol = { workspace = true }
+ghost-glyph = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }

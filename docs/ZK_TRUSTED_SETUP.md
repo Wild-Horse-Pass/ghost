@@ -108,21 +108,6 @@ Verifying keys should be:
 3. Verified against known checksums
 4. Pinned in configuration files
 
-## Code Changes for Production
-
-Replace testing code:
-```rust
-// TESTING ONLY - DO NOT USE IN PRODUCTION
-let prover = PayoutProver::new_with_setup(100, 50)?;
-```
-
-With production code:
-```rust
-// Load MPC-generated parameters
-let params = load_mpc_parameters("path/to/params")?;
-let prover = PayoutProver::new_with_params(params)?;
-```
-
 ## Verification
 
 After setup, verify:

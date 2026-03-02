@@ -8,6 +8,7 @@
 
 mod client;
 pub mod connection;
+pub mod ghost_pay;
 pub mod gsp;
 pub mod gsp_auth;
 pub mod gsp_failover;
@@ -16,6 +17,7 @@ mod sync;
 mod types;
 
 pub use client::*;
+pub use ghost_pay::*;
 pub use peer::*;
 pub use sync::*;
 pub use types::*;

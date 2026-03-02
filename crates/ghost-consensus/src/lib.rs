@@ -50,9 +50,6 @@ pub mod verification_handler;
 pub mod vote_handler;
 pub mod voting;
 #[cfg(feature = "zk-consensus")]
-pub mod zk_vote_handler;
-
-#[cfg(feature = "zk-consensus")]
 pub mod epoch_manager;
 #[cfg(feature = "zk-consensus")]
 pub mod nullifier_route_handler;
@@ -75,9 +72,6 @@ pub use reorg::*;
 pub use verification_handler::*;
 pub use vote_handler::*;
 pub use voting::*;
-#[cfg(feature = "zk-consensus")]
-pub use zk_vote_handler::*;
-
 #[cfg(feature = "zk-consensus")]
 pub use epoch_manager::*;
 #[cfg(feature = "zk-consensus")]

@@ -6865,6 +6865,185 @@ fn l2_epoch_record_from_tuple(tuple: L2EpochRowTuple) -> GhostResult<L2EpochReco
     })
 }
 
+// =============================================================================
+// GhostGlyph Registry Queries
+// =============================================================================
+
+/// A glyph record from the ghost_glyph_registry table
+#[derive(Debug, Clone)]
+pub struct GlyphRecord {
+    pub ghost_id: String,
+    pub pixels: Vec<u8>,
+    pub bitmap_hash: Vec<u8>,
+    pub commitment: Vec<u8>,
+    pub funding_txid: Option<String>,
+    pub registered_at: Option<u64>,
+    pub created_at: u64,
+}
+
+impl Database {
+    /// Insert a pending glyph claim.
+    ///
+    /// Returns error if ghost_id already claimed or bitmap_hash already taken.
+    pub fn insert_glyph_claim(
+        &self,
+        ghost_id: &str,
+        pixels: &[u8],
+        bitmap_hash: &[u8],
+        commitment: &[u8],
+        created_at: u64,
+    ) -> GhostResult<()> {
+        validate_blob_size(pixels, "glyph_pixels")?;
+        validate_blob_size(bitmap_hash, "glyph_bitmap_hash")?;
+        validate_blob_size(commitment, "glyph_commitment")?;
+
+        self.with_connection_retry("insert_glyph_claim", |conn| {
+            conn.execute(
+                "INSERT INTO ghost_glyph_registry (ghost_id, pixels, bitmap_hash, commitment, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![ghost_id, pixels, bitmap_hash, commitment, created_at as i64],
+            )
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("UNIQUE") {
+                    if msg.contains("bitmap_hash") {
+                        GhostError::Database("Bitmap already registered by another ghost ID".to_string())
+                    } else {
+                        GhostError::Database("Ghost ID already has a registered glyph".to_string())
+                    }
+                } else {
+                    GhostError::Database(msg)
+                }
+            })?;
+            Ok(())
+        })
+    }
+
+    /// Complete a glyph registration by setting the funding txid and timestamp.
+    pub fn complete_glyph_registration(
+        &self,
+        ghost_id: &str,
+        funding_txid: &str,
+        registered_at: u64,
+    ) -> GhostResult<()> {
+        self.with_connection_retry("complete_glyph_registration", |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE ghost_glyph_registry SET funding_txid = ?1, registered_at = ?2
+                     WHERE ghost_id = ?3 AND funding_txid IS NULL",
+                    params![funding_txid, registered_at as i64, ghost_id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if updated == 0 {
+                return Err(GhostError::Database(
+                    "No pending glyph claim found for this ghost ID".to_string(),
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    /// Look up a glyph by ghost ID.
+    pub fn get_glyph_by_ghost_id(&self, ghost_id: &str) -> GhostResult<Option<GlyphRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at
+                     FROM ghost_glyph_registry WHERE ghost_id = ?1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            stmt.query_row(params![ghost_id], |row| {
+                Ok(GlyphRecord {
+                    ghost_id: row.get(0)?,
+                    pixels: row.get(1)?,
+                    bitmap_hash: row.get(2)?,
+                    commitment: row.get(3)?,
+                    funding_txid: row.get(4)?,
+                    registered_at: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+                    created_at: row.get::<_, i64>(6)? as u64,
+                })
+            })
+            .optional()
+            .map_err(|e| GhostError::Database(e.to_string()))
+        })
+    }
+
+    /// Look up a glyph by bitmap hash.
+    pub fn get_glyph_by_bitmap_hash(&self, bitmap_hash: &[u8]) -> GhostResult<Option<GlyphRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at
+                     FROM ghost_glyph_registry WHERE bitmap_hash = ?1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            stmt.query_row(params![bitmap_hash], |row| {
+                Ok(GlyphRecord {
+                    ghost_id: row.get(0)?,
+                    pixels: row.get(1)?,
+                    bitmap_hash: row.get(2)?,
+                    commitment: row.get(3)?,
+                    funding_txid: row.get(4)?,
+                    registered_at: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+                    created_at: row.get::<_, i64>(6)? as u64,
+                })
+            })
+            .optional()
+            .map_err(|e| GhostError::Database(e.to_string()))
+        })
+    }
+
+    /// Check if a bitmap hash is available (not yet claimed).
+    pub fn is_bitmap_available(&self, bitmap_hash: &[u8]) -> GhostResult<bool> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM ghost_glyph_registry WHERE bitmap_hash = ?1",
+                    params![bitmap_hash],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count == 0)
+        })
+    }
+
+    /// List registered glyphs (those with funding_txid set), newest first.
+    pub fn list_registered_glyphs(&self, offset: u64, limit: u64) -> GhostResult<Vec<GlyphRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at
+                     FROM ghost_glyph_registry
+                     WHERE registered_at IS NOT NULL
+                     ORDER BY registered_at DESC
+                     LIMIT ?1 OFFSET ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let records = stmt
+                .query_map(params![limit as i64, offset as i64], |row| {
+                    Ok(GlyphRecord {
+                        ghost_id: row.get(0)?,
+                        pixels: row.get(1)?,
+                        bitmap_hash: row.get(2)?,
+                        commitment: row.get(3)?,
+                        funding_txid: row.get(4)?,
+                        registered_at: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+                        created_at: row.get::<_, i64>(6)? as u64,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(records)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8092,5 +8271,183 @@ mod tests {
         // Verify payout is queryable
         let count = db.get_payout_count().expect("Failed to get payout count");
         assert_eq!(count, 1);
+    }
+
+    // =========================================================================
+    // GhostGlyph Storage Tests
+    // =========================================================================
+
+    fn test_glyph_pixels() -> Vec<u8> {
+        let mut pixels = vec![0u8; 256];
+        for i in 0..256 {
+            pixels[i] = (i % 26) as u8;
+        }
+        pixels
+    }
+
+    fn test_bitmap_hash(pixels: &[u8]) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"GhostGlyphBitmap/v1");
+        hasher.update(pixels);
+        hasher.finalize().to_vec()
+    }
+
+    fn test_commitment(pixels: &[u8], ghost_id: &str) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"GhostGlyph/v1");
+        hasher.update(pixels);
+        hasher.update(ghost_id.as_bytes());
+        hasher.finalize().to_vec()
+    }
+
+    #[test]
+    fn test_glyph_claim_insert() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+        let cm = test_commitment(&pixels, "ghost1alice");
+
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+            .expect("Insert should succeed");
+
+        let record = db
+            .get_glyph_by_ghost_id("ghost1alice")
+            .expect("Query should succeed")
+            .expect("Record should exist");
+
+        assert_eq!(record.ghost_id, "ghost1alice");
+        assert_eq!(record.pixels, pixels);
+        assert_eq!(record.bitmap_hash, bh);
+        assert_eq!(record.commitment, cm);
+        assert!(record.funding_txid.is_none());
+        assert!(record.registered_at.is_none());
+        assert_eq!(record.created_at, 1000);
+    }
+
+    #[test]
+    fn test_glyph_duplicate_bitmap_rejected() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+
+        let cm1 = test_commitment(&pixels, "ghost1alice");
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm1, 1000)
+            .expect("First insert should succeed");
+
+        // Same bitmap_hash, different ghost_id
+        let cm2 = test_commitment(&pixels, "ghost1bob");
+        let result = db.insert_glyph_claim("ghost1bob", &pixels, &bh, &cm2, 1001);
+        assert!(result.is_err(), "Duplicate bitmap should be rejected");
+    }
+
+    #[test]
+    fn test_glyph_duplicate_ghost_id_rejected() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels1 = test_glyph_pixels();
+        let bh1 = test_bitmap_hash(&pixels1);
+        let cm1 = test_commitment(&pixels1, "ghost1alice");
+
+        db.insert_glyph_claim("ghost1alice", &pixels1, &bh1, &cm1, 1000)
+            .expect("First insert should succeed");
+
+        // Same ghost_id, different bitmap
+        let mut pixels2 = vec![1u8; 256];
+        pixels2[0] = 0; // Slightly different
+        let bh2 = test_bitmap_hash(&pixels2);
+        let cm2 = test_commitment(&pixels2, "ghost1alice");
+        let result = db.insert_glyph_claim("ghost1alice", &pixels2, &bh2, &cm2, 1001);
+        assert!(result.is_err(), "Duplicate ghost_id should be rejected");
+    }
+
+    #[test]
+    fn test_glyph_complete_registration() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+        let cm = test_commitment(&pixels, "ghost1alice");
+
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+            .expect("Insert should succeed");
+
+        db.complete_glyph_registration("ghost1alice", "txid123", 2000)
+            .expect("Registration should succeed");
+
+        let record = db
+            .get_glyph_by_ghost_id("ghost1alice")
+            .expect("Query should succeed")
+            .expect("Record should exist");
+
+        assert_eq!(record.funding_txid.as_deref(), Some("txid123"));
+        assert_eq!(record.registered_at, Some(2000));
+    }
+
+    #[test]
+    fn test_glyph_bitmap_availability() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+        let cm = test_commitment(&pixels, "ghost1alice");
+
+        // Should be available before any claim
+        assert!(db.is_bitmap_available(&bh).expect("Query should succeed"));
+
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+            .expect("Insert should succeed");
+
+        // Should NOT be available after claim
+        assert!(!db.is_bitmap_available(&bh).expect("Query should succeed"));
+    }
+
+    #[test]
+    fn test_glyph_get_by_bitmap_hash() {
+        let db = Database::in_memory().expect("Failed to create DB");
+        let pixels = test_glyph_pixels();
+        let bh = test_bitmap_hash(&pixels);
+        let cm = test_commitment(&pixels, "ghost1alice");
+
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+            .expect("Insert should succeed");
+
+        let record = db
+            .get_glyph_by_bitmap_hash(&bh)
+            .expect("Query should succeed")
+            .expect("Record should exist");
+
+        assert_eq!(record.ghost_id, "ghost1alice");
+    }
+
+    #[test]
+    fn test_glyph_list_registered() {
+        let db = Database::in_memory().expect("Failed to create DB");
+
+        // Insert two claims
+        let pixels1 = test_glyph_pixels();
+        let bh1 = test_bitmap_hash(&pixels1);
+        let cm1 = test_commitment(&pixels1, "ghost1alice");
+        db.insert_glyph_claim("ghost1alice", &pixels1, &bh1, &cm1, 1000)
+            .expect("Insert should succeed");
+
+        let mut pixels2 = vec![1u8; 256];
+        for i in 0..256 {
+            pixels2[i] = ((i + 1) % 26) as u8;
+        }
+        let bh2 = test_bitmap_hash(&pixels2);
+        let cm2 = test_commitment(&pixels2, "ghost1bob");
+        db.insert_glyph_claim("ghost1bob", &pixels2, &bh2, &cm2, 1001)
+            .expect("Insert should succeed");
+
+        // Neither registered yet
+        let registered = db.list_registered_glyphs(0, 10).expect("Query should succeed");
+        assert_eq!(registered.len(), 0);
+
+        // Register one
+        db.complete_glyph_registration("ghost1alice", "txid123", 2000)
+            .expect("Registration should succeed");
+
+        let registered = db.list_registered_glyphs(0, 10).expect("Query should succeed");
+        assert_eq!(registered.len(), 1);
+        assert_eq!(registered[0].ghost_id, "ghost1alice");
     }
 }

@@ -80,6 +80,10 @@ pub const MAX_L2_CHECKPOINT_SIZE: usize = 1_000_000;
 pub const MAX_L2_VOTE_SIZE: usize = 1_000;
 /// L2 tree sync (up to 10000 notes for reconstruction)
 pub const MAX_L2_TREE_SYNC_SIZE: usize = 1_000_000;
+/// GhostGlyph claim (256 pixels + 32 bitmap_hash + 32 commitment + ghost_id + overhead)
+pub const MAX_GLYPH_CLAIM_SIZE: usize = 2_000;
+/// GhostGlyph registration (bitmap_hash + ghost_id + txid + timestamp)
+pub const MAX_GLYPH_REGISTERED_SIZE: usize = 1_000;
 
 /// L-13 SECURITY: Global pending message memory limit (100MB)
 ///
@@ -374,6 +378,8 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
         MessageType::L2CheckpointBlock => MAX_L2_CHECKPOINT_SIZE,
         MessageType::L2CheckpointVote => MAX_L2_VOTE_SIZE,
         MessageType::L2TreeSync => MAX_L2_TREE_SYNC_SIZE,
+        MessageType::GhostGlyphClaim => MAX_GLYPH_CLAIM_SIZE,
+        MessageType::GhostGlyphRegistered => MAX_GLYPH_REGISTERED_SIZE,
     }
 }
 

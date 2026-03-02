@@ -70,21 +70,9 @@ Audited every feature that was declared/built to determine if it's actually wire
 | Silent Payments (BIP-352) | **WIRED** | ghost-keys loaded, PaymentDetector scans transactions. |
 | Timelocks (ghost-locks) | **WIRED** | Lock creation, P2WSH addresses, L1 settlement via reconciliation. |
 
-### Critical: ZK Payout Proofs Are Dead Infrastructure
+### ~~Critical: ZK Payout Proofs Are Dead Infrastructure~~ RESOLVED
 
-The entire `ZkPayoutVoteHandler` + `PayoutProver` + `PayoutVerifier` + `PayoutCircuit` stack exists as dead code:
-
-1. **`PayoutProver` is created then immediately dropped** — In `main.rs`, the prover is instantiated, a verifier is extracted from it, and then the prover goes out of scope. Nobody ever calls `prove()`.
-
-2. **No code creates `ZkPayoutProposalMessage`** — The struct exists in ghost-consensus, the handler can receive and verify proposals, but nothing in production code ever creates or broadcasts one.
-
-3. **Missing critical wiring** — `ZkPayoutVoteHandler` is never given `epoch_tracker` or `consensus_callback`. Without `epoch_tracker`, it will reject every incoming proposal. Without `consensus_callback`, even if a proposal reached quorum, the result would be silently discarded.
-
-4. **Actual payout path** — `PayoutHandler` uses plain `VoteHandler` (BFT voting with arithmetic validation, no ZK proofs). This is the live, working payout consensus mechanism.
-
-**Impact:** This means payout amounts are visible to all validator nodes during BFT voting. The ZK payout system was designed to hide payout amounts during consensus, but it was never wired in. The arithmetic validation in `VoteHandler` checks exact amounts, so every validator sees every miner's payout.
-
-**Decision needed:** Either wire in the ZK payout proofs properly, or remove the dead code and document that payout privacy is not a design goal (node operators are trusted participants).
+Dead `ZkPayoutVoteHandler` + `ReorgCoordinator` code deleted. Payouts use plain BFT via `VoteHandler` — payout privacy is not a design goal (node operators are trusted participants). Coinbase outputs are public on-chain regardless.
 
 ---
 

@@ -220,7 +220,7 @@ pub fn unlock_wallet(state: State<'_, AppState>) -> AppResult<()> {
         .wallet
         .lock()
         .map_err(|e| AppError::from(e.to_string()))?;
-    wallet.unlock();
+    wallet.unlock_with_pin("").map_err(|e| AppError::from(e.to_string()))?;
     Ok(())
 }
 

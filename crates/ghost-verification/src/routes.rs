@@ -351,6 +351,15 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/l2/sync-commitment",
             post(api_l2_sync_commitment_handler),
         )
+        // GhostGlyph relay endpoints — localhost only (ghost-pay is colocated)
+        .route(
+            "/api/v1/glyph/relay-claim",
+            post(api_glyph_relay_claim_handler),
+        )
+        .route(
+            "/api/v1/glyph/relay-registered",
+            post(api_glyph_relay_registered_handler),
+        )
         .layer(middleware::from_fn(localhost_only_middleware));
 
     // Internal/admin endpoints with HMAC authentication (AUTH4-1 fix)
@@ -4565,6 +4574,66 @@ async fn api_l2_sync_commitment_handler(
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{}", e)})),
+        ),
+    }
+}
+
+/// POST /api/v1/glyph/relay-claim — Relay a glyph claim to the mesh
+///
+/// Called by ghost-pay after validating and storing a glyph claim locally.
+/// Forwards to the consensus mesh via the glyph_claim_relay_fn callback.
+async fn api_glyph_relay_claim_handler(
+    State(state): State<Arc<VerificationState>>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let relay_fn = match &state.glyph_claim_relay_fn {
+        Some(f) => f.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Glyph relay not configured"})),
+            );
+        }
+    };
+
+    match relay_fn(body.to_vec()) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "relayed"})),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{}", e)})),
+        ),
+    }
+}
+
+/// POST /api/v1/glyph/relay-registered — Relay a glyph registration to the mesh
+///
+/// Called by ghost-pay after completing glyph registration (lock funded).
+/// Forwards to the consensus mesh via the glyph_registered_relay_fn callback.
+async fn api_glyph_relay_registered_handler(
+    State(state): State<Arc<VerificationState>>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let relay_fn = match &state.glyph_registered_relay_fn {
+        Some(f) => f.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Glyph relay not configured"})),
+            );
+        }
+    };
+
+    match relay_fn(body.to_vec()) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "relayed"})),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": format!("{}", e)})),
         ),
     }

@@ -1,7 +1,7 @@
 //! NullifierRouteHandler — L2 transaction validation + checkpoint BFT
 //!
-//! Replaces the old ZkVoteHandler for L2. All nodes validate transactions;
-//! all active nodes participate in BFT checkpoint consensus.
+//! All nodes validate transactions; all active nodes participate in BFT
+//! checkpoint consensus.
 //!
 //! Flow:
 //! 1. Sender submits tx with ZK proof → deterministically routed to validator
@@ -1140,6 +1140,26 @@ impl NullifierRouteHandler {
             "Replaying tree sync response"
         );
 
+        // Verify all checkpoint signatures before applying any (atomic)
+        if self.sign_fn.read().is_none() {
+            warn!("M-5: Rejecting tree sync — sign_fn not initialized");
+            return Ok(());
+        }
+        for (i, block) in response.checkpoints.iter().enumerate() {
+            let signable = block.to_signable_bytes();
+            if !self.verify_peer_signature(&block.proposer, &signable, &block.proposer_signature) {
+                warn!(
+                    height = block.height,
+                    proposer = %hex::encode(&block.proposer[..8]),
+                    checkpoint_idx = i,
+                    "Rejecting tree sync — invalid proposer signature"
+                );
+                return Err(GhostError::SignatureVerification(
+                    "Tree sync checkpoint has invalid signature".into(),
+                ));
+            }
+        }
+
         // Replay checkpoint blocks in order
         for block in &response.checkpoints {
             let height = block.height;
@@ -1888,16 +1908,26 @@ mod tests {
     /// Test that tree sync replays checkpoints so a new peer's root matches the source
     #[test]
     fn test_tree_sync_replays_checkpoints() {
-        // === Peer A: build a checkpoint ===
-        let (_db_a, epoch_mgr_a, handler_a) = setup();
-        epoch_mgr_a.update_active_nodes(vec![[0x01; 32]]);
+        use ghost_common::identity::NodeIdentity;
 
-        handler_a.set_sign_fn(Arc::new(|msg: &[u8]| {
-            let mut sig = [0u8; 64];
-            let len = msg.len().min(64);
-            sig[..len].copy_from_slice(&msg[..len]);
-            sig
-        }));
+        // === Peer A: build a checkpoint with real Ed25519 signatures ===
+        let identity_a = NodeIdentity::generate();
+        let node_id_a = identity_a.node_id();
+
+        let db_a = Arc::new(Database::in_memory().expect("in-memory db"));
+        let config_a = EpochManagerConfig {
+            epoch_length: 100,
+            transition_window: 10,
+            tree_depth: 4,
+            max_valid_roots: 16,
+        };
+        let epoch_mgr_a = Arc::new(EpochManager::new(db_a.clone(), config_a));
+        epoch_mgr_a.initialize_genesis().unwrap();
+        let handler_a =
+            NullifierRouteHandler::with_defaults(node_id_a, epoch_mgr_a.clone(), db_a.clone());
+        epoch_mgr_a.update_active_nodes(vec![node_id_a]);
+
+        handler_a.set_sign_fn(Arc::new(move |msg: &[u8]| identity_a.sign(msg)));
 
         let root_a = epoch_mgr_a.current_root().unwrap();
         epoch_mgr_a.add_valid_root(root_a, 0).unwrap();
@@ -1937,7 +1967,7 @@ mod tests {
         let vote = L2CheckpointVoteMessage {
             height: 1,
             checkpoint_hash: hash,
-            voter: [0x01; 32],
+            voter: node_id_a,
             approve: true,
             signature: [0u8; 64],
             timestamp: 0,
@@ -1948,6 +1978,7 @@ mod tests {
         assert_ne!(root_after_a, root_a, "A's root should change after checkpoint");
 
         // === Peer B: sync from A ===
+        let identity_b = NodeIdentity::generate();
         let db_b = Arc::new(Database::in_memory().expect("in-memory db"));
         let config_b = EpochManagerConfig {
             epoch_length: 100,
@@ -1957,8 +1988,13 @@ mod tests {
         };
         let epoch_mgr_b = Arc::new(EpochManager::new(db_b.clone(), config_b));
         epoch_mgr_b.initialize_genesis().unwrap();
-        let handler_b =
-            NullifierRouteHandler::with_defaults([0x02; 32], epoch_mgr_b.clone(), db_b.clone());
+        let handler_b = NullifierRouteHandler::with_defaults(
+            identity_b.node_id(),
+            epoch_mgr_b.clone(),
+            db_b.clone(),
+        );
+        // B needs sign_fn to verify incoming checkpoint signatures
+        handler_b.set_sign_fn(Arc::new(move |msg: &[u8]| identity_b.sign(msg)));
 
         // Build a sync response from A's persisted checkpoint data
         let request = L2TreeSyncRequest {

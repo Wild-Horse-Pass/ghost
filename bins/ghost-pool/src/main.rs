@@ -1217,6 +1217,50 @@ async fn main() -> Result<()> {
     mesh.register_handler(Arc::clone(&share_proof_handler)
         as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
+    // Register GhostGlyph handler for visual identity P2P messages
+    let glyph_handler = Arc::new(ghost_pool::glyph_handler::GlyphRegistrationHandler::new(
+        Arc::clone(&db),
+    ));
+    mesh.register_handler(Arc::clone(&glyph_handler)
+        as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+
+    // Create broadcast relay for GhostGlyph messages (Noise-encrypted)
+    let (glyph_tx, mut glyph_rx) =
+        tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(64);
+    let mesh_for_glyph_relay = Arc::clone(&mesh);
+    tokio::spawn(async move {
+        while let Some((msg_type, payload)) = glyph_rx.recv().await {
+            match mesh_for_glyph_relay.create_envelope_raw(msg_type, payload) {
+                Ok(envelope) => {
+                    if let Err(e) = mesh_for_glyph_relay.broadcast(envelope).await {
+                        tracing::warn!(error = %e, "Glyph Noise broadcast failed");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Glyph envelope creation failed");
+                }
+            }
+        }
+    });
+    let glyph_broadcast: ghost_consensus::vote_handler::BroadcastFn =
+        Arc::new(move |msg_type, payload| {
+            glyph_tx.try_send((msg_type, payload)).map_err(|e| {
+                ghost_common::error::GhostError::Internal(format!(
+                    "Glyph broadcast channel error: {}",
+                    e
+                ))
+            })
+        });
+    glyph_handler.set_broadcast_fn(glyph_broadcast);
+
+    // Wire glyph relay callbacks for ghost-pay → ghost-pool localhost relay
+    let gh_for_claim = Arc::clone(&glyph_handler);
+    let glyph_claim_relay_fn: ghost_verification::GlyphClaimRelayFn =
+        Arc::new(move |data: Vec<u8>| gh_for_claim.relay_claim(data));
+    let gh_for_registered = Arc::clone(&glyph_handler);
+    let glyph_registered_relay_fn: ghost_verification::GlyphRegisteredRelayFn =
+        Arc::new(move |data: Vec<u8>| gh_for_registered.relay_registered(data));
+
     // ZK consensus handlers (optional feature)
     // DEFERRED INITIALIZATION: ZK parameter generation is memory-intensive and can take minutes.
     // We spawn it in a background task so the node can start serving immediately.
@@ -1296,7 +1340,7 @@ async fn main() -> Result<()> {
                 })
             });
 
-        // Create NullifierRouteHandler (replaces ZkVoteHandler for L2)
+        // Create NullifierRouteHandler for L2 transaction validation
         let nullifier_handler = Arc::new(NullifierRouteHandler::with_defaults(
             identity.node_id(),
             Arc::clone(&epoch_manager),
@@ -2731,6 +2775,11 @@ async fn main() -> Result<()> {
     if let Some(l2_sync_fn) = l2_sync_commitment_fn_opt {
         verification_state = verification_state.with_l2_sync_commitment(l2_sync_fn);
     }
+
+    // Wire GhostGlyph relay callbacks (always enabled — no feature gate)
+    verification_state = verification_state
+        .with_glyph_claim_relay(glyph_claim_relay_fn)
+        .with_glyph_registered_relay(glyph_registered_relay_fn);
 
     // Configure internal API authentication (AUTH4-1 security fix)
     if let Some(ref secret_hex) = config.network.internal_api_secret {

@@ -62,6 +62,8 @@ pub mod topics {
     pub const L2_VOTE: &[u8] = b"l2vote";
     /// L2 tree sync
     pub const L2_SYNC: &[u8] = b"l2sync";
+    /// GhostGlyph visual identity
+    pub const GLYPH: &[u8] = b"glyph";
 }
 
 /// Default TTL for gossip messages (number of hops before message is dropped)
@@ -226,6 +228,10 @@ pub enum MessageType {
     L2CheckpointVote,
     /// L2: Tree sync request/response (node → peer)
     L2TreeSync,
+    /// GhostGlyph: Claim broadcast (user submits glyph design)
+    GhostGlyphClaim,
+    /// GhostGlyph: Registration confirmed (lock funded)
+    GhostGlyphRegistered,
 }
 
 impl MessageType {
@@ -257,6 +263,7 @@ impl MessageType {
             Self::L2CheckpointBlock => topics::L2_CHECKPOINT,
             Self::L2CheckpointVote => topics::L2_VOTE,
             Self::L2TreeSync => topics::L2_SYNC,
+            Self::GhostGlyphClaim | Self::GhostGlyphRegistered => topics::GLYPH,
         }
     }
 
@@ -290,6 +297,7 @@ impl MessageType {
             Self::L2CheckpointBlock => "l2chk",
             Self::L2CheckpointVote => "l2vote",
             Self::L2TreeSync => "l2sync",
+            Self::GhostGlyphClaim | Self::GhostGlyphRegistered => "glyph",
         }
     }
 }
@@ -1498,6 +1506,38 @@ pub struct L2TreeSyncResponse {
     pub has_more: bool,
     /// Timestamp
     pub timestamp: u64,
+}
+
+// =============================================================================
+// GhostGlyph Messages
+// =============================================================================
+
+/// Broadcast when a user submits a glyph claim (design chosen, pending funding)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhostGlyphClaimMessage {
+    /// bech32m ghost1... address
+    pub ghost_id: String,
+    /// 256 bytes, each 0..25
+    pub pixels: Vec<u8>,
+    /// SHA256("GhostGlyphBitmap/v1" || pixels)
+    pub bitmap_hash: Vec<u8>,
+    /// SHA256("GhostGlyph/v1" || pixels || ghost_id_bytes)
+    pub commitment: Vec<u8>,
+    /// Claim timestamp
+    pub timestamp: u64,
+}
+
+/// Broadcast when a glyph claim is confirmed (Ghost Lock funded via Wraith)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhostGlyphRegisteredMessage {
+    /// bech32m ghost1... address
+    pub ghost_id: String,
+    /// SHA256("GhostGlyphBitmap/v1" || pixels)
+    pub bitmap_hash: Vec<u8>,
+    /// Wraith deposit txid that funded the lock
+    pub funding_txid: String,
+    /// Unix timestamp of registration
+    pub registered_at: u64,
 }
 
 #[cfg(test)]

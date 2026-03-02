@@ -72,6 +72,9 @@ pub mod treasury;
 /// P2P share proof handling for cross-node share propagation.
 pub mod share_handler;
 
+/// GhostGlyph P2P handler for visual identity registration.
+pub mod glyph_handler;
+
 /// Input validation utilities for security.
 pub mod validation;
 

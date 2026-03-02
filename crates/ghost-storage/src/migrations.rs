@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 25;
+const SCHEMA_VERSION: u32 = 26;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -81,6 +81,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (23, migrate_v23),
         (24, migrate_v24),
         (25, migrate_v25),
+        (26, migrate_v26),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1634,6 +1635,33 @@ fn migrate_v25(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added encrypted_change, encrypted_recipient, epoch to confidential_transfers");
+    Ok(())
+}
+
+/// v26: Add GhostGlyph registry table
+fn migrate_v26(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v26: Add ghost_glyph_registry table");
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE ghost_glyph_registry (
+            ghost_id       TEXT PRIMARY KEY,
+            pixels         BLOB NOT NULL,
+            bitmap_hash    BLOB NOT NULL,
+            commitment     BLOB NOT NULL,
+            funding_txid   TEXT,
+            registered_at  INTEGER,
+            created_at     INTEGER NOT NULL,
+            UNIQUE(bitmap_hash)
+        );
+
+        CREATE INDEX idx_glyph_bitmap_hash ON ghost_glyph_registry(bitmap_hash);
+        CREATE INDEX idx_glyph_registered ON ghost_glyph_registry(registered_at);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Created ghost_glyph_registry table");
     Ok(())
 }
 

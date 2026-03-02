@@ -25,11 +25,13 @@ use blstrs::Bls12;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
+use ghost_keys::NoteData;
 use ghost_zkp::{
     ConsolidationInputNote, ConsolidationWitness, GhostConsolidateProver,
     GhostConsolidateVerifier, GhostNoteProver, GhostNoteSpendWitness, GhostNoteVerifier,
     GhostUnshieldProver, GhostUnshieldVerifier, UnshieldWitness,
 };
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -460,6 +462,32 @@ fn main() {
         .as_u64()
         .expect("tree state should have next_index");
 
+    // Encrypt note data for sender (change) and recipient
+    let secp = Secp256k1::new();
+    let sender_sk_3 = SecretKey::from_slice(&deterministic_blinding(130))
+        .expect("valid sender secret key");
+    let sender_pk_3 = PublicKey::from_secret_key(&secp, &sender_sk_3);
+    let recipient_sk_3 = SecretKey::from_slice(&deterministic_blinding(131))
+        .expect("valid recipient secret key");
+    let recipient_pk_3 = PublicKey::from_secret_key(&secp, &recipient_sk_3);
+
+    let change_note_3 = NoteData {
+        value: amount_3 - transfer_amount_3,
+        blinding: change_blinding_3,
+        note_index: index_3,
+    };
+    let recipient_note_3 = NoteData {
+        value: transfer_amount_3,
+        blinding: recipient_blinding_3,
+        note_index: recipient_index_3,
+    };
+    let encrypted_change_3 = hex::encode(
+        change_note_3.encrypt(&sender_pk_3).expect("change encryption"),
+    );
+    let encrypted_recipient_3 = hex::encode(
+        recipient_note_3.encrypt(&recipient_pk_3).expect("recipient encryption"),
+    );
+
     let body_3 = serde_json::json!({
         "proof_hex": hex::encode(&proof_3.proof),
         "commitment_root": hex::encode(proof_3.public_inputs.commitment_root),
@@ -470,6 +498,8 @@ fn main() {
         "recipient_index": recipient_index_3,
         "recipient_owner_pubkey": hex::encode(recipient_owner_3),
         "epoch": 0,
+        "encrypted_change": encrypted_change_3,
+        "encrypted_recipient": encrypted_recipient_3,
     });
 
     let (status_ns, body_ns) = http_post_authed_raw(

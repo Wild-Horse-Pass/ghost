@@ -58,6 +58,13 @@ pub fn run() {
             commands::wraith::start_wash_processor,
             commands::wraith::stop_wash_processor,
             commands::wraith::retry_wash,
+            // Glyph
+            commands::glyph::claim_glyph,
+            commands::glyph::get_glyph,
+            commands::glyph::check_glyph_availability,
+            commands::glyph::render_glyph,
+            commands::glyph::get_glyph_palette,
+            commands::glyph::validate_glyph_pixels,
         ])
         .run(tauri::generate_context!())
         .expect("error running GhostTap Desktop");

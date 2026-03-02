@@ -490,8 +490,6 @@ The EpochManager handles L2 epoch lifecycle:
 - **Commitment tree**: Maintains depth-20 MiMC Merkle tree
 
 ### NullifierRouteHandler
-
-Replaces the earlier ZkVoteHandler and L2BlockProducer:
 - Validates sender-side Groth16 proofs (GhostNoteSpendCircuit, ~5ms each)
 - Routes transactions by nullifier prefix for deterministic validator assignment
 - Manages checkpoint proposals and BFT voting
