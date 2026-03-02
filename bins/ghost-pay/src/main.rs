@@ -4121,8 +4121,18 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                                 let relay_url = format!("{}/api/v1/glyph/relay-registered", state.pool_api_url);
                                                 let client = state.pool_http_client.clone();
                                                 tokio::spawn(async move {
-                                                    if let Err(e) = client.post(&relay_url).json(&relay_body).send().await {
-                                                        warn!(error = %e, "Glyph registration relay failed");
+                                                    match client.post(&relay_url).json(&relay_body).send().await {
+                                                        Ok(resp) if resp.status().is_success() => {
+                                                            info!("Glyph registration relayed to ghost-pool");
+                                                        }
+                                                        Ok(resp) => {
+                                                            let status = resp.status();
+                                                            let body = resp.text().await.unwrap_or_default();
+                                                            warn!(status = %status, body = %body, "Glyph registration relay failed");
+                                                        }
+                                                        Err(e) => {
+                                                            warn!(error = %e, "Glyph registration relay request failed");
+                                                        }
                                                     }
                                                 });
                                             }
@@ -5953,6 +5963,35 @@ async fn l2_finalize_handler(
 // GhostGlyph Handlers
 // ============================================================================
 
+/// Maximum ghost_id length (bech32m addresses are ~63 chars, generous cap)
+const MAX_GHOST_ID_LEN: usize = 128;
+
+/// Validate ghost_id format: non-empty, reasonable length, no control chars.
+fn validate_ghost_id(ghost_id: &str) -> Result<(), String> {
+    if ghost_id.is_empty() {
+        return Err("ghost_id cannot be empty".to_string());
+    }
+    if ghost_id.len() > MAX_GHOST_ID_LEN {
+        return Err(format!(
+            "ghost_id too long ({} chars, max {})",
+            ghost_id.len(),
+            MAX_GHOST_ID_LEN
+        ));
+    }
+    if ghost_id.chars().any(|c| c.is_control()) {
+        return Err("ghost_id contains control characters".to_string());
+    }
+    if !ghost_id.starts_with("ghost1") {
+        return Err("ghost_id must start with 'ghost1' (bech32m)".to_string());
+    }
+    Ok(())
+}
+
+/// JSON error response for glyph endpoints (L-3: consistent error format)
+fn glyph_error(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
+    (status, Json(serde_json::json!({"error": msg.into()})))
+}
+
 /// Request body for POST /api/v1/glyph/claim
 #[derive(Debug, Deserialize)]
 struct GlyphClaimRequest {
@@ -5968,14 +6007,29 @@ struct GlyphClaimResponse {
     status: String,
 }
 
+/// Response for GET /api/v1/glyph/:ghost_id (L-6: typed response)
+#[derive(Debug, Serialize)]
+struct GlyphInfoResponse {
+    ghost_id: String,
+    pixels: Vec<u8>,
+    bitmap_hash: String,
+    commitment: String,
+    funding_txid: Option<String>,
+    registered_at: Option<u64>,
+    status: String,
+}
+
 /// Submit a glyph claim (design chosen, pending lock funding)
 async fn claim_glyph(
     State(state): State<Arc<AppState>>,
     Json(req): Json<GlyphClaimRequest>,
-) -> Result<Json<GlyphClaimResponse>, (StatusCode, String)> {
+) -> Result<Json<GlyphClaimResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Validate ghost_id format (M-1)
+    validate_ghost_id(&req.ghost_id).map_err(|e| glyph_error(StatusCode::BAD_REQUEST, e))?;
+
     // Validate pixel array size
     if req.pixels.len() != ghost_glyph::GLYPH_SIZE {
-        return Err((
+        return Err(glyph_error(
             StatusCode::BAD_REQUEST,
             format!(
                 "Expected {} pixels, got {}",
@@ -5986,13 +6040,12 @@ async fn claim_glyph(
     }
 
     // Validate pixel values
-    ghost_glyph::GhostGlyph::validate_pixel_slice(&req.pixels).map_err(|e| {
-        (StatusCode::BAD_REQUEST, e.to_string())
-    })?;
+    ghost_glyph::GhostGlyph::validate_pixel_slice(&req.pixels)
+        .map_err(|e| glyph_error(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     // Convert to fixed array
     let pixels: [u8; ghost_glyph::GLYPH_SIZE] = req.pixels.as_slice().try_into().map_err(|_| {
-        (StatusCode::BAD_REQUEST, "Invalid pixel array".to_string())
+        glyph_error(StatusCode::BAD_REQUEST, "Invalid pixel array")
     })?;
 
     // Compute hashes
@@ -6000,16 +6053,15 @@ async fn claim_glyph(
     let bitmap_hash = ghost_glyph::GhostGlyph::compute_bitmap_hash(&pixels);
 
     // Check availability
-    let available = state.db.is_bitmap_available(&bitmap_hash).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-    })?;
+    let available = state.db.is_bitmap_available(&bitmap_hash)
+        .map_err(|e| glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if !available {
-        return Err((StatusCode::CONFLICT, "Bitmap already registered".to_string()));
+        return Err(glyph_error(StatusCode::CONFLICT, "Bitmap already registered"));
     }
 
     // Check ghost_id not already claimed
     if let Ok(Some(_)) = state.db.get_glyph_by_ghost_id(&req.ghost_id) {
-        return Err((StatusCode::CONFLICT, "Ghost ID already has a glyph".to_string()));
+        return Err(glyph_error(StatusCode::CONFLICT, "Ghost ID already has a glyph"));
     }
 
     let now = std::time::SystemTime::now()
@@ -6026,15 +6078,15 @@ async fn claim_glyph(
         now,
     ).map_err(|e| {
         if e.to_string().contains("already") || e.to_string().contains("UNIQUE") {
-            (StatusCode::CONFLICT, e.to_string())
+            glyph_error(StatusCode::CONFLICT, e.to_string())
         } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         }
     })?;
 
     info!(ghost_id = %req.ghost_id, "GhostGlyph claim submitted");
 
-    // Relay claim to ghost-pool for mesh broadcast (fire-and-forget)
+    // Relay claim to ghost-pool for mesh broadcast (awaited, not fire-and-forget) (M-2)
     let relay_body = serde_json::json!({
         "ghost_id": req.ghost_id,
         "pixels": req.pixels,
@@ -6043,27 +6095,19 @@ async fn claim_glyph(
         "timestamp": now,
     });
     let relay_url = format!("{}/api/v1/glyph/relay-claim", state.pool_api_url);
-    let client = state.pool_http_client.clone();
-    tokio::spawn(async move {
-        match client
-            .post(&relay_url)
-            .json(&relay_body)
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                info!("Glyph claim relayed to ghost-pool");
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                warn!(status = %status, body = %body, "Glyph claim relay failed");
-            }
-            Err(e) => {
-                warn!(error = %e, "Glyph claim relay request failed");
-            }
+    match state.pool_http_client.post(&relay_url).json(&relay_body).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            info!(ghost_id = %req.ghost_id, "Glyph claim relayed to mesh");
         }
-    });
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            warn!(ghost_id = %req.ghost_id, status = %status, body = %body, "Glyph claim mesh relay failed");
+        }
+        Err(e) => {
+            warn!(ghost_id = %req.ghost_id, error = %e, "Glyph claim mesh relay request failed");
+        }
+    }
 
     Ok(Json(GlyphClaimResponse {
         commitment: hex::encode(commitment),
@@ -6076,12 +6120,12 @@ async fn claim_glyph(
 async fn get_glyph(
     State(state): State<Arc<AppState>>,
     Path(ghost_id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<GlyphInfoResponse>, (StatusCode, Json<serde_json::Value>)> {
     let record = state
         .db
         .get_glyph_by_ghost_id(&ghost_id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .map_err(|e| glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| glyph_error(StatusCode::NOT_FOUND, "Glyph not found"))?;
 
     let status = if record.funding_txid.is_some() {
         "registered"
@@ -6089,29 +6133,29 @@ async fn get_glyph(
         "pending"
     };
 
-    Ok(Json(serde_json::json!({
-        "ghost_id": record.ghost_id,
-        "pixels": record.pixels,
-        "bitmap_hash": hex::encode(&record.bitmap_hash),
-        "commitment": hex::encode(&record.commitment),
-        "funding_txid": record.funding_txid,
-        "registered_at": record.registered_at,
-        "status": status,
-    })))
+    Ok(Json(GlyphInfoResponse {
+        ghost_id: record.ghost_id,
+        pixels: record.pixels,
+        bitmap_hash: hex::encode(&record.bitmap_hash),
+        commitment: hex::encode(&record.commitment),
+        funding_txid: record.funding_txid,
+        registered_at: record.registered_at,
+        status: status.to_string(),
+    }))
 }
 
 /// Check if a bitmap hash is available
 async fn check_glyph_availability(
     State(state): State<Arc<AppState>>,
     Path(bitmap_hash_hex): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let bitmap_hash = hex::decode(&bitmap_hash_hex)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        .map_err(|_| glyph_error(StatusCode::BAD_REQUEST, "Invalid hex"))?;
 
     let available = state
         .db
         .is_bitmap_available(&bitmap_hash)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({
         "available": available,

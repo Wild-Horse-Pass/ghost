@@ -84,26 +84,39 @@ impl GlyphRegistrationHandler {
         }
 
         // Store locally (idempotent — UNIQUE constraint races are fine)
-        let _ = self.db.insert_glyph_claim(
+        // L-2: Only broadcast if local store succeeds
+        match self.db.insert_glyph_claim(
             &msg.ghost_id,
             &msg.pixels,
             &msg.bitmap_hash,
             &msg.commitment,
             msg.timestamp,
-        );
-
-        // Broadcast to mesh
-        if let Some(ref broadcast) = *self.broadcast_fn.read() {
-            if let Err(e) = broadcast(MessageType::GhostGlyphClaim, data) {
-                warn!(error = %e, "Failed to broadcast glyph claim to mesh");
+        ) {
+            Ok(()) => {
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    if let Err(e) = broadcast(MessageType::GhostGlyphClaim, data) {
+                        warn!(error = %e, "Failed to broadcast glyph claim to mesh");
+                    }
+                }
+                info!(ghost_id = %msg.ghost_id, "Glyph claim relayed to mesh");
+            }
+            Err(e) => {
+                // UNIQUE violations are expected races — still broadcast so other nodes get it
+                if e.to_string().contains("UNIQUE") || e.to_string().contains("already") {
+                    if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                        let _ = broadcast(MessageType::GhostGlyphClaim, data);
+                    }
+                    debug!(ghost_id = %msg.ghost_id, "Glyph claim already stored, relayed to mesh");
+                } else {
+                    warn!(error = %e, ghost_id = %msg.ghost_id, "Failed to store glyph claim, not broadcasting");
+                }
             }
         }
 
-        info!(ghost_id = %msg.ghost_id, "Glyph claim relayed to mesh");
         Ok(())
     }
 
-    /// Relay a glyph registration from ghost-pay: store locally, broadcast to mesh.
+    /// Relay a glyph registration from ghost-pay: validate, store locally, broadcast to mesh.
     pub fn relay_registered(&self, data: Vec<u8>) -> GhostResult<()> {
         let msg: GhostGlyphRegisteredMessage = serde_json::from_slice(&data).map_err(|e| {
             ghost_common::error::GhostError::Serialization(format!(
@@ -112,21 +125,46 @@ impl GlyphRegistrationHandler {
             ))
         })?;
 
-        // Complete registration locally
-        let _ = self.db.complete_glyph_registration(
-            &msg.ghost_id,
-            &msg.funding_txid,
-            msg.registered_at,
-        );
-
-        // Broadcast to mesh
-        if let Some(ref broadcast) = *self.broadcast_fn.read() {
-            if let Err(e) = broadcast(MessageType::GhostGlyphRegistered, data) {
-                warn!(error = %e, "Failed to broadcast glyph registration to mesh");
+        // L-1: Validate that a pending claim exists before completing
+        match self.db.get_glyph_by_ghost_id(&msg.ghost_id) {
+            Ok(Some(record)) => {
+                if record.funding_txid.is_some() {
+                    // Already registered — idempotent, still broadcast for other nodes
+                    if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                        let _ = broadcast(MessageType::GhostGlyphRegistered, data);
+                    }
+                    return Ok(());
+                }
+            }
+            Ok(None) => {
+                return Err(ghost_common::error::GhostError::Internal(
+                    "No pending glyph claim found for this ghost_id".to_string(),
+                ));
+            }
+            Err(e) => {
+                return Err(ghost_common::error::GhostError::Database(e.to_string()));
             }
         }
 
-        info!(ghost_id = %msg.ghost_id, "Glyph registration relayed to mesh");
+        // L-2: Complete registration locally, only broadcast on success
+        match self.db.complete_glyph_registration(
+            &msg.ghost_id,
+            &msg.funding_txid,
+            msg.registered_at,
+        ) {
+            Ok(()) => {
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    if let Err(e) = broadcast(MessageType::GhostGlyphRegistered, data) {
+                        warn!(error = %e, "Failed to broadcast glyph registration to mesh");
+                    }
+                }
+                info!(ghost_id = %msg.ghost_id, "Glyph registration relayed to mesh");
+            }
+            Err(e) => {
+                warn!(error = %e, ghost_id = %msg.ghost_id, "Failed to complete glyph registration, not broadcasting");
+            }
+        }
+
         Ok(())
     }
 

@@ -6879,12 +6879,16 @@ pub struct GlyphRecord {
     pub funding_txid: Option<String>,
     pub registered_at: Option<u64>,
     pub created_at: u64,
+    pub expires_at: Option<u64>,
 }
 
 impl Database {
     /// Insert a pending glyph claim.
     ///
     /// Returns error if ghost_id already claimed or bitmap_hash already taken.
+    /// Claim expiry: 24 hours from creation.
+    const GLYPH_CLAIM_TTL_SECS: u64 = 86400;
+
     pub fn insert_glyph_claim(
         &self,
         ghost_id: &str,
@@ -6897,11 +6901,13 @@ impl Database {
         validate_blob_size(bitmap_hash, "glyph_bitmap_hash")?;
         validate_blob_size(commitment, "glyph_commitment")?;
 
+        let expires_at = created_at + Self::GLYPH_CLAIM_TTL_SECS;
+
         self.with_connection_retry("insert_glyph_claim", |conn| {
             conn.execute(
-                "INSERT INTO ghost_glyph_registry (ghost_id, pixels, bitmap_hash, commitment, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![ghost_id, pixels, bitmap_hash, commitment, created_at as i64],
+                "INSERT INTO ghost_glyph_registry (ghost_id, pixels, bitmap_hash, commitment, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![ghost_id, pixels, bitmap_hash, commitment, created_at as i64, expires_at as i64],
             )
             .map_err(|e| {
                 let msg = e.to_string();
@@ -6929,7 +6935,7 @@ impl Database {
         self.with_connection_retry("complete_glyph_registration", |conn| {
             let updated = conn
                 .execute(
-                    "UPDATE ghost_glyph_registry SET funding_txid = ?1, registered_at = ?2
+                    "UPDATE ghost_glyph_registry SET funding_txid = ?1, registered_at = ?2, expires_at = NULL
                      WHERE ghost_id = ?3 AND funding_txid IS NULL",
                     params![funding_txid, registered_at as i64, ghost_id],
                 )
@@ -6949,7 +6955,7 @@ impl Database {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at
+                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at, expires_at
                      FROM ghost_glyph_registry WHERE ghost_id = ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -6963,6 +6969,7 @@ impl Database {
                     funding_txid: row.get(4)?,
                     registered_at: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
                     created_at: row.get::<_, i64>(6)? as u64,
+                    expires_at: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
                 })
             })
             .optional()
@@ -6975,7 +6982,7 @@ impl Database {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at
+                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at, expires_at
                      FROM ghost_glyph_registry WHERE bitmap_hash = ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -6989,6 +6996,7 @@ impl Database {
                     funding_txid: row.get(4)?,
                     registered_at: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
                     created_at: row.get::<_, i64>(6)? as u64,
+                    expires_at: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
                 })
             })
             .optional()
@@ -7015,7 +7023,7 @@ impl Database {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at
+                    "SELECT ghost_id, pixels, bitmap_hash, commitment, funding_txid, registered_at, created_at, expires_at
                      FROM ghost_glyph_registry
                      WHERE registered_at IS NOT NULL
                      ORDER BY registered_at DESC
@@ -7033,6 +7041,7 @@ impl Database {
                         funding_txid: row.get(4)?,
                         registered_at: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
                         created_at: row.get::<_, i64>(6)? as u64,
+                        expires_at: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
                     })
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?
@@ -7040,6 +7049,19 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             Ok(records)
+        })
+    }
+
+    /// Delete expired unfunded glyph claims. Returns the number of rows deleted.
+    pub fn cleanup_expired_glyph_claims(&self, now: u64) -> GhostResult<usize> {
+        self.with_connection_retry("cleanup_expired_glyph_claims", |conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM ghost_glyph_registry WHERE expires_at < ?1 AND funding_txid IS NULL",
+                    params![now as i64],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(deleted)
         })
     }
 }

@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 26;
+const SCHEMA_VERSION: u32 = 27;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -82,6 +82,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (24, migrate_v24),
         (25, migrate_v25),
         (26, migrate_v26),
+        (27, migrate_v27),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1662,6 +1663,29 @@ fn migrate_v26(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Created ghost_glyph_registry table");
+    Ok(())
+}
+
+fn migrate_v27(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v27: Add expires_at to ghost_glyph_registry");
+
+    conn.execute_batch(
+        r#"
+        ALTER TABLE ghost_glyph_registry ADD COLUMN expires_at INTEGER;
+        CREATE INDEX idx_glyph_expires ON ghost_glyph_registry(expires_at)
+            WHERE funding_txid IS NULL;
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    // Set expiry on existing unfunded claims (24 hours from creation)
+    conn.execute(
+        "UPDATE ghost_glyph_registry SET expires_at = created_at + 86400 WHERE funding_txid IS NULL",
+        [],
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added expires_at to ghost_glyph_registry");
     Ok(())
 }
 

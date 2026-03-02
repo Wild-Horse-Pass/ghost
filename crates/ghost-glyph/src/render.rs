@@ -1,17 +1,24 @@
-//! PNG rendering for GhostGlyph bitmaps (desktop only)
+//! RGBA rendering for GhostGlyph bitmaps.
 //!
-//! Feature-gated behind `render` so mobile builds don't pull in image deps.
-//! Since this is optional and requires the `image` crate, it's stubbed out
-//! as a minimal implementation that produces raw RGBA pixel data.
+//! Produces raw RGBA pixel data from glyph bitmaps. No external image
+//! dependencies — output is suitable for direct framebuffer or UI display.
 
 use crate::glyph::{GhostGlyph, GLYPH_HEIGHT, GLYPH_WIDTH};
 use crate::palette::PALETTE;
+
+/// Maximum render scale factor (256x produces 4096x4096 = 64MB RGBA).
+const MAX_SCALE: u32 = 256;
 
 /// Render a glyph to raw RGBA pixel data at the given scale factor.
 ///
 /// Each glyph pixel becomes a `scale x scale` block of RGBA pixels.
 /// Returns a Vec of (width * scale * height * scale * 4) bytes.
+///
+/// Scale must be 1..=256. Returns an empty Vec if scale is 0 or exceeds MAX_SCALE.
 pub fn render_rgba(glyph: &GhostGlyph, scale: u32) -> Vec<u8> {
+    if scale == 0 || scale > MAX_SCALE {
+        return Vec::new();
+    }
     let w = GLYPH_WIDTH as u32 * scale;
     let h = GLYPH_HEIGHT as u32 * scale;
     let mut buf = vec![0u8; (w * h * 4) as usize];

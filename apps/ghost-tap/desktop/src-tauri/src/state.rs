@@ -25,6 +25,8 @@ pub struct AppState {
     pub pin_hash: Mutex<Option<String>>,
     /// App data directory for wallet files.
     pub data_dir: PathBuf,
+    /// Shared HTTP client for API calls (avoids per-request connection pool creation).
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -38,6 +40,11 @@ impl AppState {
         let pin_path = data_dir.join("pin.hash");
         let pin_hash = std::fs::read_to_string(&pin_path).ok();
 
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+
         Self {
             wallet: Mutex::new(None),
             connection: Arc::new(ConnectionManager::new()),
@@ -45,6 +52,7 @@ impl AppState {
             wash_handle: Mutex::new(None),
             pin_hash: Mutex::new(pin_hash),
             data_dir,
+            http_client,
         }
     }
 

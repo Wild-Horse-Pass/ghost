@@ -3513,6 +3513,40 @@ async fn main() -> Result<()> {
         info!("Elder revocation checker started (hourly)");
     }
 
+    // Stale glyph claim cleanup — runs hourly, deletes unfunded claims past their expires_at
+    {
+        let db_for_glyph_cleanup = Arc::clone(&db);
+        let mut glyph_cleanup_shutdown = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            // Skip immediate first tick
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        match db_for_glyph_cleanup.cleanup_expired_glyph_claims(now) {
+                            Ok(0) => {}
+                            Ok(n) => {
+                                info!(deleted = n, "Cleaned up expired glyph claims");
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Failed to cleanup expired glyph claims");
+                            }
+                        }
+                    }
+                    _ = glyph_cleanup_shutdown.recv() => {
+                        break;
+                    }
+                }
+            }
+        });
+        info!("Glyph claim cleanup task started (hourly)");
+    }
+
     // M-MINE-2: Start rate limit cleanup task for RoundManager
     // Periodically cleans up old rate limit entries to prevent memory growth
     let rm_for_cleanup = Arc::clone(&round_manager);

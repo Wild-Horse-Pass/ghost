@@ -25,6 +25,13 @@ impl GlyphManager {
         Ok(Self { client })
     }
 
+    /// Create a glyph manager using a shared reqwest::Client (avoids per-request pool creation)
+    pub fn with_client(config: PayConfig, http_client: reqwest::Client) -> Self {
+        Self {
+            client: GhostPayClient::with_client(config, http_client),
+        }
+    }
+
     /// Validate a pixel array (all values in 0..25, correct size)
     pub fn validate_pixels(pixels: &[u8]) -> Result<(), GlyphError> {
         GhostGlyph::validate_pixel_slice(pixels)
