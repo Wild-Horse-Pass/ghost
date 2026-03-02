@@ -25,6 +25,8 @@ pub struct TreeState {
     pub tree_depth: usize,
     /// Number of spent nullifiers
     pub nullifier_count: u64,
+    /// Current epoch (increments after compaction)
+    pub current_epoch: u64,
 }
 
 /// Server note info for owned notes
@@ -49,6 +51,15 @@ impl From<ConfidentialNoteInfo> for ServerNote {
             spent: info.spent,
         }
     }
+}
+
+/// Result of checking for an epoch transition
+#[derive(Debug, Clone)]
+pub struct EpochCheck {
+    /// Whether the epoch changed
+    pub changed: bool,
+    /// The server's current epoch
+    pub server_epoch: u64,
 }
 
 /// Manages tree sync between wallet and server.
@@ -156,6 +167,28 @@ impl TreeSync {
             .await
     }
 
+    /// Check if the server epoch differs from the wallet's epoch.
+    ///
+    /// If the epoch changed, the wallet must invalidate old-epoch notes and
+    /// re-scan (compaction may have changed tree indices).
+    pub fn check_epoch_transition(
+        server_state: &TreeState,
+        wallet_epoch: u64,
+    ) -> EpochCheck {
+        let changed = server_state.current_epoch > wallet_epoch;
+        if changed {
+            warn!(
+                wallet_epoch,
+                server_epoch = server_state.current_epoch,
+                "Epoch transition detected — wallet needs re-scan"
+            );
+        }
+        EpochCheck {
+            changed,
+            server_epoch: server_state.current_epoch,
+        }
+    }
+
     /// Subscribe to confidential transfer notifications
     pub async fn subscribe(client: &GspClient) -> WalletResult<()> {
         client
@@ -258,5 +291,37 @@ mod tests {
         let note: ServerNote = info.into();
         assert_eq!(note.index, 5);
         assert!(note.spent);
+    }
+
+    #[test]
+    fn test_epoch_transition_detected() {
+        let state = TreeState {
+            root: "00".repeat(32),
+            note_count: 10,
+            next_index: 10,
+            tree_depth: 20,
+            nullifier_count: 2,
+            current_epoch: 3,
+        };
+
+        let check = TreeSync::check_epoch_transition(&state, 1);
+        assert!(check.changed);
+        assert_eq!(check.server_epoch, 3);
+    }
+
+    #[test]
+    fn test_no_epoch_transition() {
+        let state = TreeState {
+            root: "00".repeat(32),
+            note_count: 10,
+            next_index: 10,
+            tree_depth: 20,
+            nullifier_count: 2,
+            current_epoch: 1,
+        };
+
+        let check = TreeSync::check_epoch_transition(&state, 1);
+        assert!(!check.changed);
+        assert_eq!(check.server_epoch, 1);
     }
 }

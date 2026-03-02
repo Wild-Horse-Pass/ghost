@@ -736,6 +736,10 @@ async fn handle_message(
         ClientMessage::SubscribeConfidential => {
             handle_subscribe(state, conn_state, "confidential").await
         }
+
+        ClientMessage::GetRecentL2Transactions { since_height } => {
+            handle_get_recent_l2_transactions(state, since_height).await
+        }
     }
 }
 
@@ -2411,6 +2415,10 @@ async fn handle_get_commitment_tree_state(
             .get("nullifier_count")
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
+        current_epoch: result
+            .get("current_epoch")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
     }))
 }
 
@@ -2441,4 +2449,56 @@ async fn handle_get_confidential_notes(
         .unwrap_or_default();
 
     Ok(Some(ServerMessage::ConfidentialNotes { notes }))
+}
+
+/// Handle get recent L2 transactions via proxy
+async fn handle_get_recent_l2_transactions(
+    state: &Arc<GspState>,
+    since_height: u64,
+) -> Result<Option<ServerMessage>, GspError> {
+    use ghost_gsp_proto::L2TransactionInfo;
+
+    let result = state
+        .pay_node
+        .get_recent_l2_transactions(since_height)
+        .await?;
+
+    let transactions: Vec<L2TransactionInfo> = result
+        .get("transactions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| {
+                    Some(L2TransactionInfo {
+                        checkpoint_height: t.get("checkpoint_height")?.as_u64()?,
+                        epoch: t.get("epoch")?.as_u64().unwrap_or(0),
+                        nullifier: t.get("nullifier")?.as_str()?.to_string(),
+                        change_commitment: t.get("change_commitment")?.as_str()?.to_string(),
+                        recipient_commitment: t
+                            .get("recipient_commitment")?
+                            .as_str()?
+                            .to_string(),
+                        encrypted_change: t
+                            .get("encrypted_change")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        encrypted_recipient: t
+                            .get("encrypted_recipient")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let latest_height = result
+        .get("latest_height")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    Ok(Some(ServerMessage::RecentL2Transactions {
+        transactions,
+        latest_height,
+    }))
 }

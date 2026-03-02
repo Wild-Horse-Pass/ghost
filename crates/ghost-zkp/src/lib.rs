@@ -97,6 +97,8 @@ pub mod commitment_tree;
 pub mod confidential_prover;
 #[allow(deprecated)]
 pub mod confidential_verifier;
+pub mod consolidation_prover;
+pub mod consolidation_verifier;
 pub mod errors;
 pub mod field_utils;
 pub mod note_prover;
@@ -133,6 +135,13 @@ pub use note_prover::{
 };
 pub use note_verifier::GhostNoteVerifier;
 
+// Re-export consolidation types (merge multiple notes into one)
+pub use consolidation_prover::{
+    ConsolidationInputNote, ConsolidationProof, ConsolidationPublicInputs, ConsolidationWitness,
+    GhostConsolidateProver,
+};
+pub use consolidation_verifier::GhostConsolidateVerifier;
+
 // Re-export circuit types for advanced usage
 #[allow(deprecated)]
 pub use circuit::{
@@ -143,8 +152,8 @@ pub use circuit::{
     MAX_CONSOLIDATION_INPUTS, NOTE_TREE_DEPTH,
 };
 pub use circuit::{
-    compute_nullifier_native, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
-    NULLIFIER_DOMAIN_SEPARATOR,
+    bytes_to_field, compute_nullifier_native, field_to_bytes, pedersen_commit_native,
+    COMMITMENT_DOMAIN_SEPARATOR, NULLIFIER_DOMAIN_SEPARATOR,
 };
 
 // ============================================================================
@@ -556,6 +565,53 @@ pub fn load_note_spend_verifier(
     let prover_id: [u8; 32] = hasher.finalize().into();
 
     Ok(GhostNoteVerifier::new(
+        std::sync::Arc::new(prepared_vk),
+        prover_id,
+    ))
+}
+
+// ============================================================================
+// Consolidation Verifier Loading
+// ============================================================================
+
+/// Load a NoteConsolidate verifying key from disk.
+///
+/// Reads a `VerifyingKey<Bls12>` file, prepares it for efficient verification,
+/// and returns a `GhostConsolidateVerifier` ready to verify consolidation Groth16 proofs.
+///
+/// The VK file is typically `consolidation_vk.bin` from the MPC ceremony (slot 2).
+pub fn load_consolidation_verifier(
+    vk_path: &std::path::Path,
+    tree_depth: usize,
+) -> ZkResult<GhostConsolidateVerifier> {
+    use bellperson::groth16::{prepare_verifying_key, VerifyingKey};
+    use blstrs::Bls12;
+    use std::io::BufReader;
+
+    if !vk_path.exists() {
+        return Err(ZkError::InvalidParams(format!(
+            "Consolidation VK not found: {}",
+            vk_path.display()
+        )));
+    }
+
+    let file = std::fs::File::open(vk_path)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to open VK: {}", e)))?;
+    let reader = BufReader::new(file);
+
+    let vk: VerifyingKey<Bls12> = VerifyingKey::read(reader)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to read VK: {}", e)))?;
+
+    let prepared_vk = prepare_verifying_key(&vk);
+
+    // Compute prover ID (must match what GhostConsolidateProver uses)
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ghost-zkp-consolidation-prover-v1");
+    hasher.update(tree_depth.to_le_bytes());
+    let prover_id: [u8; 32] = hasher.finalize().into();
+
+    Ok(GhostConsolidateVerifier::new(
         std::sync::Arc::new(prepared_vk),
         prover_id,
     ))

@@ -64,6 +64,9 @@ use crate::locks::PreparedLock;
 /// Callback for lock state updates
 pub type LockStateCallback = Arc<dyn Fn(String, LockStateSnapshot) + Send + Sync>;
 
+/// L2 transaction query result type
+type L2TxResult = (Vec<ghost_gsp_proto::L2TransactionInfo>, u64);
+
 /// Shared callback/response state for the read task
 #[derive(Clone)]
 struct ReadCallbacks {
@@ -79,6 +82,7 @@ struct ReadCallbacks {
     #[allow(dead_code)] // Wired when lock confirm GSP response handling is connected
     pending_lock_confirm: Arc<RwLock<Option<tokio::sync::oneshot::Sender<GhostLockInfo>>>>,
     pending_jump: Arc<RwLock<Option<tokio::sync::oneshot::Sender<JumpResponse>>>>,
+    pending_l2_transactions: Arc<RwLock<Option<tokio::sync::oneshot::Sender<L2TxResult>>>>,
 }
 
 /// GSP client for WebSocket communication
@@ -127,6 +131,9 @@ pub struct GspClient {
 
     /// Pending jump response channel
     pending_jump: Arc<RwLock<Option<tokio::sync::oneshot::Sender<JumpResponse>>>>,
+
+    /// Pending L2 transactions query response channel
+    pending_l2_transactions: Arc<RwLock<Option<tokio::sync::oneshot::Sender<L2TxResult>>>>,
 }
 
 impl GspClient {
@@ -155,6 +162,7 @@ impl GspClient {
         let pending_lock_prepare = Arc::new(RwLock::new(None));
         let pending_lock_confirm = Arc::new(RwLock::new(None));
         let pending_jump = Arc::new(RwLock::new(None));
+        let pending_l2_transactions = Arc::new(RwLock::new(None));
 
         // Spawn write task
         let connected_clone = connected.clone();
@@ -172,6 +180,7 @@ impl GspClient {
             pending_lock_prepare: pending_lock_prepare.clone(),
             pending_lock_confirm: pending_lock_confirm.clone(),
             pending_jump: pending_jump.clone(),
+            pending_l2_transactions: pending_l2_transactions.clone(),
         };
         tokio::spawn(Self::read_task(read, connected_clone, callbacks));
 
@@ -192,6 +201,7 @@ impl GspClient {
             pending_lock_prepare,
             pending_lock_confirm,
             pending_jump,
+            pending_l2_transactions,
         })
     }
 
@@ -521,6 +531,16 @@ impl GspClient {
                 }
                 if let Some(err) = error {
                     warn!(lock_id = lock_id, error = err, "Jump request failed");
+                }
+            }
+
+            // Handle L2 transactions response
+            ServerMessage::RecentL2Transactions {
+                transactions,
+                latest_height,
+            } => {
+                if let Some(sender) = cb.pending_l2_transactions.write().take() {
+                    let _ = sender.send((transactions, latest_height));
                 }
             }
 
@@ -880,6 +900,35 @@ impl GspClient {
     /// the read task and are handled by the message dispatcher.
     pub async fn send_confidential_message(&self, msg: ClientMessage) -> WalletResult<()> {
         self.send_message(msg).await
+    }
+
+    /// Get recent L2 transactions with encrypted fields for wallet scanning.
+    ///
+    /// Returns transactions from checkpoints above `since_height`. The response
+    /// includes encrypted change/recipient fields that the scanner can try to
+    /// decrypt with the wallet's secret key.
+    pub async fn get_recent_l2_transactions(
+        &self,
+        since_height: u64,
+    ) -> WalletResult<(Vec<ghost_gsp_proto::L2TransactionInfo>, u64)> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.pending_l2_transactions.write() = Some(tx);
+
+        self.send_message(ClientMessage::GetRecentL2Transactions { since_height })
+            .await?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err(LightWalletError::GspError(
+                "L2 transactions channel closed".to_string(),
+            )),
+            Err(_) => {
+                *self.pending_l2_transactions.write() = None;
+                Err(LightWalletError::GspError(
+                    "L2 transactions request timed out".to_string(),
+                ))
+            }
+        }
     }
 
     /// Check if connected

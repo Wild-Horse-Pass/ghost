@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 24;
+const SCHEMA_VERSION: u32 = 25;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -80,6 +80,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (22, migrate_v22),
         (23, migrate_v23),
         (24, migrate_v24),
+        (25, migrate_v25),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1618,6 +1619,24 @@ fn migrate_v24(conn: &Connection) -> GhostResult<()> {
     Ok(())
 }
 
+/// v25: Add encrypted fields to confidential_transfers for wallet scanning
+fn migrate_v25(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v25: Add encrypted fields to confidential_transfers");
+
+    conn.execute_batch(
+        r#"
+        ALTER TABLE confidential_transfers ADD COLUMN encrypted_change BLOB;
+        ALTER TABLE confidential_transfers ADD COLUMN encrypted_recipient BLOB;
+        ALTER TABLE confidential_transfers ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_ct_block_height ON confidential_transfers(block_height);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added encrypted_change, encrypted_recipient, epoch to confidential_transfers");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1835,7 +1854,7 @@ mod tests {
         let pragma_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(pragma_version, 24);
+        assert_eq!(pragma_version, SCHEMA_VERSION);
     }
 
     #[test]

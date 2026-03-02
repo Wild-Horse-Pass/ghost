@@ -5598,6 +5598,9 @@ pub struct ConfidentialTransferRecord {
     pub sender_index: u64,
     pub recipient_index: u64,
     pub status: String,
+    pub encrypted_change: Option<Vec<u8>>,
+    pub encrypted_recipient: Option<Vec<u8>>,
+    pub epoch: u64,
 }
 
 impl Database {
@@ -5881,8 +5884,9 @@ impl Database {
                 "INSERT INTO confidential_transfers
                  (transfer_id, block_height, nullifier, sender_new_commitment,
                   recipient_new_commitment, old_commitment_root, new_commitment_root,
-                  proof, sender_index, recipient_index, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                  proof, sender_index, recipient_index, status,
+                  encrypted_change, encrypted_recipient, epoch)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     record.transfer_id,
                     record.block_height.map(|h| h as i64),
@@ -5895,6 +5899,9 @@ impl Database {
                     record.sender_index as i64,
                     record.recipient_index as i64,
                     record.status,
+                    record.encrypted_change.as_deref(),
+                    record.encrypted_recipient.as_deref(),
+                    record.epoch as i64,
                 ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -5923,6 +5930,108 @@ impl Database {
             }
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
+        })
+    }
+
+    /// Get recent confidential transfers with encrypted fields for wallet scanning.
+    ///
+    /// Returns transfers at block_height > since_height, capped at 1000 results.
+    pub fn get_recent_confidential_transfers(
+        &self,
+        since_height: u64,
+    ) -> GhostResult<Vec<ConfidentialTransferRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT transfer_id, block_height, nullifier, sender_new_commitment,
+                            recipient_new_commitment, old_commitment_root, new_commitment_root,
+                            proof, sender_index, recipient_index, status,
+                            encrypted_change, encrypted_recipient, epoch
+                     FROM confidential_transfers
+                     WHERE block_height > ?1 AND status = 'confirmed'
+                     ORDER BY block_height ASC
+                     LIMIT 1000",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![since_height as i64], |row| {
+                    let transfer_id: String = row.get(0)?;
+                    let block_height: Option<i64> = row.get(1)?;
+                    let nullifier: Vec<u8> = row.get(2)?;
+                    let sender_new: Vec<u8> = row.get(3)?;
+                    let recipient_new: Vec<u8> = row.get(4)?;
+                    let old_root: Vec<u8> = row.get(5)?;
+                    let new_root: Vec<u8> = row.get(6)?;
+                    let proof: Vec<u8> = row.get(7)?;
+                    let sender_idx: i64 = row.get(8)?;
+                    let recipient_idx: i64 = row.get(9)?;
+                    let status: String = row.get(10)?;
+                    let encrypted_change: Option<Vec<u8>> = row.get(11)?;
+                    let encrypted_recipient: Option<Vec<u8>> = row.get(12)?;
+                    let epoch: i64 = row.get::<_, Option<i64>>(13)?.unwrap_or(0);
+                    Ok((
+                        transfer_id,
+                        block_height,
+                        nullifier,
+                        sender_new,
+                        recipient_new,
+                        old_root,
+                        new_root,
+                        proof,
+                        sender_idx,
+                        recipient_idx,
+                        status,
+                        encrypted_change,
+                        encrypted_recipient,
+                        epoch,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut transfers = Vec::new();
+            for row in rows {
+                let (
+                    transfer_id,
+                    block_height,
+                    nullifier,
+                    sender_new,
+                    recipient_new,
+                    old_root,
+                    new_root,
+                    proof,
+                    sender_idx,
+                    recipient_idx,
+                    status,
+                    encrypted_change,
+                    encrypted_recipient,
+                    epoch,
+                ) = row.map_err(|e| GhostError::Database(e.to_string()))?;
+
+                let to_32 = |v: Vec<u8>, name: &str| -> GhostResult<[u8; 32]> {
+                    v.try_into().map_err(|_| {
+                        GhostError::Database(format!("Invalid {} size in DB", name))
+                    })
+                };
+
+                transfers.push(ConfidentialTransferRecord {
+                    transfer_id,
+                    block_height: block_height.map(|h| h as u64),
+                    nullifier: to_32(nullifier, "nullifier")?,
+                    sender_new_commitment: to_32(sender_new, "sender_commitment")?,
+                    recipient_new_commitment: to_32(recipient_new, "recipient_commitment")?,
+                    old_commitment_root: to_32(old_root, "old_root")?,
+                    new_commitment_root: to_32(new_root, "new_root")?,
+                    proof,
+                    sender_index: sender_idx as u64,
+                    recipient_index: recipient_idx as u64,
+                    status,
+                    encrypted_change,
+                    encrypted_recipient,
+                    epoch: epoch as u64,
+                });
+            }
+            Ok(transfers)
         })
     }
 
@@ -7849,6 +7958,9 @@ mod tests {
             sender_index: 0,
             recipient_index: 1,
             status: "pending".to_string(),
+            encrypted_change: Some(vec![0xFFu8; 64]),
+            encrypted_recipient: Some(vec![0xFEu8; 64]),
+            epoch: 1,
         };
 
         db.insert_confidential_transfer(&record)
@@ -7881,6 +7993,9 @@ mod tests {
             sender_index: 0,
             recipient_index: 1,
             status: "pending".to_string(),
+            encrypted_change: None,
+            encrypted_recipient: None,
+            epoch: 0,
         };
 
         assert!(db.insert_confidential_transfer(&record).is_err());

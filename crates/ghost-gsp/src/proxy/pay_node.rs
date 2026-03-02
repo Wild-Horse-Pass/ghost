@@ -1531,6 +1531,34 @@ impl PayNodeProxy {
             .await
             .map_err(|e| GspError::PayNodeError(e.to_string()))
     }
+
+    /// Get recent L2 transactions with encrypted fields for wallet scanning
+    pub async fn get_recent_l2_transactions(
+        &self,
+        since_height: u64,
+    ) -> GspResult<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/l2/transactions?since_height={}",
+            self.base_url, since_height
+        );
+
+        let response = self
+            .add_internal_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(GspError::PayNodeError(
+                "Failed to get L2 transactions".into(),
+            ));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
 }
 
 /// H-9: Payment information including ownership

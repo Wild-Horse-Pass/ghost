@@ -477,6 +477,10 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
         ClientMessage::SubscribeConfidential => {
             // No parameters to validate
         }
+
+        ClientMessage::GetRecentL2Transactions { .. } => {
+            // since_height is a u64, no validation needed
+        }
     }
 
     result

@@ -260,10 +260,10 @@ impl CeremonyManager {
         // Generate genesis parameters using GhostNoteSpendCircuit (sender-side proofs)
         use bellperson::groth16::generate_random_parameters;
         use blstrs::Scalar as Fr;
-        use ghost_zkp::circuit::GhostNoteSpendCircuit;
+        use ghost_zkp::circuit::{GhostNoteSpendCircuit, NoteConsolidateCircuit};
         use rand::rngs::OsRng;
 
-        tracing::info!("MPC: Generating genesis parameters for NoteSpend (depth=20) + Confidential circuits...");
+        tracing::info!("MPC: Generating genesis parameters for NoteSpend + NoteConsolidate + Confidential circuits...");
 
         let dummy_note = GhostNoteSpendCircuit::<Fr>::dummy(20);
         let note_params = generate_random_parameters::<Bls12, _, _>(dummy_note, &mut OsRng)
@@ -274,17 +274,17 @@ impl CeremonyManager {
                 ))
             })?;
 
-        // Payout slot uses NoteSpend circuit (ZK payout proofs removed — payouts use plain BFT)
-        let dummy_note_for_payout_slot = GhostNoteSpendCircuit::<Fr>::dummy(20);
-        let payout_slot_params = generate_random_parameters::<Bls12, _, _>(dummy_note_for_payout_slot, &mut OsRng)
+        // Slot 2: NoteConsolidateCircuit (merges up to 4 notes into 1)
+        let dummy_consolidate = NoteConsolidateCircuit::<Fr>::dummy(20);
+        let consolidate_params = generate_random_parameters::<Bls12, _, _>(dummy_consolidate, &mut OsRng)
             .map_err(|e| {
                 MpcError::Internal(format!(
-                    "Failed to generate payout-slot genesis params: {:?}",
+                    "Failed to generate consolidation genesis params: {:?}",
                     e
                 ))
             })?;
 
-        // Confidential slot also uses NoteSpend circuit
+        // Slot 3: Confidential (uses NoteSpend circuit structure)
         let dummy_note2 = GhostNoteSpendCircuit::<Fr>::dummy(20);
         let note_params2 = generate_random_parameters::<Bls12, _, _>(dummy_note2, &mut OsRng)
             .map_err(|e| {
@@ -294,8 +294,8 @@ impl CeremonyManager {
                 ))
             })?;
 
-        self.initialize_genesis_multi(note_params, payout_slot_params, note_params2)?;
-        tracing::info!("MPC: Genesis parameters initialized for NoteSpend + Confidential");
+        self.initialize_genesis_multi(note_params, consolidate_params, note_params2)?;
+        tracing::info!("MPC: Genesis parameters initialized for NoteSpend + NoteConsolidate + Confidential");
         Ok(true)
     }
 

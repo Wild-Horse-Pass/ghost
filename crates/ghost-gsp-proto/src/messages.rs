@@ -276,6 +276,12 @@ pub enum ClientMessage {
 
     /// Subscribe to confidential transfer notifications
     SubscribeConfidential,
+
+    /// Get recent L2 transactions with encrypted fields for wallet scanning
+    GetRecentL2Transactions {
+        /// Only return transactions from checkpoints above this height
+        since_height: u64,
+    },
 }
 
 /// Messages sent from GSP server to Light Wallet client
@@ -687,6 +693,9 @@ pub enum ServerMessage {
         next_index: u64,
         tree_depth: usize,
         nullifier_count: u64,
+        /// Current epoch (increments after compaction, ~11.5 days)
+        #[serde(default)]
+        current_epoch: u64,
     },
 
     /// Notes owned by a specific pubkey
@@ -698,6 +707,21 @@ pub enum ServerMessage {
         recipient_new_commitment: String,
         note_index: u64,
         block_height: u64,
+        /// Encrypted change note data (hex, for wallet scanning)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_change: Option<String>,
+        /// Encrypted recipient note data (hex, for wallet scanning)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_recipient: Option<String>,
+        /// Change commitment (hex)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        change_commitment: Option<String>,
+    },
+
+    /// Recent L2 transactions with encrypted fields for wallet scanning
+    RecentL2Transactions {
+        transactions: Vec<L2TransactionInfo>,
+        latest_height: u64,
     },
 }
 
@@ -716,6 +740,27 @@ pub struct UtxoInfo {
     pub script_type: String,
     /// Whether this UTXO is spendable
     pub spendable: bool,
+}
+
+/// L2 transaction info with encrypted fields for wallet scanning
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2TransactionInfo {
+    /// Checkpoint height where this transaction was included
+    pub checkpoint_height: u64,
+    /// Epoch when this transaction was processed
+    pub epoch: u64,
+    /// Nullifier (hex, 32 bytes)
+    pub nullifier: String,
+    /// Sender's change commitment (hex, 32 bytes)
+    pub change_commitment: String,
+    /// Recipient's commitment (hex, 32 bytes)
+    pub recipient_commitment: String,
+    /// Encrypted change note data (hex)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_change: Option<String>,
+    /// Encrypted recipient note data (hex)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_recipient: Option<String>,
 }
 
 /// Confidential note information
@@ -846,6 +891,7 @@ impl ClientMessage {
                 | ClientMessage::ShieldBalance { .. }
                 | ClientMessage::GetConfidentialNotes { .. }
                 | ClientMessage::SubscribeConfidential
+                | ClientMessage::GetRecentL2Transactions { .. }
         )
     }
 
@@ -964,6 +1010,76 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"lock_state_update\""));
         assert!(json.contains("\"change_type\":\"balance_change\""));
+    }
+
+    #[test]
+    fn test_l2_transaction_info_roundtrip() {
+        let info = L2TransactionInfo {
+            checkpoint_height: 42,
+            epoch: 1,
+            nullifier: "aa".repeat(32),
+            change_commitment: "bb".repeat(32),
+            recipient_commitment: "cc".repeat(32),
+            encrypted_change: Some("deadbeef".to_string()),
+            encrypted_recipient: Some("cafebabe".to_string()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let restored: L2TransactionInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.checkpoint_height, 42);
+        assert_eq!(restored.epoch, 1);
+        assert!(restored.encrypted_change.is_some());
+        assert!(restored.encrypted_recipient.is_some());
+    }
+
+    #[test]
+    fn test_recent_l2_transactions_message() {
+        let msg = ServerMessage::RecentL2Transactions {
+            transactions: vec![],
+            latest_height: 100,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"recent_l2_transactions\""));
+        assert!(json.contains("\"latest_height\":100"));
+    }
+
+    #[test]
+    fn test_get_recent_l2_transactions_requires_auth() {
+        assert!(
+            ClientMessage::GetRecentL2Transactions { since_height: 0 }.requires_auth()
+        );
+    }
+
+    #[test]
+    fn test_confidential_transfer_received_with_encrypted_fields() {
+        let msg = ServerMessage::ConfidentialTransferReceived {
+            transfer_id: "tx123".to_string(),
+            recipient_new_commitment: "aa".repeat(32),
+            note_index: 5,
+            block_height: 200,
+            encrypted_change: Some("deadbeef".to_string()),
+            encrypted_recipient: Some("cafebabe".to_string()),
+            change_commitment: Some("bb".repeat(32)),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"encrypted_change\""));
+        assert!(json.contains("\"encrypted_recipient\""));
+
+        // Also test backward compat - missing fields deserialize as None
+        let old_json = r#"{"type":"confidential_transfer_received","transfer_id":"tx123","recipient_new_commitment":"aa","note_index":5,"block_height":200}"#;
+        let parsed: ServerMessage = serde_json::from_str(old_json).unwrap();
+        if let ServerMessage::ConfidentialTransferReceived {
+            encrypted_change,
+            encrypted_recipient,
+            change_commitment,
+            ..
+        } = parsed
+        {
+            assert!(encrypted_change.is_none());
+            assert!(encrypted_recipient.is_none());
+            assert!(change_commitment.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
     }
 
     #[test]

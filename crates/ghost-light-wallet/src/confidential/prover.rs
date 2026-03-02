@@ -180,6 +180,7 @@ impl ClientProver {
             blinding: sender_new_blinding,
             spent: false,
             created_height: block_height,
+            epoch: 0,
         };
 
         Ok(ConfidentialTransferResult {
@@ -362,6 +363,7 @@ impl NoteSpendClientProver {
             blinding: change_blinding,
             spent: false,
             created_height: block_height,
+            epoch,
         };
 
         // Encrypt note data for sender (change) and recipient
@@ -464,6 +466,7 @@ mod tests {
             blinding: sender_blinding,
             spent: false,
             created_height: 100,
+            epoch: 0,
         });
 
         let prover = ClientProver::new_with_setup(depth).unwrap();
@@ -517,6 +520,7 @@ mod tests {
             blinding: sender_blinding,
             spent: false,
             created_height: 100,
+            epoch: 0,
         });
 
         let prover = ClientProver::new(depth);
@@ -553,6 +557,7 @@ mod tests {
             blinding: sender_blinding,
             spent: true, // already spent
             created_height: 100,
+            epoch: 0,
         });
 
         let prover = ClientProver::new(depth);
@@ -599,6 +604,7 @@ mod tests {
             blinding: sender_blinding,
             spent: false,
             created_height: 100,
+            epoch: 0,
         });
 
         let (_, sender_pubkey) = test_keypair();
@@ -661,6 +667,7 @@ mod tests {
             blinding: sender_blinding,
             spent: false,
             created_height: 100,
+            epoch: 0,
         });
 
         let (_, sender_pk) = test_keypair();
@@ -697,6 +704,7 @@ mod tests {
             blinding: sender_blinding,
             spent: true, // already spent
             created_height: 100,
+            epoch: 0,
         });
 
         let (_, sender_pk) = test_keypair();
@@ -728,6 +736,7 @@ mod tests {
             blinding: sender_blinding,
             spent: false,
             created_height: 100,
+            epoch: 0,
         });
 
         let (_, sender_pk) = test_keypair();

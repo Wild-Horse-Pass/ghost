@@ -1377,6 +1377,11 @@ async fn main() -> Result<()> {
             "/api/v1/confidential/notes/:owner_pubkey",
             get(get_confidential_notes),
         )
+        // L2 transaction scanning for wallets
+        .route(
+            "/api/v1/l2/transactions",
+            get(get_recent_l2_transactions),
+        )
         .with_state(state.clone());
 
     // MEDIUM-1: L2 block production endpoints are localhost-only.
@@ -2856,6 +2861,9 @@ async fn submit_confidential_transfer(
         sender_index: req.sender_index,
         recipient_index: req.recipient_index,
         status: "confirmed".to_string(),
+        encrypted_change: hex::decode(&req.encrypted_change).ok(),
+        encrypted_recipient: hex::decode(&req.encrypted_recipient).ok(),
+        epoch: req.epoch,
     };
     if let Err(e) = state.db.insert_confidential_transfer(&record) {
         warn!(error = %e, "Failed to persist transfer record");
@@ -3033,12 +3041,20 @@ async fn get_tree_state(State(state): State<Arc<AppState>>) -> Json<serde_json::
     let root = tree.root().unwrap_or([0u8; 32]);
     let nullifier_count = tree.nullifier_count();
 
+    // Get current epoch from L2 blocks database
+    let current_epoch = get_latest_l2_block()
+        .ok()
+        .flatten()
+        .map(|b| b.epoch_id)
+        .unwrap_or(0);
+
     Json(serde_json::json!({
         "root": hex::encode(root),
         "note_count": tree.note_count(),
         "next_index": tree.next_index(),
         "tree_depth": 20,
         "nullifier_count": nullifier_count,
+        "current_epoch": current_epoch,
     }))
 }
 
@@ -3091,6 +3107,51 @@ async fn get_confidential_notes(
     Ok(Json(serde_json::json!({
         "owner": owner_pubkey_hex,
         "notes": notes_json,
+    })))
+}
+
+/// Get recent L2 transactions with encrypted fields for wallet scanning
+async fn get_recent_l2_transactions(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let since_height: u64 = params
+        .get("since_height")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let transfers = state
+        .db
+        .get_recent_confidential_transfers(since_height)
+        .map_err(|e| {
+            error!(error = %e, "Failed to query L2 transactions");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let latest_height = transfers
+        .iter()
+        .filter_map(|t| t.block_height)
+        .max()
+        .unwrap_or(since_height);
+
+    let txs_json: Vec<serde_json::Value> = transfers
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "checkpoint_height": t.block_height.unwrap_or(0),
+                "epoch": t.epoch,
+                "nullifier": hex::encode(t.nullifier),
+                "change_commitment": hex::encode(t.sender_new_commitment),
+                "recipient_commitment": hex::encode(t.recipient_new_commitment),
+                "encrypted_change": t.encrypted_change.as_ref().map(hex::encode),
+                "encrypted_recipient": t.encrypted_recipient.as_ref().map(hex::encode),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "transactions": txs_json,
+        "latest_height": latest_height,
     })))
 }
 
