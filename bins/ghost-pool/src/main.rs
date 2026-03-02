@@ -1678,7 +1678,7 @@ async fn main() -> Result<()> {
                                                                 "MPC params_callback: Verified and updated note_spend params"
                                                             );
                                                         }
-                                                        // Also fetch latest payout params from same peer
+                                                        // Also fetch latest payout params from same peer (with VK extraction)
                                                         let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
                                                         if let Ok(payout_resp) = reqwest::Client::new()
                                                             .get(&payout_url)
@@ -1695,10 +1695,51 @@ async fn main() -> Result<()> {
                                                                         if let Err(e) = std::fs::write(&payout_write, &payout_data) {
                                                                             tracing::warn!(error = %e, "MPC params_callback: Failed to save payout params");
                                                                         } else {
+                                                                            // Extract and save payout VK
+                                                                            if let Ok(payout_params) = ghost_mpc::params::load_parameters(&payout_write) {
+                                                                                let payout_vk_path = params_dir.join("payout_vk.bin");
+                                                                                if let Err(e) = ghost_mpc::params::save_verifying_key(&payout_vk_path, &payout_params.vk) {
+                                                                                    tracing::warn!(error = %e, "MPC params_callback: Failed to save payout VK");
+                                                                                }
+                                                                            }
                                                                             tracing::info!(
                                                                                 size = payout_data.len(),
                                                                                 peer = %host,
                                                                                 "MPC params_callback: Updated payout params"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        // Also fetch latest unshield params from same peer (with VK extraction)
+                                                        let unshield_url = format!("http://{}:8080/api/v1/mpc/unshield-params", host);
+                                                        if let Ok(unshield_resp) = reqwest::Client::new()
+                                                            .get(&unshield_url)
+                                                            .timeout(std::time::Duration::from_secs(60))
+                                                            .send()
+                                                            .await
+                                                        {
+                                                            if unshield_resp.status().is_success() {
+                                                                if let Ok(unshield_data) = unshield_resp.bytes().await {
+                                                                    if unshield_data.len() > 1000 {
+                                                                        let unshield_current = params_dir.join("unshield_params_current.bin");
+                                                                        let unshield_write = std::fs::read_link(&unshield_current)
+                                                                            .unwrap_or(unshield_current.clone());
+                                                                        if let Err(e) = std::fs::write(&unshield_write, &unshield_data) {
+                                                                            tracing::warn!(error = %e, "MPC params_callback: Failed to save unshield params");
+                                                                        } else {
+                                                                            // Extract and save unshield VK
+                                                                            if let Ok(unshield_params) = ghost_mpc::params::load_parameters(&unshield_write) {
+                                                                                let unshield_vk_path = params_dir.join("unshield_vk.bin");
+                                                                                if let Err(e) = ghost_mpc::params::save_verifying_key(&unshield_vk_path, &unshield_params.vk) {
+                                                                                    tracing::warn!(error = %e, "MPC params_callback: Failed to save unshield VK");
+                                                                                }
+                                                                            }
+                                                                            tracing::info!(
+                                                                                size = unshield_data.len(),
+                                                                                peer = %host,
+                                                                                "MPC params_callback: Updated unshield params"
                                                                             );
                                                                         }
                                                                     }
@@ -1921,9 +1962,17 @@ async fn main() -> Result<()> {
                                                     warn!(error = %e, "MPC: Failed to create params symlink");
                                                 }
 
+                                                // Extract and save note_spend VK
+                                                if let Ok(ns_params) = ghost_mpc::params::load_parameters(&params_path) {
+                                                    let ns_vk_path = params_dir.join("note_spend_vk.bin");
+                                                    if let Err(e) = ghost_mpc::params::save_verifying_key(&ns_vk_path, &ns_params.vk) {
+                                                        warn!(error = %e, "MPC: Failed to save note_spend VK");
+                                                    }
+                                                }
+
                                                 info!(size = data.len(), peer = %host, "MPC: Fetched genesis note_spend params from peer!");
 
-                                                // Also fetch payout params from same peer
+                                                // Also fetch payout params from same peer (with VK extraction)
                                                 let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
                                                 if let Ok(payout_resp) = reqwest::Client::new()
                                                     .get(&payout_url)
@@ -1943,7 +1992,47 @@ async fn main() -> Result<()> {
                                                                     if let Err(e) = std::os::unix::fs::symlink(&payout_path, &payout_current) {
                                                                         warn!(error = %e, "MPC: Failed to create payout params symlink");
                                                                     }
+                                                                    // Extract and save payout VK
+                                                                    if let Ok(payout_params) = ghost_mpc::params::load_parameters(&payout_path) {
+                                                                        let payout_vk_path = params_dir.join("payout_vk.bin");
+                                                                        if let Err(e) = ghost_mpc::params::save_verifying_key(&payout_vk_path, &payout_params.vk) {
+                                                                            warn!(error = %e, "MPC: Failed to save payout VK");
+                                                                        }
+                                                                    }
                                                                     info!(size = payout_data.len(), peer = %host, "MPC: Fetched payout params from peer!");
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                // Also fetch unshield params from same peer (with VK extraction)
+                                                let unshield_url = format!("http://{}:8080/api/v1/mpc/unshield-params", host);
+                                                if let Ok(unshield_resp) = reqwest::Client::new()
+                                                    .get(&unshield_url)
+                                                    .timeout(std::time::Duration::from_secs(60))
+                                                    .send()
+                                                    .await
+                                                {
+                                                    if unshield_resp.status().is_success() {
+                                                        if let Ok(unshield_data) = unshield_resp.bytes().await {
+                                                            if unshield_data.len() > 1000 {
+                                                                let unshield_path = params_dir.join("unshield_params_v0.bin");
+                                                                let unshield_current = params_dir.join("unshield_params_current.bin");
+                                                                if let Err(e) = std::fs::write(&unshield_path, &unshield_data) {
+                                                                    warn!(error = %e, "MPC: Failed to save fetched unshield params");
+                                                                } else {
+                                                                    let _ = std::fs::remove_file(&unshield_current);
+                                                                    if let Err(e) = std::os::unix::fs::symlink(&unshield_path, &unshield_current) {
+                                                                        warn!(error = %e, "MPC: Failed to create unshield params symlink");
+                                                                    }
+                                                                    // Extract and save unshield VK
+                                                                    if let Ok(unshield_params) = ghost_mpc::params::load_parameters(&unshield_path) {
+                                                                        let unshield_vk_path = params_dir.join("unshield_vk.bin");
+                                                                        if let Err(e) = ghost_mpc::params::save_verifying_key(&unshield_vk_path, &unshield_params.vk) {
+                                                                            warn!(error = %e, "MPC: Failed to save unshield VK");
+                                                                        }
+                                                                    }
+                                                                    info!(size = unshield_data.len(), peer = %host, "MPC: Fetched unshield params from peer!");
                                                                 }
                                                             }
                                                         }
@@ -2397,6 +2486,13 @@ async fn main() -> Result<()> {
                                             warn!(error = %e, "MPC: Failed to save refreshed params");
                                             continue;
                                         }
+                                        // Extract and save note_spend VK
+                                        if let Ok(ns_params) = ghost_mpc::params::load_parameters(&write_path) {
+                                            let ns_vk_path = params_dir.join("note_spend_vk.bin");
+                                            if let Err(e) = ghost_mpc::params::save_verifying_key(&ns_vk_path, &ns_params.vk) {
+                                                warn!(error = %e, "MPC: Failed to save refreshed note_spend VK");
+                                            }
+                                        }
                                         // Reload into ceremony manager
                                         if let Err(e) =
                                             ceremony_manager_for_startup.load_current_params()
@@ -2407,7 +2503,7 @@ async fn main() -> Result<()> {
                                             // Invalidate cached contribution since params changed
                                             cached_msg = None;
                                         }
-                                        // Also refresh payout params from same peer
+                                        // Also refresh payout params from same peer (with VK extraction)
                                         let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
                                         if let Ok(payout_resp) = reqwest::Client::new()
                                             .get(&payout_url)
@@ -2424,7 +2520,44 @@ async fn main() -> Result<()> {
                                                         if let Err(e) = std::fs::write(&payout_write, &payout_data) {
                                                             warn!(error = %e, "MPC: Failed to save refreshed payout params");
                                                         } else {
+                                                            // Extract and save payout VK
+                                                            if let Ok(payout_params) = ghost_mpc::params::load_parameters(&payout_write) {
+                                                                let payout_vk_path = params_dir.join("payout_vk.bin");
+                                                                if let Err(e) = ghost_mpc::params::save_verifying_key(&payout_vk_path, &payout_params.vk) {
+                                                                    warn!(error = %e, "MPC: Failed to save refreshed payout VK");
+                                                                }
+                                                            }
                                                             info!(size = payout_data.len(), peer = %host, "MPC: Refreshed payout params from network");
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Also refresh unshield params from same peer (with VK extraction)
+                                        let unshield_url = format!("http://{}:8080/api/v1/mpc/unshield-params", host);
+                                        if let Ok(unshield_resp) = reqwest::Client::new()
+                                            .get(&unshield_url)
+                                            .timeout(std::time::Duration::from_secs(60))
+                                            .send()
+                                            .await
+                                        {
+                                            if unshield_resp.status().is_success() {
+                                                if let Ok(unshield_data) = unshield_resp.bytes().await {
+                                                    if unshield_data.len() > 1000 {
+                                                        let unshield_current = params_dir.join("unshield_params_current.bin");
+                                                        let unshield_write = std::fs::read_link(&unshield_current)
+                                                            .unwrap_or(unshield_current.clone());
+                                                        if let Err(e) = std::fs::write(&unshield_write, &unshield_data) {
+                                                            warn!(error = %e, "MPC: Failed to save refreshed unshield params");
+                                                        } else {
+                                                            // Extract and save unshield VK
+                                                            if let Ok(unshield_params) = ghost_mpc::params::load_parameters(&unshield_write) {
+                                                                let unshield_vk_path = params_dir.join("unshield_vk.bin");
+                                                                if let Err(e) = ghost_mpc::params::save_verifying_key(&unshield_vk_path, &unshield_params.vk) {
+                                                                    warn!(error = %e, "MPC: Failed to save refreshed unshield VK");
+                                                                }
+                                                            }
+                                                            info!(size = unshield_data.len(), peer = %host, "MPC: Refreshed unshield params from network");
                                                         }
                                                     }
                                                 }
