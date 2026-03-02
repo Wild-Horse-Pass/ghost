@@ -21,6 +21,10 @@ pub enum GlyphError {
     #[error("Ghost ID already has a registered glyph")]
     AlreadyRegistered,
 
+    /// Scale factor is out of the valid range (1..=256)
+    #[error("Invalid scale factor: {0} (must be 1..=256)")]
+    InvalidScale(u32),
+
     /// No glyph found for the given query
     #[error("Glyph not found")]
     NotFound,

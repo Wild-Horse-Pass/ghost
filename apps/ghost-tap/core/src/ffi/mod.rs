@@ -1173,14 +1173,23 @@ pub fn glyph_compute_bitmap_hash(pixels: Vec<u8>) -> Result<String, GhostTapFfiE
     Ok(hex::encode(crate::glyph::GlyphManager::compute_bitmap_hash(&arr)))
 }
 
+/// Maximum render scale on mobile (L-9: cap to 32x = 512x512 to save memory)
+const MOBILE_MAX_SCALE: u32 = 32;
+
 /// Render a glyph as RGBA pixel data at the given scale factor.
 /// Returns raw RGBA bytes (width = 16*scale, height = 16*scale, 4 bytes per pixel).
+/// Scale is capped at 32 on mobile to prevent excessive memory allocation.
 #[uniffi::export]
 pub fn glyph_render(
     pixels: Vec<u8>,
     ghost_id: String,
     scale: u32,
 ) -> Result<Vec<u8>, GhostTapFfiError> {
+    if scale > MOBILE_MAX_SCALE {
+        return Err(GhostTapFfiError::OperationFailed {
+            message: format!("Scale {} exceeds mobile maximum of {}", scale, MOBILE_MAX_SCALE),
+        });
+    }
     if pixels.len() != crate::glyph::GLYPH_SIZE {
         return Err(GhostTapFfiError::OperationFailed {
             message: format!(
@@ -1199,14 +1208,22 @@ pub fn glyph_render(
             message: e.to_string(),
         }
     })?;
-    Ok(crate::glyph::GlyphManager::render(&glyph, scale))
+    crate::glyph::GlyphManager::render(&glyph, scale).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })
 }
 
 /// Get the rendered dimensions (width, height) for a given scale factor
 #[uniffi::export]
-pub fn glyph_dimensions(scale: u32) -> Vec<u32> {
-    let (w, h) = crate::glyph::GlyphManager::dimensions(scale);
-    vec![w, h]
+pub fn glyph_dimensions(scale: u32) -> Result<Vec<u32>, GhostTapFfiError> {
+    let (w, h) = crate::glyph::GlyphManager::dimensions(scale).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
+    Ok(vec![w, h])
 }
 
 /// Get the full 26-color GhostGlyph palette
@@ -1231,6 +1248,18 @@ pub fn glyph_claim(
     ghost_id: String,
     pixels: Vec<u8>,
 ) -> Result<FfiGlyphClaimResponse, GhostTapFfiError> {
+    // H-4: Validate URL before making network request
+    crate::glyph::validate_pay_url(&ghost_pay_url).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
+    // M-7: Validate pixels before sending to network
+    crate::glyph::GlyphManager::validate_pixels(&pixels).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
     let config = crate::network::PayConfig {
         base_url: ghost_pay_url,
         ..crate::network::PayConfig::default()
@@ -1240,9 +1269,13 @@ pub fn glyph_claim(
             message: e.to_string(),
         }
     })?;
-    let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
-        message: format!("Failed to create runtime: {e}"),
-    })?;
+    // M-6: Use single-threaded runtime (lighter for FFI blocking calls)
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| GhostTapFfiError::OperationFailed {
+            message: format!("Failed to create runtime: {e}"),
+        })?;
     let resp = rt
         .block_on(manager.claim(&ghost_id, &pixels))
         .map_err(|e| GhostTapFfiError::OperationFailed {
@@ -1261,6 +1294,11 @@ pub fn glyph_get_info(
     ghost_pay_url: String,
     ghost_id: String,
 ) -> Result<Option<FfiGlyphInfo>, GhostTapFfiError> {
+    crate::glyph::validate_pay_url(&ghost_pay_url).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
     let config = crate::network::PayConfig {
         base_url: ghost_pay_url,
         ..crate::network::PayConfig::default()
@@ -1270,9 +1308,12 @@ pub fn glyph_get_info(
             message: e.to_string(),
         }
     })?;
-    let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
-        message: format!("Failed to create runtime: {e}"),
-    })?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| GhostTapFfiError::OperationFailed {
+            message: format!("Failed to create runtime: {e}"),
+        })?;
     let info = rt
         .block_on(manager.get_glyph(&ghost_id))
         .map_err(|e| GhostTapFfiError::OperationFailed {
@@ -1295,6 +1336,11 @@ pub fn glyph_check_availability(
     ghost_pay_url: String,
     pixels: Vec<u8>,
 ) -> Result<bool, GhostTapFfiError> {
+    crate::glyph::validate_pay_url(&ghost_pay_url).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
     if pixels.len() != crate::glyph::GLYPH_SIZE {
         return Err(GhostTapFfiError::OperationFailed {
             message: format!(
@@ -1317,9 +1363,12 @@ pub fn glyph_check_availability(
             message: e.to_string(),
         }
     })?;
-    let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
-        message: format!("Failed to create runtime: {e}"),
-    })?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| GhostTapFfiError::OperationFailed {
+            message: format!("Failed to create runtime: {e}"),
+        })?;
     rt.block_on(manager.is_available(&arr))
         .map_err(|e| GhostTapFfiError::OperationFailed {
             message: e.to_string(),
@@ -1548,8 +1597,15 @@ mod tests {
 
     #[test]
     fn test_glyph_dimensions() {
-        let dims = glyph_dimensions(4);
+        let dims = glyph_dimensions(4).unwrap();
         assert_eq!(dims, vec![64, 64]);
+    }
+
+    #[test]
+    fn test_glyph_render_mobile_scale_cap() {
+        let pixels = vec![0u8; crate::glyph::GLYPH_SIZE];
+        // Scale 33 exceeds mobile cap of 32
+        assert!(glyph_render(pixels, "ghost1test".to_string(), 33).is_err());
     }
 
     #[test]

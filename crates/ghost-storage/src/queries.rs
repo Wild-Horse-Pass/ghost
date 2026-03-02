@@ -6897,9 +6897,25 @@ impl Database {
         commitment: &[u8],
         created_at: u64,
     ) -> GhostResult<()> {
-        validate_blob_size(pixels, "glyph_pixels")?;
-        validate_blob_size(bitmap_hash, "glyph_bitmap_hash")?;
-        validate_blob_size(commitment, "glyph_commitment")?;
+        // L-4: Exact size validation for glyph blobs
+        if pixels.len() != 256 {
+            return Err(GhostError::Database(format!(
+                "glyph pixels must be exactly 256 bytes, got {}",
+                pixels.len()
+            )));
+        }
+        if bitmap_hash.len() != 32 {
+            return Err(GhostError::Database(format!(
+                "glyph bitmap_hash must be exactly 32 bytes, got {}",
+                bitmap_hash.len()
+            )));
+        }
+        if commitment.len() != 32 {
+            return Err(GhostError::Database(format!(
+                "glyph commitment must be exactly 32 bytes, got {}",
+                commitment.len()
+            )));
+        }
 
         let expires_at = created_at + Self::GLYPH_CLAIM_TTL_SECS;
 
@@ -6926,6 +6942,9 @@ impl Database {
     }
 
     /// Complete a glyph registration by setting the funding txid and timestamp.
+    ///
+    /// M-5: Only completes if the claim has not expired. Expired claims must be
+    /// re-submitted before funding.
     pub fn complete_glyph_registration(
         &self,
         ghost_id: &str,
@@ -6936,14 +6955,15 @@ impl Database {
             let updated = conn
                 .execute(
                     "UPDATE ghost_glyph_registry SET funding_txid = ?1, registered_at = ?2, expires_at = NULL
-                     WHERE ghost_id = ?3 AND funding_txid IS NULL",
-                    params![funding_txid, registered_at as i64, ghost_id],
+                     WHERE ghost_id = ?3 AND funding_txid IS NULL
+                     AND (expires_at IS NULL OR expires_at >= ?4)",
+                    params![funding_txid, registered_at as i64, ghost_id, registered_at as i64],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             if updated == 0 {
                 return Err(GhostError::Database(
-                    "No pending glyph claim found for this ghost ID".to_string(),
+                    "No pending (non-expired) glyph claim found for this ghost ID".to_string(),
                 ));
             }
             Ok(())
@@ -7004,13 +7024,24 @@ impl Database {
         })
     }
 
-    /// Check if a bitmap hash is available (not yet claimed).
+    /// Check if a bitmap hash is available (not yet claimed by an active record).
+    ///
+    /// M-3: Expired unfunded claims do not block availability — they will be
+    /// cleaned up by the hourly expiration task, but we treat them as available
+    /// immediately so users don't have to wait.
     pub fn is_bitmap_available(&self, bitmap_hash: &[u8]) -> GhostResult<bool> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
         self.with_connection(|conn| {
             let count: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM ghost_glyph_registry WHERE bitmap_hash = ?1",
-                    params![bitmap_hash],
+                    "SELECT COUNT(*) FROM ghost_glyph_registry
+                     WHERE bitmap_hash = ?1
+                     AND (funding_txid IS NOT NULL OR expires_at IS NULL OR expires_at >= ?2)",
+                    params![bitmap_hash, now],
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -8324,6 +8355,13 @@ mod tests {
         hasher.finalize().to_vec()
     }
 
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
     #[test]
     fn test_glyph_claim_insert() {
         let db = Database::in_memory().expect("Failed to create DB");
@@ -8411,14 +8449,15 @@ mod tests {
         let pixels = test_glyph_pixels();
         let bh = test_bitmap_hash(&pixels);
         let cm = test_commitment(&pixels, "ghost1alice");
+        let now = now_secs();
 
         // Should be available before any claim
         assert!(db.is_bitmap_available(&bh).expect("Query should succeed"));
 
-        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, now)
             .expect("Insert should succeed");
 
-        // Should NOT be available after claim
+        // Should NOT be available after claim (not expired yet)
         assert!(!db.is_bitmap_available(&bh).expect("Query should succeed"));
     }
 
@@ -8572,22 +8611,23 @@ mod tests {
         let pixels = test_glyph_pixels();
         let bh = test_bitmap_hash(&pixels);
         let cm = test_commitment(&pixels, "ghost1alice");
+        let now = now_secs();
 
-        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, 1000)
+        db.insert_glyph_claim("ghost1alice", &pixels, &bh, &cm, now)
             .expect("Insert should succeed");
 
-        // Bitmap should be taken
+        // Bitmap should be taken (claim is still fresh)
         assert!(!db.is_bitmap_available(&bh).expect("Query ok"));
 
-        // Expire the claim
-        db.cleanup_expired_glyph_claims(90000).expect("Cleanup should succeed");
+        // Expire the claim (cleanup with time far in the future)
+        db.cleanup_expired_glyph_claims(now + 90000).expect("Cleanup should succeed");
 
-        // Bitmap should be available again
+        // Bitmap should be available again (row deleted)
         assert!(db.is_bitmap_available(&bh).expect("Query ok"));
 
         // A new claim with the same bitmap should succeed
         let cm2 = test_commitment(&pixels, "ghost1bob");
-        db.insert_glyph_claim("ghost1bob", &pixels, &bh, &cm2, 100000)
+        db.insert_glyph_claim("ghost1bob", &pixels, &bh, &cm2, now + 90001)
             .expect("Re-claim should succeed after expiry");
     }
 }

@@ -4151,23 +4151,21 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                                     "funding_txid": req.txid,
                                                     "registered_at": now,
                                                 });
+                                                // L-8: Await relay instead of fire-and-forget so failures are visible
                                                 let relay_url = format!("{}/api/v1/glyph/relay-registered", state.pool_api_url);
-                                                let client = state.pool_http_client.clone();
-                                                tokio::spawn(async move {
-                                                    match client.post(&relay_url).json(&relay_body).send().await {
-                                                        Ok(resp) if resp.status().is_success() => {
-                                                            info!("Glyph registration relayed to ghost-pool");
-                                                        }
-                                                        Ok(resp) => {
-                                                            let status = resp.status();
-                                                            let body = resp.text().await.unwrap_or_default();
-                                                            warn!(status = %status, body = %body, "Glyph registration relay failed");
-                                                        }
-                                                        Err(e) => {
-                                                            warn!(error = %e, "Glyph registration relay request failed");
-                                                        }
+                                                match state.pool_http_client.post(&relay_url).json(&relay_body).send().await {
+                                                    Ok(resp) if resp.status().is_success() => {
+                                                        info!("Glyph registration relayed to ghost-pool");
                                                     }
-                                                });
+                                                    Ok(resp) => {
+                                                        let status = resp.status();
+                                                        let body = resp.text().await.unwrap_or_default();
+                                                        warn!(status = %status, body = %body, "Glyph registration relay failed");
+                                                    }
+                                                    Err(e) => {
+                                                        warn!(error = %e, "Glyph registration relay request failed");
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -6154,6 +6152,9 @@ async fn get_glyph(
     State(state): State<Arc<AppState>>,
     Path(ghost_id): Path<String>,
 ) -> Result<Json<GlyphInfoResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // M-9: Validate ghost_id before DB lookup
+    validate_ghost_id(&ghost_id).map_err(|e| glyph_error(StatusCode::BAD_REQUEST, e))?;
+
     let record = state
         .db
         .get_glyph_by_ghost_id(&ghost_id)
@@ -6184,6 +6185,14 @@ async fn check_glyph_availability(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let bitmap_hash = hex::decode(&bitmap_hash_hex)
         .map_err(|_| glyph_error(StatusCode::BAD_REQUEST, "Invalid hex"))?;
+
+    // M-10: Validate decoded bitmap_hash is exactly 32 bytes (SHA-256)
+    if bitmap_hash.len() != 32 {
+        return Err(glyph_error(
+            StatusCode::BAD_REQUEST,
+            format!("bitmap_hash must be 32 bytes, got {}", bitmap_hash.len()),
+        ));
+    }
 
     let available = state
         .db

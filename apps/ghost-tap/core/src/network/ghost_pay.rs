@@ -70,9 +70,23 @@ fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
-/// Whether a reqwest error is retryable (timeout, connection reset, etc.).
+/// Whether a reqwest error is retryable (timeout or connection failure only).
 fn is_retryable_error(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
+    err.is_timeout() || err.is_connect()
+}
+
+/// URL-encode a path segment to prevent path traversal and injection.
+fn encode_path_segment(s: &str) -> String {
+    // Percent-encode everything except alphanumeric and bech32m-safe characters
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c.to_string()
+            } else {
+                format!("%{:02X}", c as u32)
+            }
+        })
+        .collect()
 }
 
 impl GhostPayClient {
@@ -94,7 +108,11 @@ impl GhostPayClient {
         Self { config, client }
     }
 
-    /// Submit a glyph claim (design chosen, pending lock funding)
+    /// Submit a glyph claim (design chosen, pending lock funding).
+    ///
+    /// This is a non-idempotent mutation — no automatic retry on failure.
+    /// If the server commits but the response is lost, the client should
+    /// call `get_glyph()` to check the claim status before retrying.
     pub async fn claim_glyph(
         &self,
         ghost_id: &str,
@@ -106,57 +124,31 @@ impl GhostPayClient {
             "pixels": pixels,
         });
 
-        let mut last_err = None;
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                let delay_ms = INITIAL_BACKOFF_MS * (1 << (attempt - 1));
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-            }
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| NetworkError::RequestFailed(e.to_string()))?;
 
-            let result = self.client.post(&url).json(&body).send().await;
-
-            match result {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        return resp
-                            .json::<GlyphClaimResponse>()
-                            .await
-                            .map_err(|e| NetworkError::InvalidResponse(e.to_string()));
-                    }
-
-                    let status = resp.status();
-                    let resp_body = resp.text().await.unwrap_or_default();
-
-                    if is_retryable_status(status) && attempt < MAX_RETRIES {
-                        warn!(status = %status, attempt, "Glyph claim got retryable status, retrying");
-                        last_err = Some(NetworkError::RequestFailed(format!(
-                            "HTTP {}: {}", status, resp_body
-                        )));
-                        continue;
-                    }
-
-                    warn!(status = %status, body = %resp_body, "Glyph claim failed");
-                    return Err(NetworkError::RequestFailed(format!(
-                        "HTTP {}: {}", status, resp_body
-                    )));
-                }
-                Err(e) => {
-                    if is_retryable_error(&e) && attempt < MAX_RETRIES {
-                        warn!(error = %e, attempt, "Glyph claim request failed, retrying");
-                        last_err = Some(NetworkError::RequestFailed(e.to_string()));
-                        continue;
-                    }
-                    return Err(NetworkError::RequestFailed(e.to_string()));
-                }
-            }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let resp_body = resp.text().await.unwrap_or_default();
+            warn!(status = %status, body = %resp_body, "Glyph claim failed");
+            return Err(NetworkError::RequestFailed(format!(
+                "HTTP {}: {}", status, resp_body
+            )));
         }
 
-        Err(last_err.unwrap_or_else(|| NetworkError::RequestFailed("Max retries exceeded".into())))
+        resp.json::<GlyphClaimResponse>()
+            .await
+            .map_err(|e| NetworkError::InvalidResponse(e.to_string()))
     }
 
     /// Get glyph info by ghost ID
     pub async fn get_glyph(&self, ghost_id: &str) -> Result<Option<GlyphInfo>, NetworkError> {
-        let url = format!("{}/api/v1/glyph/{}", self.config.base_url, ghost_id);
+        let url = format!("{}/api/v1/glyph/{}", self.config.base_url, encode_path_segment(ghost_id));
 
         let mut last_err = None;
         for attempt in 0..=MAX_RETRIES {
@@ -217,7 +209,7 @@ impl GhostPayClient {
     ) -> Result<bool, NetworkError> {
         let url = format!(
             "{}/api/v1/glyph/check/{}",
-            self.config.base_url, bitmap_hash_hex
+            self.config.base_url, encode_path_segment(bitmap_hash_hex)
         );
 
         let mut last_err = None;

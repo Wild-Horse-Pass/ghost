@@ -3,21 +3,22 @@
 //! Produces raw RGBA pixel data from glyph bitmaps. No external image
 //! dependencies — output is suitable for direct framebuffer or UI display.
 
+use crate::error::GlyphError;
 use crate::glyph::{GhostGlyph, GLYPH_HEIGHT, GLYPH_WIDTH};
 use crate::palette::PALETTE;
 
 /// Maximum render scale factor (256x produces 4096x4096 = 64MB RGBA).
-const MAX_SCALE: u32 = 256;
+pub const MAX_SCALE: u32 = 256;
 
 /// Render a glyph to raw RGBA pixel data at the given scale factor.
 ///
 /// Each glyph pixel becomes a `scale x scale` block of RGBA pixels.
 /// Returns a Vec of (width * scale * height * scale * 4) bytes.
 ///
-/// Scale must be 1..=256. Returns an empty Vec if scale is 0 or exceeds MAX_SCALE.
-pub fn render_rgba(glyph: &GhostGlyph, scale: u32) -> Vec<u8> {
+/// Returns `GlyphError::InvalidScale` if scale is 0 or exceeds MAX_SCALE.
+pub fn render_rgba(glyph: &GhostGlyph, scale: u32) -> Result<Vec<u8>, GlyphError> {
     if scale == 0 || scale > MAX_SCALE {
-        return Vec::new();
+        return Err(GlyphError::InvalidScale(scale));
     }
     let w = GLYPH_WIDTH as u32 * scale;
     let h = GLYPH_HEIGHT as u32 * scale;
@@ -46,12 +47,17 @@ pub fn render_rgba(glyph: &GhostGlyph, scale: u32) -> Vec<u8> {
         }
     }
 
-    buf
+    Ok(buf)
 }
 
 /// Get the rendered dimensions for a given scale factor.
-pub fn rendered_dimensions(scale: u32) -> (u32, u32) {
-    (GLYPH_WIDTH as u32 * scale, GLYPH_HEIGHT as u32 * scale)
+///
+/// Returns `GlyphError::InvalidScale` if scale is 0 or exceeds MAX_SCALE.
+pub fn rendered_dimensions(scale: u32) -> Result<(u32, u32), GlyphError> {
+    if scale == 0 || scale > MAX_SCALE {
+        return Err(GlyphError::InvalidScale(scale));
+    }
+    Ok((GLYPH_WIDTH as u32 * scale, GLYPH_HEIGHT as u32 * scale))
 }
 
 #[cfg(test)]
@@ -65,8 +71,8 @@ mod tests {
         let glyph = GhostGlyph::new(pixels, "ghost1test".to_string()).unwrap();
 
         let scale = 4;
-        let buf = render_rgba(&glyph, scale);
-        let (w, h) = rendered_dimensions(scale);
+        let buf = render_rgba(&glyph, scale).unwrap();
+        let (w, h) = rendered_dimensions(scale).unwrap();
         assert_eq!(buf.len(), (w * h * 4) as usize);
     }
 
@@ -75,10 +81,32 @@ mod tests {
         let pixels = [1u8; GLYPH_SIZE]; // All Phantom White
         let glyph = GhostGlyph::new(pixels, "ghost1test".to_string()).unwrap();
 
-        let buf = render_rgba(&glyph, 1);
+        let buf = render_rgba(&glyph, 1).unwrap();
         // Every pixel should be (255, 255, 255, 255)
         for chunk in buf.chunks(4) {
             assert_eq!(chunk, &[255, 255, 255, 255]);
         }
+    }
+
+    #[test]
+    fn test_render_zero_scale_errors() {
+        let pixels = [0u8; GLYPH_SIZE];
+        let glyph = GhostGlyph::new(pixels, "ghost1test".to_string()).unwrap();
+        assert!(render_rgba(&glyph, 0).is_err());
+    }
+
+    #[test]
+    fn test_render_excessive_scale_errors() {
+        let pixels = [0u8; GLYPH_SIZE];
+        let glyph = GhostGlyph::new(pixels, "ghost1test".to_string()).unwrap();
+        assert!(render_rgba(&glyph, 257).is_err());
+    }
+
+    #[test]
+    fn test_rendered_dimensions_bounds() {
+        assert!(rendered_dimensions(0).is_err());
+        assert!(rendered_dimensions(257).is_err());
+        assert_eq!(rendered_dimensions(1).unwrap(), (16, 16));
+        assert_eq!(rendered_dimensions(256).unwrap(), (4096, 4096));
     }
 }

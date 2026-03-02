@@ -8,8 +8,38 @@ use crate::network::{GhostPayClient, GlyphClaimResponse, GlyphInfo, NetworkError
 // Re-export core glyph types for convenient access
 pub use ghost_glyph::{
     palette_index_to_rgb, render_rgba, rendered_dimensions, GhostGlyph, GlyphError, GLYPH_HEIGHT,
-    GLYPH_SIZE, GLYPH_WIDTH, PALETTE, PALETTE_SIZE,
+    GLYPH_SIZE, GLYPH_WIDTH, MAX_SCALE, PALETTE, PALETTE_SIZE,
 };
+
+/// Validate a Ghost Pay URL to prevent SSRF.
+///
+/// Rejects non-HTTP(S) schemes and URLs containing embedded credentials (`@`).
+pub fn validate_pay_url(url: &str) -> Result<(), NetworkError> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(NetworkError::ConnectionFailed(
+            "pay_url scheme must be http:// or https://".to_string(),
+        ));
+    }
+    // Reject embedded credentials (user:pass@host)
+    let after_scheme = if url.starts_with("https://") {
+        &url[8..]
+    } else {
+        &url[7..]
+    };
+    if after_scheme.contains('@') {
+        return Err(NetworkError::ConnectionFailed(
+            "pay_url must not contain credentials".to_string(),
+        ));
+    }
+    // Must have a non-empty host portion
+    let host_part = after_scheme.split('/').next().unwrap_or("");
+    if host_part.is_empty() {
+        return Err(NetworkError::ConnectionFailed(
+            "pay_url must have a host".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 /// Wallet-side glyph manager
 ///
@@ -50,11 +80,16 @@ impl GlyphManager {
     }
 
     /// Submit a glyph claim (design chosen, pending lock funding)
+    ///
+    /// Validates pixels locally before sending to the network.
     pub async fn claim(
         &self,
         ghost_id: &str,
         pixels: &[u8],
     ) -> Result<GlyphClaimResponse, NetworkError> {
+        GhostGlyph::validate_pixel_slice(pixels).map_err(|e| {
+            NetworkError::RequestFailed(format!("Invalid pixels: {}", e))
+        })?;
         self.client.claim_glyph(ghost_id, pixels).await
     }
 
@@ -67,12 +102,12 @@ impl GlyphManager {
     ///
     /// Returns raw RGBA bytes suitable for display in a UI framework.
     /// Width = GLYPH_WIDTH * scale, Height = GLYPH_HEIGHT * scale.
-    pub fn render(glyph: &GhostGlyph, scale: u32) -> Vec<u8> {
+    pub fn render(glyph: &GhostGlyph, scale: u32) -> Result<Vec<u8>, GlyphError> {
         render_rgba(glyph, scale)
     }
 
     /// Get the rendered dimensions for a given scale factor
-    pub fn dimensions(scale: u32) -> (u32, u32) {
+    pub fn dimensions(scale: u32) -> Result<(u32, u32), GlyphError> {
         rendered_dimensions(scale)
     }
 }
@@ -104,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_render_dimensions() {
-        let (w, h) = GlyphManager::dimensions(4);
+        let (w, h) = GlyphManager::dimensions(4).unwrap();
         assert_eq!(w, 64); // 16 * 4
         assert_eq!(h, 64); // 16 * 4
     }
@@ -112,7 +147,7 @@ mod tests {
     #[test]
     fn test_render_output_size() {
         let glyph = GhostGlyph::new([0u8; GLYPH_SIZE], "ghost1test".to_string()).unwrap();
-        let rgba = GlyphManager::render(&glyph, 2);
+        let rgba = GlyphManager::render(&glyph, 2).unwrap();
         // 16*2 * 16*2 * 4 bytes per pixel
         assert_eq!(rgba.len(), 32 * 32 * 4);
     }
@@ -124,5 +159,31 @@ mod tests {
         assert!(palette_index_to_rgb(0).is_some());
         assert!(palette_index_to_rgb(25).is_some());
         assert!(palette_index_to_rgb(26).is_none());
+    }
+
+    #[test]
+    fn test_validate_pay_url_valid() {
+        assert!(validate_pay_url("http://127.0.0.1:8800").is_ok());
+        assert!(validate_pay_url("https://ghost-pay.example.com").is_ok());
+        assert!(validate_pay_url("http://localhost:8800/api").is_ok());
+    }
+
+    #[test]
+    fn test_validate_pay_url_bad_scheme() {
+        assert!(validate_pay_url("ftp://evil.com").is_err());
+        assert!(validate_pay_url("file:///etc/passwd").is_err());
+        assert!(validate_pay_url("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn test_validate_pay_url_embedded_credentials() {
+        assert!(validate_pay_url("http://user:pass@evil.com").is_err());
+        assert!(validate_pay_url("http://admin@evil.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_pay_url_no_host() {
+        assert!(validate_pay_url("http://").is_err());
+        assert!(validate_pay_url("https://").is_err());
     }
 }

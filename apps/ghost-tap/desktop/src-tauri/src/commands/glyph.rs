@@ -1,6 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
-use ghost_tap_core::glyph::{GhostGlyph, GlyphManager, GLYPH_SIZE, PALETTE};
+use ghost_tap_core::glyph::{validate_pay_url, GhostGlyph, GlyphManager, GLYPH_SIZE, PALETTE};
 use ghost_tap_core::network::PayConfig;
 use serde::Serialize;
 use tauri::State;
@@ -31,12 +31,13 @@ pub struct PaletteColor {
     pub b: u8,
 }
 
-fn make_manager(state: &AppState, pay_url: &str) -> GlyphManager {
+fn make_manager(state: &AppState, pay_url: &str) -> AppResult<GlyphManager> {
+    validate_pay_url(pay_url).map_err(|e| AppError::from(e.to_string()))?;
     let config = PayConfig {
         base_url: pay_url.to_string(),
         ..PayConfig::default()
     };
-    GlyphManager::with_client(config, state.http_client.clone())
+    Ok(GlyphManager::with_client(config, state.http_client.clone()))
 }
 
 /// Submit a glyph claim for a ghost ID
@@ -47,7 +48,10 @@ pub async fn claim_glyph(
     pixels: Vec<u8>,
     pay_url: String,
 ) -> AppResult<GlyphClaimResult> {
-    let manager = make_manager(&state, &pay_url);
+    // Validate pixels before sending to network
+    GlyphManager::validate_pixels(&pixels).map_err(|e| AppError::from(e.to_string()))?;
+
+    let manager = make_manager(&state, &pay_url)?;
     let resp = manager
         .claim(&ghost_id, &pixels)
         .await
@@ -67,7 +71,7 @@ pub async fn get_glyph(
     ghost_id: String,
     pay_url: String,
 ) -> AppResult<Option<GlyphInfoResult>> {
-    let manager = make_manager(&state, &pay_url);
+    let manager = make_manager(&state, &pay_url)?;
     let info = manager
         .get_glyph(&ghost_id)
         .await
@@ -103,7 +107,7 @@ pub async fn check_glyph_availability(
         AppError::from("Invalid pixel array")
     })?;
 
-    let manager = make_manager(&state, &pay_url);
+    let manager = make_manager(&state, &pay_url)?;
     manager
         .is_available(&pixel_arr)
         .await
@@ -128,7 +132,7 @@ pub fn render_glyph(pixels: Vec<u8>, ghost_id: String, scale: u32) -> AppResult<
     let glyph = GhostGlyph::new(pixel_arr, ghost_id)
         .map_err(|e| AppError::from(e.to_string()))?;
 
-    Ok(GlyphManager::render(&glyph, scale))
+    GlyphManager::render(&glyph, scale).map_err(|e| AppError::from(e.to_string()))
 }
 
 /// Get the full 26-color palette

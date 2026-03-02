@@ -11,4 +11,4 @@ pub mod render;
 pub use error::GlyphError;
 pub use glyph::{GhostGlyph, GLYPH_HEIGHT, GLYPH_SIZE, GLYPH_WIDTH, PALETTE_SIZE};
 pub use palette::{palette_index_to_rgb, PALETTE};
-pub use render::{render_rgba, rendered_dimensions};
+pub use render::{render_rgba, rendered_dimensions, MAX_SCALE};
