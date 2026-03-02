@@ -94,10 +94,11 @@ hyper-util = { workspace = true }
 # HTTP client for L2 transaction relay to ghost-pool
 reqwest = { workspace = true }
 
-# For E2E test example (ZK proof generation)
+# For E2E test example (ZK proof generation + encryption)
 bellperson = "0.26"
 blstrs = { workspace = true }
 ff = "0.13"
+secp256k1 = { workspace = true }
 
 [features]
 # Use MPC ceremony parameters for ZK proofs (required for mainnet)
