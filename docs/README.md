@@ -78,6 +78,13 @@ Bitcoin Ghost is a full Bitcoin node implementation with incentivized operation,
 | [Reconciliation](./protocols/RECONCILIATION.md) | L1 settlement batches |
 | [L2 Comparison](./protocols/L2_COMPARISON.md) | Ghost Pay vs Lightning, Citrea, Liquid, Ark |
 
+### Mobile & Merchant
+
+| Protocol | Description |
+|----------|-------------|
+| [GhostTap](./protocols/GHOST_TAP.md) | Mobile wallet and contactless merchant terminal |
+| [GhostGlyph](./protocols/GHOST_GLYPHS.md) | Visual identity avatars bound to Ghost IDs |
+
 ### Additional
 
 | Protocol | Description |
@@ -130,11 +137,11 @@ Bitcoin Ghost is a full Bitcoin node implementation with incentivized operation,
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  USER LAYER                                                             │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐         │
-│  │  Light Wallet   │  │  Full Node      │  │   Mining        │         │
-│  │  (CLI/TUI)      │  │  Wallet         │  │   Dashboard     │         │
-│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘         │
-│           │                    │                     │                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │
+│  │Light Wallet │  │ Full Node   │  │  GhostTap   │  │   Mining    │  │
+│  │ (CLI/TUI)   │  │  Wallet     │  │(Mobile/POS) │  │  Dashboard  │  │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  │
+│         │                │                 │                │          │
 │  SERVICE LAYER                 │                     │                  │
 │  ┌────────┴────────┐           │           ┌────────┴────────┐         │
 │  │   GSP Server    │           │           │   Ghost Pool    │         │
@@ -182,8 +189,9 @@ Bitcoin Ghost is a full Bitcoin node implementation with incentivized operation,
 ### For L2 Users
 1. [Ghost Pay](./protocols/GHOST_PAY.md) - L2 overview
 2. [Ghost Keys](./protocols/GHOST_KEYS.md) - Your identity
-3. [Wraith Protocol](./protocols/WRAITH_PROTOCOL.md) - Private entry
-4. [Reconciliation](./protocols/RECONCILIATION.md) - Exiting to L1
+3. [GhostTap](./protocols/GHOST_TAP.md) - Mobile wallet and merchant terminal
+4. [Wraith Protocol](./protocols/WRAITH_PROTOCOL.md) - Private entry
+5. [Reconciliation](./protocols/RECONCILIATION.md) - Exiting to L1
 
 ### For Developers
 1. [Specification](./SPECIFICATION.md) - Canonical reference
@@ -218,12 +226,14 @@ Bitcoin Ghost is a full Bitcoin node implementation with incentivized operation,
 | **Shroud** | Random relay delay for transaction origin protection |
 | **Virtual Block** | 10-second L2 block |
 | **Wraith** | Two-phase CoinJoin mixing protocol |
+| **GhostGlyph** | 16x16 pixel avatar permanently bound to a Ghost ID |
+| **GhostTap** | Cross-platform mobile wallet and merchant payment terminal |
 
 ---
 
 ## Version
 
-This documentation covers Bitcoin Ghost v1.5.
+This documentation covers Bitcoin Ghost v1.8.
 
 ## Contributing
 

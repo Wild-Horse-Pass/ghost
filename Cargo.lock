@@ -3415,6 +3415,7 @@ dependencies = [
  "blstrs",
  "ff",
  "getrandom 0.2.17",
+ "ghost-common",
  "group",
  "hex",
  "pairing",

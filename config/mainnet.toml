@@ -354,13 +354,6 @@ treasury_address = "${TREASURY_ADDRESS}"
 # required = 2                     # M of N required signatures
 # total = 3                        # Total signers (N)
 
-# Pool fee percentage (operator revenue)
-# Options: 0.0-100.0
-# Default: 2.0
-# Industry standard: 1-2%
-# IMMUTABLE: Cannot be changed via dashboard API (baked into decay schedule)
-treasury_fee_percent = 1.0
-
 # Minimum payout threshold in satoshis
 # Balances below this accumulate until threshold is met
 # Options: 547+ (must be above dust limit of 546)
@@ -397,27 +390,11 @@ virtual_block_secs = 10
 # Default: 2160 (~6 hours at 10s blocks)
 epoch_blocks = 2160
 
-# Transfer fee in basis points (1 bp = 0.01%)
-# Options: 0-10000
-# Default: 10 (0.1%)
-transfer_fee_bps = 10
-
-# Minimum transfer fee in satoshis
-# Applied when percentage fee would be less than minimum
-# Options: 0+
-# Default: 10
-min_transfer_fee_sats = 10
-
 # Enable Wraith Protocol mixing (CoinJoin privacy)
 # Provides transaction unlinkability
 # Options: true | false
 # Default: true
 wraith_enabled = true
-
-# Wraith mixing fee percentage
-# Options: 0.0-10.0
-# Default: 1.0
-wraith_fee_percent = 0.5
 
 # =============================================================================
 # [registry] - DNS Load Balancer Registration (Optional)

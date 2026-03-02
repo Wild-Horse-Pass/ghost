@@ -51,14 +51,10 @@ prune_height = 0
 
 [pool]
 treasury_address = ""
-treasury_fee_percent = 1.0
 min_payout_sats = 10000
 
 [ghost_pay]
 enabled = true
 virtual_block_secs = 10
 epoch_blocks = 100
-transfer_fee_bps = 10
-min_transfer_fee_sats = 100
 wraith_enabled = true
-wraith_fee_percent = 0.5

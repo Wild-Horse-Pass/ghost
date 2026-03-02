@@ -62,9 +62,8 @@ archive_mode = false  # Solo miners don't need archive
 prune_height = 1000   # Keep ~1 week of data
 
 [pool]
-# Treasury still receives 1% fee
+# Treasury still receives 1% fee (POOL_FEE_BASIS_POINTS = 100)
 treasury_address = "${TREASURY_ADDRESS}"
-treasury_fee_percent = 1.0
 min_payout_sats = 10000  # Lower threshold for solo
 payout_interval_blocks = 10  # Faster payouts for solo
 

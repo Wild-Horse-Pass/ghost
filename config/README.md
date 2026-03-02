@@ -84,7 +84,6 @@ These settings cannot be changed via the dashboard API. They require direct conf
 | Setting | Section | Reason |
 |---------|---------|--------|
 | `treasury_address` | `[pool]` | Economic - prevents redirect attacks |
-| `treasury_fee_percent` | `[pool]` | Economic - baked into decay schedule |
 | `internal_api_secret` | `[network]` | Security - can't change own auth |
 | `key_path` | `[identity]` | Identity - changing would change node_id |
 | `signing_key` | `[network]` | Identity - tied to DNS registration |

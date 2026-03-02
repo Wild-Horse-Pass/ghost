@@ -68,56 +68,7 @@ Ghost Pay uses **Groth16** SNARKs (Succinct Non-interactive ARguments of Knowled
 
 ## Use Cases in Ghost Pay
 
-### 1. Balance Verification (Legacy — ConfidentialTransfer)
-
-> **Deprecation Notice:** Use Cases 1-2 describe the legacy ConfidentialTransfer account-model
-> approach. The current L2 uses the NoteSpend/UTXO model (GhostNoteSpendCircuit). See
-> "Circuit Design" section below for the current approach.
-
-Prove you have sufficient balance for a transfer without revealing your total balance.
-
-```
-Public inputs:
-├── Transfer amount: 0.1 BTC
-├── Fee: 100 sats
-└── Balance commitment: H(balance || randomness)
-
-Private inputs (witness):
-├── Actual balance: 1.5 BTC
-└── Randomness used in commitment
-
-Statement proven:
-├── balance ≥ amount + fee
-└── Balance commitment is valid
-```
-
-### 2. Transfer Validity
-
-Prove a transfer is valid without revealing sender, recipient, or amount.
-
-```
-Public inputs:
-├── Sender balance commitment (before)
-├── Sender balance commitment (after)
-├── Recipient balance commitment (before)
-├── Recipient balance commitment (after)
-└── State transition hash
-
-Private inputs (witness):
-├── Sender actual balance (before/after)
-├── Recipient actual balance (before/after)
-├── Transfer amount
-├── Valid signatures
-└── Randomness values
-
-Statement proven:
-├── sender_balance_after = sender_balance_before - amount - fee
-├── recipient_balance_after = recipient_balance_before + amount
-├── All signatures are valid
-└── No double-spend
-```
-
-### 3. Settlement Batching
+### 1. Settlement Batching
 
 Prove a batch settlement is correct without revealing individual transactions.
 
@@ -140,7 +91,7 @@ Statement proven:
 └── Fee calculation is accurate
 ```
 
-### 4. Wraith Mixing Enhancement
+### 2. Wraith Mixing Enhancement
 
 ZK proofs provide additional privacy guarantees beyond blind signatures.
 
@@ -200,6 +151,59 @@ pub struct GhostNoteSpendCircuit<F: PrimeField> {
 - `change_commitment` — sender's new note (remaining balance)
 - `recipient_commitment` — recipient's new note (transfer amount)
 
+### NoteConsolidateCircuit (UTXO Compaction)
+
+Merges up to 4 notes into a single note of equal total value, reducing wallet UTXO count and keeping the commitment tree compact.
+
+```rust
+pub struct NoteConsolidateCircuit<F: PrimeField> {
+    // Up to 4 input notes (unused slots zeroed)
+    pub input_values: Vec<Option<F>>,
+    pub input_spending_keys: Vec<Option<F>>,
+    pub input_randomness: Vec<Option<F>>,
+    pub input_indices: Vec<Option<u64>>,
+    pub input_epochs: Vec<Option<F>>,
+    pub merkle_siblings: Vec<Vec<Option<F>>>,
+    // Output note
+    pub output_randomness: Option<F>,
+    pub commitment_root: Option<F>,
+    pub tree_depth: usize,
+}
+```
+
+**Constraints (~2,500 at depth-20):**
+1. Each input note commitment correctly formed (MiMC Pedersen)
+2. Each input nullifier proves ownership via spending key
+3. Merkle inclusion for each input note (depth 20)
+4. Sum preservation: output_value = sum(input_values)
+5. Output commitment correctly formed
+6. Range proofs: all values in [0, 2^64)
+
+**Public inputs (5+):**
+- `commitment_root` — Merkle root of the commitment tree
+- `nullifier_0..3` — Nullifiers for each input note (prevents double-spend)
+- `output_commitment` — The consolidated output note
+
+**Endpoint:** `POST /api/v1/confidential/consolidate`
+**Required field:** `encrypted_output` (hex string, min 218 chars = 109 bytes)
+
+### GhostUnshieldCircuit (L2→L1 Withdrawal)
+
+Proves ownership of a note and burns its entire value for L1 withdrawal. Simpler than NoteSpend — no change or recipient commitments needed.
+
+**Constraints (~6,300 at depth-20):**
+1. Spent note commitment correctly formed (MiMC Pedersen)
+2. Nullifier proves ownership via spending key
+3. Merkle inclusion in commitment tree (depth 20)
+4. Withdrawal amount equals full note value (no partial withdrawal)
+
+**Public inputs (3):**
+- `commitment_root` — Merkle root of the commitment tree
+- `nullifier` — Prevents double-withdrawal
+- `withdrawal_amount` — Full note value (verified in circuit)
+
+**Endpoint:** `POST /api/v1/confidential/unshield`
+
 ## Trusted Setup
 
 Groth16 requires a trusted setup ceremony:
@@ -239,6 +243,8 @@ Anyone can verify the setup was performed correctly:
 | Circuit | Constraints | Proving Time | Params Size |
 |---------|-------------|--------------|-------------|
 | GhostNoteSpendCircuit (depth=20) | ~12,675 | ~170ms | ~1.4 MB |
+| NoteConsolidateCircuit (depth=20) | ~2,500 | ~100ms | ~200 KB |
+| GhostUnshieldCircuit (depth=20) | ~6,300 | ~85ms | ~700 KB |
 | PayoutCircuit | ~2,500 | ~1 second | ~200 KB |
 
 ### Proof Verification (Validator-Side)
@@ -246,6 +252,8 @@ Anyone can verify the setup was performed correctly:
 | Circuit | Verification Time | Proof Size |
 |---------|-------------------|------------|
 | NoteSpend | ~5ms | 192 bytes |
+| Consolidation | ~5ms | 192 bytes |
+| Unshield | ~5ms | 192 bytes |
 | Payout | ~10ms | 192 bytes |
 
 ## Privacy Guarantees
@@ -493,23 +501,9 @@ fn test_note_spend_circuit() {
 }
 ```
 
-## Deprecated Types
-
-The following types remain in the codebase for backward compatibility but are deprecated.
-New code must use the NoteSpend equivalents:
-
-| Deprecated Type | Replacement | Notes |
-|----------------|-------------|-------|
-| `ConfidentialTransferCircuit` | `GhostNoteSpendCircuit` | Account-model → UTXO model |
-| `ConfidentialProver` | `GhostNoteProver` | Server-side → sender-side proofs |
-| `ConfidentialVerifier` | `GhostNoteVerifier` | Verify NoteSpend proofs (~5ms) |
-| `ClientProver` | `NoteSpendClientProver` | Wallet-side proof generation |
-| `ConfidentialTransferResult` | `NoteSpendTransferResult` | Proof output with nullifier + commitments |
-
-All deprecated types carry `#[deprecated]` attributes and will emit compiler warnings.
-
 ## Related Documentation
 
 - [Ghost Pay](GHOST_PAY.md) - L2 network using ZK proofs
 - [Wraith Protocol](WRAITH_PROTOCOL.md) - Mixing with ZK enhancement
 - [Reconciliation](RECONCILIATION.md) - Batch settlement with ZK proofs
+- [MPC Ceremony](MPC_CEREMONY.md) - Rolling MPC for ZK parameter generation

@@ -44,11 +44,6 @@ pub const SATS_PER_BTC_F64: f64 = 100_000_000.0;
 /// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const POOL_FEE_BASIS_POINTS: u64 = 100;
 
-/// Pool fee percentage (1% of block subsidy)
-/// DEPRECATED: Use POOL_FEE_BASIS_POINTS for new code
-#[deprecated(note = "Use POOL_FEE_BASIS_POINTS for integer arithmetic")]
-pub const POOL_FEE_PERCENT: f64 = 1.0;
-
 /// Treasury threshold in satoshis (21 BTC)
 /// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const TREASURY_THRESHOLD_SATS: u64 = 21 * SATS_PER_BTC;
@@ -272,14 +267,10 @@ pub const MAX_TX_SIZE_BITCOIN_PURE: usize = 100_000;
 // GHOST PAY L2
 // =============================================================================
 
-/// Ghost Pay transfer fee (basis points, 10 = 0.1%)
-pub const GHOSTPAY_FEE_BPS: u64 = 10;
-
-/// Ghost Pay minimum transfer fee (satoshis)
-pub const GHOSTPAY_MIN_FEE_SATS: u64 = 10;
-
-/// Wraith mixing fee (percentage)
-pub const WRAITH_FEE_PERCENT: f64 = 1.0;
+/// L2 transfer fee in satoshis (flat fee per NoteSpend transfer)
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
+/// Baked into circuit constraints; changing requires MPC ceremony reset.
+pub const L2_TRANSFER_FEE_SATS: u64 = 10;
 
 /// Virtual block time (seconds)
 pub const L2_VIRTUAL_BLOCK_SECS: u64 = 10;

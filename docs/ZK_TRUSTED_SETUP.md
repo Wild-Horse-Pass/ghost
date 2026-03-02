@@ -57,7 +57,7 @@ The solution is a **Multi-Party Computation ceremony** where:
 
 ### Ceremony Requirements
 
-For Ghost's ZK circuits (GhostNoteSpendCircuit and PayoutCircuit):
+For Ghost's ZK circuits (GhostNoteSpendCircuit, NoteConsolidateCircuit, and GhostUnshieldCircuit):
 
 1. **Minimum Participants**: At least 10 independent parties (Ghost supports up to 101)
 2. **Geographic Distribution**: Participants from different jurisdictions
@@ -75,8 +75,8 @@ Ghost implements a **rolling MPC ceremony** (not a one-time event):
    - Produces curve-wide parameters
 
 2. **Phase 2 (Circuit-Specific)**
-   - Specific to Ghost's GhostNoteSpendCircuit (~12,675 constraints, depth-20 merkle, MiMC 82 rounds)
-   - Uses `GhostNoteSpendCircuit::dummy(20)` for parameter generation (~3-4 seconds per contribution)
+   - Covers all 3 circuits: GhostNoteSpendCircuit (~12,675 constraints), NoteConsolidateCircuit (~2,500 constraints), and GhostUnshieldCircuit (~6,300 constraints)
+   - Uses dummy circuit instantiation for parameter generation (~3-4 seconds per contribution)
    - The first 101 contributors become Elders (+1 share)
    - Parameters ossify permanently after 101 contributions
 

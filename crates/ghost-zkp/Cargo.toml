@@ -68,5 +68,8 @@ rayon = "1.8"
 # Hex encoding for display
 hex = "0.4"
 
+# Shared constants (L2_TRANSFER_FEE_SATS)
+ghost-common = { path = "../ghost-common" }
+
 [dev-dependencies]
 tokio = { version = "1.35", features = ["rt-multi-thread", "macros"] }

@@ -125,9 +125,6 @@ prune_height = 0
 # IMPORTANT: Use a secure address you control!
 treasury_address = "bc1p..."
 
-# Pool fee percentage (1.0 = 1%)
-treasury_fee_percent = 1.0
-
 # Minimum payout amount in satoshis (must be > 546 dust limit)
 min_payout_sats = 10000
 
@@ -145,14 +142,5 @@ virtual_block_secs = 10
 # Epoch length in virtual blocks before L1 settlement
 epoch_blocks = 100
 
-# Transfer fee in basis points (10 = 0.1%)
-transfer_fee_bps = 10
-
-# Minimum transfer fee in satoshis
-min_transfer_fee_sats = 100
-
 # Enable Wraith Protocol mixing
 wraith_enabled = true
-
-# Wraith mixing fee percentage
-wraith_fee_percent = 0.5

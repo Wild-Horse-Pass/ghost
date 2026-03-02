@@ -69,6 +69,7 @@ pub struct CeremonyManager {
     files: ParameterFiles,
     note_spend_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
     payout_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
+    unshield_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
 }
 
 pub struct CeremonyState {
@@ -216,8 +217,10 @@ Parameters are stored in the node's data directory:
 ├── note_spend_params_v100.bin      # After elder 101 (ossified)
 ├── note_spend_params_current.bin   # Symlink to latest
 ├── payout_params_v*.bin            # Same versioning for payout circuit
+├── unshield_params_v*.bin          # Same versioning for unshield circuit
 ├── note_spend_vk.bin               # Note spend verifying key
-└── payout_vk.bin                   # Payout verifying key
+├── payout_vk.bin                   # Payout verifying key
+└── unshield_vk.bin                 # Unshield verifying key
 ```
 
 Parameter files use magic markers and version gaps to detect corruption. Each version is a complete parameter set (~200MB), transferred between peers in 1MB chunks via `MpcParametersRequest`/`MpcParametersResponse` messages.
@@ -317,7 +320,7 @@ On startup, `ghost-pool` checks the `mpc_contributions` table to set `capabiliti
 
 ## 9. Groth16 Proof Types
 
-The MPC ceremony generates parameters for two circuit types:
+The MPC ceremony generates parameters for three circuit types:
 
 ### 9.1 GhostNoteSpendCircuit
 
@@ -352,7 +355,19 @@ Proves payout distribution validity (~2,500 constraints vs NoteSpend's ~12,675):
 - All amounts fit in 64 bits
 - Metadata commitment (epoch, counts)
 
-### 9.3 Verification
+### 9.3 GhostUnshieldCircuit
+
+Proves L2→L1 withdrawal validity. Simpler than NoteSpend — full note value only, no change or recipient commitments:
+
+- **Public inputs (3):** `commitment_root`, `nullifier`, `withdrawal_amount`
+- **~6,300 constraints** (~half of NoteSpend)
+- Proves note ownership via spending key
+- Proves Merkle inclusion in commitment tree (depth 20)
+- Burns entire note value (no partial withdrawal)
+- Nullifier prevents double-withdrawal
+- Proof size: 192 bytes. Verification: ~5ms.
+
+### 9.4 Verification
 
 ```rust
 pub struct BlockVerifier {

@@ -1022,6 +1022,17 @@ impl NullifierRouteHandler {
         self.db
             .persist_l2_checkpoint_atomic(&record, &pending_nullifiers)?;
 
+        // Track L2 transfer fees: each NoteSpend transaction pays a flat protocol fee
+        if tx_count > 0 {
+            if let Err(e) = self.db.increment_epoch_fee(
+                self.epoch_manager.current_epoch(),
+                tx_count as u64,
+            ) {
+                warn!(epoch = self.epoch_manager.current_epoch(), error = %e,
+                    "Failed to increment epoch fee counter — fees will be under-counted");
+            }
+        }
+
         // Update last checkpoint time (for proposer timeout detection)
         *self.last_checkpoint_time.write() = Instant::now();
 

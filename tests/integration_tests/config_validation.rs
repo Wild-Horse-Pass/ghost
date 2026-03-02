@@ -33,7 +33,6 @@ fn test_086_default_config_has_sensible_values() {
 
     // Pool defaults
     assert!(config.pool.treasury_address.is_empty());
-    assert_eq!(config.pool.treasury_fee_percent, 2.0);
 }
 
 #[test]
@@ -398,44 +397,6 @@ fn test_116_treasury_address_matches_testnet() {
 }
 
 #[test]
-fn test_117_fee_percent_negative_rejected() {
-    let mut config = NodeConfig::default();
-    config.pool.treasury_fee_percent = -1.0;
-
-    let result = config.validate();
-    assert!(!result.is_valid());
-    assert!(result
-        .errors
-        .iter()
-        .any(|e| e.field == "pool.treasury_fee_percent"));
-}
-
-#[test]
-fn test_118_fee_percent_over_100_rejected() {
-    let mut config = NodeConfig::default();
-    config.pool.treasury_fee_percent = 101.0;
-
-    let result = config.validate();
-    assert!(!result.is_valid());
-    assert!(result
-        .errors
-        .iter()
-        .any(|e| e.field == "pool.treasury_fee_percent"));
-}
-
-#[test]
-fn test_119_high_fee_warning() {
-    let mut config = NodeConfig::default();
-    config.pool.treasury_fee_percent = 15.0; // > 10%
-
-    let result = config.validate();
-    assert!(result
-        .warnings
-        .iter()
-        .any(|e| e.field == "pool.treasury_fee_percent" && e.message.contains("High")));
-}
-
-#[test]
 fn test_120_min_payout_below_dust_rejected() {
     let mut config = NodeConfig::default();
     config.pool.min_payout_sats = 100; // Below 546 dust limit
@@ -523,44 +484,6 @@ fn test_133_zero_epoch_blocks_rejected() {
         .any(|e| e.field == "ghost_pay.epoch_blocks"));
 }
 
-#[test]
-fn test_134_high_transfer_fee_warning() {
-    let config = NodeConfig {
-        ghost_pay: Some(GhostPayConfig {
-            enabled: true,
-            transfer_fee_bps: 1500, // 15% - very high
-            ..GhostPayConfig::default()
-        }),
-        ..NodeConfig::default()
-    };
-
-    let result = config.validate();
-    assert!(result
-        .warnings
-        .iter()
-        .any(|e| e.field == "ghost_pay.transfer_fee_bps"));
-}
-
-#[test]
-fn test_135_wraith_fee_out_of_range_rejected() {
-    let config = NodeConfig {
-        ghost_pay: Some(GhostPayConfig {
-            enabled: true,
-            wraith_enabled: true,
-            wraith_fee_percent: 15.0, // > 10%
-            ..GhostPayConfig::default()
-        }),
-        ..NodeConfig::default()
-    };
-
-    let result = config.validate();
-    assert!(!result.is_valid());
-    assert!(result
-        .errors
-        .iter()
-        .any(|e| e.field == "ghost_pay.wraith_fee_percent"));
-}
-
 // =============================================================================
 // POOL CONFIG VALIDATE METHOD TESTS
 // =============================================================================
@@ -577,10 +500,10 @@ fn test_pool_config_validate_empty_treasury() {
 }
 
 #[test]
-fn test_pool_config_validate_invalid_fee() {
+fn test_pool_config_validate_zero_min_payout_via_struct() {
     let config = PoolConfig {
         treasury_address: TreasuryAddress::single("bc1qtest"),
-        treasury_fee_percent: 150.0,
+        min_payout_sats: 0,
         ..PoolConfig::default()
     };
 
@@ -604,7 +527,6 @@ fn test_pool_config_validate_zero_min_payout() {
 fn test_pool_config_validate_success() {
     let config = PoolConfig {
         treasury_address: TreasuryAddress::single("bc1qtest"),
-        treasury_fee_percent: 2.0,
         min_payout_sats: 10000,
         payout_interval_blocks: 100,
         node_payout_address: None,

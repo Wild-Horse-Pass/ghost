@@ -347,17 +347,6 @@ impl NodeConfig {
             }
         }
 
-        // Fee percentage validation
-        if self.pool.treasury_fee_percent < 0.0 || self.pool.treasury_fee_percent > 100.0 {
-            result.add_error("pool.treasury_fee_percent", "Must be between 0 and 100");
-        }
-        if self.pool.treasury_fee_percent > 10.0 {
-            result.add_warning(
-                "pool.treasury_fee_percent",
-                &format!("High pool fee of {}%", self.pool.treasury_fee_percent),
-            );
-        }
-
         // Minimum payout validation
         const DUST_LIMIT: u64 = 546;
         if self.pool.min_payout_sats < DUST_LIMIT {
@@ -737,23 +726,6 @@ impl NodeConfig {
         // Epoch blocks
         if gp.epoch_blocks == 0 {
             result.add_error("ghost_pay.epoch_blocks", "Cannot be 0");
-        }
-
-        // Transfer fee
-        if gp.transfer_fee_bps > 1000 {
-            result.add_warning(
-                "ghost_pay.transfer_fee_bps",
-                &format!(
-                    "High transfer fee of {} basis points ({}%)",
-                    gp.transfer_fee_bps,
-                    gp.transfer_fee_bps as f64 / 100.0
-                ),
-            );
-        }
-
-        // Wraith fee
-        if gp.wraith_enabled && (gp.wraith_fee_percent < 0.0 || gp.wraith_fee_percent > 10.0) {
-            result.add_error("ghost_pay.wraith_fee_percent", "Must be between 0 and 10");
         }
     }
 
@@ -1261,14 +1233,8 @@ pub struct GhostPayConfig {
     pub virtual_block_secs: u64,
     /// Epoch length (virtual blocks)
     pub epoch_blocks: u64,
-    /// Transfer fee (basis points)
-    pub transfer_fee_bps: u64,
-    /// Minimum transfer fee (satoshis)
-    pub min_transfer_fee_sats: u64,
     /// Enable Wraith mixing
     pub wraith_enabled: bool,
-    /// Wraith mixing fee (percentage)
-    pub wraith_fee_percent: f64,
 }
 
 impl Default for GhostPayConfig {
@@ -1277,10 +1243,7 @@ impl Default for GhostPayConfig {
             enabled: false,
             virtual_block_secs: L2_VIRTUAL_BLOCK_SECS,
             epoch_blocks: L2_EPOCH_BLOCKS,
-            transfer_fee_bps: GHOSTPAY_FEE_BPS,
-            min_transfer_fee_sats: GHOSTPAY_MIN_FEE_SATS,
             wraith_enabled: true,
-            wraith_fee_percent: WRAITH_FEE_PERCENT,
         }
     }
 }
@@ -1387,8 +1350,6 @@ pub struct PoolConfig {
     /// ```
     #[serde(default)]
     pub treasury_address: TreasuryAddress,
-    /// Treasury fee percentage (0-100)
-    pub treasury_fee_percent: f64,
     /// Minimum payout threshold (satoshis)
     pub min_payout_sats: u64,
     /// Payout frequency (blocks)
@@ -1429,12 +1390,6 @@ impl PoolConfig {
             return Err(format!("treasury_address: {}", e));
         }
 
-        if self.treasury_fee_percent < 0.0 || self.treasury_fee_percent > 100.0 {
-            return Err(format!(
-                "treasury_fee_percent must be between 0 and 100, got {}",
-                self.treasury_fee_percent
-            ));
-        }
         if self.min_payout_sats == 0 {
             return Err("min_payout_sats must be greater than 0".to_string());
         }
@@ -1457,8 +1412,7 @@ impl Default for PoolConfig {
         Self {
             // Default placeholder - MUST be configured in production
             treasury_address: TreasuryAddress::default(),
-            treasury_fee_percent: 2.0, // 2% pool fee
-            min_payout_sats: 100_000,  // 0.001 BTC minimum
+            min_payout_sats: 100_000, // 0.001 BTC minimum
             payout_interval_blocks: 100,
             node_payout_address: None,
             pool_name: None,

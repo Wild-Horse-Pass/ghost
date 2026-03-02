@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 27;
+const SCHEMA_VERSION: u32 = 28;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -83,6 +83,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (25, migrate_v25),
         (26, migrate_v26),
         (27, migrate_v27),
+        (28, migrate_v28),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1686,6 +1687,26 @@ fn migrate_v27(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added expires_at to ghost_glyph_registry");
+    Ok(())
+}
+
+fn migrate_v28(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v28: Add l2_epoch_fees table for L2 transfer fee tracking");
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE l2_epoch_fees (
+            epoch INTEGER PRIMARY KEY,
+            transfer_count INTEGER NOT NULL DEFAULT 0,
+            fee_total_sats INTEGER NOT NULL DEFAULT 0,
+            distributed INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added l2_epoch_fees table");
     Ok(())
 }
 

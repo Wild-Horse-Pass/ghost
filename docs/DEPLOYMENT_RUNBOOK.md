@@ -22,7 +22,7 @@
 //|======================================================================================================================|
 ```
 
-# Bitcoin Ghost v1.4 Deployment Runbook
+# Bitcoin Ghost v1.8 Deployment Runbook
 
 This runbook provides step-by-step instructions for deploying Bitcoin Ghost in production.
 
@@ -146,6 +146,7 @@ For Stratum V2 support with full BUDS/policy control, use TDP mode with SRI:
 | `ghost-pool` | Main mining pool node | Yes |
 | `translator` | SV1 to SV2 protocol translator | If SV1 miners |
 | `ghost-pay` | L2 instant payments | Optional |
+| `ghost-setup` | Headless CLI for scripted node setup | Optional |
 
 ---
 
@@ -171,7 +172,7 @@ ls -la target/release/ghost-pay
 
 ```bash
 # Download latest release
-wget https://releases.bitcoin-ghost.org/v1.4/ghost-pool-linux-amd64.tar.gz
+wget https://releases.bitcoin-ghost.org/v1.8/ghost-pool-linux-amd64.tar.gz
 tar -xzf ghost-pool-linux-amd64.tar.gz
 sudo mv ghost-pool /opt/ghost/bin/
 ```
@@ -219,7 +220,7 @@ ghost-pool keygen --output /etc/ghost/node.key
 ### Configuration File (`/etc/ghost/config.toml`)
 
 ```toml
-# Bitcoin Ghost v1.4 Configuration
+# Bitcoin Ghost v1.8 Configuration
 
 [identity]
 key_path = "/etc/ghost/node.key"
@@ -270,7 +271,6 @@ prune_height = 0
 
 [pool]
 treasury_address = "bc1q..."      # Your treasury P2TR address
-treasury_fee_percent = 1.0
 min_payout_sats = 10000
 
 # Optional: Ghost Pay L2
@@ -278,9 +278,7 @@ min_payout_sats = 10000
 enabled = false
 virtual_block_secs = 10
 epoch_blocks = 100
-transfer_fee_bps = 10
 wraith_enabled = true
-wraith_fee_percent = 0.5
 
 ```
 
@@ -463,6 +461,55 @@ curl http://localhost:8080/api/v1/status
 curl http://localhost:8080/api/v1/miners
 ```
 
+### Step 6: Deploy Ghost Pay (Optional)
+
+If running Ghost Pay L2 payments:
+
+```bash
+# Deploy ghost-pay binary
+sudo cp target/release/ghost-pay /opt/ghost/bin/ghost-pay
+```
+
+Create `/etc/systemd/system/ghost-pay.service`:
+
+```ini
+[Unit]
+Description=Bitcoin Ghost Pay L2
+After=network.target ghost-pool.service
+Wants=ghost-pool.service
+
+[Service]
+Type=simple
+User=ghost
+Group=ghost
+ExecStart=/opt/ghost/bin/ghost-pay --config /etc/ghost/pool.toml
+Restart=on-failure
+RestartSec=10
+Environment=GHOST_PAY_API_SECRET=CHANGE_THIS_UNIQUE_SECRET
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/ghost/.ghost
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Important:**
+- Data directory: `~/.ghost/ghost-pay/` (separate from ghost-pool's `~/.ghost/ghost.db`)
+- Database: `ghost-pay.db` with SQLCipher encryption at rest
+- Each node must have a **unique** `GHOST_PAY_API_SECRET` in its systemd service
+- ghost-pay communicates with ghost-pool via localhost-only L2 endpoints
+
+```bash
+# Start ghost-pay
+sudo systemctl daemon-reload
+sudo systemctl start ghost-pay
+sudo systemctl enable ghost-pay
+```
+
 ---
 
 ## Network Ports
@@ -571,7 +618,7 @@ curl -s http://localhost:8080/health | jq
 #   "signed": true,
 #   "response": {
 #     "node_id": "abc123...",
-#     "version": "1.4.0",
+#     "version": "1.8.0",
 #     "capabilities": [...],
 #     "uptime_secs": 86400,
 #     "block_height": 820000,
@@ -856,4 +903,4 @@ curl http://localhost:8080/api/v1/health
 
 ---
 
-*Last Updated: 2026-01-23*
+*Last Updated: 2026-03-02*

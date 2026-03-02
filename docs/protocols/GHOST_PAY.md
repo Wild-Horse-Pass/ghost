@@ -135,6 +135,43 @@ Transfers use sender-side NoteSpend proofs for instant, private transfers:
 | Recipient identity | Approximate timing |
 | Exact amount | Fee paid |
 
+## Consolidation (UTXO Compaction)
+
+Merges up to 4 notes into a single note of equal total value. Reduces wallet UTXO count and keeps the commitment tree compact.
+
+```
+1. Wallet selects up to 4 unspent notes to consolidate
+2. Wallet generates NoteConsolidateCircuit proof locally (~100ms)
+   ├── Proves ownership of each input note via spending key → nullifiers
+   ├── Proves each note is in commitment tree via Merkle path (depth 20)
+   ├── Proves sum preservation: output_value = sum(input_values)
+   └── Creates single output commitment
+3. Submit to ghost-pay POST /api/v1/confidential/consolidate
+   - Required: encrypted_output field (hex, min 218 chars = 109 bytes)
+4. ghost-pay verifies proof (~5ms), updates tree
+5. ghost-pay relays to ghost-pool for BFT finalization
+6. BFT checkpoint (every 10s, 67% threshold) finalizes
+```
+
+Uses NoteConsolidateCircuit (Groth16, ~2,500 constraints). Proof size: 192 bytes.
+
+## Unshield (L2→L1 Withdrawal)
+
+Proves ownership of a note and burns its entire value for L1 withdrawal. This is the primary mechanism for exiting the L2.
+
+```
+1. Wallet generates GhostUnshieldCircuit proof locally (~85ms)
+   ├── Proves ownership of note via spending key → nullifier
+   ├── Proves note is in commitment tree via Merkle path (depth 20)
+   └── Withdrawal amount = full note value (no partial withdrawal)
+2. Submit to ghost-pay POST /api/v1/confidential/unshield
+3. ghost-pay verifies proof (~5ms)
+4. Nullifier recorded, withdrawal amount queued for next reconciliation batch
+5. Settlement TX includes user's L1 output
+```
+
+Uses GhostUnshieldCircuit (Groth16, ~6,300 constraints). 3 public inputs: `commitment_root`, `nullifier`, `withdrawal_amount`. No change commitment (full withdrawal only).
+
 ## Withdrawal (Exit to L1)
 
 ### Standard Withdrawal
@@ -253,9 +290,6 @@ Entry via Wraith breaks the link to public Bitcoin:
 enabled = true
 l2_port = 9333
 epoch_length = 2160
-
-[ghost_pay.fees]
-transfer_protocol_fee = 0  # No protocol fee on transfers
 ```
 
 ### Rewards
@@ -270,11 +304,13 @@ Nodes running Ghost Pay earn:
 | Endpoint | Method | Service | Purpose |
 |----------|--------|---------|---------|
 | `/api/v1/confidential/transfer` | POST | ghost-pay | NoteSpend proof submission from wallets |
+| `/api/v1/confidential/consolidate` | POST | ghost-pay | Merge up to 4 notes into 1 (UTXO compaction) |
+| `/api/v1/confidential/unshield` | POST | ghost-pay | L2→L1 withdrawal (burns note, queues for settlement) |
+| `/api/v1/confidential/shield` | POST | ghost-pay | Shield plaintext balance into commitment |
+| `/api/v1/confidential/tree` | GET | ghost-pay | Current commitment tree state (root, next_index) |
 | `/api/v1/l2/submit` | POST | ghost-pool | Mesh relay (called by ghost-pay after verification) |
 | `/api/v1/l2/finalize` | POST | ghost-pay | Consensus finalization callback (from ghost-pool) |
 | `/api/v1/mpc/params` | GET | ghost-pool | MPC parameter download for light wallets |
-| `/api/v1/confidential/tree` | GET | ghost-pay | Current commitment tree state (root, next_index) |
-| `/api/v1/confidential/shield` | POST | ghost-pay | Shield plaintext balance into commitment |
 
 ## ParamsCache Flow
 

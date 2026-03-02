@@ -38,7 +38,7 @@
 //!
 //! For production deployment, you must:
 //!
-//! 1. Complete an MPC ceremony (see `docs/ZK_CEREMONY.md`)
+//! 1. Complete an MPC ceremony (see `docs/ZK_TRUSTED_SETUP.md`)
 //! 2. Set `ZK_PARAMS_PATH` to the ceremony output directory
 //! 3. Compile with `--features zk-production`
 //!

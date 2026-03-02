@@ -9,6 +9,7 @@
 //! - Year 5+: 0.0% treasury, 1.0% nodes
 
 use chrono::{DateTime, Utc};
+use ghost_common::constants::DUST_THRESHOLD_SATS;
 use serde::{Deserialize, Serialize};
 
 /// Treasury threshold in satoshis (21 BTC)
@@ -290,6 +291,114 @@ impl FeeDistribution {
         }
         actual == expected
     }
+}
+
+/// L2 fee distribution: splits accumulated NoteSpend fees between treasury and
+/// Ghost Pay nodes using the same decay schedule as L1.
+#[derive(Debug, Clone)]
+pub struct L2FeeDistribution {
+    /// Total fee pool being distributed (sum of all undistributed epoch fees)
+    pub total_fee_pool: u64,
+    /// Treasury allocation (decays over time)
+    pub treasury_amount: u64,
+    /// Total amount distributed to Ghost Pay nodes
+    pub node_pool: u64,
+    /// Per-node payouts: (node_id, address, amount)
+    pub node_payouts: Vec<(String, String, u64)>,
+}
+
+impl L2FeeDistribution {
+    /// Calculate L2 fee distribution using the treasury decay schedule.
+    ///
+    /// - `total_fee_pool`: Sum of accumulated fees from `get_undistributed_fees()`
+    /// - `treasury_state`: Current treasury state for decay calculation
+    /// - `reference_time`: Block timestamp for deterministic decay year
+    /// - `ghost_pay_nodes`: List of (node_id, address, capability_shares) for qualified nodes
+    pub fn calculate(
+        total_fee_pool: u64,
+        treasury_state: &TreasuryState,
+        reference_time: DateTime<Utc>,
+        ghost_pay_nodes: &[(String, String, i32)],
+    ) -> Self {
+        if total_fee_pool == 0 {
+            return Self {
+                total_fee_pool: 0,
+                treasury_amount: 0,
+                node_pool: 0,
+                node_payouts: Vec::new(),
+            };
+        }
+
+        // Same decay schedule as L1
+        let (treasury_bps, _node_bps) = treasury_state.get_fee_split_bps(reference_time);
+        let treasury_amount =
+            (total_fee_pool as u128 * treasury_bps as u128 / 10000) as u64;
+        let node_pool = total_fee_pool.saturating_sub(treasury_amount);
+
+        // Distribute node_pool among Ghost Pay nodes weighted by capability shares
+        let node_payouts = distribute_to_nodes(node_pool, ghost_pay_nodes);
+
+        Self {
+            total_fee_pool,
+            treasury_amount,
+            node_pool,
+            node_payouts,
+        }
+    }
+}
+
+/// Distribute `pool` among nodes weighted by capability shares.
+///
+/// - Sub-dust payouts (<546 sats) are redirected to the top node.
+/// - If no nodes qualify, entire pool goes to treasury (returned as empty vec).
+fn distribute_to_nodes(
+    pool: u64,
+    nodes: &[(String, String, i32)],
+) -> Vec<(String, String, u64)> {
+    if pool == 0 || nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let total_shares: i32 = nodes.iter().map(|(_, _, s)| *s).sum();
+    if total_shares <= 0 {
+        return Vec::new();
+    }
+
+    // Weighted distribution with exact remainder handling
+    let mut payouts: Vec<(String, String, u64)> = Vec::with_capacity(nodes.len());
+    let mut distributed = 0u64;
+
+    for (i, (node_id, address, shares)) in nodes.iter().enumerate() {
+        let payout = if i == nodes.len() - 1 {
+            // Last node gets the remainder (prevents rounding loss)
+            pool.saturating_sub(distributed)
+        } else {
+            (pool as u128 * *shares as u128 / total_shares as u128) as u64
+        };
+        distributed += payout;
+        payouts.push((node_id.clone(), address.clone(), payout));
+    }
+
+    // Redirect sub-dust payouts to top node (highest shares)
+    let top_idx = payouts
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, (_, _, amt))| *amt)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    let mut dust_reclaimed = 0u64;
+    for (i, (_, _, amt)) in payouts.iter_mut().enumerate() {
+        if i != top_idx && *amt < DUST_THRESHOLD_SATS {
+            dust_reclaimed += *amt;
+            *amt = 0;
+        }
+    }
+    payouts[top_idx].2 += dust_reclaimed;
+
+    // Remove zero payouts
+    payouts.retain(|(_, _, amt)| *amt > 0);
+    payouts
 }
 
 #[cfg(test)]
@@ -646,5 +755,84 @@ mod tests {
             years_before,
             years_after
         );
+    }
+
+    // =========================================================================
+    // L2 Fee Distribution Tests
+    // =========================================================================
+
+    #[test]
+    fn test_l2_fee_distribution_pre_threshold() {
+        let state = TreasuryState::new();
+        let now = Utc::now();
+        let nodes = vec![
+            ("node1".to_string(), "addr1".to_string(), 4),
+            ("node2".to_string(), "addr2".to_string(), 4),
+        ];
+
+        let dist = L2FeeDistribution::calculate(1000, &state, now, &nodes);
+
+        // Pre-threshold: 50% treasury, 50% nodes
+        assert_eq!(dist.treasury_amount, 500);
+        assert_eq!(dist.node_pool, 500);
+        assert_eq!(dist.treasury_amount + dist.node_pool, dist.total_fee_pool);
+    }
+
+    #[test]
+    fn test_l2_fee_distribution_year5() {
+        let now = Utc::now();
+        let threshold_time = now - chrono::Duration::days(365 * 6);
+        let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
+        let nodes = vec![("node1".to_string(), "addr1".to_string(), 4)];
+
+        let dist = L2FeeDistribution::calculate(1000, &state, now, &nodes);
+
+        // Year 5+: 0% treasury, 100% nodes
+        assert_eq!(dist.treasury_amount, 0);
+        assert_eq!(dist.node_pool, 1000);
+    }
+
+    #[test]
+    fn test_l2_fee_distribution_no_nodes() {
+        let state = TreasuryState::new();
+        let now = Utc::now();
+
+        let dist = L2FeeDistribution::calculate(1000, &state, now, &[]);
+
+        // No nodes: all to treasury via pool split, node payouts empty
+        assert_eq!(dist.treasury_amount, 500);
+        assert_eq!(dist.node_pool, 500);
+        assert!(dist.node_payouts.is_empty());
+    }
+
+    #[test]
+    fn test_l2_fee_distribution_dust_redirect() {
+        let state = TreasuryState::new();
+        let now = Utc::now();
+        // Node2 gets dust (1 share out of 101 = ~2 sats of 500 node pool)
+        let nodes = vec![
+            ("node1".to_string(), "addr1".to_string(), 100),
+            ("node2".to_string(), "addr2".to_string(), 1),
+        ];
+
+        let dist = L2FeeDistribution::calculate(1000, &state, now, &nodes);
+
+        // node2's payout < 546 sats → redirected to node1
+        assert_eq!(dist.node_payouts.len(), 1);
+        assert_eq!(dist.node_payouts[0].0, "node1");
+        assert_eq!(dist.node_payouts[0].2, 500); // Gets full node pool
+    }
+
+    #[test]
+    fn test_l2_fee_distribution_zero_pool() {
+        let state = TreasuryState::new();
+        let now = Utc::now();
+        let nodes = vec![("node1".to_string(), "addr1".to_string(), 4)];
+
+        let dist = L2FeeDistribution::calculate(0, &state, now, &nodes);
+
+        assert_eq!(dist.treasury_amount, 0);
+        assert_eq!(dist.node_pool, 0);
+        assert!(dist.node_payouts.is_empty());
     }
 }

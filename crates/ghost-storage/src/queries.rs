@@ -7095,6 +7095,84 @@ impl Database {
             Ok(deleted)
         })
     }
+
+    // =========================================================================
+    // L2 Epoch Fee Tracking
+    // =========================================================================
+
+    /// Atomically increment the fee counter for an epoch.
+    /// `transfer_count` is the number of NoteSpend transfers in this checkpoint.
+    pub fn increment_epoch_fee(&self, epoch: u64, transfer_count: u64) -> GhostResult<()> {
+        use ghost_common::constants::L2_TRANSFER_FEE_SATS;
+        let fee_sats = transfer_count * L2_TRANSFER_FEE_SATS;
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO l2_epoch_fees (epoch, transfer_count, fee_total_sats, updated_at)
+                 VALUES (?1, ?2, ?3, datetime('now'))
+                 ON CONFLICT(epoch) DO UPDATE SET
+                     transfer_count = transfer_count + excluded.transfer_count,
+                     fee_total_sats = fee_total_sats + excluded.fee_total_sats,
+                     updated_at = datetime('now')",
+                params![epoch as i64, transfer_count as i64, fee_sats as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get the accumulated fee total for an epoch.
+    pub fn get_epoch_fee_total(&self, epoch: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let result: Option<i64> = conn
+                .query_row(
+                    "SELECT fee_total_sats FROM l2_epoch_fees WHERE epoch = ?1",
+                    params![epoch as i64],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(result.unwrap_or(0) as u64)
+        })
+    }
+
+    /// Mark an epoch's fees as distributed (after reconciliation payout).
+    pub fn mark_epoch_fees_distributed(&self, epoch: u64) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE l2_epoch_fees SET distributed = 1, updated_at = datetime('now') WHERE epoch = ?1",
+                params![epoch as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get all undistributed epoch fees (for reconciliation batch formation).
+    pub fn get_undistributed_fees(&self) -> GhostResult<Vec<(u64, u64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT epoch, fee_total_sats FROM l2_epoch_fees
+                     WHERE distributed = 0 AND fee_total_sats > 0
+                     ORDER BY epoch",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    let epoch: i64 = row.get(0)?;
+                    let fee_total: i64 = row.get(1)?;
+                    Ok((epoch as u64, fee_total as u64))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut result = Vec::new();
+            for row in rows {
+                result.push(row.map_err(|e| GhostError::Database(e.to_string()))?);
+            }
+            Ok(result)
+        })
+    }
 }
 
 #[cfg(test)]

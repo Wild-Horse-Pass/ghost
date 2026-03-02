@@ -14,7 +14,7 @@
 //! 2. Note ID incorporates index, epoch, and commitment
 //! 3. Nullifier proves ownership via spending key
 //! 4. Merkle inclusion in commitment tree (20 levels)
-//! 5. Balance conservation: change = note_value - amount
+//! 5. Balance conservation: change + amount + fee = note_value (fee = 10 sats)
 //! 6. Change and recipient commitments correctly formed
 //! 7. Range proofs: amount in [0, 2^64), change in [0, 2^64)
 
@@ -24,6 +24,8 @@ use bellperson::{
     Circuit, ConstraintSystem, LinearCombination, SynthesisError,
 };
 use ff::PrimeField;
+
+use ghost_common::constants::L2_TRANSFER_FEE_SATS;
 
 use super::commitment::{pedersen_commit, NULLIFIER_DOMAIN_SEPARATOR};
 use super::mimc::{mimc_hash, mimc_hash_native};
@@ -265,18 +267,31 @@ impl<F: PrimeField> Circuit<F> for GhostNoteSpendCircuit<F> {
         );
 
         // ====================================================================
-        // 6. Balance conservation: change_value = note_value - amount
+        // 6. Balance conservation: change_value + amount + fee = note_value
+        //    Fee is a protocol constant baked into the circuit (10 sats).
+        //    No new public input — the fee is enforced by the constraint.
         // ====================================================================
+
+        let fee_value = F::from(L2_TRANSFER_FEE_SATS);
+        let fee = AllocatedNum::alloc(cs.namespace(|| "fee"), || Ok(fee_value))?;
+
+        // Constrain fee to the protocol constant (prevents witness manipulation)
+        cs.enforce(
+            || "fee_is_constant",
+            |lc| lc + fee.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + (fee_value, CS::one()),
+        );
 
         let change_value = AllocatedNum::alloc(cs.namespace(|| "change_value"), || {
             let nv = self.note_value.ok_or(SynthesisError::AssignmentMissing)?;
             let a = self.amount.ok_or(SynthesisError::AssignmentMissing)?;
-            Ok(F::from(nv.saturating_sub(a)))
+            Ok(F::from(nv.saturating_sub(a).saturating_sub(L2_TRANSFER_FEE_SATS)))
         })?;
 
         cs.enforce(
             || "balance_conservation",
-            |lc| lc + change_value.get_variable() + amount.get_variable(),
+            |lc| lc + change_value.get_variable() + amount.get_variable() + fee.get_variable(),
             |lc| lc + CS::one(),
             |lc| lc + note_value.get_variable(),
         );
@@ -512,7 +527,7 @@ mod tests {
         let note_index = 0u64;
         let epoch = 1u64;
         let amount = 300u64;
-        let change_value = note_value - amount;
+        let change_value = note_value - amount - L2_TRANSFER_FEE_SATS;
         let change_blinding = Fr::from(222u64);
         let recipient_blinding = Fr::from(333u64);
 
@@ -669,6 +684,7 @@ mod tests {
         let note_index = 0u64;
         let epoch = 1u64;
         let amount = 0u64;
+        let change_value = note_value - amount - L2_TRANSFER_FEE_SATS;
         let change_blinding = Fr::from(222u64);
         let recipient_blinding = Fr::from(333u64);
         let tree_depth = 4;
@@ -678,7 +694,7 @@ mod tests {
         let commitment_root = compute_note_root_native(note_commitment, note_index, &siblings);
         let nullifier =
             compute_nullifier_with_epoch_native(spending_key, note_index, epoch, note_commitment);
-        let change_commitment_val = pedersen_commit_native(Fr::from(note_value), change_blinding);
+        let change_commitment_val = pedersen_commit_native(Fr::from(change_value), change_blinding);
         let recipient_commitment_val = pedersen_commit_native(Fr::from(amount), recipient_blinding);
 
         let circuit = GhostNoteSpendCircuit {
@@ -716,7 +732,7 @@ mod tests {
         let spending_key = Fr::from(42u64);
         let note_index = 0u64;
         let epoch = 1u64;
-        let amount = 1000u64;
+        let amount = note_value - L2_TRANSFER_FEE_SATS; // Max transferable after fee
         let change_blinding = Fr::from(222u64);
         let recipient_blinding = Fr::from(333u64);
         let tree_depth = 4;
@@ -783,5 +799,21 @@ mod tests {
         // Different index produces different note_id
         let note_id3 = compute_note_id_with_epoch_native(1, 1, commitment);
         assert_ne!(note_id, note_id3);
+    }
+
+    #[test]
+    fn test_amount_plus_fee_exceeds_note_fails() {
+        // note_value = 1000, amount = 995, fee = 10 → change would be -5 (wraps in field)
+        let mut circuit = build_valid_circuit(4);
+        circuit.amount = Some(995);
+        circuit.note_value = Some(1000);
+
+        let mut cs = TestConstraintSystem::<Fr>::new();
+        let _ = circuit.synthesize(&mut cs);
+
+        assert!(
+            !cs.is_satisfied(),
+            "amount + fee > note_value must NOT satisfy (range proof catches wrap)"
+        );
     }
 }

@@ -2401,7 +2401,9 @@ async fn request_withdrawal(
     }
 
     // Validate amount
-    let settlement_fee = 1000u64; // Base settlement fee
+    let fee_rate = estimate_fee_rate(&state).await;
+    let estimated_vsize = 110u64; // Single-input P2WPKH withdrawal
+    let settlement_fee = (estimated_vsize * fee_rate).max(1);
     let max_withdrawal = lock.amount_sats.saturating_sub(settlement_fee);
     if req.amount_sats > max_withdrawal {
         return Ok(Json(serde_json::json!({
@@ -5453,10 +5455,11 @@ async fn reconcile_lock(
     }
 
     // Settlement fee
+    let fee_rate = estimate_fee_rate(&state).await;
     let settlement_fee = if req.settlement_class == "batched" {
-        500u64
+        (68u64 * fee_rate).max(1) // Per-output in batch
     } else {
-        1000u64
+        (110u64 * fee_rate).max(1) // Solo transaction
     };
     let settlement_amount = lock.amount_sats.saturating_sub(settlement_fee);
 

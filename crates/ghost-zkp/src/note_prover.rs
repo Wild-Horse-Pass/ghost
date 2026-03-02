@@ -25,6 +25,8 @@ use std::time::Instant;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, warn};
 
+use ghost_common::constants::L2_TRANSFER_FEE_SATS;
+
 use crate::circuit::commitment::pedersen_commit_native;
 use crate::circuit::mimc::field_to_bytes;
 use crate::circuit::note_spend::{
@@ -58,12 +60,12 @@ pub struct GhostNoteSpendWitness {
 }
 
 impl GhostNoteSpendWitness {
-    /// Validate witness data
+    /// Validate witness data (amount + protocol fee must not exceed note value)
     pub fn validate(&self) -> ZkResult<()> {
-        if self.amount > self.note_value {
+        if self.amount + L2_TRANSFER_FEE_SATS > self.note_value {
             return Err(ZkError::InsufficientBalance {
                 has: self.note_value,
-                needs: self.amount,
+                needs: self.amount + L2_TRANSFER_FEE_SATS,
             });
         }
         Ok(())
@@ -260,7 +262,7 @@ impl GhostNoteProver {
 
         // Compute values for public inputs
         let note_commitment = pedersen_commit_native(Fr::from(witness.note_value), note_blinding);
-        let change_value = witness.note_value - witness.amount;
+        let change_value = witness.note_value - witness.amount - L2_TRANSFER_FEE_SATS;
         let change_commitment_val = pedersen_commit_native(Fr::from(change_value), change_blinding);
         let recipient_commitment_val =
             pedersen_commit_native(Fr::from(witness.amount), recipient_blinding);
@@ -301,7 +303,7 @@ impl GhostNoteProver {
         let recipient_blinding: Fr = bytes_to_field(&witness.recipient_blinding)?;
 
         let note_commitment = pedersen_commit_native(Fr::from(witness.note_value), note_blinding);
-        let change_value = witness.note_value - witness.amount;
+        let change_value = witness.note_value - witness.amount - L2_TRANSFER_FEE_SATS;
         let change_commitment_val = pedersen_commit_native(Fr::from(change_value), change_blinding);
         let recipient_commitment_val =
             pedersen_commit_native(Fr::from(witness.amount), recipient_blinding);

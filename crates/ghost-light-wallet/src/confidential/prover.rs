@@ -6,6 +6,7 @@
 //!
 //! `NoteSpendClientProver` wraps `GhostNoteProver` with a wallet-friendly API.
 
+use ghost_common::constants::L2_TRANSFER_FEE_SATS;
 use ghost_zkp::{
     CommitmentTree, GhostNoteProver, GhostNoteSpendProof, GhostNoteSpendWitness,
 };
@@ -131,9 +132,10 @@ impl NoteSpendClientProver {
             ));
         }
 
-        if sender_note.value < amount {
+        let total_deduction = amount + L2_TRANSFER_FEE_SATS;
+        if sender_note.value < total_deduction {
             return Err(LightWalletError::InsufficientBalance {
-                required: amount,
+                required: total_deduction,
                 available: sender_note.value,
             });
         }
@@ -173,8 +175,8 @@ impl NoteSpendClientProver {
             "NoteSpend proof generated"
         );
 
-        // Build change note for local tracking
-        let change_value = sender_note.value - amount;
+        // Build change note for local tracking (deduct fee)
+        let change_value = sender_note.value - amount - L2_TRANSFER_FEE_SATS;
         let change_note = OwnedNote {
             index: sender_note_index, // Change reuses the sender's index (new commitment at same position)
             value: change_value,
@@ -314,8 +316,8 @@ mod tests {
         assert!(!result.change_commitment.is_empty());
         assert!(!result.recipient_commitment.is_empty());
 
-        // Change note should have correct value: 1000 - 300 = 700
-        assert_eq!(result.change_note.value, 700);
+        // Change note should have correct value: 1000 - 300 - 10 (fee) = 690
+        assert_eq!(result.change_note.value, 690);
         assert_eq!(result.change_note.index, 0);
         assert!(!result.change_note.spent);
         assert_eq!(result.epoch, 0);
@@ -362,7 +364,7 @@ mod tests {
         assert!(result.is_err(), "Should reject transfer exceeding note value");
         match result.unwrap_err() {
             LightWalletError::InsufficientBalance { required, available } => {
-                assert_eq!(required, 200);
+                assert_eq!(required, 210); // 200 + 10 fee
                 assert_eq!(available, 100);
             }
             other => panic!("Expected InsufficientBalance, got: {:?}", other),

@@ -1456,9 +1456,9 @@ L2 transfers use the **NoteSpend/UTXO model** with sender-side Groth16 proofs (G
 3. **Wraith Mixing**: Additional privacy layer for mixing proofs
 4. **Payout Validity**: PayoutCircuit proves distribution correctness
 
-> **Deprecation Note:** The earlier account-model ConfidentialTransfer approach (balance
-> commitments, server-side verification) has been replaced by the NoteSpend UTXO model.
-> Legacy types (`ConfidentialProver`, `ClientProver`) remain but are deprecated.
+> **Note:** The earlier account-model ConfidentialTransfer approach has been fully removed.
+> The current L2 uses the NoteSpend UTXO model exclusively. Proof generation uses
+> `GhostNoteProver` (server) and `NoteSpendClientProver` (wallet).
 
 **ZK System**: Groth16 SNARKs via bellperson (BLS12-381), MPC-generated parameters
 
@@ -2520,7 +2520,7 @@ struct PolicyVerifyResponse { accepted, rejected_labels, arbda_score, verified }
 
 ```rust
 // Economic
-const POOL_FEE_PERCENT: f64 = 1.0;
+const POOL_FEE_BASIS_POINTS: u64 = 100; // 1% of block subsidy
 const TREASURY_THRESHOLD_SATS: u64 = 2_100_000_000_000; // 21 BTC
 const TREASURY_DECAY_YEARS: u32 = 5;
 const DUST_THRESHOLD_SATS: u64 = 546;

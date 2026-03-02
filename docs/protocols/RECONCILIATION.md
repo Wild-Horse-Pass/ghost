@@ -91,24 +91,50 @@ L2 Settlement TX:
 
 ## Exit to L1 (Withdrawal)
 
-### User Flow
+### ZK Unshield (Primary Mechanism)
+
+The primary mechanism for exiting L2 is the **ZK unshield proof** (GhostUnshieldCircuit):
 
 ```
-1. User requests withdrawal in wallet
-   - Specify amount
-   - Provide L1 destination address
-   - Choose settlement class
+1. User submits unshield proof to POST /api/v1/confidential/unshield
+   - Proves ownership of a note in the commitment tree
+   - Burns the entire note value (full withdrawal only)
+   - Records nullifier to prevent double-spend
+   - 3 public inputs: commitment_root, nullifier, withdrawal_amount
 
-2. Request queued for next batch
-   - Express: Next epoch
-   - Standard: Within 24 hours
-   - Economy: Within 7 days
+2. Withdrawal amount queued for next reconciliation batch
 
 3. Batch executes at epoch boundary
    - User's withdrawal included in settlement TX
    - Funds sent to L1 address
 
-4. Wait for confirmation
+4. Wait for Bitcoin confirmation
+   - 1-6 blocks depending on fee level
+   - User notified when confirmed
+```
+
+### User Flow
+
+```
+1. User requests withdrawal in wallet
+   - Specify amount (full note value)
+   - Provide L1 destination address
+   - Choose settlement class
+
+2. Wallet generates GhostUnshieldCircuit proof locally
+   - Proves note ownership and burns the note
+   - No change commitment (full withdrawal only)
+
+3. Request queued for next batch
+   - Express: Next epoch
+   - Standard: Within 24 hours
+   - Economy: Within 7 days
+
+4. Batch executes at epoch boundary
+   - User's withdrawal included in settlement TX
+   - Funds sent to L1 address
+
+5. Wait for confirmation
    - 1-6 blocks depending on fee level
    - User notified when confirmed
 ```

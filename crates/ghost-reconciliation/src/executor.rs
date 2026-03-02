@@ -522,6 +522,21 @@ impl BatchExecutor {
         batch: &Batch,
         fee_rate: u64,
     ) -> Result<BatchTransaction, ReconciliationError> {
+        self.build_transaction_with_l2_fees(batch, fee_rate, 0, &[])
+    }
+
+    /// Build batch transaction with L2 fee distribution.
+    ///
+    /// - `l2_fee_pool`: Accumulated L2 transfer fees (from `get_undistributed_fees()`)
+    /// - `l2_fee_split`: Pre-computed per-node payouts: `(node_id, address, amount)`
+    ///   plus treasury amount (baked into the regular treasury output).
+    pub fn build_transaction_with_l2_fees(
+        &mut self,
+        batch: &Batch,
+        fee_rate: u64,
+        l2_treasury_fees: u64,
+        l2_node_payouts: &[(String, String, u64)],
+    ) -> Result<BatchTransaction, ReconciliationError> {
         if batch.state() != BatchState::Ready {
             return Err(ReconciliationError::InvalidState(format!(
                 "Batch must be Ready, got {:?}",
@@ -663,24 +678,26 @@ impl BatchExecutor {
             .map(|s| s.fee_sats())
             .sum::<u64>();
 
-        // Treasury fee (50% of settlement fees)
-        let treasury_amount = total_settlement_fees / 2;
+        // Settlement fees go 100% as mining fee (they cover the L1 tx cost)
+        // L2 protocol fees are distributed separately via l2_treasury_fees / l2_node_payouts
+        let treasury_amount = l2_treasury_fees;
 
         // Estimate mining fee
+        let l2_node_output_count = l2_node_payouts.len();
         let estimated_vsize = estimate_transaction_vsize(
             input_outpoints.len(),
-            self.current_batch_settlements.len() + 2, // settlements + treasury + op_return
+            self.current_batch_settlements.len() + 2 + l2_node_output_count, // settlements + treasury + op_return + node fees
         );
         let mining_fee = estimated_vsize * fee_rate;
 
-        // Node rewards (remaining 50% of settlement fees)
-        let node_rewards = total_settlement_fees - treasury_amount;
+        // L2 node rewards
+        let l2_node_total: u64 = l2_node_payouts.iter().map(|(_, _, amt)| *amt).sum();
 
         // H-7: Verify total outputs do not exceed total inputs (prevents overflow/theft)
         let total_committed_outputs = total_output_sats
             .checked_add(treasury_amount)
             .and_then(|v| v.checked_add(mining_fee))
-            .and_then(|v| v.checked_add(node_rewards));
+            .and_then(|v| v.checked_add(l2_node_total));
         match total_committed_outputs {
             Some(total_out) if total_out > total_input_sats => {
                 return Err(ReconciliationError::InvalidSettlement(format!(
@@ -743,6 +760,17 @@ impl BatchExecutor {
             })?;
         }
 
+        // Add L2 node fee outputs
+        for (node_id, address, amount) in l2_node_payouts {
+            if *amount > 0 {
+                recon_tx.add_output(TxOutput::NodeFee {
+                    address: address.clone(),
+                    amount: *amount,
+                    node_id: node_id.clone(),
+                })?;
+            }
+        }
+
         // Add OP_RETURN
         recon_tx.add_op_return();
 
@@ -788,7 +816,7 @@ impl BatchExecutor {
             total_output_sats,
             settlement_fees: total_settlement_fees,
             treasury_amount,
-            node_rewards,
+            node_rewards: l2_node_total,
             mining_fee,
             input_outpoints,
         })

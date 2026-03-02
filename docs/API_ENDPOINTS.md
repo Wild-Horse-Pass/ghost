@@ -186,6 +186,20 @@ The main pool node API for mining operations, status monitoring, and dashboard i
 |--------|----------|-------------|
 | POST | `/admin/test-consensus` | Test consensus (admin only) |
 
+### L2 Relay (`/api/v1/l2/*`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/l2/submit` | L2 transaction relay to mesh (localhost only) |
+| POST | `/api/v1/l2/sync-commitment` | Commitment tree sync (localhost only) |
+
+### MPC Ceremony (`/api/v1/mpc/*`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/mpc/contributors` | MPC contributor list |
+| GET | `/api/v1/mpc/params` | MPC parameter download |
+
 ---
 
 ## Ghost Pay (L2 Payments)
@@ -266,6 +280,22 @@ Privacy-preserving Layer 2 payment service.
   "label": "optional_label"
 }
 ```
+
+### Confidential L2 (`/api/v1/confidential/*`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/confidential/transfer` | NoteSpend proof submission |
+| POST | `/api/v1/confidential/consolidate` | Merge up to 4 notes into 1 |
+| POST | `/api/v1/confidential/unshield` | L2→L1 withdrawal (burns note) |
+| POST | `/api/v1/confidential/shield` | Shield plaintext into commitment |
+| GET | `/api/v1/confidential/tree` | Commitment tree state |
+
+### L2 Finalization
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/l2/finalize` | BFT finalization callback (localhost only) |
 
 ### Withdrawals (`/api/v1/withdrawals/*`)
 
