@@ -582,7 +582,11 @@ impl BitcoinRpc {
         );
 
         let mut client_builder =
-            reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(config.timeout_secs))
+                // Proactively close idle connections before ghostd's HTTP keep-alive
+                // expires, preventing "error sending request" on stale connections
+                .pool_idle_timeout(std::time::Duration::from_secs(15));
 
         // Add custom CA certificate if provided
         if let Some(ref cert_path) = config.tls_cert_path {
