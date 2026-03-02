@@ -93,7 +93,6 @@ struct RpcResponse<T> {
     jsonrpc: String,
     result: Option<T>,
     error: Option<RpcError>,
-    #[allow(dead_code)]
     id: u64,
 }
 
@@ -200,6 +199,10 @@ impl GhostClient {
             .json()
             .await
             .map_err(|e| NetworkError::InvalidResponse(e.to_string()))?;
+
+        if rpc_response.id != request.id {
+            return Err(NetworkError::InvalidResponse("response ID mismatch".into()));
+        }
 
         if let Some(error) = rpc_response.error {
             return Err(NetworkError::RequestFailed(format!(

@@ -15,6 +15,7 @@ use crate::transaction::{FeePriority, TransactionBuilder, UnsignedTransaction};
 use crate::wallet::{validate_mnemonic as core_validate_mnemonic, Wallet, WordCount};
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::{Arc, Mutex};
+use zeroize::Zeroizing;
 
 /// Callback interface for push notifications from the wallet to the mobile UI.
 ///
@@ -350,7 +351,7 @@ pub fn nfc_encode_payment_request(
     address: String,
     amount: u64,
     memo: Option<String>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, GhostTapFfiError> {
     use crate::payment::nfc::{
         encode_nfc_payment_request, NfcPaymentRequest,
         PROTOCOL_VERSION, MSG_TYPE_PAYMENT_REQUEST,
@@ -364,6 +365,7 @@ pub fn nfc_encode_payment_request(
         memo,
     };
     encode_nfc_payment_request(&req)
+        .map_err(|e| GhostTapFfiError::OperationFailed { message: e.to_string() })
 }
 
 /// Decode an NFC payment response from binary wire format.
@@ -414,22 +416,24 @@ pub struct FfiWashStats {
 #[derive(uniffi::Object)]
 pub struct WalletHandle {
     wallet: Arc<Mutex<Wallet>>,
-    mnemonic: String,
+    mnemonic: Mutex<Option<Zeroizing<String>>>,
     storage: Mutex<Option<WalletStorage>>,
     connection: Arc<ConnectionManager>,
     washer: Arc<Mutex<crate::merchant::wraith::WraithWasher>>,
     wash_processor: Mutex<Option<crate::merchant::wash_task::WashProcessorHandle>>,
+    wash_runtime: Mutex<Option<tokio::runtime::Runtime>>,
 }
 
 impl WalletHandle {
     fn new(wallet: Wallet, mnemonic: String) -> Self {
         Self {
             wallet: Arc::new(Mutex::new(wallet)),
-            mnemonic,
+            mnemonic: Mutex::new(Some(Zeroizing::new(mnemonic))),
             storage: Mutex::new(None),
             connection: Arc::new(ConnectionManager::new()),
             washer: Arc::new(Mutex::new(crate::merchant::wraith::WraithWasher::new())),
             wash_processor: Mutex::new(None),
+            wash_runtime: Mutex::new(None),
         }
     }
 
@@ -493,20 +497,25 @@ impl WalletHandle {
     /// Recover a wallet from an existing mnemonic
     #[uniffi::constructor]
     pub fn from_mnemonic(mnemonic: String, passphrase: Option<String>) -> Result<Self, GhostTapFfiError> {
-        let secret_mnemonic = SecretString::new(mnemonic.clone());
+        let mnemonic_z = Zeroizing::new(mnemonic);
+        let secret_mnemonic = SecretString::new(mnemonic_z.to_string());
         let secret_passphrase = passphrase.map(SecretString::new);
         let wallet = Wallet::from_mnemonic(
             &secret_mnemonic,
             secret_passphrase.as_ref(),
         )?;
-        Ok(Self::new(wallet, mnemonic))
+        Ok(Self::new(wallet, mnemonic_z.to_string()))
     }
 
     // --- Mnemonic ---
 
-    /// Get the mnemonic phrase (only available immediately after creation)
-    pub fn get_mnemonic(&self) -> String {
-        self.mnemonic.clone()
+    /// Get the mnemonic phrase. Returns it once, then zeroizes internally.
+    /// Subsequent calls return `None`.
+    pub fn get_mnemonic(&self) -> Option<String> {
+        self.mnemonic
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take().map(|z| z.to_string()))
     }
 
     // --- Balance ---
@@ -681,12 +690,12 @@ impl WalletHandle {
         });
     }
 
-    /// Unlock the wallet
-    pub fn unlock(&self) {
-        let _ = self.with_wallet_mut(|w| {
-            w.unlock();
-            Ok(())
-        });
+    /// Unlock the wallet with PIN verification.
+    /// If no PIN is set, allows unlock directly (first-time use).
+    pub fn unlock(&self, pin: String) -> Result<(), GhostTapFfiError> {
+        self.with_wallet_mut(|w| {
+            w.unlock_with_pin(&pin).map_err(|e| e.into())
+        })
     }
 
     // --- Persistence ---
@@ -850,8 +859,15 @@ impl WalletHandle {
     // --- Encrypted Backup ---
 
     /// Export the wallet mnemonic as an encrypted backup blob.
+    /// Requires that the mnemonic has not yet been consumed by `get_mnemonic()`.
     pub fn export_encrypted_backup(&self, password: String) -> Result<Vec<u8>, GhostTapFfiError> {
-        let mnemonic = SecretString::new(self.mnemonic.clone());
+        let guard = self.mnemonic.lock().map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })?;
+        let mnemonic_str = guard.as_ref().ok_or_else(|| GhostTapFfiError::OperationFailed {
+            message: "mnemonic already consumed".into(),
+        })?;
+        let mnemonic = SecretString::new(mnemonic_str.to_string());
         crate::wallet::export_encrypted_backup(&mnemonic, &password)
             .map_err(|e| GhostTapFfiError::OperationFailed {
                 message: e.to_string(),
@@ -1038,8 +1054,10 @@ impl WalletHandle {
         });
 
         *guard = Some(handle);
-        // Keep the runtime alive so the background task continues running
-        std::mem::forget(rt);
+        // Store the runtime so it stays alive and gets cleaned up properly
+        if let Ok(mut rt_guard) = self.wash_runtime.lock() {
+            *rt_guard = Some(rt);
+        }
         Ok(())
     }
 
@@ -1050,6 +1068,10 @@ impl WalletHandle {
         })?;
         if let Some(handle) = guard.take() {
             handle.stop();
+        }
+        // Drop the runtime after stopping the handle
+        if let Ok(mut rt_guard) = self.wash_runtime.lock() {
+            rt_guard.take();
         }
         Ok(())
     }
@@ -1111,7 +1133,11 @@ mod tests {
     #[test]
     fn test_wallet_handle_generate() {
         let handle = WalletHandle::generate_12().unwrap();
-        assert!(!handle.get_mnemonic().is_empty());
+        let mnemonic = handle.get_mnemonic();
+        assert!(mnemonic.is_some());
+        assert!(!mnemonic.unwrap().is_empty());
+        // Second call returns None (consumed)
+        assert!(handle.get_mnemonic().is_none());
         assert_eq!(handle.get_balance(), 0);
         assert!(!handle.is_locked());
     }
@@ -1119,7 +1145,7 @@ mod tests {
     #[test]
     fn test_wallet_handle_from_mnemonic() {
         let handle1 = WalletHandle::generate_12().unwrap();
-        let mnemonic = handle1.get_mnemonic();
+        let mnemonic = handle1.get_mnemonic().unwrap();
         let handle2 = WalletHandle::from_mnemonic(mnemonic, None).unwrap();
         assert_eq!(handle2.get_balance(), 0);
     }
@@ -1147,7 +1173,8 @@ mod tests {
         handle.lock();
         assert!(handle.is_locked());
         assert!(handle.new_receive_address().is_err());
-        handle.unlock();
+        // No PIN set, so unlock with empty PIN succeeds (first-time use)
+        handle.unlock("".into()).unwrap();
         assert!(!handle.is_locked());
         assert!(handle.new_receive_address().is_ok());
     }
@@ -1164,7 +1191,7 @@ mod tests {
     #[test]
     fn test_parse_payment_uri_roundtrip() {
         let uri = create_payment_uri(
-            "GhTestAddr".into(),
+            "GhTestAddr1234567890abcdefg".into(),
             Some(50_000),
             Some("Coffee".into()),
             None,
@@ -1172,7 +1199,7 @@ mod tests {
             None,
         );
         let parsed = parse_payment_uri(uri).unwrap();
-        assert_eq!(parsed.address, "GhTestAddr");
+        assert_eq!(parsed.address, "GhTestAddr1234567890abcdefg");
         assert_eq!(parsed.amount, Some(50_000));
         assert_eq!(parsed.memo.as_deref(), Some("Coffee"));
     }
@@ -1186,7 +1213,7 @@ mod tests {
     #[test]
     fn test_parse_payment_uri_checked_expired() {
         let uri = create_payment_uri(
-            "GhAddr".into(), None, None, None, Some(1000), None,
+            "GhAddrABCDEFGHIJKLMNOPQRS".into(), None, None, None, Some(1000), None,
         );
         let result = parse_payment_uri_checked(uri, 2000, None);
         assert!(result.is_err());
@@ -1195,7 +1222,7 @@ mod tests {
     #[test]
     fn test_parse_payment_uri_checked_network_warning() {
         let uri = create_payment_uri(
-            "GhAddr".into(), None, None, None, None, Some("bitcoin".into()),
+            "GhAddrABCDEFGHIJKLMNOPQRS".into(), None, None, None, None, Some("bitcoin".into()),
         );
         let parsed = parse_payment_uri_checked(uri, 0, Some("ghost".into())).unwrap();
         assert_eq!(parsed.warnings.len(), 1);
@@ -1210,7 +1237,7 @@ mod tests {
             "GhTestAddr".into(),
             100_000,
             Some("Coffee".into()),
-        );
+        ).unwrap();
         assert!(!encoded.is_empty());
         assert_eq!(encoded[0], 1); // version
         assert_eq!(encoded[1], 0x01); // MSG_TYPE_PAYMENT_REQUEST
@@ -1223,7 +1250,7 @@ mod tests {
             txid: "deadbeef".to_string(),
             status: 0x00,
         };
-        let bytes = encode_nfc_payment_response(&resp);
+        let bytes = encode_nfc_payment_response(&resp).unwrap();
         let decoded = nfc_decode_payment_response(bytes).unwrap();
         assert_eq!(decoded.txid, "deadbeef");
         assert_eq!(decoded.status, 0x00);

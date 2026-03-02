@@ -89,6 +89,7 @@ impl PeerManager {
     /// Discover peers from a connected node.
     ///
     /// Queries `getpeerinfo` and adds any new endpoints up to `max_peers`.
+    /// Rejects loopback, private-network, and non-HTTP(S) addresses.
     pub async fn discover_peers(&mut self, client: &mut super::NodeClient) -> Result<(), NetworkError> {
         let peers_info = client.get_peer_info().await?;
 
@@ -100,6 +101,37 @@ impl PeerManager {
                 } else {
                     format!("http://{addr}")
                 };
+
+                // --- Address validation ---
+                // Reject non-HTTP(S) schemes.
+                if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+                    continue;
+                }
+
+                // Extract the host portion (after "://" up to the next '/' or ':' or end).
+                let host_part = endpoint
+                    .split("://")
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .split(':')
+                    .next()
+                    .unwrap_or("");
+
+                // Reject loopback addresses.
+                if host_part == "127.0.0.1" || host_part == "localhost" || host_part == "0.0.0.0" || host_part == "::1" {
+                    continue;
+                }
+
+                // Reject private IP ranges (RFC 1918).
+                if host_part.starts_with("10.")
+                    || host_part.starts_with("192.168.")
+                    || is_private_172(host_part)
+                {
+                    continue;
+                }
 
                 // Don't add if we already know this peer or we're at capacity.
                 if self.peers.len() >= self.max_peers {
@@ -120,6 +152,19 @@ impl PeerManager {
 
         Ok(())
     }
+}
+
+/// Check whether a host string falls in the 172.16.0.0/12 private range
+/// (172.16.x.x through 172.31.x.x).
+fn is_private_172(host: &str) -> bool {
+    if let Some(rest) = host.strip_prefix("172.") {
+        if let Some(second_octet_str) = rest.split('.').next() {
+            if let Ok(second_octet) = second_octet_str.parse::<u8>() {
+                return (16..=31).contains(&second_octet);
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -234,5 +279,23 @@ mod tests {
         let manager = PeerManager::new(vec!["same".into(), "same".into()]);
         // HashSet deduplicates
         assert_eq!(manager.peers.len(), 1);
+    }
+
+    #[test]
+    fn test_is_private_172() {
+        // In range (172.16 - 172.31)
+        assert!(is_private_172("172.16.0.1"));
+        assert!(is_private_172("172.31.255.255"));
+        assert!(is_private_172("172.24.0.1"));
+
+        // Out of range
+        assert!(!is_private_172("172.15.0.1"));
+        assert!(!is_private_172("172.32.0.1"));
+        assert!(!is_private_172("172.0.0.1"));
+
+        // Not 172.x at all
+        assert!(!is_private_172("10.0.0.1"));
+        assert!(!is_private_172("192.168.1.1"));
+        assert!(!is_private_172("8.8.8.8"));
     }
 }

@@ -49,16 +49,40 @@ static KEYCHAIN: OnceLock<Arc<dyn PlatformKeychain>> = OnceLock::new();
 /// Register the platform keychain implementation.
 /// Called once at startup from native code (Android/iOS).
 pub fn register_keychain(keychain: Arc<dyn PlatformKeychain>) {
-    let _ = KEYCHAIN.set(keychain);
+    if KEYCHAIN.set(keychain).is_err() {
+        tracing::error!("register_keychain called more than once; ignoring duplicate registration");
+    }
 }
 
-/// Get the registered keychain, or install the desktop fallback on first access.
+/// Get the registered keychain.
+///
+/// On mobile targets (iOS/Android), panics if `register_keychain` was not
+/// called first -- the native side MUST register a real keychain at startup.
+///
+/// On non-mobile targets, falls back to an insecure in-memory keychain
+/// suitable for desktop testing.
 fn get_keychain() -> Arc<dyn PlatformKeychain> {
-    KEYCHAIN
-        .get_or_init(|| {
-            Arc::new(DesktopFallbackKeychain::new()) as Arc<dyn PlatformKeychain>
-        })
-        .clone()
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    {
+        KEYCHAIN
+            .get()
+            .unwrap_or_else(|| {
+                panic!(
+                    "register_keychain() must be called before any keychain operations \
+                     on mobile targets (iOS/Android)"
+                )
+            })
+            .clone()
+    }
+
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        KEYCHAIN
+            .get_or_init(|| {
+                Arc::new(DesktopFallbackKeychain::new()) as Arc<dyn PlatformKeychain>
+            })
+            .clone()
+    }
 }
 
 /// High-level keychain accessor that delegates to the registered platform implementation.

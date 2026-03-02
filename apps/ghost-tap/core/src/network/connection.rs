@@ -8,6 +8,7 @@
 use super::gsp::MobileGspClient;
 use super::{GhostClient, NetworkError, NodeConfig};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// The transport mode for communicating with the Ghost network.
@@ -43,6 +44,8 @@ pub struct ConnectionManager {
     rpc_client: Arc<tokio::sync::Mutex<Option<GhostClient>>>,
     /// RPC node configuration (needed to lazily create the RPC client).
     rpc_config: Arc<Mutex<NodeConfig>>,
+    /// M-7: Track RPC client creation without lock contention.
+    rpc_connected: Arc<AtomicBool>,
 }
 
 impl ConnectionManager {
@@ -57,6 +60,7 @@ impl ConnectionManager {
             gsp_client: Arc::new(MobileGspClient::new()),
             rpc_client: Arc::new(tokio::sync::Mutex::new(None)),
             rpc_config: Arc::new(Mutex::new(NodeConfig::default())),
+            rpc_connected: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -71,6 +75,7 @@ impl ConnectionManager {
             gsp_client: Arc::new(gsp_client),
             rpc_client: Arc::new(tokio::sync::Mutex::new(None)),
             rpc_config: Arc::new(Mutex::new(rpc_config)),
+            rpc_connected: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -102,15 +107,7 @@ impl ConnectionManager {
     pub fn is_connected(&self) -> bool {
         match *self.mode.lock() {
             ConnectionMode::Gsp => self.gsp_client.is_connected(),
-            ConnectionMode::DirectRpc => {
-                // The RPC client is considered "connected" if it has been
-                // created. Actual connectivity is verified on each request.
-                // We use try_lock to avoid blocking.
-                self.rpc_client
-                    .try_lock()
-                    .map(|guard| guard.is_some())
-                    .unwrap_or(false)
-            }
+            ConnectionMode::DirectRpc => self.rpc_connected.load(Ordering::Relaxed),
         }
     }
 
@@ -121,6 +118,7 @@ impl ConnectionManager {
             let config = self.rpc_config.lock().clone();
             let client = GhostClient::new(config)?;
             *guard = Some(client);
+            self.rpc_connected.store(true, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -140,7 +138,7 @@ impl ConnectionManager {
                     .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
 
                 let public = client.get_public_balance().await.unwrap_or(0.0);
-                let confirmed = (public * 100_000_000.0) as u64;
+                let confirmed = (public * 100_000_000.0).round() as u64;
                 // RPC does not have a single "pending" call — return 0.
                 Ok((confirmed, 0))
             }

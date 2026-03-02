@@ -64,17 +64,24 @@ impl NfcLimits {
         limits
     }
 
+    /// Hard cap: 100 GHOST = 10,000,000,000 sats.
+    const MAX_SAT_CAP: u64 = 10_000_000_000;
+
     /// Update the exchange rate and recalculate the satoshi cap.
     ///
     /// `rate` is the price of 1 GHOST in GBP.
     /// For example, if 1 GHOST = 2.50 GBP, then rate = 2.50.
-    /// The cap becomes: (fiat_limit / rate) * 100_000_000 sats.
+    /// The cap becomes: (fiat_limit / rate) * 100_000_000 sats, capped at 100 GHOST.
+    ///
+    /// Invalid rates (non-finite, zero, or negative) are silently ignored.
     pub fn update_rate(&mut self, rate: f64) {
-        self.exchange_rate = Some(rate);
-        if rate > 0.0 {
-            let ghost_amount = self.fiat_limit / rate;
-            self.max_amount_sats = (ghost_amount * 100_000_000.0) as u64;
+        if !rate.is_finite() || rate <= 0.0 {
+            return;
         }
+        self.exchange_rate = Some(rate);
+        let ghost_amount = self.fiat_limit / rate;
+        let sats = (ghost_amount * 100_000_000.0).round() as u64;
+        self.max_amount_sats = sats.min(Self::MAX_SAT_CAP);
     }
 
     /// Whether a real exchange rate has been set (as opposed to the default cap).
@@ -139,9 +146,46 @@ mod tests {
 
     #[test]
     fn test_with_rate() {
-        // 1 GHOST = 0.50 GBP → 250 GBP = 500 GHOST = 50_000_000_000 sats
+        // 1 GHOST = 0.50 GBP → 250 GBP = 500 GHOST = 50_000_000_000 sats,
+        // but capped at 100 GHOST = 10_000_000_000 sats.
         let limits = NfcLimits::with_rate(0.50);
-        assert_eq!(limits.max_amount_sats, 50_000_000_000);
+        assert_eq!(limits.max_amount_sats, 10_000_000_000);
+    }
+
+    #[test]
+    fn test_update_rate_invalid_values() {
+        let mut limits = NfcLimits::new();
+        let original = limits.max_amount_sats;
+
+        // Negative rate — ignored
+        limits.update_rate(-1.0);
+        assert_eq!(limits.max_amount_sats, original);
+        assert!(!limits.has_exchange_rate());
+
+        // Zero rate — ignored
+        limits.update_rate(0.0);
+        assert_eq!(limits.max_amount_sats, original);
+
+        // NaN — ignored
+        limits.update_rate(f64::NAN);
+        assert_eq!(limits.max_amount_sats, original);
+
+        // Infinity — ignored
+        limits.update_rate(f64::INFINITY);
+        assert_eq!(limits.max_amount_sats, original);
+
+        // Negative infinity — ignored
+        limits.update_rate(f64::NEG_INFINITY);
+        assert_eq!(limits.max_amount_sats, original);
+    }
+
+    #[test]
+    fn test_hard_cap_enforced() {
+        // Very low rate would normally produce enormous sats value
+        // 1 GHOST = 0.01 GBP → 250/0.01 = 25,000 GHOST = 2,500,000,000,000 sats
+        // Capped at 10_000_000_000
+        let limits = NfcLimits::with_rate(0.01);
+        assert_eq!(limits.max_amount_sats, 10_000_000_000);
     }
 
     #[test]

@@ -1,10 +1,8 @@
 //! Secure memory handling utilities
 
-use std::ptr;
 use zeroize::Zeroize;
 
 /// A wrapper that guarantees memory is zeroed on drop
-#[derive(Clone)]
 pub struct SecureBuffer {
     data: Vec<u8>,
 }
@@ -60,27 +58,23 @@ impl From<Vec<u8>> for SecureBuffer {
     }
 }
 
-/// Securely compare two byte slices in constant time
+/// Securely compare two byte slices in constant time.
+///
+/// Uses `subtle::ConstantTimeEq` which handles length differences
+/// in constant time (no early return on length mismatch).
 pub fn secure_compare(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-
-    result == 0
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
 }
 
-/// Zero out a memory region
+/// Zero out a memory region using volatile writes.
 ///
 /// # Safety
-/// The pointer must be valid and point to at least `len` bytes
+/// The pointer must be valid and point to at least `len` bytes.
 pub unsafe fn secure_zero(ptr: *mut u8, len: usize) {
-    ptr::write_bytes(ptr, 0, len);
-    // Compiler fence to prevent optimization
+    for i in 0..len {
+        std::ptr::write_volatile(ptr.add(i), 0u8);
+    }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 

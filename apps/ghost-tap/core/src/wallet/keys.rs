@@ -29,9 +29,11 @@ impl WordCount {
     }
 }
 
-/// BIP44 coin type for Ghost
-/// Using a placeholder - replace with actual registered coin type
-pub const GHOST_COIN_TYPE: u32 = 0; // Bitcoin mainnet, matching monorepo light wallet
+/// BIP44 coin type for Bitcoin mainnet (coin_type = 0).
+///
+/// GhostTap derives standard Bitcoin L1 P2PKH keys using BIP-44, so
+/// coin_type 0 is correct for Bitcoin mainnet compatibility.
+pub const GHOST_COIN_TYPE: u32 = 0;
 
 /// Extended private key wrapper with zeroization
 pub struct ExtendedKey {
@@ -78,6 +80,21 @@ impl ExtendedKey {
         let secret = SecretKey::from_slice(&*privkey_bytes)
             .map_err(|e| WalletError::KeyDerivation(format!("Invalid secret key: {}", e)))?;
         Ok(PublicKey::from_secret_key(&secp, &secret))
+    }
+}
+
+impl Drop for ExtendedKey {
+    fn drop(&mut self) {
+        // Best-effort zeroization of key material.
+        // ExtendedPrivateKey<SigningKey> stores key bytes internally.
+        let ptr = self as *mut Self as *mut u8;
+        let size = std::mem::size_of::<Self>();
+        unsafe {
+            for i in 0..size {
+                std::ptr::write_volatile(ptr.add(i), 0u8);
+            }
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
     }
 }
 

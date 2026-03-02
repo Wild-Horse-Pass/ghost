@@ -123,7 +123,9 @@ impl WraithWasher {
     fn persist(storage: &Option<Arc<Mutex<WalletStorage>>>, req: &WashRequest) {
         if let Some(ref storage) = storage {
             if let Ok(s) = storage.lock() {
-                let _ = s.save_wash_request(req);
+                if let Err(e) = s.save_wash_request(req) {
+                    tracing::error!("Failed to persist wash request {}: {e}", req.txid);
+                }
             }
         }
     }
@@ -132,7 +134,9 @@ impl WraithWasher {
     fn persist_delete(storage: &Option<Arc<Mutex<WalletStorage>>>, txid: &str) {
         if let Some(ref storage) = storage {
             if let Ok(s) = storage.lock() {
-                let _ = s.delete_wash_request(txid);
+                if let Err(e) = s.delete_wash_request(txid) {
+                    tracing::error!("Failed to delete wash request {}: {e}", txid);
+                }
             }
         }
     }

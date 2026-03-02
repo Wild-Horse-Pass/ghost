@@ -35,6 +35,9 @@ pub unsafe extern "C" fn ghost_keychain_store(
 ) -> bool {
     use std::ffi::CStr;
 
+    if service.is_null() || key.is_null() || data.is_null() {
+        return false;
+    }
     let service_str = match CStr::from_ptr(service).to_str() {
         Ok(s) => s,
         Err(_) => return false,
@@ -64,6 +67,11 @@ pub unsafe extern "C" fn ghost_keychain_retrieve(
 ) {
     use std::ffi::CStr;
 
+    if service.is_null() || key.is_null() {
+        callback(false, std::ptr::null(), 0);
+        return;
+    }
+
     let service_str = match CStr::from_ptr(service).to_str() {
         Ok(s) => s,
         Err(_) => {
@@ -80,6 +88,9 @@ pub unsafe extern "C" fn ghost_keychain_retrieve(
     };
 
     match keychain_retrieve_impl(service_str, key_str) {
+        // SAFETY: The callback is invoked synchronously while `data` is alive
+        // on the stack. The caller (Swift) must copy the data within the callback
+        // — the pointer is invalid after the callback returns.
         Some(data) => callback(true, data.as_ptr(), data.len()),
         None => callback(false, std::ptr::null(), 0),
     }
@@ -96,6 +107,10 @@ pub unsafe extern "C" fn ghost_keychain_delete(
     key: *const std::os::raw::c_char,
 ) -> bool {
     use std::ffi::CStr;
+
+    if service.is_null() || key.is_null() {
+        return false;
+    }
 
     let service_str = match CStr::from_ptr(service).to_str() {
         Ok(s) => s,

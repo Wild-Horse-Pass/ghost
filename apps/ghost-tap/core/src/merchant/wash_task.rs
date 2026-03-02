@@ -20,6 +20,12 @@ const POLL_INTERVAL_SECS: u64 = 30;
 /// Maximum retry attempts before giving up on a wash request.
 const MAX_RETRIES: u32 = 5;
 
+/// How long an InProgress item can be stuck before we attempt recovery (1 hour).
+const STUCK_TIMEOUT_SECS: u64 = 3600;
+
+/// Minimum amount (sats) below which a wash exit leg is not viable after fees.
+const DUST_THRESHOLD_SATS: u64 = 546;
+
 /// Handle for controlling the background wash processor.
 pub struct WashProcessorHandle {
     stop_tx: watch::Sender<bool>,
@@ -71,22 +77,42 @@ async fn wash_processor_loop(
         }
 
         // Get ready items (respects concurrency limit)
-        let ready: Vec<(String, u64)> = match washer.lock() {
-            Ok(w) => w
-                .get_ready()
-                .iter()
-                .filter(|r| r.retry_count < MAX_RETRIES)
-                .map(|r| (r.txid.clone(), r.amount))
-                .collect(),
+        type TxAmountList = Vec<(String, u64)>;
+        let (ready, stuck): (TxAmountList, TxAmountList) = match washer.lock() {
+            Ok(w) => {
+                let ready = w
+                    .get_ready()
+                    .iter()
+                    .filter(|r| r.retry_count < MAX_RETRIES)
+                    .map(|r| (r.txid.clone(), r.amount))
+                    .collect();
+                // H-5: Find InProgress items stuck longer than STUCK_TIMEOUT_SECS
+                let stuck = w
+                    .get_queue()
+                    .iter()
+                    .filter(|r| {
+                        r.status == crate::merchant::wraith::WashStatus::InProgress
+                            && now.saturating_sub(r.updated_at) > STUCK_TIMEOUT_SECS
+                            && r.retry_count < MAX_RETRIES
+                    })
+                    .map(|r| (r.txid.clone(), r.amount))
+                    .collect();
+                (ready, stuck)
+            }
             Err(_) => continue,
         };
 
-        if ready.is_empty() {
+        if ready.is_empty() && stuck.is_empty() {
             continue;
         }
 
         for (txid, amount) in ready {
             process_one_wash(&washer, &connection, &txid, amount).await;
+        }
+
+        // H-5: Recover stuck InProgress items
+        for (txid, amount) in stuck {
+            recover_stuck_wash(&washer, &connection, &txid, amount).await;
         }
     }
 }
@@ -126,6 +152,21 @@ async fn process_one_wash(
         w.mark_in_progress(txid, &wraith_in_txid, now_unix());
     }
 
+    // H-6: Estimate fees for exit leg
+    let estimated_fee = connection.estimate_fee(6).await
+        .ok()
+        .flatten()
+        .unwrap_or(1000); // conservative 1000 sat/kB fallback
+    // Account for both legs of the wash (in + out)
+    let exit_amount = amount.saturating_sub(estimated_fee * 2);
+    if exit_amount < DUST_THRESHOLD_SATS {
+        tracing::warn!("Wash {txid}: amount after fees ({exit_amount}) below dust threshold, marking failed");
+        if let Ok(mut w) = washer.lock() {
+            w.mark_failed(txid, now_unix());
+        }
+        return;
+    }
+
     // Step 3: Get a fresh public address for the exit leg
     let exit_addr = match connection.get_new_address().await {
         Ok(addr) => addr,
@@ -136,8 +177,8 @@ async fn process_one_wash(
         }
     };
 
-    // Step 4: Send private -> public
-    let wraith_out_txid = match connection.send_private_to_public(&exit_addr, amount).await {
+    // Step 4: Send private -> public (fee-adjusted amount)
+    let wraith_out_txid = match connection.send_private_to_public(&exit_addr, exit_amount).await {
         Ok(id) => id,
         Err(e) => {
             tracing::warn!("Wash {txid}: private->public failed: {e}");
@@ -152,6 +193,56 @@ async fn process_one_wash(
     }
 
     tracing::info!("Wash {txid}: completed (in={wraith_in_txid}, out={wraith_out_txid})");
+}
+
+/// H-5: Attempt to recover a stuck InProgress wash (retry the exit leg).
+async fn recover_stuck_wash(
+    washer: &Arc<Mutex<WraithWasher>>,
+    connection: &Arc<ConnectionManager>,
+    txid: &str,
+    amount: u64,
+) {
+    tracing::info!("Wash {txid}: recovering stuck InProgress item");
+
+    // Estimate fees for exit leg
+    let estimated_fee = connection.estimate_fee(6).await
+        .ok()
+        .flatten()
+        .unwrap_or(1000);
+    let exit_amount = amount.saturating_sub(estimated_fee * 2);
+    if exit_amount < DUST_THRESHOLD_SATS {
+        tracing::warn!("Wash {txid}: recovery amount after fees ({exit_amount}) below dust, marking failed");
+        if let Ok(mut w) = washer.lock() {
+            w.mark_failed(txid, now_unix());
+        }
+        return;
+    }
+
+    let exit_addr = match connection.get_new_address().await {
+        Ok(addr) => addr,
+        Err(e) => {
+            tracing::warn!("Wash {txid}: recovery failed to get exit address: {e}");
+            if let Ok(mut w) = washer.lock() {
+                w.mark_failed(txid, now_unix());
+            }
+            return;
+        }
+    };
+
+    match connection.send_private_to_public(&exit_addr, exit_amount).await {
+        Ok(wraith_out_txid) => {
+            if let Ok(mut w) = washer.lock() {
+                w.mark_completed(txid, &wraith_out_txid, now_unix());
+            }
+            tracing::info!("Wash {txid}: recovery completed (out={wraith_out_txid})");
+        }
+        Err(e) => {
+            tracing::warn!("Wash {txid}: recovery private->public failed: {e}");
+            if let Ok(mut w) = washer.lock() {
+                w.mark_failed(txid, now_unix());
+            }
+        }
+    }
 }
 
 fn now_unix() -> u64 {

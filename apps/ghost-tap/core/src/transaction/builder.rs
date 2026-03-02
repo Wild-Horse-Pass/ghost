@@ -72,8 +72,12 @@ impl TransactionBuilder {
         }
     }
 
-    /// Add an output (recipient)
+    /// Add an output (recipient). Rejects zero-amount outputs.
     pub fn add_output(mut self, address: String, amount: u64) -> Self {
+        if amount == 0 {
+            // Silently skip zero-amount outputs (will fail at build time if no valid outputs)
+            return self;
+        }
         self.outputs.push(TxOutput { address, amount });
         self
     }
@@ -105,26 +109,37 @@ impl TransactionBuilder {
         available_utxos: &[Utxo],
         _balance: &Balance,
     ) -> Result<UnsignedTransaction, TransactionError> {
+        // L-10: Reject outputs below dust threshold
+        for output in &self.outputs {
+            if output.amount < DUST_THRESHOLD_SATS {
+                return Err(TransactionError::InvalidTransaction(
+                    format!("output amount {} below dust threshold {}", output.amount, DUST_THRESHOLD_SATS),
+                ));
+            }
+        }
+
         // Calculate total output amount
         let total_output: u64 = self.outputs.iter().map(|o| o.amount).sum();
 
-        // Estimate fee (simplified - real implementation needs size estimation)
-        let estimated_fee = self.estimate_fee(self.outputs.len(), 2); // Assume 2 inputs
-
-        let total_needed = total_output + estimated_fee;
+        // Initial fee estimate with assumed 2 inputs
+        let initial_fee = self.estimate_fee(self.outputs.len(), 2);
+        let total_needed = total_output + initial_fee;
 
         // Select UTXOs
         let selected = select_utxos(available_utxos, total_needed)?;
 
         let total_input: u64 = selected.iter().map(|u| u.amount).sum();
 
-        // Calculate actual fee and change
-        let change = total_input - total_output - estimated_fee;
+        // M-4: Re-estimate fee with actual input count
+        let actual_fee = self.estimate_fee(self.outputs.len() + 1, selected.len()); // +1 for potential change
+
+        // Calculate change with corrected fee
+        let change = total_input.saturating_sub(total_output + actual_fee);
 
         let mut outputs = self.outputs;
 
         // Add change output if significant
-        if change > DUST_THRESHOLD_SATS {
+        let final_fee = if change > DUST_THRESHOLD_SATS {
             let change_addr = self
                 .change_address
                 .ok_or_else(|| TransactionError::InvalidTransaction("No change address".into()))?;
@@ -132,7 +147,11 @@ impl TransactionBuilder {
                 address: change_addr,
                 amount: change,
             });
-        }
+            actual_fee
+        } else {
+            // L-11: When dust change is absorbed, set fee = actual difference
+            total_input - total_output
+        };
 
         let inputs = selected
             .into_iter()
@@ -148,7 +167,7 @@ impl TransactionBuilder {
         Ok(UnsignedTransaction {
             inputs,
             outputs,
-            fee: estimated_fee,
+            fee: final_fee,
         })
     }
 

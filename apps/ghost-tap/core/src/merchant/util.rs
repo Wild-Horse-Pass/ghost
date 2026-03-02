@@ -42,10 +42,20 @@ pub fn format_ghost_amount(sats: u64) -> String {
 
 /// Escape a value for safe embedding in CSV.
 ///
-/// If the value contains commas, quotes, or newlines, wrap it in double
-/// quotes and double any existing double-quote characters.
+/// Wraps in double quotes and doubles any existing quotes if the value
+/// contains special characters. Also handles formula-triggering characters
+/// (`=`, `+`, `-`, `@`, `\t`) to prevent CSV injection attacks.
 pub fn csv_escape(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
+    let needs_quoting = value.contains(',')
+        || value.contains('"')
+        || value.contains('\n')
+        || value.contains('\r')
+        || value.starts_with('=')
+        || value.starts_with('+')
+        || value.starts_with('-')
+        || value.starts_with('@')
+        || value.starts_with('\t');
+    if needs_quoting {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_string()

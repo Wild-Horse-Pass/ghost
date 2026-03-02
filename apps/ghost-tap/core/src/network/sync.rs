@@ -9,7 +9,7 @@
 use super::connection::{ConnectionManager, ConnectionMode};
 use super::types::*;
 use super::{GhostClient, NetworkError};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Sync status
 #[derive(Debug, Clone)]
@@ -95,8 +95,9 @@ pub struct GhostSync {
     jump_locks: Vec<String>, // Lock IDs
     /// Sync configuration
     config: SyncConfig,
-    /// Previously seen UTXOs keyed by (txid, vout) for spent detection.
-    known_utxos: HashSet<(String, u32)>,
+    /// Previously seen UTXOs keyed by address, then (txid, vout) for
+    /// per-address spent detection.
+    known_utxos: HashMap<String, HashSet<(String, u32)>>,
 }
 
 /// Sync configuration
@@ -134,7 +135,7 @@ impl GhostSync {
             ghost_locks: Vec::new(),
             jump_locks: Vec::new(),
             config,
-            known_utxos: HashSet::new(),
+            known_utxos: HashMap::new(),
         }
     }
 
@@ -306,30 +307,29 @@ impl GhostSync {
             .map(|u| (u.txid.clone(), u.vout))
             .collect();
 
-        // Detect spent: UTXOs previously known for this address that are
-        // no longer in the current set.
-        let spent_utxos: Vec<(String, u32)> = self
-            .known_utxos
-            .iter()
-            .filter(|(txid, _vout)| {
-                // We only care about UTXOs that belonged to this address.
-                // Since known_utxos is global, we check membership in the
-                // current query scope: if it was in our set but NOT in the
-                // node's current UTXOs for this address, it was spent.
-                // (This is conservative — if the UTXO belongs to a different
-                // address it won't appear in current_set either, but we
-                // accept false positives here; the wallet layer reconciles.)
-                !current_set.contains(&(txid.clone(), *_vout))
-            })
-            .cloned()
-            .collect();
+        // Look up UTXOs previously known for this specific address.
+        let addr_key = address.to_string();
+        let previously_known = self.known_utxos.get(&addr_key);
 
-        // Remove spent from known set, add new ones.
+        // Detect spent: UTXOs previously known for this address that are
+        // no longer in the current set from the node.
+        let spent_utxos: Vec<(String, u32)> = previously_known
+            .map(|known| {
+                known
+                    .iter()
+                    .filter(|utxo| !current_set.contains(utxo))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Remove spent from this address's known set, add current ones.
+        let addr_set = self.known_utxos.entry(addr_key).or_default();
         for spent in &spent_utxos {
-            self.known_utxos.remove(spent);
+            addr_set.remove(spent);
         }
         for utxo in &current_utxos {
-            self.known_utxos.insert((utxo.txid.clone(), utxo.vout));
+            addr_set.insert((utxo.txid.clone(), utxo.vout));
         }
 
         Ok(AddressSyncResult {
@@ -378,7 +378,7 @@ impl GhostSync {
         let private_balance = client
             .get_private_balance()
             .await
-            .map(|b| (b * 100_000_000.0) as u64) // Convert from GHOST to satoshis
+            .map(|b| (b * 100_000_000.0).round() as u64) // Convert from GHOST to satoshis
             .unwrap_or(0);
 
         Ok((public_balance, private_balance))

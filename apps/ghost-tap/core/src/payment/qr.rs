@@ -162,6 +162,14 @@ impl PaymentRequest {
             return Err(PaymentUriError::MissingAddress);
         }
 
+        // Basic address validation: length and character set
+        if address.len() < 25 || address.len() > 90 {
+            return Err(PaymentUriError::MissingAddress);
+        }
+        if !address.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err(PaymentUriError::MissingAddress);
+        }
+
         let mut request = PaymentRequest::new(address);
 
         if let Some(query_str) = query {
@@ -362,9 +370,9 @@ mod tests {
 
     #[test]
     fn roundtrip_address_only() {
-        let req = PaymentRequest::new("GhA1b2c3d4e5f6g7h8i9j0");
+        let req = PaymentRequest::new("GhA1b2c3d4e5f6g7h8i9j0klmnop");
         let uri = req.to_uri();
-        assert_eq!(uri, "ghost:GhA1b2c3d4e5f6g7h8i9j0");
+        assert_eq!(uri, "ghost:GhA1b2c3d4e5f6g7h8i9j0klmnop");
 
         let parsed = PaymentRequest::from_uri(&uri).unwrap();
         assert_eq!(parsed, req);
@@ -372,7 +380,7 @@ mod tests {
 
     #[test]
     fn roundtrip_with_amount() {
-        let req = PaymentRequest::new("GhA1b2c3d4e5f6g7h8i9j0")
+        let req = PaymentRequest::new("GhA1b2c3d4e5f6g7h8i9j0klmnop")
             .with_amount(100_000_000);
         let uri = req.to_uri();
         assert!(uri.contains("amount=100000000"));
@@ -383,7 +391,7 @@ mod tests {
 
     #[test]
     fn roundtrip_full() {
-        let req = PaymentRequest::new("GhA1b2c3d4e5f6g7h8i9j0")
+        let req = PaymentRequest::new("GhA1b2c3d4e5f6g7h8i9j0klmnop")
             .with_amount(50_000)
             .with_memo("Coffee order #42")
             .with_label("Ghost Cafe");
@@ -398,7 +406,7 @@ mod tests {
 
     #[test]
     fn roundtrip_special_characters() {
-        let req = PaymentRequest::new("GhAddr123")
+        let req = PaymentRequest::new("GhAddr1234567890abcdefghij")
             .with_memo("Payment for item #1 & item #2 (50% off)")
             .with_label("Bob's Store / Main St.");
         let uri = req.to_uri();
@@ -410,7 +418,7 @@ mod tests {
 
     #[test]
     fn roundtrip_unicode_memo() {
-        let req = PaymentRequest::new("GhAddr456")
+        let req = PaymentRequest::new("GhAddr4567890abcdefghijklm")
             .with_memo("Thanks! \u{2615}\u{1F600}");
         let uri = req.to_uri();
 
@@ -438,24 +446,24 @@ mod tests {
 
     #[test]
     fn parse_invalid_amount() {
-        let result = PaymentRequest::from_uri("ghost:addr?amount=notanumber");
+        let result = PaymentRequest::from_uri("ghost:GhAddrABCDEFGHIJKLMNOPQRS?amount=notanumber");
         assert!(matches!(result, Err(PaymentUriError::InvalidAmount(_))));
     }
 
     #[test]
     fn parse_unknown_params_ignored() {
         let parsed = PaymentRequest::from_uri(
-            "ghost:GhAddr?amount=1000&future_param=value",
+            "ghost:GhAddrABCDEFGHIJKLMNOPQRS?amount=1000&future_param=value",
         )
         .unwrap();
         assert_eq!(parsed.amount, Some(1000));
-        assert_eq!(parsed.address, "GhAddr");
+        assert_eq!(parsed.address, "GhAddrABCDEFGHIJKLMNOPQRS");
     }
 
     #[test]
     fn parse_no_amount() {
         let parsed = PaymentRequest::from_uri(
-            "ghost:GhAddr?memo=test&label=shop",
+            "ghost:GhAddrABCDEFGHIJKLMNOPQRS?memo=test&label=shop",
         )
         .unwrap();
         assert_eq!(parsed.amount, None);
@@ -465,7 +473,7 @@ mod tests {
 
     #[test]
     fn amount_zero() {
-        let req = PaymentRequest::new("GhAddr").with_amount(0);
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS").with_amount(0);
         let uri = req.to_uri();
         let parsed = PaymentRequest::from_uri(&uri).unwrap();
         assert_eq!(parsed.amount, Some(0));
@@ -473,7 +481,7 @@ mod tests {
 
     #[test]
     fn amount_max() {
-        let req = PaymentRequest::new("GhAddr").with_amount(u64::MAX);
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS").with_amount(u64::MAX);
         let uri = req.to_uri();
         let parsed = PaymentRequest::from_uri(&uri).unwrap();
         assert_eq!(parsed.amount, Some(u64::MAX));
@@ -481,7 +489,7 @@ mod tests {
 
     #[test]
     fn roundtrip_with_expiry() {
-        let req = PaymentRequest::new("GhAddr123")
+        let req = PaymentRequest::new("GhAddr1234567890abcdefghij")
             .with_amount(50_000)
             .with_expiry(1710374400);
         let uri = req.to_uri();
@@ -494,7 +502,7 @@ mod tests {
 
     #[test]
     fn expired_uri_rejected() {
-        let req = PaymentRequest::new("GhAddr")
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
             .with_expiry(1000);
         let uri = req.to_uri();
 
@@ -505,7 +513,7 @@ mod tests {
 
     #[test]
     fn valid_expiry_accepted() {
-        let req = PaymentRequest::new("GhAddr")
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
             .with_expiry(5000);
         let uri = req.to_uri();
 
@@ -518,7 +526,7 @@ mod tests {
     #[test]
     fn old_uri_still_parses() {
         // URI without exp/net fields should still parse (backward compat)
-        let uri = "ghost:GhAddr?amount=1000&memo=hello";
+        let uri = "ghost:GhAddrABCDEFGHIJKLMNOPQRS?amount=1000&memo=hello";
         let parsed = PaymentRequest::from_uri(uri).unwrap();
         assert_eq!(parsed.exp, None);
         assert_eq!(parsed.net, None);
@@ -527,7 +535,7 @@ mod tests {
 
     #[test]
     fn network_mismatch_warning() {
-        let req = PaymentRequest::new("GhAddr")
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
             .with_network("bitcoin");
         let uri = req.to_uri();
 
@@ -542,7 +550,7 @@ mod tests {
 
     #[test]
     fn roundtrip_with_network() {
-        let req = PaymentRequest::new("GhAddr")
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
             .with_amount(100)
             .with_network("ghost");
         let uri = req.to_uri();
@@ -554,7 +562,7 @@ mod tests {
 
     #[test]
     fn network_match_no_warning() {
-        let req = PaymentRequest::new("GhAddr")
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
             .with_network("ghost");
         let uri = req.to_uri();
 

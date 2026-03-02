@@ -17,6 +17,16 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
+/// Derive a 32-byte key from a password and salt using Argon2id.
+fn derive_key_argon2(password: &[u8], salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, WalletError> {
+    use argon2::Argon2;
+    let mut key = Zeroizing::new([0u8; 32]);
+    Argon2::default()
+        .hash_password_into(password, salt, key.as_mut())
+        .map_err(|e| WalletError::KeyDerivation(format!("Argon2 KDF failed: {e}")))?;
+    Ok(key)
+}
+
 #[derive(Error, Debug)]
 pub enum WalletError {
     #[error("Invalid mnemonic phrase")]
@@ -108,9 +118,23 @@ impl Wallet {
         self.is_locked = true;
     }
 
-    /// Unlock the wallet
-    pub fn unlock(&mut self) {
-        self.is_locked = false;
+    /// Unlock the wallet after verifying PIN.
+    /// If no PIN is set, allows unlock directly (first-time use).
+    pub fn unlock_with_pin(&mut self, pin: &str) -> Result<(), WalletError> {
+        let pm = crate::wallet::auth::PinManager::new();
+        if pm.has_pin() {
+            match pm.verify_pin(pin) {
+                Ok(true) => {
+                    self.is_locked = false;
+                    Ok(())
+                }
+                Ok(false) => Err(WalletError::Locked),
+                Err(e) => Err(WalletError::KeyDerivation(e.to_string())),
+            }
+        } else {
+            self.is_locked = false;
+            Ok(())
+        }
     }
 
     /// Check if wallet is locked
@@ -230,41 +254,55 @@ impl Wallet {
 
 /// Create an encrypted backup of a mnemonic phrase.
 ///
-/// Derives an AES-256-GCM key from `password` via SHA-256 and encrypts
-/// the mnemonic bytes. The returned blob is nonce ‖ ciphertext.
+/// Derives an AES-256-GCM key from `password` via Argon2id with a random
+/// 16-byte salt. Output format: `salt(16) || nonce(12) || ciphertext`.
 pub fn export_encrypted_backup(
     mnemonic: &SecretString,
     password: &str,
 ) -> Result<Vec<u8>, WalletError> {
     use secrecy::ExposeSecret;
 
-    let key = Sha256::digest(password.as_bytes());
-    let key: [u8; 32] = key.into();
-    crate::crypto::encrypt_aes_gcm(mnemonic.expose_secret().as_bytes(), &key)
-        .map_err(|e| WalletError::KeyDerivation(format!("backup encryption failed: {e}")))
+    let mut salt = [0u8; 16];
+    getrandom::getrandom(&mut salt)
+        .map_err(|e| WalletError::KeyDerivation(format!("RNG failed: {e}")))?;
+
+    let key = derive_key_argon2(password.as_bytes(), &salt)?;
+    let encrypted = crate::crypto::encrypt_aes_gcm(mnemonic.expose_secret().as_bytes(), &key)
+        .map_err(|e| WalletError::KeyDerivation(format!("backup encryption failed: {e}")))?;
+
+    let mut output = Vec::with_capacity(16 + encrypted.len());
+    output.extend_from_slice(&salt);
+    output.extend_from_slice(&encrypted);
+    Ok(output)
 }
 
 /// Restore a wallet from an encrypted backup.
 ///
-/// Decrypts the blob with the password-derived key, validates the
-/// resulting mnemonic, and returns both the wallet and mnemonic.
+/// Reads 16-byte salt prefix, derives key via Argon2id, decrypts the
+/// remainder, validates the mnemonic, and returns both wallet and mnemonic.
 pub fn from_encrypted_backup(
     encrypted: &[u8],
     password: &str,
 ) -> Result<(Wallet, SecretString), WalletError> {
-    let key = Sha256::digest(password.as_bytes());
-    let key: [u8; 32] = key.into();
-    let plaintext = crate::crypto::decrypt_aes_gcm(encrypted, &key)
+    if encrypted.len() < 16 {
+        return Err(WalletError::KeyDerivation("backup too short".into()));
+    }
+
+    let (salt, ciphertext) = encrypted.split_at(16);
+    let key = derive_key_argon2(password.as_bytes(), salt)?;
+    let plaintext = crate::crypto::decrypt_aes_gcm(ciphertext, &key)
         .map_err(|e| WalletError::KeyDerivation(format!("backup decryption failed: {e}")))?;
 
-    let mnemonic_str = String::from_utf8(plaintext)
-        .map_err(|_| WalletError::InvalidMnemonic)?;
+    let mnemonic_str = Zeroizing::new(
+        String::from_utf8(plaintext)
+            .map_err(|_| WalletError::InvalidMnemonic)?,
+    );
 
     if !validate_mnemonic(&mnemonic_str) {
         return Err(WalletError::InvalidMnemonic);
     }
 
-    let secret = SecretString::new(mnemonic_str);
+    let secret = SecretString::new(mnemonic_str.to_string());
     let wallet = Wallet::from_mnemonic(&secret, None)?;
     Ok((wallet, secret))
 }
@@ -321,7 +359,7 @@ mod tests {
         ));
 
         // Unlock and try again
-        wallet.unlock();
+        wallet.unlock_with_pin("").unwrap();
         assert!(wallet.new_receive_address().is_ok());
     }
 

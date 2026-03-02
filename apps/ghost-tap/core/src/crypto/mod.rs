@@ -53,9 +53,8 @@ pub fn encrypt_aes_gcm(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Cryp
 
 /// Decrypt data with AES-256-GCM.
 ///
-/// Plaintext is held in a `SecureBuffer` during decryption so it is
-/// zeroized if this function panics or the caller drops the result
-/// without consuming the bytes.
+/// Returns plaintext wrapped in `Vec<u8>`. Callers handling sensitive data
+/// should wrap the result in `Zeroizing<Vec<u8>>`.
 pub fn decrypt_aes_gcm(ciphertext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, CryptoError> {
     use aes_gcm::{
         aead::{Aead, KeyInit},
@@ -75,9 +74,7 @@ pub fn decrypt_aes_gcm(ciphertext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Cry
         .decrypt(nonce, encrypted)
         .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
 
-    // Wrap in SecureBuffer so the plaintext is zeroized on drop.
-    let secure = SecureBuffer::from_vec(plaintext_raw);
-    Ok(secure.as_slice().to_vec())
+    Ok(plaintext_raw)
 }
 
 #[cfg(test)]

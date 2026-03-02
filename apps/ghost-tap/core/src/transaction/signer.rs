@@ -7,6 +7,25 @@ use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+/// Write a Bitcoin CompactSize/VarInt encoding of `n` into `buf`.
+///
+/// This matches the encoding used by Bitcoin Core for counts (input count,
+/// output count, script lengths) in serialised transactions.
+fn write_compact_size(buf: &mut Vec<u8>, n: usize) {
+    if n < 0xFD {
+        buf.push(n as u8);
+    } else if n <= 0xFFFF {
+        buf.push(0xFD);
+        buf.extend_from_slice(&(n as u16).to_le_bytes());
+    } else if n <= 0xFFFF_FFFF {
+        buf.push(0xFE);
+        buf.extend_from_slice(&(n as u32).to_le_bytes());
+    } else {
+        buf.push(0xFF);
+        buf.extend_from_slice(&(n as u64).to_le_bytes());
+    }
+}
+
 /// Decode a Base58Check address and build the P2PKH scriptPubKey.
 ///
 /// The script is: `OP_DUP OP_HASH160 <20-byte-pubkey-hash> OP_EQUALVERIFY OP_CHECKSIG`
@@ -46,6 +65,26 @@ fn address_to_script(address: &str) -> Result<Vec<u8>, TransactionError> {
     Ok(script)
 }
 
+/// Build a P2PKH scriptPubKey directly from a compressed public key.
+///
+/// Performs Hash160 (SHA-256 then RIPEMD-160) on the pubkey bytes and
+/// wraps the result in `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG`.
+fn pubkey_to_p2pkh_script(pubkey: &PublicKey) -> Vec<u8> {
+    use ripemd::Ripemd160;
+    let pk_bytes = pubkey.serialize(); // 33 bytes compressed
+    let sha = Sha256::digest(pk_bytes);
+    let hash160: [u8; 20] = Ripemd160::digest(sha).into();
+
+    let mut script = Vec::with_capacity(25);
+    script.push(0x76); // OP_DUP
+    script.push(0xa9); // OP_HASH160
+    script.push(0x14); // Push 20 bytes
+    script.extend_from_slice(&hash160);
+    script.push(0x88); // OP_EQUALVERIFY
+    script.push(0xac); // OP_CHECKSIG
+    script
+}
+
 /// Transaction signer
 ///
 /// Signs transactions using provided private keys.
@@ -77,26 +116,33 @@ impl TransactionSigner {
     where
         F: FnMut(u32, u32) -> Result<Zeroizing<[u8; 32]>, TransactionError>,
     {
-        let mut signatures = Vec::with_capacity(tx.inputs.len());
+        // First pass: derive all private keys and public keys so we can
+        // build the per-input P2PKH subscripts for sighash computation.
+        let mut secret_keys = Vec::with_capacity(tx.inputs.len());
         let mut pubkeys = Vec::with_capacity(tx.inputs.len());
+        let mut subscripts = Vec::with_capacity(tx.inputs.len());
 
-        // Create the transaction hash to sign
-        let tx_hash = self.compute_tx_hash(tx)?;
-        let message = Message::from_digest(tx_hash);
-
-        // Sign each input
         for input in &tx.inputs {
-            // Get the private key for this input using the BIP44 change index
-            // stored in the TxInput (0 = receive, 1 = change).
             let privkey_bytes = get_key(input.change, input.address_index)?;
-
             let secret_key = SecretKey::from_slice(&*privkey_bytes)
                 .map_err(|e| TransactionError::SigningFailed(format!("Invalid key: {}", e)))?;
-
             let pubkey = PublicKey::from_secret_key(&self.secp, &secret_key);
-            let signature = self.secp.sign_ecdsa(&message, &secret_key);
-            signatures.push(signature);
+            let script = pubkey_to_p2pkh_script(&pubkey);
+
+            secret_keys.push(secret_key);
             pubkeys.push(pubkey);
+            subscripts.push(script);
+        }
+
+        // Second pass: for each input, compute the sighash with that
+        // input's subscript filled in (all others empty) and sign it.
+        let mut signatures = Vec::with_capacity(tx.inputs.len());
+
+        for (input_index, secret_key) in secret_keys.iter().enumerate().take(tx.inputs.len()) {
+            let sighash = self.compute_tx_hash(tx, input_index, &subscripts)?;
+            let message = Message::from_digest(sighash);
+            let signature = self.secp.sign_ecdsa(&message, secret_key);
+            signatures.push(signature);
         }
 
         // Build the signed transaction
@@ -105,38 +151,87 @@ impl TransactionSigner {
         Ok(signed)
     }
 
-    /// Compute the hash of a transaction for signing.
+    /// Compute the sighash for a specific input using the standard Bitcoin
+    /// legacy P2PKH sighash algorithm (SIGHASH_ALL).
     ///
-    /// Serialises version, inputs (txid + vout + amount), outputs
-    /// (amount + P2PKH scriptPubKey) and produces a double-SHA256 digest.
-    fn compute_tx_hash(&self, tx: &UnsignedTransaction) -> Result<[u8; 32], TransactionError> {
+    /// The preimage is:
+    /// ```text
+    /// version (4 bytes LE)
+    /// input_count (compact size)
+    /// for each input:
+    ///   prev_txid (32 bytes, internal byte order)
+    ///   prev_vout (4 bytes LE)
+    ///   if this is the input being signed:
+    ///     script_length (compact size of subscript)
+    ///     subscript (the P2PKH scriptPubKey)
+    ///   else:
+    ///     0x00 (empty script)
+    ///   sequence (4 bytes LE, 0xFFFFFFFF)
+    /// output_count (compact size)
+    /// for each output:
+    ///   value (8 bytes LE)
+    ///   script_length (compact size)
+    ///   script (P2PKH scriptPubKey)
+    /// locktime (4 bytes LE)
+    /// sighash_type (4 bytes LE, 0x01000000 for SIGHASH_ALL)
+    /// ```
+    ///
+    /// The result is the double-SHA256 of this preimage.
+    fn compute_tx_hash(
+        &self,
+        tx: &UnsignedTransaction,
+        input_index: usize,
+        subscripts: &[Vec<u8>],
+    ) -> Result<[u8; 32], TransactionError> {
         let mut data = Vec::new();
 
-        // Version (4 bytes)
+        // Version (4 bytes LE)
         data.extend_from_slice(&1u32.to_le_bytes());
 
-        // Number of inputs
-        data.push(tx.inputs.len() as u8);
+        // Input count (compact size)
+        write_compact_size(&mut data, tx.inputs.len());
 
         // Inputs
-        for input in &tx.inputs {
+        for (i, input) in tx.inputs.iter().enumerate() {
+            // Previous txid (32 bytes, internal byte order)
             let txid_bytes = hex::decode(&input.txid)
                 .map_err(|e| TransactionError::InvalidTransaction(format!("Invalid txid: {}", e)))?;
             data.extend_from_slice(&txid_bytes);
+
+            // Previous output index (4 bytes LE)
             data.extend_from_slice(&input.vout.to_le_bytes());
-            data.extend_from_slice(&input.amount.to_le_bytes());
+
+            if i == input_index {
+                // Include the subscript (previous output's scriptPubKey)
+                let subscript = &subscripts[i];
+                write_compact_size(&mut data, subscript.len());
+                data.extend_from_slice(subscript);
+            } else {
+                // Empty script for other inputs
+                data.push(0x00);
+            }
+
+            // Sequence (4 bytes LE, 0xFFFFFFFF)
+            data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         }
 
-        // Number of outputs
-        data.push(tx.outputs.len() as u8);
+        // Output count (compact size)
+        write_compact_size(&mut data, tx.outputs.len());
 
-        // Outputs — use P2PKH scriptPubKey (matches build_signed_tx)
+        // Outputs — use P2PKH scriptPubKey
         for output in &tx.outputs {
+            // Value (8 bytes LE)
             data.extend_from_slice(&output.amount.to_le_bytes());
             let script = address_to_script(&output.address)?;
-            data.push(script.len() as u8);
+            write_compact_size(&mut data, script.len());
             data.extend_from_slice(&script);
         }
+
+        // Locktime (4 bytes LE)
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        // SIGHASH_ALL (4 bytes LE)
+        data.extend_from_slice(&1u32.to_le_bytes());
 
         // Double SHA256
         let hash1 = Sha256::digest(&data);
@@ -161,8 +256,8 @@ impl TransactionSigner {
         // Version (4 bytes)
         raw_tx.extend_from_slice(&1u32.to_le_bytes());
 
-        // Number of inputs
-        raw_tx.push(tx.inputs.len() as u8);
+        // Number of inputs (compact size)
+        write_compact_size(&mut raw_tx, tx.inputs.len());
 
         // Inputs with signatures + pubkeys
         for ((input, sig), pubkey) in tx.inputs.iter().zip(signatures.iter()).zip(pubkeys.iter()) {
@@ -178,7 +273,7 @@ impl TransactionSigner {
             let sig_der = sig.serialize_der();
             let pk_bytes = pubkey.serialize(); // 33 bytes compressed
             let script_sig_len = 1 + sig_der.len() + 1 + 1 + pk_bytes.len();
-            raw_tx.push(script_sig_len as u8);
+            write_compact_size(&mut raw_tx, script_sig_len);
             // Push sig
             raw_tx.push((sig_der.len() + 1) as u8); // +1 for SIGHASH_ALL byte
             raw_tx.extend_from_slice(&sig_der);
@@ -186,23 +281,37 @@ impl TransactionSigner {
             // Push pubkey
             raw_tx.push(pk_bytes.len() as u8);
             raw_tx.extend_from_slice(&pk_bytes);
+
+            // Sequence (4 bytes LE, 0xFFFFFFFF)
+            raw_tx.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         }
 
-        // Number of outputs
-        raw_tx.push(tx.outputs.len() as u8);
+        // Number of outputs (compact size)
+        write_compact_size(&mut raw_tx, tx.outputs.len());
 
         // Outputs with P2PKH scriptPubKey
         for output in &tx.outputs {
             raw_tx.extend_from_slice(&output.amount.to_le_bytes());
             let script = address_to_script(&output.address)?;
-            raw_tx.push(script.len() as u8);
+            write_compact_size(&mut raw_tx, script.len());
             raw_tx.extend_from_slice(&script);
         }
 
         // Locktime (4 bytes)
         raw_tx.extend_from_slice(&0u32.to_le_bytes());
 
-        // Compute txid (double SHA256 of raw tx, reversed)
+        // Compute txid as double-SHA256 of the raw serialised transaction,
+        // displayed in reversed byte order (Bitcoin standard).
+        //
+        // NOTE: This uses the legacy (pre-SegWit) txid calculation which
+        // covers the full serialised transaction including scriptSig.
+        // Legacy txids are inherently malleable because a third party can
+        // re-encode the DER signature or public key push-data without
+        // invalidating the signature, producing a different txid for the
+        // same economic transaction.  This is acceptable for GhostTap
+        // because: (a) the wallet does not chain unconfirmed transactions,
+        // and (b) SegWit witness commitment is outside the scope of the
+        // current P2PKH signing path.
         let txid_hash = Sha256::digest(Sha256::digest(&raw_tx));
         let txid = hex::encode(txid_hash.iter().rev().copied().collect::<Vec<_>>());
 
@@ -259,9 +368,9 @@ impl Default for TransactionSigner {
 /// Verify a signed transaction's signatures against the original unsigned
 /// transaction.
 ///
-/// Recomputes the sighash from `unsigned_tx`, then parses the signed raw
-/// bytes to extract each input's DER signature and compressed public key,
-/// and verifies every ECDSA signature.
+/// Recomputes the per-input sighash from `unsigned_tx`, then parses the
+/// signed raw bytes to extract each input's DER signature and compressed
+/// public key, and verifies every ECDSA signature.
 pub fn verify_transaction(
     signed: &SignedTransaction,
     unsigned: &UnsignedTransaction,
@@ -283,11 +392,7 @@ pub fn verify_transaction(
         )));
     }
 
-    // Recompute the sighash from the unsigned transaction
     let signer = TransactionSigner::new();
-    let tx_hash = signer.compute_tx_hash(unsigned)?;
-    let message = Message::from_digest(tx_hash);
-
     let secp = Secp256k1::verification_only();
     let mut pos = 4;
 
@@ -300,48 +405,78 @@ pub fn verify_transaction(
         ));
     }
 
+    // First pass: extract all pubkeys so we can build subscripts for
+    // sighash computation.
+    let mut input_positions = Vec::with_capacity(num_inputs);
+    let mut extracted_sigs = Vec::with_capacity(num_inputs);
+    let mut extracted_pks = Vec::with_capacity(num_inputs);
+
+    let mut scan_pos = pos;
     for _ in 0..num_inputs {
-        if pos + 36 >= raw.len() {
+        if scan_pos + 36 >= raw.len() {
             return Err(TransactionError::InvalidTransaction("Truncated input".into()));
         }
-        pos += 36; // txid (32) + vout (4)
+        let input_start = scan_pos;
+        scan_pos += 36; // txid (32) + vout (4)
 
-        let script_sig_len = raw[pos] as usize;
-        pos += 1;
-        if pos + script_sig_len > raw.len() {
+        let script_sig_len = raw[scan_pos] as usize;
+        scan_pos += 1;
+        if scan_pos + script_sig_len > raw.len() {
             return Err(TransactionError::InvalidTransaction("Truncated scriptSig".into()));
         }
 
-        let script_start = pos;
+        let script_start = scan_pos;
 
         // Parse DER sig (+ SIGHASH_ALL byte)
-        let sig_push_len = raw[pos] as usize;
-        pos += 1;
-        if sig_push_len < 2 || pos + sig_push_len > raw.len() {
+        let sig_push_len = raw[scan_pos] as usize;
+        scan_pos += 1;
+        if sig_push_len < 2 || scan_pos + sig_push_len > raw.len() {
             return Err(TransactionError::InvalidTransaction("Bad sig push".into()));
         }
-        let der_bytes = &raw[pos..pos + sig_push_len - 1];
-        pos += sig_push_len;
+        let der_bytes = &raw[scan_pos..scan_pos + sig_push_len - 1];
+        scan_pos += sig_push_len;
 
         // Parse compressed pubkey (33 bytes)
-        let pk_push_len = raw[pos] as usize;
-        pos += 1;
-        if pk_push_len != 33 || pos + pk_push_len > raw.len() {
+        let pk_push_len = raw[scan_pos] as usize;
+        scan_pos += 1;
+        if pk_push_len != 33 || scan_pos + pk_push_len > raw.len() {
             return Err(TransactionError::InvalidTransaction("Bad pubkey push".into()));
         }
-        let pk_bytes = &raw[pos..pos + pk_push_len];
-        pos += pk_push_len;
+        let pk_bytes = &raw[scan_pos..scan_pos + pk_push_len];
+        scan_pos += pk_push_len;
 
-        if pos != script_start + script_sig_len {
+        if scan_pos != script_start + script_sig_len {
             return Err(TransactionError::InvalidTransaction("scriptSig length mismatch".into()));
         }
+
+        // Skip sequence (4 bytes)
+        if scan_pos + 4 > raw.len() {
+            return Err(TransactionError::InvalidTransaction("Truncated sequence".into()));
+        }
+        scan_pos += 4;
 
         let sig = Signature::from_der(der_bytes)
             .map_err(|_| TransactionError::InvalidTransaction("Invalid DER signature".into()))?;
         let pubkey = PublicKey::from_slice(pk_bytes)
             .map_err(|_| TransactionError::InvalidTransaction("Invalid public key".into()))?;
 
-        if secp.verify_ecdsa(&message, &sig, &pubkey).is_err() {
+        input_positions.push(input_start);
+        extracted_sigs.push(sig);
+        extracted_pks.push(pubkey);
+    }
+
+    // Build subscripts from extracted public keys
+    let subscripts: Vec<Vec<u8>> = extracted_pks
+        .iter()
+        .map(pubkey_to_p2pkh_script)
+        .collect();
+
+    // Verify each input's signature against its per-input sighash
+    for i in 0..num_inputs {
+        let sighash = signer.compute_tx_hash(unsigned, i, &subscripts)?;
+        let message = Message::from_digest(sighash);
+
+        if secp.verify_ecdsa(&message, &extracted_sigs[i], &extracted_pks[i]).is_err() {
             return Ok(false);
         }
     }
@@ -413,11 +548,17 @@ mod tests {
         let signer = TransactionSigner::new();
         let tx = simple_unsigned_tx();
 
-        let hash = signer.compute_tx_hash(&tx).unwrap();
+        // Build a subscript from the test key's pubkey for input 0.
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&test_privkey()).unwrap();
+        let pk = PublicKey::from_secret_key(&secp, &sk);
+        let subscripts = vec![pubkey_to_p2pkh_script(&pk)];
+
+        let hash = signer.compute_tx_hash(&tx, 0, &subscripts).unwrap();
         assert_eq!(hash.len(), 32);
 
         // Same transaction should produce same hash (deterministic)
-        let hash2 = signer.compute_tx_hash(&tx).unwrap();
+        let hash2 = signer.compute_tx_hash(&tx, 0, &subscripts).unwrap();
         assert_eq!(hash, hash2);
     }
 
@@ -562,8 +703,13 @@ mod tests {
         let mut tx2 = simple_unsigned_tx();
         tx2.outputs[0].amount = 80000; // different amount
 
-        let hash1 = signer.compute_tx_hash(&tx1).unwrap();
-        let hash2 = signer.compute_tx_hash(&tx2).unwrap();
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&test_privkey()).unwrap();
+        let pk = PublicKey::from_secret_key(&secp, &sk);
+        let subscripts = vec![pubkey_to_p2pkh_script(&pk)];
+
+        let hash1 = signer.compute_tx_hash(&tx1, 0, &subscripts).unwrap();
+        let hash2 = signer.compute_tx_hash(&tx2, 0, &subscripts).unwrap();
         assert_ne!(hash1, hash2);
     }
 
@@ -659,5 +805,69 @@ mod tests {
         let sig1 = signer.sign_message(msg, &privkey).unwrap();
         let sig2 = signer.sign_message(msg, &privkey).unwrap();
         assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_write_compact_size_small() {
+        let mut buf = Vec::new();
+        write_compact_size(&mut buf, 0);
+        assert_eq!(buf, vec![0x00]);
+
+        buf.clear();
+        write_compact_size(&mut buf, 252);
+        assert_eq!(buf, vec![0xFC]);
+    }
+
+    #[test]
+    fn test_write_compact_size_medium() {
+        let mut buf = Vec::new();
+        write_compact_size(&mut buf, 253);
+        assert_eq!(buf, vec![0xFD, 0xFD, 0x00]);
+
+        buf.clear();
+        write_compact_size(&mut buf, 0xFFFF);
+        assert_eq!(buf, vec![0xFD, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_write_compact_size_large() {
+        let mut buf = Vec::new();
+        write_compact_size(&mut buf, 0x10000);
+        assert_eq!(buf, vec![0xFE, 0x00, 0x00, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn test_verify_multi_input_transaction() {
+        let signer = TransactionSigner::new();
+        let tx = UnsignedTransaction {
+            inputs: vec![
+                TxInput {
+                    txid: valid_txid(),
+                    vout: 0,
+                    amount: 50000,
+                    address_index: 0,
+                    change: 0,
+                },
+                TxInput {
+                    txid: valid_txid(),
+                    vout: 1,
+                    amount: 60000,
+                    address_index: 1,
+                    change: 1,
+                },
+            ],
+            outputs: vec![
+                TxOutput { address: test_address(), amount: 80000 },
+                TxOutput { address: test_address(), amount: 20000 },
+            ],
+            fee: 10000,
+        };
+
+        let privkey = test_privkey();
+        let signed = signer
+            .sign(&tx, |_change, _idx| Ok(Zeroizing::new(privkey)))
+            .unwrap();
+
+        assert!(verify_transaction(&signed, &tx).unwrap());
     }
 }

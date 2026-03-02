@@ -83,12 +83,12 @@ impl TransactionExporter {
             csv.push_str(&format!(
                 "{},{},{},{},{},{},{},{}\n",
                 Self::format_date(entry.timestamp),
-                &entry.txid,
-                Self::format_direction(entry.direction),
+                csv_escape(&entry.txid),
+                csv_escape(Self::format_direction(entry.direction)),
                 format_ghost_amount(entry.amount),
                 fee_str,
                 csv_escape(&entry.address),
-                Self::format_status(&entry.status),
+                csv_escape(&Self::format_status(&entry.status)),
                 memo_str,
             ));
         }

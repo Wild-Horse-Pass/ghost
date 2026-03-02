@@ -7,12 +7,13 @@ mod keychain;
 pub use keychain::*;
 
 use crate::crypto::{decrypt_aes_gcm, encrypt_aes_gcm};
-use crate::wallet::{HistoryEntry, TxDirection, TxStatus, Utxo};
+use crate::wallet::{HistoryEntry, Utxo};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -51,7 +52,7 @@ pub struct WalletMeta {
 /// Encrypted local database for wallet data
 pub struct WalletStorage {
     conn: Mutex<Connection>,
-    encryption_key: [u8; 32],
+    encryption_key: Zeroizing<[u8; 32]>,
 }
 
 impl WalletStorage {
@@ -72,15 +73,35 @@ impl WalletStorage {
 
         let storage = Self {
             conn: Mutex::new(conn),
-            encryption_key: *encryption_key,
+            encryption_key: Zeroizing::new(*encryption_key),
         };
 
         storage.create_tables()?;
         Ok(storage)
     }
 
+    /// Schema version history:
+    /// - 0/1: Original plaintext columns for utxos, history, wash_queue
+    /// - 2: Encrypted blob storage for utxos, history, wash_queue (M-14 audit fix)
+    const SCHEMA_VERSION: i32 = 2;
+
     fn create_tables(&self) -> Result<(), StorageError> {
         let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+
+        // Check current schema version
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap_or(0);
+
+        if version < Self::SCHEMA_VERSION {
+            // Drop old plaintext tables (data loss is acceptable — pre-release audit fix)
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS utxos;
+                 DROP TABLE IF EXISTS history;
+                 DROP TABLE IF EXISTS wash_queue;",
+            )?;
+        }
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS kv_store (
                 key TEXT PRIMARY KEY,
@@ -89,26 +110,14 @@ impl WalletStorage {
             );
 
             CREATE TABLE IF NOT EXISTS utxos (
-                txid TEXT NOT NULL,
-                vout INTEGER NOT NULL,
-                amount INTEGER NOT NULL,
-                confirmations INTEGER NOT NULL DEFAULT 0,
-                address TEXT NOT NULL,
-                address_index INTEGER NOT NULL,
-                change INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (txid, vout)
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                data BLOB NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS history (
                 txid TEXT PRIMARY KEY,
-                direction TEXT NOT NULL,
-                amount INTEGER NOT NULL,
-                fee INTEGER,
-                address TEXT NOT NULL,
-                status TEXT NOT NULL,
-                confirmations INTEGER NOT NULL DEFAULT 0,
                 timestamp INTEGER NOT NULL,
-                memo TEXT
+                data BLOB NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS wallet_meta (
@@ -127,15 +136,16 @@ impl WalletStorage {
 
             CREATE TABLE IF NOT EXISTS wash_queue (
                 txid TEXT PRIMARY KEY,
-                amount INTEGER NOT NULL,
                 status TEXT NOT NULL,
-                wraith_in_txid TEXT,
-                wraith_out_txid TEXT,
-                created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
-                retry_count INTEGER NOT NULL DEFAULT 0
+                data BLOB NOT NULL
             );",
         )?;
+
+        if version < Self::SCHEMA_VERSION {
+            conn.pragma_update(None, "user_version", Self::SCHEMA_VERSION)?;
+        }
+
         Ok(())
     }
 
@@ -207,8 +217,12 @@ impl WalletStorage {
     /// List all keys with a prefix
     pub fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
         let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
-        let pattern = format!("{prefix}%");
-        let mut stmt = conn.prepare("SELECT key FROM kv_store WHERE key LIKE ?1")?;
+        let escaped = prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("{escaped}%");
+        let mut stmt = conn.prepare("SELECT key FROM kv_store WHERE key LIKE ?1 ESCAPE '\\'")?;
         let keys = stmt
             .query_map(params![pattern], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
@@ -217,78 +231,48 @@ impl WalletStorage {
 
     // --- UTXOs ---
 
-    /// Save the UTXO set (replaces all existing)
+    /// Save the UTXO set (replaces all existing) as a single encrypted blob.
     pub fn save_utxos(&self, utxos: &[Utxo]) -> Result<(), StorageError> {
+        let json = serde_json::to_vec(utxos)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let encrypted = self.encrypt_value(&json)?;
         let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
-        conn.execute("DELETE FROM utxos", [])?;
-        let mut stmt = conn.prepare(
-            "INSERT INTO utxos (txid, vout, amount, confirmations, address, address_index, change)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        conn.execute(
+            "INSERT OR REPLACE INTO utxos (id, data) VALUES (1, ?1)",
+            params![encrypted],
         )?;
-        for utxo in utxos {
-            stmt.execute(params![
-                utxo.txid,
-                utxo.vout,
-                utxo.amount as i64,
-                utxo.confirmations,
-                utxo.address,
-                utxo.address_index,
-                utxo.change,
-            ])?;
-        }
         Ok(())
     }
 
-    /// Load all UTXOs
+    /// Load all UTXOs from the encrypted blob.
     pub fn load_utxos(&self) -> Result<Vec<Utxo>, StorageError> {
         let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
-        let mut stmt = conn.prepare(
-            "SELECT txid, vout, amount, confirmations, address, address_index, change FROM utxos",
-        )?;
-        let utxos = stmt
-            .query_map([], |row| {
-                Ok(Utxo {
-                    txid: row.get(0)?,
-                    vout: row.get(1)?,
-                    amount: row.get::<_, i64>(2)? as u64,
-                    confirmations: row.get(3)?,
-                    address: row.get(4)?,
-                    address_index: row.get(5)?,
-                    change: row.get(6)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(utxos)
+        let encrypted: Vec<u8> = match conn.query_row(
+            "SELECT data FROM utxos WHERE id = 1",
+            [],
+            |row| row.get(0),
+        ) {
+            Ok(data) => data,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+            Err(e) => return Err(StorageError::Database(e.to_string())),
+        };
+        drop(conn);
+        let json = self.decrypt_value(&encrypted)?;
+        serde_json::from_slice(&json)
+            .map_err(|e| StorageError::Serialization(e.to_string()))
     }
 
     // --- History ---
 
-    /// Save a history entry
+    /// Save a history entry (encrypted blob with plaintext txid + timestamp for ordering).
     pub fn save_history_entry(&self, entry: &HistoryEntry) -> Result<(), StorageError> {
+        let json = serde_json::to_vec(entry)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let encrypted = self.encrypt_value(&json)?;
         let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
-        let direction = match entry.direction {
-            TxDirection::Incoming => "incoming",
-            TxDirection::Outgoing => "outgoing",
-        };
-        let (status, confirmations) = match entry.status {
-            TxStatus::Pending => ("pending", 0u32),
-            TxStatus::Confirmed(n) => ("confirmed", n),
-            TxStatus::Failed => ("failed", 0),
-        };
         conn.execute(
-            "INSERT OR REPLACE INTO history (txid, direction, amount, fee, address, status, confirmations, timestamp, memo)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                entry.txid,
-                direction,
-                entry.amount as i64,
-                entry.fee.map(|f| f as i64),
-                entry.address,
-                status,
-                confirmations,
-                entry.timestamp as i64,
-                entry.memo,
-            ],
+            "INSERT OR REPLACE INTO history (txid, timestamp, data) VALUES (?1, ?2, ?3)",
+            params![entry.txid, entry.timestamp as i64, encrypted],
         )?;
         Ok(())
     }
@@ -297,34 +281,21 @@ impl WalletStorage {
     pub fn load_history(&self, offset: usize, limit: usize) -> Result<Vec<HistoryEntry>, StorageError> {
         let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
         let mut stmt = conn.prepare(
-            "SELECT txid, direction, amount, fee, address, status, confirmations, timestamp, memo
-             FROM history ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2",
+            "SELECT data FROM history ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2",
         )?;
-        let entries = stmt
-            .query_map(params![limit as i64, offset as i64], |row| {
-                let direction: String = row.get(1)?;
-                let status_str: String = row.get(5)?;
-                let confirmations: u32 = row.get(6)?;
-                Ok(HistoryEntry {
-                    txid: row.get(0)?,
-                    direction: if direction == "incoming" {
-                        TxDirection::Incoming
-                    } else {
-                        TxDirection::Outgoing
-                    },
-                    amount: row.get::<_, i64>(2)? as u64,
-                    fee: row.get::<_, Option<i64>>(3)?.map(|f| f as u64),
-                    address: row.get(4)?,
-                    status: match status_str.as_str() {
-                        "pending" => TxStatus::Pending,
-                        "confirmed" => TxStatus::Confirmed(confirmations),
-                        _ => TxStatus::Failed,
-                    },
-                    timestamp: row.get::<_, i64>(7)? as u64,
-                    memo: row.get(8)?,
-                })
-            })?
+        let blobs: Vec<Vec<u8>> = stmt
+            .query_map(params![limit as i64, offset as i64], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
+
+        let mut entries = Vec::with_capacity(blobs.len());
+        for blob in &blobs {
+            let json = self.decrypt_value(blob)?;
+            let entry: HistoryEntry = serde_json::from_slice(&json)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            entries.push(entry);
+        }
         Ok(entries)
     }
 
@@ -407,62 +378,42 @@ impl WalletStorage {
 
     // --- Wash Queue ---
 
-    /// Save a wash request (insert or replace)
+    /// Save a wash request (encrypted blob with plaintext txid, status, updated_at for queries).
     pub fn save_wash_request(
         &self,
         req: &crate::merchant::wraith::WashRequest,
     ) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let json = serde_json::to_vec(req)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let encrypted = self.encrypt_value(&json)?;
         let status = req.status.to_string();
+        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
-            "INSERT OR REPLACE INTO wash_queue (txid, amount, status, wraith_in_txid, wraith_out_txid, created_at, updated_at, retry_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                req.txid,
-                req.amount as i64,
-                status,
-                req.wraith_in_txid,
-                req.wraith_out_txid,
-                req.created_at as i64,
-                req.updated_at as i64,
-                req.retry_count,
-            ],
+            "INSERT OR REPLACE INTO wash_queue (txid, status, updated_at, data) VALUES (?1, ?2, ?3, ?4)",
+            params![req.txid, status, req.updated_at as i64, encrypted],
         )?;
         Ok(())
     }
 
-    /// Load all wash requests from the database
+    /// Load all wash requests from the database (decrypts each row).
     pub fn load_wash_queue(
         &self,
     ) -> Result<Vec<crate::merchant::wraith::WashRequest>, StorageError> {
-        use crate::merchant::wraith::WashStatus;
-
         let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
-        let mut stmt = conn.prepare(
-            "SELECT txid, amount, status, wraith_in_txid, wraith_out_txid, created_at, updated_at, retry_count FROM wash_queue",
-        )?;
-        let requests = stmt
-            .query_map([], |row| {
-                let status_str: String = row.get(2)?;
-                let status = match status_str.as_str() {
-                    "Queued" => WashStatus::Queued,
-                    "In Progress" => WashStatus::InProgress,
-                    "Completed" => WashStatus::Completed,
-                    "Failed" => WashStatus::Failed,
-                    _ => WashStatus::Queued,
-                };
-                Ok(crate::merchant::wraith::WashRequest {
-                    txid: row.get(0)?,
-                    amount: row.get::<_, i64>(1)? as u64,
-                    status,
-                    wraith_in_txid: row.get(3)?,
-                    wraith_out_txid: row.get(4)?,
-                    created_at: row.get::<_, i64>(5)? as u64,
-                    updated_at: row.get::<_, i64>(6)? as u64,
-                    retry_count: row.get(7)?,
-                })
-            })?
+        let mut stmt = conn.prepare("SELECT data FROM wash_queue")?;
+        let blobs: Vec<Vec<u8>> = stmt
+            .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
+
+        let mut requests = Vec::with_capacity(blobs.len());
+        for blob in &blobs {
+            let json = self.decrypt_value(blob)?;
+            let req: crate::merchant::wraith::WashRequest = serde_json::from_slice(&json)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            requests.push(req);
+        }
         Ok(requests)
     }
 
@@ -488,6 +439,7 @@ impl WalletStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wallet::{TxDirection, TxStatus};
 
     fn test_storage() -> WalletStorage {
         WalletStorage::open(":memory:", &[42u8; 32]).unwrap()

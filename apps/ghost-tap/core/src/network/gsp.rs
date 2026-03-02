@@ -138,6 +138,9 @@ pub struct MobileGspClient {
     response_tx: mpsc::Sender<GspResponse>,
     /// Handle to the background connection task (for cancellation).
     task_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Serialization lock: ensures send_request + recv_response are atomic
+    /// so concurrent RPC calls cannot get misrouted responses.
+    rpc_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MobileGspClient {
@@ -155,6 +158,7 @@ impl MobileGspClient {
             response_rx: Arc::new(Mutex::new(Some(response_rx))),
             response_tx,
             task_handle: Arc::new(Mutex::new(None)),
+            rpc_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -305,6 +309,7 @@ impl MobileGspClient {
         wallet_id: &str,
         token: &str,
     ) -> Result<String, NetworkError> {
+        let _lock = self.rpc_lock.lock().await;
         self.send_request(&GspRequest::Authenticate {
             wallet_id: wallet_id.to_string(),
             token: token.to_string(),
@@ -328,6 +333,8 @@ impl MobileGspClient {
 
     /// Request the current wallet balance.
     pub async fn get_balance(&self) -> Result<(u64, u64), NetworkError> {
+        self.require_authenticated()?;
+        let _lock = self.rpc_lock.lock().await;
         self.send_request(&GspRequest::GetBalance).await?;
 
         match self.recv_response().await? {
@@ -351,6 +358,8 @@ impl MobileGspClient {
         to: &str,
         amount: u64,
     ) -> Result<(String, u64), NetworkError> {
+        self.require_authenticated()?;
+        let _lock = self.rpc_lock.lock().await;
         self.send_request(&GspRequest::PreparePayment {
             to: to.to_string(),
             amount,
@@ -374,6 +383,8 @@ impl MobileGspClient {
         &self,
         signed_tx: &str,
     ) -> Result<String, NetworkError> {
+        self.require_authenticated()?;
+        let _lock = self.rpc_lock.lock().await;
         self.send_request(&GspRequest::SubmitSignedPayment {
             signed_tx: signed_tx.to_string(),
         })
@@ -393,12 +404,24 @@ impl MobileGspClient {
 
     /// Subscribe to balance change notifications.
     pub async fn subscribe_balance(&self) -> Result<(), NetworkError> {
+        self.require_authenticated()?;
         self.send_request(&GspRequest::SubscribeBalance).await
     }
 
     /// Subscribe to payment notifications.
     pub async fn subscribe_payments(&self) -> Result<(), NetworkError> {
+        self.require_authenticated()?;
         self.send_request(&GspRequest::SubscribePayments).await
+    }
+
+    /// Reject requests if not yet authenticated (except Authenticate itself).
+    fn require_authenticated(&self) -> Result<(), NetworkError> {
+        if !matches!(*self.state.lock(), ConnectionState::Authenticated) {
+            return Err(NetworkError::AuthenticationFailed(
+                "not authenticated".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Check whether the client is currently connected.

@@ -107,9 +107,21 @@ impl std::error::Error for NfcProtocolError {}
 // ---------------------------------------------------------------------------
 
 /// Encode an `NfcPaymentRequest` into the binary wire format.
-pub fn encode_nfc_payment_request(req: &NfcPaymentRequest) -> Vec<u8> {
+pub fn encode_nfc_payment_request(req: &NfcPaymentRequest) -> Result<Vec<u8>, NfcProtocolError> {
     let addr_bytes = req.address.as_bytes();
     let memo_bytes = req.memo.as_deref().unwrap_or("").as_bytes();
+
+    let addr_len = u16::try_from(addr_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
+        field: "address",
+        declared: addr_bytes.len(),
+        remaining: u16::MAX as usize,
+    })?;
+
+    let memo_len = u16::try_from(memo_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
+        field: "memo",
+        declared: memo_bytes.len(),
+        remaining: u16::MAX as usize,
+    })?;
 
     // version(1) + msg_type(1) + amount(8) + addr_len(2) + addr(N) + memo_len(2) + memo(N)
     let capacity = 1 + 1 + 8 + 2 + addr_bytes.len() + 2 + memo_bytes.len();
@@ -118,14 +130,14 @@ pub fn encode_nfc_payment_request(req: &NfcPaymentRequest) -> Vec<u8> {
     buf.push(req.version);
     buf.push(req.msg_type);
     buf.extend_from_slice(&req.amount.to_be_bytes());
-    buf.extend_from_slice(&(addr_bytes.len() as u16).to_be_bytes());
+    buf.extend_from_slice(&addr_len.to_be_bytes());
     buf.extend_from_slice(addr_bytes);
-    buf.extend_from_slice(&(memo_bytes.len() as u16).to_be_bytes());
+    buf.extend_from_slice(&memo_len.to_be_bytes());
     if !memo_bytes.is_empty() {
         buf.extend_from_slice(memo_bytes);
     }
 
-    buf
+    Ok(buf)
 }
 
 /// Decode a binary buffer into an `NfcPaymentRequest`.
@@ -208,15 +220,22 @@ pub fn decode_nfc_payment_request(buf: &[u8]) -> Result<NfcPaymentRequest, NfcPr
 /// Encode an `NfcPaymentResponse` into the binary wire format.
 ///
 /// Format: `[status(1)][txid_len(2)][txid(N)]`
-pub fn encode_nfc_payment_response(resp: &NfcPaymentResponse) -> Vec<u8> {
+pub fn encode_nfc_payment_response(resp: &NfcPaymentResponse) -> Result<Vec<u8>, NfcProtocolError> {
     let txid_bytes = resp.txid.as_bytes();
+
+    let txid_len = u16::try_from(txid_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
+        field: "txid",
+        declared: txid_bytes.len(),
+        remaining: u16::MAX as usize,
+    })?;
+
     let mut buf = Vec::with_capacity(1 + 2 + txid_bytes.len());
 
     buf.push(resp.status);
-    buf.extend_from_slice(&(txid_bytes.len() as u16).to_be_bytes());
+    buf.extend_from_slice(&txid_len.to_be_bytes());
     buf.extend_from_slice(txid_bytes);
 
-    buf
+    Ok(buf)
 }
 
 /// Decode a binary buffer into an `NfcPaymentResponse`.
@@ -299,7 +318,7 @@ mod tests {
     #[test]
     fn roundtrip_request_with_memo() {
         let req = sample_request();
-        let encoded = encode_nfc_payment_request(&req);
+        let encoded = encode_nfc_payment_request(&req).unwrap();
         let decoded = decode_nfc_payment_request(&encoded).unwrap();
         assert_eq!(decoded, req);
     }
@@ -307,7 +326,7 @@ mod tests {
     #[test]
     fn roundtrip_request_no_memo() {
         let req = sample_request_no_memo();
-        let encoded = encode_nfc_payment_request(&req);
+        let encoded = encode_nfc_payment_request(&req).unwrap();
         let decoded = decode_nfc_payment_request(&encoded).unwrap();
         assert_eq!(decoded, req);
     }
@@ -321,7 +340,7 @@ mod tests {
             address: "AB".to_string(),
             memo: None,
         };
-        let buf = encode_nfc_payment_request(&req);
+        let buf = encode_nfc_payment_request(&req).unwrap();
 
         // version
         assert_eq!(buf[0], 1);
@@ -350,7 +369,7 @@ mod tests {
 
     #[test]
     fn request_unsupported_version() {
-        let mut buf = encode_nfc_payment_request(&sample_request());
+        let mut buf = encode_nfc_payment_request(&sample_request()).unwrap();
         buf[0] = 0xFF;
         let result = decode_nfc_payment_request(&buf);
         assert!(matches!(
@@ -361,7 +380,7 @@ mod tests {
 
     #[test]
     fn request_unknown_msg_type() {
-        let mut buf = encode_nfc_payment_request(&sample_request());
+        let mut buf = encode_nfc_payment_request(&sample_request()).unwrap();
         buf[1] = 0xFE;
         let result = decode_nfc_payment_request(&buf);
         assert!(matches!(
@@ -373,7 +392,7 @@ mod tests {
     #[test]
     fn request_addr_length_overflow() {
         let req = sample_request();
-        let mut buf = encode_nfc_payment_request(&req);
+        let mut buf = encode_nfc_payment_request(&req).unwrap();
         // Overwrite addr_len to a huge value
         buf[10] = 0xFF;
         buf[11] = 0xFF;
@@ -387,7 +406,7 @@ mod tests {
     #[test]
     fn request_memo_length_overflow() {
         let req = sample_request_no_memo();
-        let mut buf = encode_nfc_payment_request(&req);
+        let mut buf = encode_nfc_payment_request(&req).unwrap();
         // Overwrite memo_len (last 2 bytes of the encoded no-memo request)
         let memo_pos = buf.len() - 2;
         buf[memo_pos] = 0x00;
@@ -404,7 +423,7 @@ mod tests {
     #[test]
     fn roundtrip_response_success() {
         let resp = sample_response();
-        let encoded = encode_nfc_payment_response(&resp);
+        let encoded = encode_nfc_payment_response(&resp).unwrap();
         let decoded = decode_nfc_payment_response(&encoded).unwrap();
         assert_eq!(decoded, resp);
     }
@@ -412,7 +431,7 @@ mod tests {
     #[test]
     fn roundtrip_response_error() {
         let resp = sample_response_error();
-        let encoded = encode_nfc_payment_response(&resp);
+        let encoded = encode_nfc_payment_response(&resp).unwrap();
         let decoded = decode_nfc_payment_response(&encoded).unwrap();
         assert_eq!(decoded, resp);
     }
@@ -423,7 +442,7 @@ mod tests {
             txid: "DEAD".to_string(),
             status: 0x00,
         };
-        let buf = encode_nfc_payment_response(&resp);
+        let buf = encode_nfc_payment_response(&resp).unwrap();
 
         assert_eq!(buf[0], 0x00); // status
         assert_eq!(&buf[1..3], &4u16.to_be_bytes()); // txid_len = 4
@@ -459,7 +478,7 @@ mod tests {
             address: "GhAddr".to_string(),
             memo: None,
         };
-        let encoded = encode_nfc_payment_request(&req);
+        let encoded = encode_nfc_payment_request(&req).unwrap();
         let decoded = decode_nfc_payment_request(&encoded).unwrap();
         assert_eq!(decoded, req);
     }
@@ -473,7 +492,7 @@ mod tests {
             address: "GhAddr".to_string(),
             memo: Some("max amount".to_string()),
         };
-        let encoded = encode_nfc_payment_request(&req);
+        let encoded = encode_nfc_payment_request(&req).unwrap();
         let decoded = decode_nfc_payment_request(&encoded).unwrap();
         assert_eq!(decoded, req);
     }
@@ -484,7 +503,7 @@ mod tests {
             txid: String::new(),
             status: 0x00,
         };
-        let encoded = encode_nfc_payment_response(&resp);
+        let encoded = encode_nfc_payment_response(&resp).unwrap();
         let decoded = decode_nfc_payment_response(&encoded).unwrap();
         assert_eq!(decoded, resp);
     }

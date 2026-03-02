@@ -74,46 +74,62 @@ pub extern "system" fn Java_com_ghost_tap_RustBridge_version<'a>(
 // Wallet generation / import
 // ---------------------------------------------------------------------------
 
-/// Generate a new 12-word wallet.  Returns the mnemonic or null.
+/// Generate a new 12-word wallet.  Returns a handle (>0) or -1 on error.
 #[no_mangle]
 #[cfg(target_os = "android")]
-pub extern "system" fn Java_com_ghost_tap_RustBridge_generateWallet12<'a>(
-    env: JNIEnv<'a>,
+pub extern "system" fn Java_com_ghost_tap_RustBridge_generateWallet12(
+    _env: JNIEnv,
     _class: JClass,
-) -> jstring {
+) -> jlong {
     use crate::wallet::{Wallet, WordCount};
-    use secrecy::ExposeSecret;
 
     match Wallet::generate(WordCount::Words12) {
-        Ok((_, mnemonic)) => {
-            let output = env
-                .new_string(mnemonic.expose_secret())
-                .expect("Failed to create mnemonic string");
-            output.into_raw()
-        }
-        Err(_) => std::ptr::null_mut(),
+        Ok((wallet, _mnemonic)) => insert_wallet(wallet),
+        Err(_) => -1,
     }
 }
 
-/// Generate a new 24-word wallet.  Returns the mnemonic or null.
+/// Generate a new 24-word wallet.  Returns a handle (>0) or -1 on error.
 #[no_mangle]
 #[cfg(target_os = "android")]
-pub extern "system" fn Java_com_ghost_tap_RustBridge_generateWallet24<'a>(
-    env: JNIEnv<'a>,
+pub extern "system" fn Java_com_ghost_tap_RustBridge_generateWallet24(
+    _env: JNIEnv,
     _class: JClass,
-) -> jstring {
+) -> jlong {
     use crate::wallet::{Wallet, WordCount};
-    use secrecy::ExposeSecret;
 
     match Wallet::generate(WordCount::Words24) {
-        Ok((_, mnemonic)) => {
-            let output = env
-                .new_string(mnemonic.expose_secret())
-                .expect("Failed to create mnemonic string");
-            output.into_raw()
-        }
-        Err(_) => std::ptr::null_mut(),
+        Ok((wallet, _mnemonic)) => insert_wallet(wallet),
+        Err(_) => -1,
     }
+}
+
+/// Get the mnemonic for a wallet handle. Returns the mnemonic once; use
+/// UniFFI `WalletHandle.get_mnemonic()` for the primary flow. This JNI
+/// helper is for the Android-specific code path before UniFFI adoption.
+/// Returns null if handle invalid.
+#[no_mangle]
+#[cfg(target_os = "android")]
+pub extern "system" fn Java_com_ghost_tap_RustBridge_getMnemonic<'a>(
+    env: JNIEnv<'a>,
+    _class: JClass,
+    wallet_handle: jlong,
+) -> jstring {
+    // The mnemonic is not stored in the JNI handle map (only the Wallet).
+    // Android should use the UniFFI WalletHandle for mnemonic access.
+    // Return null to signal the caller to use UniFFI instead.
+    std::ptr::null_mut()
+}
+
+/// Destroy a wallet handle and free its resources.
+#[no_mangle]
+#[cfg(target_os = "android")]
+pub extern "system" fn Java_com_ghost_tap_RustBridge_destroyWallet(
+    _env: JNIEnv,
+    _class: JClass,
+    wallet_handle: jlong,
+) {
+    WALLETS.lock().unwrap().remove(&wallet_handle);
 }
 
 /// Validate a mnemonic phrase
@@ -256,6 +272,10 @@ pub extern "system" fn Java_com_ghost_tap_RustBridge_createTransaction<'a>(
         Ok(s) => s.into(),
         Err(_) => return std::ptr::null_mut(),
     };
+
+    if amount < 0 {
+        return std::ptr::null_mut();
+    }
 
     let priority = match fee_priority {
         0 => FeePriority::Low,

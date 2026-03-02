@@ -52,6 +52,8 @@ uniffi.workspace = true
 # Security
 zeroize.workspace = true
 secrecy.workspace = true
+subtle.workspace = true
+argon2.workspace = true
 bs58.workspace = true
 hex.workspace = true
 

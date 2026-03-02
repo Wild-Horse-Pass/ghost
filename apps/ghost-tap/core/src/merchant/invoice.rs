@@ -108,8 +108,29 @@ impl Invoice {
     }
 
     /// Update the invoice status.
-    pub fn set_status(&mut self, status: InvoiceStatus) {
+    ///
+    /// Only the following transitions are allowed:
+    /// - Draft -> Sent
+    /// - Draft -> Cancelled
+    /// - Sent -> Paid
+    /// - Sent -> Overdue
+    /// - Sent -> Cancelled
+    pub fn set_status(&mut self, status: InvoiceStatus) -> Result<(), &'static str> {
+        let valid = matches!(
+            (self.status, status),
+            (InvoiceStatus::Draft, InvoiceStatus::Sent)
+                | (InvoiceStatus::Draft, InvoiceStatus::Cancelled)
+                | (InvoiceStatus::Sent, InvoiceStatus::Paid)
+                | (InvoiceStatus::Sent, InvoiceStatus::Overdue)
+                | (InvoiceStatus::Sent, InvoiceStatus::Cancelled)
+        );
+
+        if !valid {
+            return Err("invalid invoice status transition");
+        }
+
         self.status = status;
+        Ok(())
     }
 
     /// Total amount paid so far across all payments.
@@ -130,15 +151,29 @@ impl Invoice {
     /// Record a payment against this invoice.
     ///
     /// Automatically transitions status to `Paid` when fully paid.
-    pub fn add_payment(&mut self, txid: impl Into<String>, amount: u64, timestamp: u64) {
+    /// Returns `false` if the payment was rejected (duplicate txid or
+    /// invoice is cancelled). Returns `true` if the payment was recorded.
+    pub fn add_payment(&mut self, txid: impl Into<String>, amount: u64, timestamp: u64) -> bool {
+        if self.status == InvoiceStatus::Cancelled {
+            return false;
+        }
+
+        let txid = txid.into();
+
+        // Reject duplicate txids
+        if self.payments.iter().any(|p| p.txid == txid) {
+            return false;
+        }
+
         self.payments.push(InvoicePayment {
-            txid: txid.into(),
+            txid,
             amount,
             timestamp,
         });
         if self.is_fully_paid() {
             self.status = InvoiceStatus::Paid;
         }
+        true
     }
 
     /// Generate a `ghost:` payment URI for this invoice.
@@ -377,11 +412,37 @@ mod tests {
         let mut inv = Invoice::new("I-1", "Shop", "Addr", 1000, "GhA", 0);
         assert_eq!(inv.status, InvoiceStatus::Draft);
 
-        inv.set_status(InvoiceStatus::Sent);
+        inv.set_status(InvoiceStatus::Sent).unwrap();
         assert_eq!(inv.status, InvoiceStatus::Sent);
 
-        inv.set_status(InvoiceStatus::Paid);
+        inv.set_status(InvoiceStatus::Paid).unwrap();
         assert_eq!(inv.status, InvoiceStatus::Paid);
+    }
+
+    #[test]
+    fn test_invalid_status_transition() {
+        let mut inv = Invoice::new("I-T", "Shop", "Addr", 1000, "GhA", 0);
+        // Draft -> Paid is not allowed (must go through Sent)
+        assert!(inv.set_status(InvoiceStatus::Paid).is_err());
+        // Draft -> Overdue is not allowed
+        assert!(inv.set_status(InvoiceStatus::Overdue).is_err());
+    }
+
+    #[test]
+    fn test_duplicate_payment_rejected() {
+        let mut inv = Invoice::new("I-D", "Shop", "Addr", 100_000_000, "GhA", 0);
+        assert!(inv.add_payment("tx1", 40_000_000, 1000));
+        // Duplicate txid should be rejected
+        assert!(!inv.add_payment("tx1", 40_000_000, 2000));
+        assert_eq!(inv.amount_paid(), 40_000_000);
+    }
+
+    #[test]
+    fn test_payment_rejected_when_cancelled() {
+        let mut inv = Invoice::new("I-C", "Shop", "Addr", 100_000_000, "GhA", 0);
+        inv.set_status(InvoiceStatus::Cancelled).unwrap();
+        assert!(!inv.add_payment("tx1", 40_000_000, 1000));
+        assert_eq!(inv.amount_paid(), 0);
     }
 
     #[test]

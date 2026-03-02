@@ -1,11 +1,11 @@
 //! PIN-based authentication as a biometric fallback.
 //!
-//! Provides a 6-digit PIN manager that stores a SHA-256 hash
+//! Provides a 6-digit PIN manager that stores an Argon2id hash
 //! in the platform keychain. Tracks failed attempts and locks
 //! out after 5 consecutive failures (requiring mnemonic re-import).
 
 use crate::storage::{Keychain, KeychainAccess, StorageError};
-use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 const MAX_ATTEMPTS: u32 = 5;
 const KEYCHAIN_KEY_PIN_HASH: &str = "pin_hash";
@@ -64,13 +64,22 @@ impl PinManager {
     }
 
     /// Set (or replace) the PIN. Must be exactly 6 ASCII digits.
+    ///
+    /// Generates a random 16-byte salt and stores `salt(16) || hash(32)`.
     pub fn set_pin(&self, pin: &str) -> Result<(), PinError> {
         if !Self::is_valid_format(pin) {
             return Err(PinError::InvalidFormat);
         }
 
-        let hash = Self::hash_pin(pin);
-        self.keychain.store(KEYCHAIN_KEY_PIN_HASH, &hash)?;
+        let mut salt = [0u8; 16];
+        getrandom::getrandom(&mut salt)
+            .map_err(|e| PinError::Storage(format!("RNG failed: {e}")))?;
+
+        let hash = Self::hash_pin_with_salt(pin, &salt)?;
+        let mut stored = Vec::with_capacity(48);
+        stored.extend_from_slice(&salt);
+        stored.extend_from_slice(&hash);
+        self.keychain.store(KEYCHAIN_KEY_PIN_HASH, &stored)?;
         // Reset fail counter on PIN change
         self.keychain.store(KEYCHAIN_KEY_FAIL_COUNT, &0u32.to_le_bytes())?;
         Ok(())
@@ -86,14 +95,20 @@ impl PinManager {
             return Err(PinError::LockedOut);
         }
 
-        let stored_hash = self
+        let stored = self
             .keychain
             .retrieve(KEYCHAIN_KEY_PIN_HASH)
             .map_err(|_| PinError::Storage("no PIN set".into()))?;
 
-        let candidate_hash = Self::hash_pin(pin);
+        if stored.len() < 48 {
+            return Err(PinError::Storage("corrupt PIN hash".into()));
+        }
 
-        if stored_hash == candidate_hash {
+        let salt = &stored[..16];
+        let stored_hash = &stored[16..48];
+        let candidate_hash = Self::hash_pin_with_salt(pin, salt)?;
+
+        if bool::from(stored_hash.ct_eq(&candidate_hash)) {
             // Reset fail counter on success
             self.keychain
                 .store(KEYCHAIN_KEY_FAIL_COUNT, &0u32.to_le_bytes())?;
@@ -134,10 +149,13 @@ impl PinManager {
         pin.len() == 6 && pin.bytes().all(|b| b.is_ascii_digit())
     }
 
-    fn hash_pin(pin: &str) -> Vec<u8> {
-        let mut hasher = Sha256::new();
-        hasher.update(pin.as_bytes());
-        hasher.finalize().to_vec()
+    fn hash_pin_with_salt(pin: &str, salt: &[u8]) -> Result<[u8; 32], PinError> {
+        use argon2::Argon2;
+        let mut hash = [0u8; 32];
+        Argon2::default()
+            .hash_password_into(pin.as_bytes(), salt, &mut hash)
+            .map_err(|e| PinError::Storage(format!("Argon2 KDF failed: {e}")))?;
+        Ok(hash)
     }
 
     fn fail_count(&self) -> u32 {
