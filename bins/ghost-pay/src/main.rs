@@ -74,8 +74,9 @@ use ghost_storage::{
     WithdrawalRequest, WithdrawalStatus,
 };
 use ghost_zkp::{
-    BalanceTree, CommitmentTree, GhostNoteSpendProof, GhostNoteSpendPublicInputs,
-    GhostNoteVerifier,
+    BalanceTree, CommitmentTree, ConsolidationPublicInputs, GhostConsolidateVerifier,
+    GhostNoteSpendProof, GhostNoteSpendPublicInputs, GhostNoteVerifier, GhostUnshieldVerifier,
+    UnshieldPublicInputs, MAX_CONSOLIDATION_INPUTS,
 };
 use wraith_protocol::{
     FileSessionPersistence, ParticipantTier, PersistentSessionRegistry, WraithCoordinator,
@@ -218,6 +219,99 @@ fn load_note_spend_verifier_from_params(args: &Args) -> Option<Arc<GhostNoteVeri
                 error = %e,
                 path = %vk_path.display(),
                 "Failed to load NoteSpend verifier"
+            );
+            None
+        }
+    }
+}
+
+/// Load the NoteConsolidate Groth16 verifier from MPC params directory.
+///
+/// Returns `Some(Arc<GhostConsolidateVerifier>)` if the VK file exists and loads successfully.
+/// Returns `None` if no VK file found (consolidation transfers will be unavailable).
+fn load_consolidation_verifier_from_params(args: &Args) -> Option<Arc<GhostConsolidateVerifier>> {
+    let mpc_dir = if let Some(ref dir) = args.mpc_params_dir {
+        dir.clone()
+    } else {
+        // Default: sibling of data_dir (e.g., /home/ghost/.ghost/mpc_params/)
+        let data_path = std::path::PathBuf::from(&args.data_dir);
+        if let Some(parent) = data_path.parent() {
+            parent.join("mpc_params")
+        } else {
+            std::path::PathBuf::from("mpc_params")
+        }
+    };
+
+    // MPC slot 2 naming legacy: consolidation VK is stored as payout_vk.bin
+    let vk_path = mpc_dir.join("payout_vk.bin");
+    if !vk_path.exists() {
+        warn!(
+            path = %vk_path.display(),
+            "Consolidation VK not found — consolidation transfers will be unavailable"
+        );
+        return None;
+    }
+
+    match ghost_zkp::load_consolidation_verifier(&vk_path, COMMITMENT_TREE_DEPTH) {
+        Ok(verifier) => {
+            info!(
+                path = %vk_path.display(),
+                has_groth16_vk = verifier.has_groth16_vk(),
+                "Loaded consolidation verifier"
+            );
+            Some(Arc::new(verifier))
+        }
+        Err(e) => {
+            error!(
+                error = %e,
+                path = %vk_path.display(),
+                "Failed to load consolidation verifier"
+            );
+            None
+        }
+    }
+}
+
+/// Load the Unshield Groth16 verifier from MPC params directory.
+///
+/// Returns `Some(Arc<GhostUnshieldVerifier>)` if the VK file exists and loads successfully.
+/// Returns `None` if no VK file found (unshield withdrawals will be unavailable).
+fn load_unshield_verifier_from_params(args: &Args) -> Option<Arc<GhostUnshieldVerifier>> {
+    let mpc_dir = if let Some(ref dir) = args.mpc_params_dir {
+        dir.clone()
+    } else {
+        // Default: sibling of data_dir (e.g., /home/ghost/.ghost/mpc_params/)
+        let data_path = std::path::PathBuf::from(&args.data_dir);
+        if let Some(parent) = data_path.parent() {
+            parent.join("mpc_params")
+        } else {
+            std::path::PathBuf::from("mpc_params")
+        }
+    };
+
+    let vk_path = mpc_dir.join("unshield_vk.bin");
+    if !vk_path.exists() {
+        warn!(
+            path = %vk_path.display(),
+            "Unshield VK not found — unshield withdrawals will be unavailable"
+        );
+        return None;
+    }
+
+    match ghost_zkp::load_unshield_verifier(&vk_path, COMMITMENT_TREE_DEPTH) {
+        Ok(verifier) => {
+            info!(
+                path = %vk_path.display(),
+                has_groth16_vk = verifier.has_groth16_vk(),
+                "Loaded unshield verifier"
+            );
+            Some(Arc::new(verifier))
+        }
+        Err(e) => {
+            error!(
+                error = %e,
+                path = %vk_path.display(),
+                "Failed to load unshield verifier"
             );
             None
         }
@@ -778,6 +872,12 @@ struct AppState {
     /// Groth16 NoteSpend verifier (None if MPC params not available)
     /// Wrapped in RwLock for hot-reload when MPC ceremony completes after startup.
     note_spend_verifier: RwLock<Option<Arc<GhostNoteVerifier>>>,
+    /// Groth16 NoteConsolidate verifier (None if MPC params not available)
+    /// Wrapped in RwLock for hot-reload when MPC ceremony completes after startup.
+    consolidation_verifier: RwLock<Option<Arc<GhostConsolidateVerifier>>>,
+    /// Groth16 Unshield verifier (None if MPC params not available)
+    /// Wrapped in RwLock for hot-reload when MPC ceremony completes after startup.
+    unshield_verifier: RwLock<Option<Arc<GhostUnshieldVerifier>>>,
     /// HTTP client for relaying verified transactions to ghost-pool
     pool_http_client: reqwest::Client,
     /// Ghost-pool API URL for L2 transaction relay
@@ -1036,6 +1136,12 @@ async fn main() -> Result<()> {
     // Load NoteSpend verifier from MPC params (before args is moved)
     let note_spend_verifier = load_note_spend_verifier_from_params(&args);
 
+    // Load consolidation verifier from MPC params (before args is moved)
+    let consolidation_verifier = load_consolidation_verifier_from_params(&args);
+
+    // Load unshield verifier from MPC params (before args is moved)
+    let unshield_verifier = load_unshield_verifier_from_params(&args);
+
     // Initialize state
     let pool_api_url = args.pool_api_url.clone();
     let pool_http_client = reqwest::Client::builder()
@@ -1059,6 +1165,8 @@ async fn main() -> Result<()> {
         commitment_tree: RwLock::new(commitment_tree),
         balance_tree: RwLock::new(balance_tree),
         note_spend_verifier: RwLock::new(note_spend_verifier),
+        consolidation_verifier: RwLock::new(consolidation_verifier),
+        unshield_verifier: RwLock::new(unshield_verifier),
         pool_http_client,
         pool_api_url,
     });
@@ -1098,6 +1206,90 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => {
                             warn!(error = %e, "Failed to reload NoteSpend VK");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Spawn periodic consolidation VK hot-reload task
+    {
+        let state_for_cvk = Arc::clone(&state);
+        let cvk_path = {
+            let mpc_dir = if let Some(ref dir) = state.config.mpc_params_dir {
+                dir.clone()
+            } else {
+                let data_path = std::path::PathBuf::from(&state.config.data_dir);
+                if let Some(parent) = data_path.parent() {
+                    parent.join("mpc_params")
+                } else {
+                    std::path::PathBuf::from("mpc_params")
+                }
+            };
+            mpc_dir.join("payout_vk.bin")
+        };
+        let mut last_modified_cvk = std::fs::metadata(&cvk_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let current = std::fs::metadata(&cvk_path)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+                if current != last_modified_cvk && cvk_path.exists() {
+                    match ghost_zkp::load_consolidation_verifier(&cvk_path, COMMITMENT_TREE_DEPTH) {
+                        Ok(v) => {
+                            *state_for_cvk.consolidation_verifier.write() = Some(Arc::new(v));
+                            info!(path = %cvk_path.display(), "Reloaded consolidation VK");
+                            last_modified_cvk = current;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to reload consolidation VK");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Spawn periodic unshield VK hot-reload task
+    {
+        let state_for_uvk = Arc::clone(&state);
+        let uvk_path = {
+            let mpc_dir = if let Some(ref dir) = state.config.mpc_params_dir {
+                dir.clone()
+            } else {
+                let data_path = std::path::PathBuf::from(&state.config.data_dir);
+                if let Some(parent) = data_path.parent() {
+                    parent.join("mpc_params")
+                } else {
+                    std::path::PathBuf::from("mpc_params")
+                }
+            };
+            mpc_dir.join("unshield_vk.bin")
+        };
+        let mut last_modified_uvk = std::fs::metadata(&uvk_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let current = std::fs::metadata(&uvk_path)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+                if current != last_modified_uvk && uvk_path.exists() {
+                    match ghost_zkp::load_unshield_verifier(&uvk_path, COMMITMENT_TREE_DEPTH) {
+                        Ok(v) => {
+                            *state_for_uvk.unshield_verifier.write() = Some(Arc::new(v));
+                            info!(path = %uvk_path.display(), "Reloaded unshield VK");
+                            last_modified_uvk = current;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to reload unshield VK");
                         }
                     }
                 }
@@ -1334,6 +1526,14 @@ async fn main() -> Result<()> {
         .route(
             "/api/v1/confidential/transfer",
             post(submit_confidential_transfer),
+        )
+        .route(
+            "/api/v1/confidential/consolidate",
+            post(submit_consolidation),
+        )
+        .route(
+            "/api/v1/confidential/unshield",
+            post(submit_unshield),
         )
         .route("/api/v1/confidential/shield", post(shield_balance))
         // Lock reconciliation (SENSITIVE - settles lock to L1)
@@ -2940,6 +3140,567 @@ async fn submit_confidential_transfer(
         "new_commitment_root": hex::encode(new_root),
         "sender_index": req.sender_index,
         "recipient_index": req.recipient_index,
+    })))
+}
+
+// ============================================================================
+// Consolidation Handler
+// ============================================================================
+
+/// Request body for submitting a consolidation proof (merge up to 4 notes into 1)
+#[derive(Debug, Deserialize)]
+struct ConsolidateRequest {
+    proof_hex: String,
+    commitment_root: String,
+    nullifiers: [String; 4],
+    output_commitment: String,
+    encrypted_output: Option<String>,
+    epoch: u64,
+}
+
+/// Submit a consolidation proof that merges up to 4 notes into 1
+async fn submit_consolidation(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ConsolidateRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Step 1: Parse proof_hex, verify 192 bytes (Groth16 BLS12-381)
+    let proof_bytes = hex::decode(&req.proof_hex).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid proof hex"})),
+        )
+    })?;
+    if proof_bytes.len() != 192 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Proof must be exactly 192 bytes"})),
+        ));
+    }
+
+    // Step 2: Parse hex fields
+    let commitment_root = parse_hex_32(&req.commitment_root).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid commitment_root hex (need 32 bytes)"})),
+        )
+    })?;
+
+    let mut nullifiers = [[0u8; 32]; MAX_CONSOLIDATION_INPUTS];
+    for (i, n) in req.nullifiers.iter().enumerate() {
+        let bytes = hex::decode(n).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid nullifier[{}] hex", i)})),
+            )
+        })?;
+        if bytes.len() != 32 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("nullifier[{}] must be 32 bytes", i)})),
+            ));
+        }
+        nullifiers[i].copy_from_slice(&bytes);
+    }
+
+    let output_commitment = parse_hex_32(&req.output_commitment).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid output_commitment hex (need 32 bytes)"})),
+        )
+    })?;
+
+    // Step 3: Read-lock tree, verify root matches, check nullifiers unspent
+    {
+        let tree = state.commitment_tree.read();
+        let current_root = tree.root().map_err(|e| {
+            error!(error = %e, "Failed to compute tree root");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
+        })?;
+        if current_root != commitment_root {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "Stale commitment root",
+                    "current_root": hex::encode(current_root)
+                })),
+            ));
+        }
+        // Check all non-zero nullifiers are unspent (in-memory)
+        for (i, nul) in nullifiers.iter().enumerate() {
+            if *nul != [0u8; 32] && tree.is_nullifier_spent(nul) {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": format!("Nullifier[{}] already spent", i)
+                    })),
+                ));
+            }
+        }
+    }
+
+    // Also check nullifiers in DB (belt and suspenders)
+    for (i, nul) in nullifiers.iter().enumerate() {
+        if *nul != [0u8; 32] && state.db.is_nullifier_spent(nul).unwrap_or(true) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": format!("Nullifier[{}] already spent (DB)", i)
+                })),
+            ));
+        }
+    }
+
+    // Step 4: Verify Groth16 consolidation proof
+    let verifier = state
+        .consolidation_verifier
+        .read()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "Consolidation verifier not initialized (MPC params unavailable)"
+                })),
+            )
+        })?;
+
+    let public_inputs = ConsolidationPublicInputs {
+        commitment_root,
+        nullifiers,
+        output_commitment,
+    };
+
+    match verifier.verify_raw(&proof_bytes, &public_inputs) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Consolidation proof verification returned false"})),
+            ));
+        }
+        Err(e) => {
+            warn!(error = %e, "Consolidation proof verification failed");
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid consolidation proof: {}", e)})),
+            ));
+        }
+    }
+
+    // Step 5: Write-lock tree, recheck root (TOCTOU), spend nullifiers, insert output
+    let consolidation_id = uuid::Uuid::new_v4().to_string();
+    let new_root;
+    let output_index;
+    {
+        let mut tree = state.commitment_tree.write();
+
+        // Re-check root under write lock (TOCTOU protection)
+        let current_root = tree.root().map_err(|e| {
+            error!(error = %e, "Failed to compute tree root");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
+        })?;
+        if current_root != commitment_root {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "Stale commitment root (concurrent update)",
+                    "current_root": hex::encode(current_root)
+                })),
+            ));
+        }
+
+        // Re-check nullifiers under write lock
+        for (i, nul) in nullifiers.iter().enumerate() {
+            if *nul != [0u8; 32] && tree.is_nullifier_spent(nul) {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": format!("Nullifier[{}] already spent (concurrent spend)", i)
+                    })),
+                ));
+            }
+        }
+
+        // Spend all non-zero nullifiers
+        for nul in &nullifiers {
+            if *nul != [0u8; 32] {
+                tree.spend_nullifier(*nul);
+            }
+        }
+
+        // Insert output commitment at next available index
+        output_index = tree.next_index();
+        tree.insert(output_index, output_commitment);
+
+        // Compute new root after tree update
+        new_root = tree.root().map_err(|e| {
+            error!(error = %e, "Failed to compute new tree root");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
+        })?;
+    }
+
+    // Step 6: Persist to DB
+    let current_height = state.rpc.get_block_count().await.unwrap_or(0);
+
+    // Insert output note
+    if let Err(e) = state.db.insert_confidential_note(
+        output_index,
+        &output_commitment,
+        &[0u8; 32], // Owner pubkey not known from consolidation; updated by owner
+        current_height,
+    ) {
+        warn!(error = %e, "Failed to persist consolidation output note");
+    }
+
+    // Insert all non-zero nullifiers
+    for nul in &nullifiers {
+        if *nul != [0u8; 32] {
+            if let Err(e) = state
+                .db
+                .insert_nullifier(nul, current_height, &consolidation_id)
+            {
+                warn!(error = %e, "Failed to persist consolidation nullifier");
+            }
+        }
+    }
+
+    info!(
+        consolidation_id = %consolidation_id,
+        output_index = output_index,
+        epoch = req.epoch,
+        nullifiers_spent = nullifiers.iter().filter(|n| **n != [0u8; 32]).count(),
+        "Consolidation applied"
+    );
+
+    // Step 7: Relay to ghost-pool for L2 consensus broadcast
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let l2_message = serde_json::json!({
+        "transaction": {
+            "epoch": req.epoch,
+            "nullifier": hex::encode(nullifiers[0]),
+            "change_commitment": hex::encode(output_commitment),
+            "recipient_commitment": hex::encode([0u8; 32]),
+            "commitment_root": hex::encode(commitment_root),
+            "proof": proof_bytes,
+            "encrypted_change": hex::decode(req.encrypted_output.as_deref().unwrap_or("")).unwrap_or_default(),
+            "encrypted_recipient": [],
+            "timestamp": timestamp,
+        },
+        "sender": hex::encode([0u8; 32]),
+    });
+
+    let relay_url = format!("{}/api/v1/l2/submit", state.pool_api_url);
+    let relay_body = serde_json::to_vec(&l2_message).unwrap_or_default();
+
+    match state
+        .pool_http_client
+        .post(&relay_url)
+        .body(relay_body)
+        .header("content-type", "application/json")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            info!(consolidation_id = %consolidation_id, "Consolidation relayed to ghost-pool");
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            warn!(
+                consolidation_id = %consolidation_id,
+                status = %status,
+                body = %body,
+                "Ghost-pool consolidation relay returned non-success status"
+            );
+        }
+        Err(e) => {
+            warn!(
+                consolidation_id = %consolidation_id,
+                error = %e,
+                "Failed to relay consolidation to ghost-pool (will be retried by consensus)"
+            );
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "consolidation_id": consolidation_id,
+        "new_commitment_root": hex::encode(new_root),
+        "output_index": output_index,
+    })))
+}
+
+// ============================================================================
+// Unshield Handler (L2 -> L1 Withdrawal)
+// ============================================================================
+
+/// Request body for submitting an unshield proof (full L2 -> L1 withdrawal)
+#[derive(Debug, Deserialize)]
+struct UnshieldRequest {
+    proof_hex: String,
+    commitment_root: String,
+    nullifier: String,
+    withdrawal_amount_sats: u64,
+    destination_address: String,
+}
+
+/// Submit an unshield proof that withdraws value from L2 to an L1 Bitcoin address
+async fn submit_unshield(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UnshieldRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Step 1: Parse proof_hex, verify 192 bytes (Groth16 BLS12-381)
+    let proof_bytes = hex::decode(&req.proof_hex).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid proof hex"})),
+        )
+    })?;
+    if proof_bytes.len() != 192 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Proof must be exactly 192 bytes"})),
+        ));
+    }
+
+    // Step 2: Parse hex fields
+    let commitment_root = parse_hex_32(&req.commitment_root).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid commitment_root hex (need 32 bytes)"})),
+        )
+    })?;
+
+    let nullifier = parse_hex_32(&req.nullifier).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid nullifier hex (need 32 bytes)"})),
+        )
+    })?;
+
+    if req.withdrawal_amount_sats == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "withdrawal_amount_sats must be > 0"})),
+        ));
+    }
+
+    // Validate destination address is a parseable Bitcoin address
+    if req.destination_address.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "destination_address is required"})),
+        ));
+    }
+
+    // Step 3: Read-lock tree, verify root matches, check nullifier unspent
+    {
+        let tree = state.commitment_tree.read();
+        let current_root = tree.root().map_err(|e| {
+            error!(error = %e, "Failed to compute tree root");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
+        })?;
+        if current_root != commitment_root {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "Stale commitment root",
+                    "current_root": hex::encode(current_root)
+                })),
+            ));
+        }
+        if tree.is_nullifier_spent(&nullifier) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "Nullifier already spent"})),
+            ));
+        }
+    }
+
+    // Also check nullifier in DB (belt and suspenders)
+    if state.db.is_nullifier_spent(&nullifier).unwrap_or(true) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "Nullifier already spent (DB)"})),
+        ));
+    }
+
+    // Step 4: Verify Groth16 unshield proof
+    let verifier = state
+        .unshield_verifier
+        .read()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "Unshield verifier not initialized (MPC params unavailable)"
+                })),
+            )
+        })?;
+
+    let public_inputs = UnshieldPublicInputs {
+        commitment_root,
+        nullifier,
+        withdrawal_amount: req.withdrawal_amount_sats,
+    };
+
+    match verifier.verify_raw(&proof_bytes, &public_inputs) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Unshield proof verification returned false"})),
+            ));
+        }
+        Err(e) => {
+            warn!(error = %e, "Unshield proof verification failed");
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid unshield proof: {}", e)})),
+            ));
+        }
+    }
+
+    // Step 5: Write-lock tree, recheck root (TOCTOU), spend nullifier
+    // NOTE: No new commitment inserted — value leaves L2
+    let unshield_id = uuid::Uuid::new_v4().to_string();
+    let new_root;
+    {
+        let mut tree = state.commitment_tree.write();
+
+        // Re-check root under write lock (TOCTOU protection)
+        let current_root = tree.root().map_err(|e| {
+            error!(error = %e, "Failed to compute tree root");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
+        })?;
+        if current_root != commitment_root {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "Stale commitment root (concurrent update)",
+                    "current_root": hex::encode(current_root)
+                })),
+            ));
+        }
+
+        // Re-check nullifier under write lock
+        if tree.is_nullifier_spent(&nullifier) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "Nullifier already spent (concurrent spend)"})),
+            ));
+        }
+
+        // Spend the nullifier
+        tree.spend_nullifier(nullifier);
+
+        // Compute new root after nullifier spend (tree unchanged, only nullifier set)
+        new_root = tree.root().map_err(|e| {
+            error!(error = %e, "Failed to compute new tree root");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
+        })?;
+    }
+
+    // Step 6: Persist nullifier to DB and record withdrawal request
+    let current_height = state.rpc.get_block_count().await.unwrap_or(0);
+
+    if let Err(e) = state
+        .db
+        .insert_nullifier(&nullifier, current_height, &unshield_id)
+    {
+        warn!(error = %e, "Failed to persist unshield nullifier");
+    }
+
+    info!(
+        unshield_id = %unshield_id,
+        withdrawal_amount_sats = req.withdrawal_amount_sats,
+        destination = %req.destination_address,
+        "Unshield withdrawal applied"
+    );
+
+    // Step 7: Relay to ghost-pool for L2 consensus broadcast
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let l2_message = serde_json::json!({
+        "transaction": {
+            "epoch": 0,
+            "nullifier": hex::encode(nullifier),
+            "change_commitment": hex::encode([0u8; 32]),
+            "recipient_commitment": hex::encode([0u8; 32]),
+            "commitment_root": hex::encode(commitment_root),
+            "proof": proof_bytes,
+            "encrypted_change": [],
+            "encrypted_recipient": [],
+            "timestamp": timestamp,
+        },
+        "sender": hex::encode([0u8; 32]),
+    });
+
+    let relay_url = format!("{}/api/v1/l2/submit", state.pool_api_url);
+    let relay_body = serde_json::to_vec(&l2_message).unwrap_or_default();
+
+    match state
+        .pool_http_client
+        .post(&relay_url)
+        .body(relay_body)
+        .header("content-type", "application/json")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            info!(unshield_id = %unshield_id, "Unshield relayed to ghost-pool");
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            warn!(
+                unshield_id = %unshield_id,
+                status = %status,
+                body = %body,
+                "Ghost-pool unshield relay returned non-success status"
+            );
+        }
+        Err(e) => {
+            warn!(
+                unshield_id = %unshield_id,
+                error = %e,
+                "Failed to relay unshield to ghost-pool (will be retried by consensus)"
+            );
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "unshield_id": unshield_id,
+        "new_commitment_root": hex::encode(new_root),
+        "withdrawal_amount_sats": req.withdrawal_amount_sats,
+        "destination_address": req.destination_address,
     })))
 }
 

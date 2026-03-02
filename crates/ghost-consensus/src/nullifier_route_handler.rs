@@ -22,7 +22,7 @@ use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity;
 use ghost_common::types::NodeId;
 use ghost_storage::Database;
-use ghost_zkp::{GhostNoteSpendPublicInputs, GhostNoteVerifier};
+use ghost_zkp::{GhostConsolidateVerifier, GhostNoteSpendPublicInputs, GhostNoteVerifier, GhostUnshieldVerifier};
 
 use crate::epoch_manager::{EpochManager, PROPOSER_GRACE_SECS};
 use crate::mesh::MessageHandler;
@@ -157,6 +157,10 @@ pub struct NullifierRouteHandler {
     epoch_manager: Arc<EpochManager>,
     /// Note verifier (Groth16 proof verification)
     verifier: RwLock<Option<Arc<GhostNoteVerifier>>>,
+    /// Consolidation verifier (Groth16 consolidation proof verification)
+    consolidation_verifier: RwLock<Option<Arc<GhostConsolidateVerifier>>>,
+    /// Unshield verifier (Groth16 unshield/withdrawal proof verification)
+    unshield_verifier: RwLock<Option<Arc<GhostUnshieldVerifier>>>,
     /// Confirmed transactions waiting for next checkpoint
     confirmed_pool: RwLock<Vec<L2Transaction>>,
     /// S-4: O(1) nullifier dedup index for confirmed_pool (parallel HashSet)
@@ -201,6 +205,8 @@ impl NullifierRouteHandler {
             our_id,
             epoch_manager,
             verifier: RwLock::new(None),
+            consolidation_verifier: RwLock::new(None),
+            unshield_verifier: RwLock::new(None),
             confirmed_pool: RwLock::new(Vec::new()),
             confirmed_nullifiers: RwLock::new(HashSet::new()),
             pending_shields: RwLock::new(Vec::new()),
@@ -230,6 +236,16 @@ impl NullifierRouteHandler {
     /// Set the verifier (after MPC params are loaded)
     pub fn set_verifier(&self, verifier: Arc<GhostNoteVerifier>) {
         *self.verifier.write() = Some(verifier);
+    }
+
+    /// Set the consolidation verifier (after MPC params are loaded)
+    pub fn set_consolidation_verifier(&self, verifier: Arc<GhostConsolidateVerifier>) {
+        *self.consolidation_verifier.write() = Some(verifier);
+    }
+
+    /// Set the unshield verifier (after MPC params are loaded)
+    pub fn set_unshield_verifier(&self, verifier: Arc<GhostUnshieldVerifier>) {
+        *self.unshield_verifier.write() = Some(verifier);
     }
 
     /// Set the broadcast function

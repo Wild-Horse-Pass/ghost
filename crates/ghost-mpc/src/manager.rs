@@ -87,14 +87,14 @@ pub struct CeremonyManager {
     note_spend_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
     /// Current payout proving parameters (hot-swappable)
     payout_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
-    /// Current confidential transfer proving parameters (hot-swappable)
-    confidential_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
+    /// Current unshield (L2 -> L1 withdrawal) proving parameters (hot-swappable)
+    unshield_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
     /// Prepared note spend verifying key (for fast verification)
     note_spend_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
     /// Prepared payout verifying key
     payout_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
-    /// Prepared confidential transfer verifying key
-    confidential_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
+    /// Prepared unshield verifying key
+    unshield_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
     /// CRIT-2 FIX: Pending contribution commitments (commitment_hash -> commitment)
     /// Contributors broadcast commitments BEFORE revealing their contribution.
     /// This prevents a malicious coordinator from silently dropping contributions.
@@ -111,10 +111,10 @@ impl CeremonyManager {
             files: ParameterFiles::new(params_dir),
             note_spend_params: RwLock::new(None),
             payout_params: RwLock::new(None),
-            confidential_params: RwLock::new(None),
+            unshield_params: RwLock::new(None),
             note_spend_vk: RwLock::new(None),
             payout_vk: RwLock::new(None),
-            confidential_vk: RwLock::new(None),
+            unshield_vk: RwLock::new(None),
             // CRIT-2 FIX: Initialize commitment tracking
             pending_commitments: RwLock::new(HashMap::new()),
             fulfilled_commitments: RwLock::new(Vec::new()),
@@ -185,17 +185,17 @@ impl CeremonyManager {
             }
         }
 
-        let confidential_path = self.files.current_confidential_params_path();
-        if confidential_path.exists() {
-            match load_parameters(&confidential_path) {
+        let unshield_path = self.files.current_unshield_params_path();
+        if unshield_path.exists() {
+            match load_parameters(&unshield_path) {
                 Ok(params) => {
                     let vk = prepare_verifying_key(&params.vk);
-                    *self.confidential_params.write() = Some(Arc::new(params));
-                    *self.confidential_vk.write() = Some(Arc::new(vk));
-                    info!("Loaded current confidential transfer parameters");
+                    *self.unshield_params.write() = Some(Arc::new(params));
+                    *self.unshield_vk.write() = Some(Arc::new(vk));
+                    info!("Loaded current unshield parameters");
                 }
                 Err(e) => {
-                    warn!(error = %e, "Failed to load confidential transfer parameters");
+                    warn!(error = %e, "Failed to load unshield parameters");
                 }
             }
         }
@@ -260,10 +260,10 @@ impl CeremonyManager {
         // Generate genesis parameters using GhostNoteSpendCircuit (sender-side proofs)
         use bellperson::groth16::generate_random_parameters;
         use blstrs::Scalar as Fr;
-        use ghost_zkp::circuit::{GhostNoteSpendCircuit, NoteConsolidateCircuit};
+        use ghost_zkp::circuit::{GhostNoteSpendCircuit, GhostUnshieldCircuit, NoteConsolidateCircuit};
         use rand::rngs::OsRng;
 
-        tracing::info!("MPC: Generating genesis parameters for NoteSpend + NoteConsolidate + Confidential circuits...");
+        tracing::info!("MPC: Generating genesis parameters for NoteSpend + NoteConsolidate + Unshield circuits...");
 
         let dummy_note = GhostNoteSpendCircuit::<Fr>::dummy(20);
         let note_params = generate_random_parameters::<Bls12, _, _>(dummy_note, &mut OsRng)
@@ -284,18 +284,18 @@ impl CeremonyManager {
                 ))
             })?;
 
-        // Slot 3: Confidential (uses NoteSpend circuit structure)
-        let dummy_note2 = GhostNoteSpendCircuit::<Fr>::dummy(20);
-        let note_params2 = generate_random_parameters::<Bls12, _, _>(dummy_note2, &mut OsRng)
+        // Slot 3: Unshield circuit (L2 -> L1 withdrawal proofs)
+        let dummy_unshield = GhostUnshieldCircuit::<Fr>::dummy(20);
+        let unshield_params = generate_random_parameters::<Bls12, _, _>(dummy_unshield, &mut OsRng)
             .map_err(|e| {
                 MpcError::Internal(format!(
-                    "Failed to generate confidential-slot genesis params: {:?}",
+                    "Failed to generate unshield genesis params: {:?}",
                     e
                 ))
             })?;
 
-        self.initialize_genesis_multi(note_params, consolidate_params, note_params2)?;
-        tracing::info!("MPC: Genesis parameters initialized for NoteSpend + NoteConsolidate + Confidential");
+        self.initialize_genesis_multi(note_params, consolidate_params, unshield_params)?;
+        tracing::info!("MPC: Genesis parameters initialized for NoteSpend + NoteConsolidate + Unshield");
         Ok(true)
     }
 
@@ -319,16 +319,16 @@ impl CeremonyManager {
         self.payout_vk.read().clone()
     }
 
-    /// Get current confidential transfer parameters for proving
+    /// Get current unshield parameters for proving
     #[deprecated(note = "Use note_spend params instead")]
-    pub fn confidential_params(&self) -> Option<Arc<Parameters<Bls12>>> {
-        self.confidential_params.read().clone()
+    pub fn unshield_params(&self) -> Option<Arc<Parameters<Bls12>>> {
+        self.unshield_params.read().clone()
     }
 
-    /// Get current confidential transfer verifying key
+    /// Get current unshield verifying key
     #[deprecated(note = "Use note_spend VK instead")]
-    pub fn confidential_vk(&self) -> Option<Arc<PreparedVerifyingKey<Bls12>>> {
-        self.confidential_vk.read().clone()
+    pub fn unshield_vk(&self) -> Option<Arc<PreparedVerifyingKey<Bls12>>> {
+        self.unshield_vk.read().clone()
     }
 
     /// Generate a contribution for a new elder
@@ -380,8 +380,8 @@ impl CeremonyManager {
         let current_payout = self.payout_params.read();
         let payout_ref = current_payout.as_ref().map(|p| p.as_ref());
 
-        let current_confidential = self.confidential_params.read();
-        let confidential_ref = current_confidential.as_ref().map(|p| p.as_ref());
+        let current_unshield = self.unshield_params.read();
+        let unshield_ref = current_unshield.as_ref().map(|p| p.as_ref());
 
         // 4.22: Get ceremony_id for binding proofs to this ceremony
         let ceremony_id = state.ceremony_id;
@@ -391,7 +391,7 @@ impl CeremonyManager {
         let result = generate_multi_contribution(
             note_spend_params.as_ref(),
             payout_ref,
-            confidential_ref,
+            unshield_ref,
             &ceremony_id,
             next_position,
             contributor_id,
@@ -404,7 +404,7 @@ impl CeremonyManager {
             prev_hash = %hex::encode(result.contribution.prev_params_hash),
             new_hash = %hex::encode(result.contribution.new_params_hash),
             has_payout = result.payout_params.is_some(),
-            has_confidential = result.confidential_params.is_some(),
+            has_unshield = result.unshield_params.is_some(),
             "Generated multi-circuit MPC contribution"
         );
 
@@ -446,8 +446,8 @@ impl CeremonyManager {
         let current_payout = self.payout_params.read();
         let payout_ref = current_payout.as_ref().map(|p| p.as_ref());
 
-        let current_confidential = self.confidential_params.read();
-        let confidential_ref = current_confidential.as_ref().map(|p| p.as_ref());
+        let current_unshield = self.unshield_params.read();
+        let unshield_ref = current_unshield.as_ref().map(|p| p.as_ref());
 
         // 4.22: Get ceremony_id for binding proofs to this ceremony
         let ceremony_id = state.ceremony_id;
@@ -457,7 +457,7 @@ impl CeremonyManager {
         let result = generate_multi_contribution(
             note_spend_params.as_ref(),
             payout_ref,
-            confidential_ref,
+            unshield_ref,
             &ceremony_id,
             position,
             contributor_id,
@@ -589,7 +589,7 @@ impl CeremonyManager {
         &self,
         new_note_spend_params: Parameters<Bls12>,
         new_payout_params: Option<Parameters<Bls12>>,
-        new_confidential_params: Option<Parameters<Bls12>>,
+        new_unshield_params: Option<Parameters<Bls12>>,
         contribution: &MpcContribution,
     ) -> MpcResult<()> {
         let mut state = self.state.write();
@@ -623,10 +623,10 @@ impl CeremonyManager {
         }
 
         // Confidential params (if provided)
-        if let Some(ref confidential_params) = new_confidential_params {
-            let confidential_path = self.files.confidential_params_path(contribution.position);
-            save_parameters(&confidential_path, confidential_params)?;
-            save_verifying_key(&self.files.confidential_vk_path(), &confidential_params.vk)?;
+        if let Some(ref unshield_params) = new_unshield_params {
+            let unshield_path = self.files.unshield_params_path(contribution.position);
+            save_parameters(&unshield_path, unshield_params)?;
+            save_verifying_key(&self.files.unshield_vk_path(), &unshield_params.vk)?;
         }
 
         // Update current symlinks
@@ -644,11 +644,11 @@ impl CeremonyManager {
             *self.payout_vk.write() = Some(Arc::new(payout_vk));
         }
 
-        // Hot-swap confidential params
-        if let Some(confidential_params) = new_confidential_params {
-            let confidential_vk = prepare_verifying_key(&confidential_params.vk);
-            *self.confidential_params.write() = Some(Arc::new(confidential_params));
-            *self.confidential_vk.write() = Some(Arc::new(confidential_vk));
+        // Hot-swap unshield params
+        if let Some(unshield_params) = new_unshield_params {
+            let unshield_vk = prepare_verifying_key(&unshield_params.vk);
+            *self.unshield_params.write() = Some(Arc::new(unshield_params));
+            *self.unshield_vk.write() = Some(Arc::new(unshield_vk));
         }
 
         // Update state
@@ -878,13 +878,13 @@ impl CeremonyManager {
 
     /// Initialize genesis with all three circuit types
     ///
-    /// Generates and saves genesis parameters for note spend and confidential transfer circuits.
+    /// Generates and saves genesis parameters for note spend, consolidation, and unshield circuits.
     /// All sets go through the same MPC ceremony transformations.
     pub fn initialize_genesis_multi(
         &self,
         note_spend_params: Parameters<Bls12>,
         payout_params: Parameters<Bls12>,
-        confidential_params: Parameters<Bls12>,
+        unshield_params: Parameters<Bls12>,
     ) -> MpcResult<()> {
         let mut state = self.state.write();
 
@@ -904,12 +904,12 @@ impl CeremonyManager {
         save_parameters(&self.files.payout_params_path(0), &payout_params)?;
         save_verifying_key(&self.files.payout_vk_path(), &payout_params.vk)?;
 
-        // Save confidential params as v0
+        // Save unshield params as v0
         save_parameters(
-            &self.files.confidential_params_path(0),
-            &confidential_params,
+            &self.files.unshield_params_path(0),
+            &unshield_params,
         )?;
-        save_verifying_key(&self.files.confidential_vk_path(), &confidential_params.vk)?;
+        save_verifying_key(&self.files.unshield_vk_path(), &unshield_params.vk)?;
 
         // Update current symlinks
         update_current_params(&self.files, 0)?;
@@ -926,9 +926,9 @@ impl CeremonyManager {
         *self.payout_params.write() = Some(Arc::new(payout_params));
         *self.payout_vk.write() = Some(Arc::new(payout_vk));
 
-        let confidential_vk = prepare_verifying_key(&confidential_params.vk);
-        *self.confidential_params.write() = Some(Arc::new(confidential_params));
-        *self.confidential_vk.write() = Some(Arc::new(confidential_vk));
+        let unshield_vk = prepare_verifying_key(&unshield_params.vk);
+        *self.unshield_params.write() = Some(Arc::new(unshield_params));
+        *self.unshield_vk.write() = Some(Arc::new(unshield_vk));
 
         // Update state
         let now = std::time::SystemTime::now()
@@ -941,7 +941,7 @@ impl CeremonyManager {
 
         info!(
             params_hash = %hex::encode(params_hash),
-            circuits = "note_spend + payout + confidential",
+            circuits = "note_spend + payout + unshield",
             "Initialized MPC ceremony with multi-circuit genesis parameters"
         );
 

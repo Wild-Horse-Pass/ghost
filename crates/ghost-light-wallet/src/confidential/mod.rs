@@ -18,9 +18,6 @@ pub mod tree_sync;
 
 pub use notes::{ConsolidationPlan, NoteSelection, NoteStore, OwnedNote};
 pub use params_cache::{default_params_cache_dir, ParamsCache};
-#[allow(deprecated)]
-pub use prover::{
-    ClientProver, ConfidentialTransferResult, NoteSpendClientProver, NoteSpendTransferResult,
-};
+pub use prover::{NoteSpendClientProver, NoteSpendTransferResult};
 pub use scanner::{DiscoveredNote, NoteScanner};
 pub use tree_sync::TreeSync;

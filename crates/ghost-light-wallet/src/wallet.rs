@@ -31,7 +31,7 @@ use tracing::info;
 
 use ghost_gsp_proto::WalletId;
 
-use crate::confidential::{NoteSpendClientProver, ParamsCache};
+use crate::confidential::{DiscoveredNote, NoteScanner, NoteSpendClientProver, NoteStore, ParamsCache};
 use crate::error::{LightWalletError, WalletResult};
 use crate::gsp::GspClient;
 use crate::keys::MasterKey;
@@ -139,6 +139,12 @@ pub struct LightWallet {
 
     /// Lazily-initialized NoteSpend prover (loaded on first use)
     prover: Arc<RwLock<Option<NoteSpendClientProver>>>,
+
+    /// Owned confidential note store (lazily initialized on first scan)
+    note_store: Arc<RwLock<Option<NoteStore>>>,
+
+    /// L2 transaction scanner for discovering owned notes (lazily initialized)
+    scanner: Arc<RwLock<Option<NoteScanner>>>,
 }
 
 impl LightWallet {
@@ -177,6 +183,8 @@ impl LightWallet {
             balance: Arc::new(RwLock::new(WalletBalance::default())),
             params_cache,
             prover: Arc::new(RwLock::new(None)),
+            note_store: Arc::new(RwLock::new(None)),
+            scanner: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -218,6 +226,8 @@ impl LightWallet {
             balance: Arc::new(RwLock::new(WalletBalance::default())),
             params_cache,
             prover: Arc::new(RwLock::new(None)),
+            note_store: Arc::new(RwLock::new(None)),
+            scanner: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -450,6 +460,111 @@ impl LightWallet {
             .prepare_payment(recipient, amount_sats, use_wraith)
             .await?;
         self.submit_payment(&prepared).await
+    }
+
+    // =========================================================================
+    // Confidential Note Scanning
+    // =========================================================================
+
+    /// Scan recent L2 transactions for confidential notes belonging to this wallet.
+    ///
+    /// Lazily initializes the scanner and note store on first call using keys
+    /// derived from the master key. Fetches transactions from the GSP since the
+    /// last scanned height, attempts to decrypt each one, and adds discovered
+    /// notes to the store.
+    pub async fn scan_recent_notes(&self) -> WalletResult<Vec<DiscoveredNote>> {
+        // 1. Get master key
+        let master_key = {
+            let key_guard = self.master_key.read();
+            Arc::clone(key_guard.as_ref().ok_or(LightWalletError::NotInitialized)?)
+        };
+
+        // 2. Get scan secret and spending key from master key
+        let scan_secret = master_key.ghost_keys().scan_secret().clone();
+        let spending_key = *master_key.confidential_spending_key();
+
+        // 3. Lazy-init scanner if None
+        {
+            let mut scanner_guard = self.scanner.write();
+            if scanner_guard.is_none() {
+                *scanner_guard = Some(NoteScanner::new(scan_secret));
+            }
+        }
+
+        // 4. Lazy-init note_store if None
+        {
+            let mut store_guard = self.note_store.write();
+            if store_guard.is_none() {
+                *store_guard = Some(NoteStore::new(spending_key));
+            }
+        }
+
+        // 5. Read last_scanned_height before the await (no lock held across await)
+        let since_height = {
+            let scanner_guard = self.scanner.read();
+            scanner_guard.as_ref().unwrap().last_scanned_height()
+        };
+
+        // 6. Get GSP client (clone to release lock before await)
+        let client = {
+            let client_guard = self.gsp_client.read();
+            client_guard
+                .as_ref()
+                .ok_or(LightWalletError::NotConnected)?
+                .clone()
+        };
+
+        // 7. Fetch recent L2 transactions since last scanned height
+        let (txs, latest_height) = client
+            .get_recent_l2_transactions(since_height)
+            .await?;
+
+        // 8. Scan transactions (re-acquire lock after await)
+        let discovered = {
+            let mut scanner_guard = self.scanner.write();
+            let scanner = scanner_guard.as_mut().unwrap();
+            scanner.scan_transactions(&txs)
+        };
+
+        // 9. Read last_seen_epoch from scanner (separate lock acquisition)
+        let last_seen_epoch = {
+            let scanner_guard = self.scanner.read();
+            scanner_guard.as_ref().unwrap().last_seen_epoch()
+        };
+
+        // 10. Add discovered notes to store and handle epoch transitions
+        {
+            let mut store_guard = self.note_store.write();
+            let store = store_guard.as_mut().unwrap();
+
+            for note in &discovered {
+                store.add_note(note.note.clone());
+            }
+
+            if last_seen_epoch > store.current_epoch() {
+                store.handle_epoch_transition(last_seen_epoch);
+            }
+        }
+
+        // 11. Update last scanned height
+        {
+            let mut scanner_guard = self.scanner.write();
+            let scanner = scanner_guard.as_mut().unwrap();
+            scanner.set_last_scanned_height(latest_height);
+        }
+
+        Ok(discovered)
+    }
+
+    /// Get the current confidential (L2) balance from the note store.
+    ///
+    /// Returns 0 if the note store has not been initialized (no scan performed yet).
+    pub fn confidential_balance(&self) -> WalletResult<u64> {
+        let store_guard = self.note_store.read();
+        match store_guard.as_ref() {
+            Some(store) => Ok(store.confidential_balance()),
+            None => Ok(0),
+        }
     }
 
     // =========================================================================

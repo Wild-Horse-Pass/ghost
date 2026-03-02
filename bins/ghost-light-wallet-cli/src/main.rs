@@ -226,6 +226,13 @@ enum Commands {
         #[arg(long)]
         address: Option<String>,
     },
+
+    /// Scan for incoming L2 confidential notes
+    Scan {
+        /// Checkpoint height to scan from (0 = beginning)
+        #[arg(long, default_value = "0")]
+        since_height: u64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -421,6 +428,9 @@ async fn main() -> Result<()> {
         }
         Commands::Reconcile { lock_id, address } => {
             cmd_reconcile(&api_host, api_port, lock_id, address).await?;
+        }
+        Commands::Scan { since_height } => {
+            cmd_scan(config, since_height).await?;
         }
     }
 
@@ -1987,6 +1997,63 @@ async fn cmd_reconcile(
             );
         }
     }
+
+    Ok(())
+}
+
+// ============================================================================
+// Scan for Confidential Notes
+// ============================================================================
+
+async fn cmd_scan(config: WalletConfig, _since_height: u64) -> Result<()> {
+    let password = rpassword::prompt_password("Enter wallet password: ")?;
+    let wallet = LightWallet::open(&password, config)?;
+
+    // Connect to GSP
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
+    pb.set_message("Connecting to GSP...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    wallet.connect(&wallet.config().gsp_urls[0]).await?;
+
+    pb.set_message("Scanning for confidential notes...");
+
+    // Scan
+    let discovered = wallet.scan_recent_notes().await?;
+
+    pb.finish_and_clear();
+
+    if discovered.is_empty() {
+        println!("No new confidential notes found.");
+    } else {
+        println!(
+            "Discovered {} confidential note(s):",
+            style(discovered.len()).bold()
+        );
+        let mut total = 0u64;
+        for (i, note) in discovered.iter().enumerate() {
+            let kind = if note.is_change { "change" } else { "received" };
+            println!(
+                "  {}. {} sats ({}) at height {}",
+                i + 1,
+                style(note.note.value).yellow(),
+                style(kind).dim(),
+                note.checkpoint_height
+            );
+            total += note.note.value;
+        }
+        println!();
+        println!("Total discovered: {} sats", style(total).yellow().bold());
+    }
+
+    // Show current confidential balance
+    let balance = wallet.confidential_balance()?;
+    println!();
+    println!(
+        "Confidential balance: {} sats",
+        style(balance).green().bold()
+    );
 
     Ok(())
 }

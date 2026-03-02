@@ -9,14 +9,13 @@
 
 pub mod block;
 pub mod commitment;
-#[allow(deprecated)]
-pub mod confidential_transfer;
 pub mod merkle;
 pub mod mimc;
 pub mod note_consolidate;
 pub mod note_spend;
 pub mod payment;
 pub mod range_proof;
+pub mod unshield;
 pub mod state_transition;
 
 pub use block::{BlockCircuit, BlockCircuitBuilder};
@@ -25,8 +24,6 @@ pub use commitment::{
     pedersen_commit, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
     NULLIFIER_DOMAIN_SEPARATOR,
 };
-#[allow(deprecated)]
-pub use confidential_transfer::ConfidentialTransferCircuit;
 pub use merkle::{MerkleCircuit, MerkleUpdateCircuit};
 pub use mimc::{bytes_to_field, field_to_bytes, mimc_hash, mimc_hash_native, MIMC_ROUNDS};
 pub use note_consolidate::{NoteConsolidateCircuit, MAX_CONSOLIDATION_INPUTS};
@@ -37,6 +34,7 @@ pub use note_spend::{
 pub use payment::{PaymentCircuit, PaymentCircuitError, PaymentOutputs};
 pub use range_proof::enforce_range;
 pub use state_transition::{PaymentStateTransitionCircuit, StateTransitionOutputs};
+pub use unshield::{GhostUnshieldCircuit, UNSHIELD_TREE_DEPTH};
 
 /// Maximum supported transactions per block
 pub const MAX_TXS_PER_BLOCK: usize = 100;

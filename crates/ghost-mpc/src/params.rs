@@ -34,7 +34,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
-/// Container for note spend, payout, and confidential transfer parameters
+/// Container for note spend, payout, and unshield parameters
 /// Note: Not Clone because PreparedVerifyingKey doesn't implement Clone.
 /// Use Arc<MpcParameters> for shared ownership.
 #[derive(Default)]
@@ -43,14 +43,14 @@ pub struct MpcParameters {
     pub note_spend_params: Option<Parameters<Bls12>>,
     /// Parameters for payout proofs
     pub payout_params: Option<Parameters<Bls12>>,
-    /// Parameters for confidential transfer proofs
-    pub confidential_params: Option<Parameters<Bls12>>,
+    /// Parameters for unshield proofs (L2 -> L1 withdrawal)
+    pub unshield_params: Option<Parameters<Bls12>>,
     /// Prepared verifying key for note spend proofs (for fast verification)
     pub note_spend_vk: Option<PreparedVerifyingKey<Bls12>>,
     /// Prepared verifying key for payout proofs
     pub payout_vk: Option<PreparedVerifyingKey<Bls12>>,
-    /// Prepared verifying key for confidential transfer proofs
-    pub confidential_vk: Option<PreparedVerifyingKey<Bls12>>,
+    /// Prepared verifying key for unshield proofs
+    pub unshield_vk: Option<PreparedVerifyingKey<Bls12>>,
 }
 
 /// File paths for parameter storage
@@ -97,20 +97,20 @@ impl ParameterFiles {
         self.dir.join("payout_vk.bin")
     }
 
-    /// Path to confidential transfer parameters file
-    pub fn confidential_params_path(&self, contribution_count: u32) -> PathBuf {
+    /// Path to unshield (L2 -> L1 withdrawal) parameters file
+    pub fn unshield_params_path(&self, contribution_count: u32) -> PathBuf {
         self.dir
-            .join(format!("confidential_params_v{}.bin", contribution_count))
+            .join(format!("unshield_params_v{}.bin", contribution_count))
     }
 
-    /// Path to the current (latest) confidential transfer parameters
-    pub fn current_confidential_params_path(&self) -> PathBuf {
-        self.dir.join("confidential_params_current.bin")
+    /// Path to the current (latest) unshield parameters
+    pub fn current_unshield_params_path(&self) -> PathBuf {
+        self.dir.join("unshield_params_current.bin")
     }
 
-    /// Path to the confidential transfer verifying key
-    pub fn confidential_vk_path(&self) -> PathBuf {
-        self.dir.join("confidential_vk.bin")
+    /// Path to the unshield verifying key
+    pub fn unshield_vk_path(&self) -> PathBuf {
+        self.dir.join("unshield_vk.bin")
     }
 
     /// Ensure the parameters directory exists
@@ -318,10 +318,10 @@ pub fn hash_params_file(path: &Path) -> MpcResult<[u8; 32]> {
 pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<()> {
     let note_spend_src = files.note_spend_params_path(version);
     let payout_src = files.payout_params_path(version);
-    let confidential_src = files.confidential_params_path(version);
+    let unshield_src = files.unshield_params_path(version);
     let note_spend_dst = files.current_note_spend_params_path();
     let payout_dst = files.current_payout_params_path();
-    let confidential_dst = files.current_confidential_params_path();
+    let unshield_dst = files.current_unshield_params_path();
 
     if note_spend_src.exists() {
         atomic_copy(&note_spend_src, &note_spend_dst)?;
@@ -341,12 +341,12 @@ pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<
         );
     }
 
-    if confidential_src.exists() {
-        atomic_copy(&confidential_src, &confidential_dst)?;
+    if unshield_src.exists() {
+        atomic_copy(&unshield_src, &unshield_dst)?;
         info!(
             version = version,
-            path = %confidential_dst.display(),
-            "Updated current confidential transfer parameters"
+            path = %unshield_dst.display(),
+            "Updated current unshield parameters"
         );
     }
 

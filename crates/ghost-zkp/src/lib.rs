@@ -93,16 +93,14 @@
 
 pub mod circuit;
 pub mod commitment_tree;
-#[allow(deprecated)]
-pub mod confidential_prover;
-#[allow(deprecated)]
-pub mod confidential_verifier;
 pub mod consolidation_prover;
 pub mod consolidation_verifier;
 pub mod errors;
 pub mod field_utils;
 pub mod note_prover;
 pub mod note_verifier;
+pub mod unshield_prover;
+pub mod unshield_verifier;
 pub mod prover;
 pub mod state_tree;
 pub mod types;
@@ -111,10 +109,8 @@ pub mod verifier;
 // Re-export main types
 pub use errors::{ZkError, ZkResult};
 pub use prover::BlockProver;
-#[allow(deprecated)]
 pub use types::{
-    BlockProof, BlockWitness, BlockWitnessV2, ConfidentialNote, ConfidentialPublicInputs,
-    ConfidentialTransferWitness, MerkleProof, PaymentTransitionWitness, PaymentWitness,
+    BlockProof, BlockWitness, BlockWitnessV2, MerkleProof, PaymentTransitionWitness, PaymentWitness,
     ProvingParams, StateSnapshot, VerificationKey,
 };
 pub use verifier::BlockVerifier;
@@ -122,12 +118,6 @@ pub use verifier::BlockVerifier;
 // Re-export state tree utilities
 pub use commitment_tree::{CommitmentTree, CommitmentTreeBuilder};
 pub use state_tree::{BalanceTree, BalanceTreeBuilder};
-
-// Re-export confidential transfer types (deprecated — use NoteSpend equivalents)
-#[allow(deprecated)]
-pub use confidential_prover::{ConfidentialProver, ConfidentialTransferProof};
-#[allow(deprecated)]
-pub use confidential_verifier::ConfidentialVerifier;
 
 // Re-export note spend types (L2 sender-side proofs)
 pub use note_prover::{
@@ -142,14 +132,17 @@ pub use consolidation_prover::{
 };
 pub use consolidation_verifier::GhostConsolidateVerifier;
 
+// Re-export unshield types (L2 -> L1 full withdrawal proofs)
+pub use unshield_prover::{GhostUnshieldProver, UnshieldProof, UnshieldPublicInputs, UnshieldWitness};
+pub use unshield_verifier::GhostUnshieldVerifier;
+
 // Re-export circuit types for advanced usage
-#[allow(deprecated)]
 pub use circuit::{
     compute_note_id_with_epoch_native, compute_note_root_native,
     compute_nullifier_with_epoch_native, BlockCircuit, BlockCircuitBuilder,
-    ConfidentialTransferCircuit, MerkleCircuit, NoteConsolidateCircuit, GhostNoteSpendCircuit,
-    PaymentCircuit, PaymentStateTransitionCircuit, StateTransitionOutputs,
-    MAX_CONSOLIDATION_INPUTS, NOTE_TREE_DEPTH,
+    GhostUnshieldCircuit, MerkleCircuit, NoteConsolidateCircuit,
+    GhostNoteSpendCircuit, PaymentCircuit, PaymentStateTransitionCircuit,
+    StateTransitionOutputs, MAX_CONSOLIDATION_INPUTS, NOTE_TREE_DEPTH, UNSHIELD_TREE_DEPTH,
 };
 pub use circuit::{
     bytes_to_field, compute_nullifier_native, field_to_bytes, pedersen_commit_native,
@@ -471,58 +464,6 @@ pub fn is_zk_setup_valid_for_mainnet() -> bool {
 }
 
 // ============================================================================
-// Confidential Transfer Parameter Loading
-// ============================================================================
-
-/// Load a confidential transfer verifying key from disk.
-///
-/// Reads a `VerifyingKey<Bls12>` file, prepares it for efficient verification,
-/// and returns a `ConfidentialVerifier` ready to verify Groth16 proofs.
-///
-/// The VK file is typically generated during MPC ceremony or dev setup
-/// and saved as `confidential_vk.bin`.
-///
-/// **Deprecated:** Use `load_note_spend_verifier` instead.
-#[deprecated(note = "Use load_note_spend_verifier instead")]
-#[allow(deprecated)]
-pub fn load_confidential_verifier(
-    vk_path: &std::path::Path,
-    tree_depth: usize,
-) -> ZkResult<ConfidentialVerifier> {
-    use bellperson::groth16::{prepare_verifying_key, VerifyingKey};
-    use blstrs::Bls12;
-    use std::io::BufReader;
-
-    if !vk_path.exists() {
-        return Err(ZkError::InvalidParams(format!(
-            "Confidential VK not found: {}",
-            vk_path.display()
-        )));
-    }
-
-    let file = std::fs::File::open(vk_path)
-        .map_err(|e| ZkError::InvalidParams(format!("Failed to open VK: {}", e)))?;
-    let reader = BufReader::new(file);
-
-    let vk: VerifyingKey<Bls12> = VerifyingKey::read(reader)
-        .map_err(|e| ZkError::InvalidParams(format!("Failed to read VK: {}", e)))?;
-
-    let prepared_vk = prepare_verifying_key(&vk);
-
-    // Compute prover ID (must match what ConfidentialProver uses)
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"ghost-zkp-confidential-prover-v1");
-    hasher.update(tree_depth.to_le_bytes());
-    let prover_id: [u8; 32] = hasher.finalize().into();
-
-    Ok(ConfidentialVerifier::new(
-        std::sync::Arc::new(prepared_vk),
-        prover_id,
-    ))
-}
-
-// ============================================================================
 // NoteSpend Verifier Loading
 // ============================================================================
 
@@ -617,85 +558,51 @@ pub fn load_consolidation_verifier(
     ))
 }
 
-/// Generate confidential transfer Groth16 parameters and save to disk.
+// ============================================================================
+// Unshield Verifier Loading
+// ============================================================================
+
+/// Load an Unshield verifying key from disk.
 ///
-/// **WARNING**: This uses a random trusted setup. For production, use MPC ceremony.
-/// This is intended for signet/testnet/development deployments only.
+/// Reads a `VerifyingKey<Bls12>` file, prepares it for efficient verification,
+/// and returns a `GhostUnshieldVerifier` ready to verify unshield Groth16 proofs.
 ///
-/// Generates:
-/// - `confidential_params_current.bin` - Full proving parameters
-/// - `confidential_vk.bin` - Verification key only
-#[cfg(not(feature = "zk-production"))]
-#[allow(deprecated)]
-pub fn generate_confidential_params(dir: &std::path::Path, tree_depth: usize) -> ZkResult<()> {
-    use bellperson::groth16::{generate_random_parameters, Parameters};
+/// The VK file is typically `unshield_vk.bin` from the MPC ceremony (slot 3).
+pub fn load_unshield_verifier(
+    vk_path: &std::path::Path,
+    tree_depth: usize,
+) -> ZkResult<GhostUnshieldVerifier> {
+    use bellperson::groth16::{prepare_verifying_key, VerifyingKey};
     use blstrs::Bls12;
-    use std::io::{BufWriter, Write};
+    use std::io::BufReader;
 
-    tracing::warn!(
-        "Generating random confidential transfer Groth16 parameters (NOT production-safe)"
-    );
-
-    let dummy_circuit = circuit::ConfidentialTransferCircuit::<blstrs::Scalar>::dummy(tree_depth);
-    let params: Parameters<Bls12> =
-        generate_random_parameters(dummy_circuit, &mut rand::rngs::OsRng)
-            .map_err(|e| ZkError::SetupError(format!("Parameter generation failed: {:?}", e)))?;
-
-    std::fs::create_dir_all(dir)
-        .map_err(|e| ZkError::SetupError(format!("Failed to create dir: {}", e)))?;
-
-    // Save full params
-    let params_path = dir.join("confidential_params_current.bin");
-    {
-        let file = std::fs::File::create(&params_path)
-            .map_err(|e| ZkError::SetupError(format!("Failed to create params file: {}", e)))?;
-        let mut writer = BufWriter::new(file);
-        params
-            .write(&mut writer)
-            .map_err(|e| ZkError::SetupError(format!("Failed to write params: {}", e)))?;
-        writer
-            .flush()
-            .map_err(|e| ZkError::SetupError(format!("Flush failed: {}", e)))?;
-        writer
-            .get_ref()
-            .sync_all()
-            .map_err(|e| ZkError::SetupError(format!("Sync failed: {}", e)))?;
+    if !vk_path.exists() {
+        return Err(ZkError::InvalidParams(format!(
+            "Unshield VK not found: {}",
+            vk_path.display()
+        )));
     }
 
-    // Save VK separately
-    let vk_path = dir.join("confidential_vk.bin");
-    {
-        let file = std::fs::File::create(&vk_path)
-            .map_err(|e| ZkError::SetupError(format!("Failed to create VK file: {}", e)))?;
-        let mut writer = BufWriter::new(file);
-        params
-            .vk
-            .write(&mut writer)
-            .map_err(|e| ZkError::SetupError(format!("Failed to write VK: {}", e)))?;
-        writer
-            .flush()
-            .map_err(|e| ZkError::SetupError(format!("Flush failed: {}", e)))?;
-        writer
-            .get_ref()
-            .sync_all()
-            .map_err(|e| ZkError::SetupError(format!("Sync failed: {}", e)))?;
-    }
+    let file = std::fs::File::open(vk_path)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to open VK: {}", e)))?;
+    let reader = BufReader::new(file);
 
-    let params_size = std::fs::metadata(&params_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    let vk_size = std::fs::metadata(&vk_path).map(|m| m.len()).unwrap_or(0);
+    let vk: VerifyingKey<Bls12> = VerifyingKey::read(reader)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to read VK: {}", e)))?;
 
-    tracing::info!(
-        params_path = %params_path.display(),
-        params_size_bytes = params_size,
-        vk_path = %vk_path.display(),
-        vk_size_bytes = vk_size,
-        tree_depth = tree_depth,
-        "Generated and saved confidential transfer parameters"
-    );
+    let prepared_vk = prepare_verifying_key(&vk);
 
-    Ok(())
+    // Compute prover ID (must match what GhostUnshieldProver uses)
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ghost-zkp-unshield-prover-v1");
+    hasher.update(tree_depth.to_le_bytes());
+    let prover_id: [u8; 32] = hasher.finalize().into();
+
+    Ok(GhostUnshieldVerifier::new(
+        std::sync::Arc::new(prepared_vk),
+        prover_id,
+    ))
 }
 
 // ============================================================================

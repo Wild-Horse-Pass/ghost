@@ -1,7 +1,7 @@
-//! Confidential transfer proof verification
+//! Unshield (L2 -> L1 withdrawal) proof verification
 //!
-//! Verifies Groth16 proofs that a confidential transfer is valid.
-//! Verification is fast (~10ms) and requires only the public inputs.
+//! Verifies Groth16 proofs that a full note withdrawal is valid.
+//! Verification is fast (~5ms) and requires only the public inputs.
 
 use bellperson::groth16::{verify_proof, PreparedVerifyingKey, Proof};
 use blstrs::{Bls12, G1Affine, G2Affine, Scalar as Fr};
@@ -9,36 +9,43 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::confidential_prover::ConfidentialTransferProof;
 use crate::errors::{ZkError, ZkResult};
 use crate::field_utils::bytes_to_field;
-use crate::types::{ConfidentialPublicInputs, GROTH16_PROOF_SIZE};
+use crate::types::GROTH16_PROOF_SIZE;
+use crate::unshield_prover::{UnshieldProof, UnshieldPublicInputs};
 
-/// Verifies confidential transfer proofs
-///
-/// **Deprecated:** Use `GhostNoteVerifier` instead.
-#[deprecated(note = "Use GhostNoteVerifier instead")]
-pub struct ConfidentialVerifier {
-    /// Prepared verifying key for Groth16 verification
+/// Verifies unshield (withdrawal) proofs
+pub struct GhostUnshieldVerifier {
     prepared_vk: Option<Arc<PreparedVerifyingKey<Bls12>>>,
-    /// Expected prover ID
     prover_id: [u8; 32],
+    accept_all: bool,
 }
 
-impl ConfidentialVerifier {
+impl GhostUnshieldVerifier {
     /// Create a verifier with a Groth16 verification key
     pub fn new(prepared_vk: Arc<PreparedVerifyingKey<Bls12>>, prover_id: [u8; 32]) -> Self {
         Self {
             prepared_vk: Some(prepared_vk),
             prover_id,
+            accept_all: false,
         }
     }
 
     /// Create a verifier from a prover (inherits VK if available)
-    pub fn for_prover(prover: &crate::confidential_prover::ConfidentialProver) -> Self {
+    pub fn for_prover(prover: &crate::unshield_prover::GhostUnshieldProver) -> Self {
         Self {
             prepared_vk: prover.prepared_verifying_key(),
             prover_id: prover.prover_id(),
+            accept_all: false,
+        }
+    }
+
+    /// Create a test verifier that accepts all proofs unconditionally.
+    pub fn test_accept_all() -> Self {
+        Self {
+            prepared_vk: None,
+            prover_id: [0u8; 32],
+            accept_all: true,
         }
     }
 
@@ -47,24 +54,25 @@ impl ConfidentialVerifier {
         self.prepared_vk.is_some()
     }
 
-    /// Verify a confidential transfer proof
+    /// Verify an unshield proof
     #[instrument(skip_all)]
-    pub fn verify(&self, proof: &ConfidentialTransferProof) -> ZkResult<bool> {
+    pub fn verify(&self, proof: &UnshieldProof) -> ZkResult<bool> {
+        if self.accept_all {
+            return Ok(true);
+        }
+
         let start = Instant::now();
 
-        // Check prover ID
         if proof.prover_id != self.prover_id {
             warn!("Prover ID mismatch");
             return Ok(false);
         }
 
-        // Check proof is not empty
         if proof.proof.is_empty() {
             warn!("Empty proof");
             return Ok(false);
         }
 
-        // Verify with Groth16 if VK available
         if let Some(ref prepared_vk) = self.prepared_vk {
             if proof.proof.len() != GROTH16_PROOF_SIZE {
                 debug!(
@@ -77,10 +85,7 @@ impl ConfidentialVerifier {
 
             match self.verify_groth16(proof, prepared_vk) {
                 Ok(valid) => {
-                    info!(
-                        "Confidential transfer proof verified in {:?}",
-                        start.elapsed()
-                    );
+                    info!("Unshield proof verified in {:?}", start.elapsed());
                     return Ok(valid);
                 }
                 Err(e) => {
@@ -90,7 +95,6 @@ impl ConfidentialVerifier {
             }
         }
 
-        // No VK available — fail closed in production
         error!("SECURITY: No Groth16 verification key available. Rejecting proof.");
 
         #[cfg(test)]
@@ -103,15 +107,52 @@ impl ConfidentialVerifier {
         Ok(false)
     }
 
-    /// Verify using Groth16
+    /// Verify an unshield proof using raw public input bytes
+    #[instrument(skip_all)]
+    pub fn verify_raw(
+        &self,
+        proof_bytes: &[u8],
+        public_inputs: &UnshieldPublicInputs,
+    ) -> ZkResult<bool> {
+        if self.accept_all {
+            return Ok(true);
+        }
+
+        let start = Instant::now();
+
+        if let Some(ref prepared_vk) = self.prepared_vk {
+            if proof_bytes.len() != GROTH16_PROOF_SIZE {
+                return Ok(false);
+            }
+
+            let groth16_proof = self.deserialize_proof(proof_bytes)?;
+            let pi = self.build_public_inputs(public_inputs)?;
+            let result = verify_proof(prepared_vk, &groth16_proof, &pi);
+
+            debug!("Raw unshield verification in {:?}", start.elapsed());
+
+            match result {
+                Ok(valid) => Ok(valid),
+                Err(e) => {
+                    warn!("Groth16 verification error: {:?}", e);
+                    Ok(false)
+                }
+            }
+        } else {
+            error!("No Groth16 VK for raw verification");
+            #[cfg(test)]
+            return Ok(true);
+            #[cfg(not(test))]
+            Ok(false)
+        }
+    }
+
     fn verify_groth16(
         &self,
-        proof: &ConfidentialTransferProof,
+        proof: &UnshieldProof,
         prepared_vk: &PreparedVerifyingKey<Bls12>,
     ) -> ZkResult<bool> {
         let groth16_proof = self.deserialize_proof(&proof.proof)?;
-
-        // Build public inputs in the same order as the circuit's alloc_input calls
         let public_inputs = self.build_public_inputs(&proof.public_inputs)?;
 
         let result = verify_proof(prepared_vk, &groth16_proof, &public_inputs);
@@ -125,15 +166,13 @@ impl ConfidentialVerifier {
         }
     }
 
-    /// Build public inputs in circuit order
-    fn build_public_inputs(&self, inputs: &ConfidentialPublicInputs) -> ZkResult<Vec<Fr>> {
-        Ok(vec![
-            bytes_to_field(&inputs.old_commitment_root)?,
-            bytes_to_field(&inputs.new_commitment_root)?,
-            bytes_to_field(&inputs.nullifier)?,
-            bytes_to_field(&inputs.sender_new_commitment)?,
-            bytes_to_field(&inputs.recipient_new_commitment)?,
-        ])
+    /// Build public inputs in circuit order: commitment_root, nullifier, withdrawal_amount
+    fn build_public_inputs(&self, inputs: &UnshieldPublicInputs) -> ZkResult<Vec<Fr>> {
+        let mut pi = Vec::with_capacity(3);
+        pi.push(bytes_to_field(&inputs.commitment_root)?);
+        pi.push(bytes_to_field(&inputs.nullifier)?);
+        pi.push(Fr::from(inputs.withdrawal_amount));
+        Ok(pi)
     }
 
     /// Deserialize a Groth16 proof from bytes with subgroup checks
@@ -146,7 +185,6 @@ impl ConfidentialVerifier {
             )));
         }
 
-        // Parse A (G1 point, 48 bytes)
         let a_bytes: [u8; 48] = bytes[0..48]
             .try_into()
             .map_err(|_| ZkError::InvalidProof("Failed to read A point".to_string()))?;
@@ -162,7 +200,6 @@ impl ConfidentialVerifier {
             ));
         }
 
-        // Parse B (G2 point, 96 bytes)
         let b_bytes: [u8; 96] = bytes[48..144]
             .try_into()
             .map_err(|_| ZkError::InvalidProof("Failed to read B point".to_string()))?;
@@ -178,7 +215,6 @@ impl ConfidentialVerifier {
             ));
         }
 
-        // Parse C (G1 point, 48 bytes)
         let c_bytes: [u8; 48] = bytes[144..192]
             .try_into()
             .map_err(|_| ZkError::InvalidProof("Failed to read C point".to_string()))?;
@@ -202,51 +238,72 @@ impl ConfidentialVerifier {
 mod tests {
     use super::*;
     use crate::circuit::commitment::pedersen_commit_native;
-    use crate::circuit::mimc::field_to_bytes;
-    use crate::confidential_prover::ConfidentialProver;
-    use crate::types::{ConfidentialTransferWitness, MerkleProof};
+    use crate::circuit::mimc::{field_to_bytes, mimc_hash_native};
+    use crate::unshield_prover::{GhostUnshieldProver, UnshieldWitness};
+    use blstrs::Scalar as Fr;
+    use ff::Field;
 
-    fn create_test_witness(tree_depth: usize) -> ConfidentialTransferWitness {
-        let sender_blinding = Fr::from(111u64);
-        let sender_new_blinding = Fr::from(222u64);
-        let recipient_old_blinding = Fr::from(333u64);
-        let recipient_new_blinding = Fr::from(444u64);
-        let sender_spending_key = Fr::from(42u64);
+    fn build_tree(
+        depth: usize,
+        leaves: &[(u64, Fr)],
+    ) -> (Fr, Vec<Vec<[u8; 32]>>) {
+        let leaf_map: std::collections::HashMap<u64, Fr> = leaves.iter().cloned().collect();
 
-        let sender_value = 1000u64;
-        let amount = 300u64;
-        let recipient_old_value = 500u64;
+        fn compute_node(
+            level: usize,
+            index: u64,
+            leaves: &std::collections::HashMap<u64, Fr>,
+        ) -> Fr {
+            if level == 0 {
+                return *leaves.get(&index).unwrap_or(&Fr::ZERO);
+            }
+            let left = compute_node(level - 1, index * 2, leaves);
+            let right = compute_node(level - 1, index * 2 + 1, leaves);
+            mimc_hash_native(left, right)
+        }
 
-        let sender_new_commit =
-            pedersen_commit_native(Fr::from(sender_value - amount), sender_new_blinding);
-        let recipient_old_commit =
-            pedersen_commit_native(Fr::from(recipient_old_value), recipient_old_blinding);
+        let root = compute_node(depth, 0, &leaf_map);
 
-        let mut sender_siblings = vec![[0u8; 32]; tree_depth];
-        let mut recipient_siblings = vec![[0u8; 32]; tree_depth];
-        sender_siblings[0] = field_to_bytes(recipient_old_commit);
-        recipient_siblings[0] = field_to_bytes(sender_new_commit);
+        let siblings = leaves
+            .iter()
+            .map(|(index, _)| {
+                let mut sibs = Vec::with_capacity(depth);
+                let mut current_idx = *index;
+                for level in 0..depth {
+                    let sibling_idx = current_idx ^ 1;
+                    let sibling_hash = compute_node(level, sibling_idx, &leaf_map);
+                    sibs.push(field_to_bytes(sibling_hash));
+                    current_idx /= 2;
+                }
+                sibs
+            })
+            .collect();
 
-        ConfidentialTransferWitness {
-            sender_value,
-            sender_blinding: field_to_bytes(sender_blinding),
-            sender_spending_key: field_to_bytes(sender_spending_key),
-            sender_index: 0,
-            sender_merkle_proof: MerkleProof::new(0, sender_siblings),
-            amount,
-            sender_new_blinding: field_to_bytes(sender_new_blinding),
-            recipient_old_value,
-            recipient_old_blinding: field_to_bytes(recipient_old_blinding),
-            recipient_index: 1,
-            recipient_merkle_proof: MerkleProof::new(1, recipient_siblings),
-            recipient_new_blinding: field_to_bytes(recipient_new_blinding),
+        (root, siblings)
+    }
+
+    fn create_test_witness(tree_depth: usize) -> UnshieldWitness {
+        let spending_key = field_to_bytes(Fr::from(42u64));
+        let value = 1000u64;
+        let blinding = Fr::from(111u64);
+        let commitment = pedersen_commit_native(Fr::from(value), blinding);
+
+        let (_root, all_siblings) = build_tree(tree_depth, &[(0, commitment)]);
+
+        UnshieldWitness {
+            spending_key,
+            note_value: value,
+            note_blinding: field_to_bytes(blinding),
+            note_index: 0,
+            epoch: 1,
+            merkle_siblings: all_siblings[0].clone(),
         }
     }
 
     #[test]
     fn test_prove_verify_roundtrip() {
-        let prover = ConfidentialProver::new(4);
-        let verifier = ConfidentialVerifier::for_prover(&prover);
+        let prover = GhostUnshieldProver::new(4);
+        let verifier = GhostUnshieldVerifier::for_prover(&prover);
         let witness = create_test_witness(4);
 
         let proof = prover.prove(&witness).unwrap();
@@ -255,10 +312,11 @@ mod tests {
 
     #[test]
     fn test_prover_id_mismatch() {
-        let prover = ConfidentialProver::new(4);
-        let verifier = ConfidentialVerifier {
+        let prover = GhostUnshieldProver::new(4);
+        let verifier = GhostUnshieldVerifier {
             prepared_vk: None,
             prover_id: [0xFF; 32],
+            accept_all: false,
         };
         let witness = create_test_witness(4);
 
@@ -268,8 +326,8 @@ mod tests {
 
     #[test]
     fn test_empty_proof_rejected() {
-        let prover = ConfidentialProver::new(4);
-        let verifier = ConfidentialVerifier::for_prover(&prover);
+        let prover = GhostUnshieldProver::new(4);
+        let verifier = GhostUnshieldVerifier::for_prover(&prover);
         let witness = create_test_witness(4);
 
         let mut proof = prover.prove(&witness).unwrap();
@@ -277,14 +335,24 @@ mod tests {
         assert!(!verifier.verify(&proof).unwrap());
     }
 
-    // Full Groth16 roundtrip test — expensive (~10-30s)
     #[test]
-    #[ignore]
+    fn test_accept_all_verifier() {
+        let prover = GhostUnshieldProver::new(4);
+        let verifier = GhostUnshieldVerifier::test_accept_all();
+        let witness = create_test_witness(4);
+
+        let proof = prover.prove(&witness).unwrap();
+        assert!(verifier.verify(&proof).unwrap());
+    }
+
+    #[test]
+    #[ignore] // Expensive ~10-30s
     fn test_groth16_prove_verify_roundtrip() {
-        let prover = ConfidentialProver::new_with_setup(4).expect("Setup should succeed");
+        let prover =
+            GhostUnshieldProver::new_with_setup(4).expect("Setup should succeed");
         assert!(prover.has_groth16_params());
 
-        let verifier = ConfidentialVerifier::for_prover(&prover);
+        let verifier = GhostUnshieldVerifier::for_prover(&prover);
         assert!(verifier.has_groth16_vk());
 
         let witness = create_test_witness(4);

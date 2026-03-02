@@ -291,8 +291,8 @@ pub struct MultiContributionResult {
     pub note_spend_params: Parameters<Bls12>,
     /// Transformed payout parameters (if provided)
     pub payout_params: Option<Parameters<Bls12>>,
-    /// Transformed confidential transfer parameters (if provided)
-    pub confidential_params: Option<Parameters<Bls12>>,
+    /// Transformed unshield parameters (if provided)
+    pub unshield_params: Option<Parameters<Bls12>>,
     /// Contribution record (hash chain based on note spend params)
     pub contribution: MpcContribution,
 }
@@ -306,7 +306,7 @@ pub struct MultiContributionResult {
 /// # Arguments
 /// * `note_spend_params` - Note spend circuit parameters (required)
 /// * `payout_params` - Payout circuit parameters (optional)
-/// * `confidential_params` - Confidential transfer circuit parameters (optional)
+/// * `unshield_params` - Unshield circuit parameters (optional)
 /// * `ceremony_id` - Unique ceremony identifier
 /// * `position` - Contributor's position
 /// * `contributor` - Contributor identifier
@@ -314,7 +314,7 @@ pub struct MultiContributionResult {
 pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
     note_spend_params: &Parameters<Bls12>,
     payout_params: Option<&Parameters<Bls12>>,
-    confidential_params: Option<&Parameters<Bls12>>,
+    unshield_params: Option<&Parameters<Bls12>>,
     ceremony_id: &[u8; 32],
     position: u32,
     contributor: &str,
@@ -335,7 +335,7 @@ pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
         None => None,
     };
 
-    let new_confidential_params = match confidential_params {
+    let new_unshield_params = match unshield_params {
         Some(params) => Some(apply_contribution(params, &toxic)?),
         None => None,
     };
@@ -361,7 +361,7 @@ pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
     Ok(MultiContributionResult {
         note_spend_params: new_note_spend_params,
         payout_params: new_payout_params,
-        confidential_params: new_confidential_params,
+        unshield_params: new_unshield_params,
         contribution,
     })
 }

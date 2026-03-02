@@ -1477,6 +1477,56 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Load consolidation VK from MPC params directory
+            {
+                let mpc_dir = std::path::PathBuf::from(
+                    std::env::var("MPC_PARAMS_PATH").unwrap_or_else(|_| {
+                        format!(
+                            "{}/.ghost/mpc_params",
+                            std::env::var("HOME").unwrap_or_default()
+                        )
+                    }),
+                );
+                let consolidation_vk_path = mpc_dir.join("payout_vk.bin");
+                if consolidation_vk_path.exists() {
+                    match ghost_zkp::load_consolidation_verifier(&consolidation_vk_path, 20) {
+                        Ok(verifier) => {
+                            nullifier_handler_for_init
+                                .set_consolidation_verifier(Arc::new(verifier));
+                            info!("L2 consolidation verifier initialized");
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to load consolidation verifier");
+                        }
+                    }
+                } else {
+                    info!(
+                        path = %consolidation_vk_path.display(),
+                        "Consolidation VK not found — consolidation not available"
+                    );
+                }
+
+                // Load unshield VK
+                let unshield_vk_path = mpc_dir.join("unshield_vk.bin");
+                if unshield_vk_path.exists() {
+                    match ghost_zkp::load_unshield_verifier(&unshield_vk_path, 20) {
+                        Ok(verifier) => {
+                            nullifier_handler_for_init
+                                .set_unshield_verifier(Arc::new(verifier));
+                            info!("L2 unshield verifier initialized");
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to load unshield verifier");
+                        }
+                    }
+                } else {
+                    info!(
+                        path = %unshield_vk_path.display(),
+                        "Unshield VK not found — unshield not available"
+                    );
+                }
+            }
+
             info!(
                 total_secs = start.elapsed().as_secs(),
                 "ZK parameter generation complete"
