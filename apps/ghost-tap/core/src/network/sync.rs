@@ -3,7 +3,6 @@
 //! Implements light sync for Ghost mobile wallet, including:
 //! - Public address scanning
 //! - Stealth address scanning (Wraith Protocol)
-//! - Ghost Lock status updates
 //! - Jump Lock monitoring
 
 use super::connection::{ConnectionManager, ConnectionMode};
@@ -89,8 +88,6 @@ pub struct GhostSync {
     public_addresses: Vec<String>,
     /// Stealth addresses to watch
     stealth_addresses: Vec<StealthAddress>,
-    /// Active Ghost Locks
-    ghost_locks: Vec<String>, // Lock IDs
     /// Active Jump Locks
     jump_locks: Vec<String>, // Lock IDs
     /// Sync configuration
@@ -132,7 +129,6 @@ impl GhostSync {
             last_height: 0,
             public_addresses: Vec::new(),
             stealth_addresses: Vec::new(),
-            ghost_locks: Vec::new(),
             jump_locks: Vec::new(),
             config,
             known_utxos: HashMap::new(),
@@ -160,13 +156,6 @@ impl GhostSync {
     pub fn watch_stealth_address(&mut self, stealth: StealthAddress) {
         if !self.stealth_addresses.iter().any(|s| s.address == stealth.address) {
             self.stealth_addresses.push(stealth);
-        }
-    }
-
-    /// Add a Ghost Lock to monitor
-    pub fn watch_ghost_lock(&mut self, lock_id: String) {
-        if !self.ghost_locks.contains(&lock_id) {
-            self.ghost_locks.push(lock_id);
         }
     }
 
@@ -256,13 +245,6 @@ impl GhostSync {
                 target_height,
                 phase: SyncPhase::Locks,
             };
-
-            // Update Ghost Locks
-            for lock_id in &self.ghost_locks.clone() {
-                if let Ok(_lock) = client.get_ghost_lock(lock_id).await {
-                    result.locks_updated += 1;
-                }
-            }
 
             // Update Jump Locks
             for lock_id in &self.jump_locks.clone() {
@@ -384,14 +366,6 @@ impl GhostSync {
         Ok((public_balance, private_balance))
     }
 
-    /// Get all Ghost Locks with their current status
-    pub async fn get_all_ghost_locks(
-        &self,
-        client: &mut GhostClient,
-    ) -> Result<Vec<GhostLock>, NetworkError> {
-        client.list_ghost_locks().await
-    }
-
     /// Get all Jump Locks with their current status
     pub async fn get_all_jump_locks(
         &self,
@@ -436,22 +410,6 @@ impl GhostSync {
         }
     }
 
-    /// Check if any locks have matured or expired
-    pub async fn check_lock_maturity(
-        &self,
-        client: &mut GhostClient,
-    ) -> Result<Vec<String>, NetworkError> {
-        let mut matured = Vec::new();
-
-        let locks = client.list_ghost_locks().await?;
-        for lock in locks {
-            if lock.status == LockStatus::Matured {
-                matured.push(lock.id);
-            }
-        }
-
-        Ok(matured)
-    }
 }
 
 impl Default for GhostSync {
@@ -507,13 +465,9 @@ mod tests {
     }
 
     #[test]
-    fn test_watch_locks() {
+    fn test_watch_jump_lock() {
         let mut sync = GhostSync::new(SyncConfig::default());
-
-        sync.watch_ghost_lock("lock1".into());
         sync.watch_jump_lock("jump1".into());
-
-        assert_eq!(sync.ghost_locks.len(), 1);
         assert_eq!(sync.jump_locks.len(), 1);
     }
 
@@ -535,14 +489,6 @@ mod tests {
         sync.watch_address("a1".into());
         sync.unwatch_address("nonexistent");
         assert_eq!(sync.public_addresses.len(), 1);
-    }
-
-    #[test]
-    fn test_duplicate_ghost_lock() {
-        let mut sync = GhostSync::default();
-        sync.watch_ghost_lock("lock1".into());
-        sync.watch_ghost_lock("lock1".into());
-        assert_eq!(sync.ghost_locks.len(), 1);
     }
 
     #[test]

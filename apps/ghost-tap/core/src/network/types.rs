@@ -1,6 +1,6 @@
 //! Ghost network types and data structures
 //!
-//! Defines Ghost-specific types for Wraith Protocol, Ghost Locks, Jump Locks, etc.
+//! Defines Ghost-specific types for Wraith Protocol, Jump Locks, etc.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +14,6 @@ pub enum TxType {
     Private,
     /// Coinbase (mining reward)
     Coinbase,
-    /// Staking reward
-    Staking,
 }
 
 /// Wraith Protocol mode
@@ -41,29 +39,6 @@ pub enum LockStatus {
     Matured,
     /// Lock was cancelled
     Cancelled,
-}
-
-/// Ghost Lock type
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GhostLock {
-    /// Lock identifier
-    pub id: String,
-    /// Amount locked (in smallest unit)
-    pub amount: u64,
-    /// Lock duration in blocks
-    pub duration_blocks: u64,
-    /// Block height when lock was created
-    pub start_height: u64,
-    /// Block height when lock matures
-    pub end_height: u64,
-    /// Current status
-    pub status: LockStatus,
-    /// Reward rate (annual percentage * 100, e.g., 500 = 5%)
-    pub reward_rate: u32,
-    /// Accumulated rewards
-    pub rewards_earned: u64,
-    /// Transaction ID that created this lock
-    pub txid: String,
 }
 
 /// Jump Lock type (cross-chain or time-locked)
@@ -210,21 +185,6 @@ pub struct BlockchainInfo {
     pub chain: String,
 }
 
-/// Staking info
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StakingInfo {
-    /// Whether staking is enabled
-    pub enabled: bool,
-    /// Whether currently staking
-    pub staking: bool,
-    /// Current staking weight
-    pub weight: u64,
-    /// Network staking weight
-    pub netstakeweight: u64,
-    /// Expected time to stake (seconds)
-    pub expectedtime: u64,
-}
-
 /// Address balance info
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddressBalance {
@@ -234,7 +194,7 @@ pub struct AddressBalance {
     pub confirmed: u64,
     /// Unconfirmed balance
     pub unconfirmed: u64,
-    /// Immature balance (staking rewards)
+    /// Immature balance (coinbase rewards not yet mature)
     pub immature: u64,
 }
 
@@ -290,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_tx_type_serde() {
-        for ty in [TxType::Public, TxType::Private, TxType::Coinbase, TxType::Staking] {
+        for ty in [TxType::Public, TxType::Private, TxType::Coinbase] {
             let json = serde_json::to_string(&ty).unwrap();
             let restored: TxType = serde_json::from_str(&json).unwrap();
             assert_eq!(restored, ty);
@@ -327,26 +287,6 @@ mod tests {
         let restored: WraithConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.default_ring_size, 8);
         assert!(!restored.enabled);
-    }
-
-    #[test]
-    fn test_ghost_lock_serde() {
-        let lock = GhostLock {
-            id: "lock1".into(),
-            amount: 100_000_000,
-            duration_blocks: 1440,
-            start_height: 500_000,
-            end_height: 501_440,
-            status: LockStatus::Active,
-            reward_rate: 500,
-            rewards_earned: 50_000,
-            txid: "abc123".into(),
-        };
-        let json = serde_json::to_string(&lock).unwrap();
-        let restored: GhostLock = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.id, "lock1");
-        assert_eq!(restored.amount, 100_000_000);
-        assert_eq!(restored.status, LockStatus::Active);
     }
 
     #[test]

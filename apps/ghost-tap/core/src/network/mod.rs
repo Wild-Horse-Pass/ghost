@@ -3,7 +3,6 @@
 //! Handles communication with Ghost network nodes, including:
 //! - Standard blockchain queries
 //! - Wraith Protocol (private transactions)
-//! - Ghost Locks (staking)
 //! - Jump Locks (HTLC/cross-chain)
 
 mod client;

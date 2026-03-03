@@ -134,28 +134,6 @@ pub struct FfiSyncResult {
     pub new_tx_count: u32,
 }
 
-/// Staking information exposed to mobile UIs
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct FfiStakingInfo {
-    /// Whether staking is enabled
-    pub enabled: bool,
-    /// Whether currently staking
-    pub staking: bool,
-    /// Current difficulty
-    pub difficulty: f64,
-    /// Expected time to next stake (seconds)
-    pub expected_time: u64,
-}
-
-/// Ghost Lock information exposed to mobile UIs
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct FfiGhostLock {
-    pub lock_id: String,
-    pub amount: u64,
-    pub status: String,
-    pub duration_days: u32,
-}
-
 /// Merchant dashboard summary exposed to mobile UIs
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiDashboardSummary {
@@ -916,59 +894,6 @@ impl WalletHandle {
                 message: e.to_string(),
             })?;
         Ok(Self::new(wallet, mnemonic.expose_secret().to_string()))
-    }
-
-    // --- Staking ---
-
-    /// Get staking information via RPC.
-    pub fn get_staking_info(&self) -> Result<FfiStakingInfo, GhostTapFfiError> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: format!("Failed to create runtime: {e}"),
-        })?;
-
-        let info = rt
-            .block_on(async {
-                let conn = &self.connection;
-                conn.sync().await?; // ensure RPC client ready
-                // Access the GSP for staking info isn't possible; fall back to RPC stub.
-                Ok::<_, crate::network::NetworkError>(crate::network::StakingInfo {
-                    enabled: false,
-                    staking: false,
-                    weight: 0,
-                    netstakeweight: 0,
-                    expectedtime: 0,
-                })
-            })
-            .map_err(|e| GhostTapFfiError::OperationFailed {
-                message: e.to_string(),
-            })?;
-
-        Ok(FfiStakingInfo {
-            enabled: info.enabled,
-            staking: info.staking,
-            difficulty: 0.0, // not provided by node RPC
-            expected_time: info.expectedtime,
-        })
-    }
-
-    /// List all Ghost Locks.
-    pub fn list_ghost_locks(&self) -> Result<Vec<FfiGhostLock>, GhostTapFfiError> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: format!("Failed to create runtime: {e}"),
-        })?;
-
-        // Delegate to ConnectionManager which in RPC mode calls listghostlocks
-        let locks = rt
-            .block_on(async {
-                // Just trigger RPC client init and return empty for now.
-                self.connection.sync().await?;
-                Ok::<_, crate::network::NetworkError>(Vec::new())
-            })
-            .map_err(|e| GhostTapFfiError::OperationFailed {
-                message: e.to_string(),
-            })?;
-
-        Ok(locks)
     }
 
     // --- Merchant Dashboard ---
