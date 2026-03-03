@@ -494,8 +494,9 @@ impl ChallengeTracker {
     fn new() -> Self {
         Self {
             last_challenged: std::collections::HashMap::new(),
-            // LOW-VER-3: Don't challenge same node more than once per 10 minutes
-            min_interval_secs: 600,
+            // LOW-VER-3: Don't challenge same node more than once per 5 minutes
+            // Matches the verification cycle interval so every cycle runs
+            min_interval_secs: 300,
         }
     }
 
@@ -784,7 +785,7 @@ impl VerificationTask {
             .get_random_peers(&self.our_node_id, self.config.peers_per_cycle * 3);
 
         if peers.is_empty() {
-            debug!("No peers to verify");
+            info!("Verification cycle: no connected peers");
             return;
         }
 
@@ -827,7 +828,7 @@ impl VerificationTask {
         let selected = filtered;
 
         if selected.is_empty() {
-            debug!("LOW-VER-3: All selected peers were recently challenged, skipping cycle");
+            info!("Verification cycle: all peers recently challenged, skipping");
             return;
         }
 

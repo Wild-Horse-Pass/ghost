@@ -201,11 +201,20 @@ impl VerificationResultHandler {
         // submit verification results that will be recorded.
         if let Some(ref peers) = self.peers {
             if peers.get_peer(&msg.challenger_id).is_none() {
-                warn!(
+                // Peer not in memory — fall back to DB (nodes table persisted from health pings)
+                let challenger_hex = hex::encode(&msg.challenger_id);
+                let known_in_db = self.db.get_node(&challenger_hex).ok().flatten().is_some();
+                if !known_in_db {
+                    warn!(
+                        challenger = %short_challenger,
+                        "HIGH-VER-4: Rejecting verification result from unknown challenger"
+                    );
+                    return Ok(());
+                }
+                debug!(
                     challenger = %short_challenger,
-                    "HIGH-VER-4: Rejecting verification result from unknown challenger"
+                    "HIGH-VER-4: Challenger not in PeerManager but found in DB, accepting"
                 );
-                return Ok(());
             }
         }
 

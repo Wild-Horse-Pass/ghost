@@ -560,8 +560,7 @@ pub struct DiscoveryHandler {
     node_id: NodeId,
     /// Our public address
     public_address: String,
-    /// Peer manager (for getting connected peer info)
-    #[allow(dead_code)]
+    /// Peer manager (for registering discovered peers with real node_id + address)
     peers: Arc<PeerManager>,
     /// Known peer addresses (node_id -> address)
     known_addresses: RwLock<HashMap<NodeId, String>>,
@@ -835,12 +834,13 @@ impl DiscoveryHandler {
                 //
                 // Solution: Hold BOTH write locks for the entire operation (no intermediate releases)
                 // This ensures the check and insert are atomic with respect to other threads.
-                let (is_new, should_connect) = {
+                let (is_new, should_connect, accepted) = {
                     let mut addresses = self.known_addresses.write();
                     let mut owners = self.address_owners.write();
 
                     // CRIT-CONS-5: Atomic check-and-set for address ownership
                     // Check if address is already owned BEFORE any modifications
+                    // Returns (is_new, should_connect, accepted) — accepted=false on hijack rejection
                     match owners.get(&normalized_address) {
                         Some(&existing_owner) if existing_owner != envelope.sender => {
                             // CRIT-CONS-5: Address already claimed by a DIFFERENT node - REJECT
@@ -850,12 +850,12 @@ impl DiscoveryHandler {
                                 existing_owner = %hex::encode(&existing_owner[..8]),
                                 "CRIT-CONS-5: Rejecting address hijacking attempt - address already owned"
                             );
-                            (false, false)
+                            (false, false, false)
                         }
                         Some(&existing_owner) => {
                             // Same node re-announcing - this is fine, no-op
                             debug_assert_eq!(existing_owner, envelope.sender);
-                            (false, false)
+                            (false, false, true)
                         }
                         None => {
                             // CRIT-CONS-5: Address is free - claim it atomically
@@ -863,7 +863,7 @@ impl DiscoveryHandler {
                             let is_new = !addresses.contains_key(&envelope.sender);
                             addresses.insert(envelope.sender, normalized_address.clone());
                             owners.insert(normalized_address.clone(), envelope.sender);
-                            (is_new, is_new)
+                            (is_new, is_new, true)
                         }
                     }
                     // Locks are released here - AFTER both checks and inserts completed
@@ -875,6 +875,16 @@ impl DiscoveryHandler {
                         address = %normalized_address,
                         "Discovered new peer from gossip"
                     );
+                }
+
+                // Register peer in PeerManager with real node_id + real address.
+                // Post-S-7, discovery is the only path that pairs real identities with
+                // addresses (health pings no longer carry public_address in cleartext).
+                // Fires on both new and re-announce, but NOT on hijack rejection.
+                if accepted {
+                    let mut peer = crate::peer::Peer::new(envelope.sender, normalized_address.clone());
+                    peer.state = crate::peer::PeerState::Connected;
+                    self.peers.upsert_peer(peer);
                 }
 
                 // Connect callback outside the lock to avoid holding locks during I/O
@@ -962,6 +972,13 @@ impl DiscoveryHandler {
                 owners.insert(peer_normalized.clone(), peer_info.node_id);
             }
             new_peers += 1;
+
+            // Register gossiped peer in PeerManager with real node_id + real address
+            {
+                let mut peer = crate::peer::Peer::new(peer_info.node_id, peer_normalized.clone());
+                peer.state = crate::peer::PeerState::Connected;
+                self.peers.upsert_peer(peer);
+            }
 
             // Try to connect
             if let Some(ref callback) = self.connect_callback {
