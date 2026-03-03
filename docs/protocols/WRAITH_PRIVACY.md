@@ -38,20 +38,59 @@ Nonces expire after 1 hour and are capped at 100 per participant to prevent reso
 
 Every output within a session is exactly the same amount. This eliminates amount-based clustering entirely. An observer cannot distinguish one participant's output from another because they are all identical.
 
-The denomination tiers and their properties:
+Wraith uses four fixed denominations:
 
-| Tier | Balance Range | Output Amount | OPP | Max Participants | Anonymity Set |
-|------|---------------|---------------|-----|------------------|---------------|
-| Micro | 100K–1M sats | 100K sats | 2 | 500 | 500 |
-| Small | 1M–10M sats | 1M sats | 4 | 320 | 320 |
-| Medium | 10M–100M sats | 10M sats | 5 | 260 | 260 |
-| Standard | 100M–1B sats | 100M sats | 5 | 250 | 250 |
-| Large | 1B–10B sats | 1B sats | 8 | 170 | 170 |
-| Whale | 10B+ sats | 10B sats | 10 | 140 | 140 |
+| Denomination | Output Amount | GHOST Equivalent |
+|-------------|---------------|------------------|
+| Micro | 100,000 sats | 0.001 GHOST |
+| Small | 1,000,000 sats | 0.01 GHOST |
+| Medium | 10,000,000 sats | 0.1 GHOST |
+| Large | 100,000,000 sats | 1 GHOST |
 
-A critical invariant enforced in code: the denomination output amount must be exactly divisible by OPP with zero remainder. This ensures all intermediate outputs are bit-for-bit identical in value, leaving no residual amount that could be used as a fingerprint.
+These denominations are combined with six participant tiers that determine the anonymity set size and the number of intermediate outputs per participant (OPP):
 
-Service fees are charged at the L2 layer through shielded note reduction, not at L1 input time, so they do not appear on-chain and cannot be used for correlation.
+| Tier | Balance Range | OPP | Participants | Anonymity Set |
+|------|---------------|-----|-------------|---------------|
+| Micro | 0.001–0.01 GHOST | 2 | 500 | 500 |
+| Small | 0.01–0.1 GHOST | 4 | 320 | 320 |
+| Medium | 0.1–1 GHOST | 5 | 260 | 260 |
+| Standard | 1–10 GHOST | 5 | 250 | 250 |
+| Large | 10–50 GHOST | 8 | 170 | 170 |
+| Whale | 50+ GHOST | 10 | 140 | 140 |
+
+A critical invariant enforced in code: every denomination amount must be exactly divisible by every OPP value (2, 4, 5, 8, 10) with zero remainder. This ensures all intermediate outputs are bit-for-bit identical in value, leaving no residual amount that could be used as a fingerprint.
+
+## Fee Structure
+
+Wraith fees are designed to be invisible on-chain, preventing fee-based fingerprinting.
+
+### L1 Mixing Fees
+
+Each denomination has a fixed service fee charged only on Mix sessions (not Jump/key-rotation sessions):
+
+| Denomination | Service Fee |
+|-------------|-------------|
+| Micro | 500 sats |
+| Small | 2,000 sats |
+| Medium | 5,000 sats |
+| Large | 10,000 sats |
+
+These service fees are charged at the L2 layer through shielded note reduction, not at L1 input time. The L1 transaction inputs equal the denomination output exactly (`min_input = output_sats`), so no fee amount appears on-chain. Mining cost (transaction fees) is handled separately by the executor's fee estimation and is at-cost with no markup.
+
+Jump sessions (key rotation without mixing) have zero service fee — mining cost only.
+
+### L2 Transfer Fee
+
+The Ghost Pay L2 confidential layer charges a flat 10 sat fee per NoteSpend transfer. This fee is a protocol constant baked into the ZK circuit constraints — changing it requires an MPC ceremony reset. The fee is deducted from the sender's note value inside the circuit, so it is invisible to L1 observers.
+
+### Privacy Implications
+
+Because all fees are settled at the L2 layer or absorbed into the denomination structure:
+
+- L1 inputs and outputs are uniform — no fee residuals to fingerprint
+- Service fees cannot be used to distinguish participants within a session
+- Mining fees are standard Bitcoin transaction fees, indistinguishable from any other transaction
+- L2 transfer fees are hidden inside ZK proofs, invisible on-chain
 
 ## Phase Key Separation
 
@@ -118,7 +157,7 @@ Blind signature tokens are cached for 14 days (2× the maximum session duration 
 | Link Phase 1 transaction to Phase 2 | Phase-specific derived keys produce different OP_RETURN markers |
 | Network timing analysis | Entry delays + batching + jitter + cover traffic |
 | Identify tier from transaction size | All tiers fit within 90KB, structurally uniform |
-| Fee-based fingerprinting | Service fees charged at L2, invisible on-chain |
+| Fee-based fingerprinting | Service fees settled at L2 shielded layer; L1 inputs = denomination exactly |
 | Griefing / denial of service | 3-strike reputation system with hash-based identity |
 | Token replay | 14-day token cache with 10M capacity |
 | RNG failure | Entropy validation (Shannon + runs test + unique byte count) |
