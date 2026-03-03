@@ -1310,12 +1310,12 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-                // Update last_seen and pow_proof if node already existed
+                // Update last_seen, capabilities, and pow_proof if node already existed
                 conn.execute(
                     "UPDATE nodes SET last_seen = ?1, public_address = COALESCE(?2, public_address),
-                                      pow_proof = COALESCE(?3, pow_proof)
-                     WHERE node_id = ?4",
-                    params![now, public_address, pow_proof, node_id],
+                                      capabilities = ?3, pow_proof = COALESCE(?4, pow_proof)
+                     WHERE node_id = ?5",
+                    params![now, public_address, capabilities, pow_proof, node_id],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
