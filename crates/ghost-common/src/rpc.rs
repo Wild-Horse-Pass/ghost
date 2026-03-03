@@ -1150,6 +1150,26 @@ impl BitcoinRpc {
             .await
     }
 
+    /// Get wallet balance in satoshis
+    pub async fn get_balance(&self) -> GhostResult<u64> {
+        let btc: f64 = self.call("getbalance", vec![]).await?;
+        Ok((btc * 100_000_000.0).round() as u64)
+    }
+
+    /// Get a new address from the wallet
+    pub async fn get_new_address(&self) -> GhostResult<String> {
+        self.call("getnewaddress", vec![]).await
+    }
+
+    /// Call an arbitrary RPC method (for methods not wrapped with typed helpers)
+    pub async fn call_raw(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+    ) -> GhostResult<Value> {
+        self.call(method, params).await
+    }
+
     /// Get chain tips
     pub async fn get_chain_tips(&self) -> GhostResult<Vec<ChainTip>> {
         self.call("getchaintips", vec![]).await

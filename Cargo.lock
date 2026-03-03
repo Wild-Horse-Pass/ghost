@@ -3084,6 +3084,7 @@ dependencies = [
  "ghost-glyph",
  "ghost-keys",
  "ghost-locks",
+ "ghost-mpc",
  "ghost-reconciliation",
  "ghost-storage",
  "ghost-zkp",
