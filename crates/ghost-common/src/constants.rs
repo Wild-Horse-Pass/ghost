@@ -278,6 +278,12 @@ pub const L2_VIRTUAL_BLOCK_SECS: u64 = 10;
 /// Epoch length in virtual blocks
 pub const L2_EPOCH_BLOCKS: u64 = 2160;
 
+/// Compute the L2 epoch number from a block height.
+/// Ghost-pay tracks block height via RPC; this maps it to the epoch for fee tracking.
+pub fn l2_epoch_from_height(block_height: u64) -> u64 {
+    block_height / L2_EPOCH_BLOCKS
+}
+
 /// Wraith denomination tiers (satoshis)
 pub const WRAITH_DENOMINATIONS: [u64; 4] = [
     100_000,     // 0.001 BTC

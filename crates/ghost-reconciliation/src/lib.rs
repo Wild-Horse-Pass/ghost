@@ -61,6 +61,7 @@ pub mod broadcaster;
 pub mod commitment;
 pub mod error;
 pub mod executor;
+pub mod fee_distribution;
 pub mod proof;
 pub mod rules;
 pub mod settlement;

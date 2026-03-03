@@ -398,6 +398,10 @@ pub struct GhostLockRecord {
     pub created_at: i64,
     /// Updated timestamp
     pub updated_at: i64,
+    /// Lock source: "manual", "wraith_mix", "wraith_jump"
+    pub source: String,
+    /// Wraith service fee deducted at L2 (0 for non-wraith locks)
+    pub wraith_fee_sats: u64,
 }
 
 /// Ghost Lock state

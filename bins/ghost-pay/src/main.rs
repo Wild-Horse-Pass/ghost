@@ -1958,6 +1958,10 @@ async fn list_locks(State(state): State<Arc<AppState>>) -> Json<Vec<LockInfo>> {
 struct CreateLockRequest {
     amount_sats: u64,
     timelock_tier: Option<String>,
+    /// Lock source: "wraith_mix", "wraith_jump", or omit for "manual"
+    source: Option<String>,
+    /// Wraith service fee deducted at L2 (denomination - service_fee = shielded amount)
+    wraith_fee_sats: Option<u64>,
 }
 
 /// Create a new ghost lock
@@ -2058,6 +2062,8 @@ async fn create_lock(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Create database record
+    let lock_source = req.source.as_deref().unwrap_or("manual").to_string();
+    let wraith_fee = req.wraith_fee_sats.unwrap_or(0);
     let db_record = GhostLockRecord {
         lock_id: ghost_lock.lock_id_hex(),
         owner_ghost_id,
@@ -2077,6 +2083,8 @@ async fn create_lock(
         next_jump_height: Some(ghost_lock.jump_schedule().deadline_height),
         created_at: now as i64,
         updated_at: now as i64,
+        source: lock_source,
+        wraith_fee_sats: wraith_fee,
     };
 
     // Persist to database
@@ -3795,6 +3803,8 @@ struct ShieldBalanceRequest {
     amount_sats: u64,
     blinding_hex: String,
     owner_pubkey: String,
+    /// Optional lock ID for wraith lock validation (enforces denomination - service_fee)
+    lock_id: Option<String>,
 }
 
 /// Shield plaintext balance into a confidential commitment
@@ -3820,6 +3830,39 @@ async fn shield_balance(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "Amount must be > 0"})),
         ));
+    }
+
+    // Validate shield amount against wraith lock fee deduction
+    if let Some(ref lock_id) = req.lock_id {
+        match state.db.get_ghost_lock(lock_id) {
+            Ok(Some(lock)) => {
+                let expected = lock.amount_sats.saturating_sub(lock.wraith_fee_sats);
+                if req.amount_sats != expected {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "error": format!(
+                                "Shield amount {} does not match expected {} (denomination {} - wraith_fee {})",
+                                req.amount_sats, expected, lock.amount_sats, lock.wraith_fee_sats
+                            )
+                        })),
+                    ));
+                }
+            }
+            Ok(None) => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "Lock not found"})),
+                ));
+            }
+            Err(e) => {
+                error!(error = %e, lock_id = %lock_id, "Failed to look up lock for shield validation");
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Failed to validate lock"})),
+                ));
+            }
+        }
     }
 
     // Compute commitment: C = MiMC(MiMC(value, blinding), domain_sep)
@@ -4507,6 +4550,43 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                     };
 
                     if is_complete {
+                        // Track wraith service fee for L2 distribution (Mix sessions only)
+                        let session_snapshot = {
+                            let sessions = state.sessions.read();
+                            sessions.iter().find(|s| s.id == session_id).cloned()
+                        };
+                        if let Some(ref snap) = session_snapshot {
+                            let denomination_str = &snap.denomination;
+                            if let Some(denom) =
+                                wraith_protocol::WraithDenomination::from_short_code(denomination_str)
+                                    .or_else(|| match denomination_str.to_lowercase().as_str() {
+                                        "micro" => Some(wraith_protocol::WraithDenomination::Micro),
+                                        "small" => Some(wraith_protocol::WraithDenomination::Small),
+                                        "medium" => Some(wraith_protocol::WraithDenomination::Medium),
+                                        "large" => Some(wraith_protocol::WraithDenomination::Large),
+                                        _ => None,
+                                    })
+                            {
+                                let fee_per_participant = denom.service_fee();
+                                let total_fee = fee_per_participant * snap.participants as u64;
+                                let block_height = state.rpc.get_block_count().await.unwrap_or(0);
+                                let epoch = ghost_common::constants::l2_epoch_from_height(block_height);
+                                if let Err(e) = state.db.increment_wraith_fee(epoch, total_fee) {
+                                    warn!(error = %e, "Failed to track wraith fee");
+                                } else {
+                                    info!(
+                                        session_id = %session_id,
+                                        denomination = %denomination_str,
+                                        participants = snap.participants,
+                                        fee_per_participant,
+                                        total_fee,
+                                        epoch,
+                                        "Tracked wraith service fee for L2 distribution"
+                                    );
+                                }
+                            }
+                        }
+
                         let mut sessions = state.sessions.write();
                         if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
                             session.state = "complete".to_string();
@@ -4597,6 +4677,45 @@ async fn run_session_coordinator(state: Arc<AppState>) {
 }
 
 /// L1 Settlement loop - reconciles L2 balances to Bitcoin L1
+/// Fee distribution context returned by ghost-pool.
+struct FeeDistributionContext {
+    treasury_balance_sats: u64,
+    threshold_reached_at: Option<i64>,
+    ghost_pay_nodes: Vec<(String, String, i32)>,
+}
+
+/// Query ghost-pool for treasury state and qualified Ghost Pay nodes.
+async fn query_fee_distribution_context(state: &AppState) -> Option<FeeDistributionContext> {
+    let url = format!(
+        "{}/api/v1/l2/fee-distribution-context",
+        state.pool_api_url
+    );
+    let resp = state.pool_http_client.get(&url).send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+
+    let treasury_balance_sats = json.get("treasury_balance_sats")?.as_u64()?;
+    let threshold_reached_at = json
+        .get("threshold_reached_at")
+        .and_then(|v| v.as_i64());
+
+    let nodes_array = json.get("ghost_pay_nodes")?.as_array()?;
+    let ghost_pay_nodes: Vec<(String, String, i32)> = nodes_array
+        .iter()
+        .filter_map(|node| {
+            let node_id = node.get("node_id")?.as_str()?.to_string();
+            let address = node.get("address")?.as_str()?.to_string();
+            let shares = node.get("shares")?.as_i64()? as i32;
+            Some((node_id, address, shares))
+        })
+        .collect();
+
+    Some(FeeDistributionContext {
+        treasury_balance_sats,
+        threshold_reached_at,
+        ghost_pay_nodes,
+    })
+}
+
 ///
 /// This background task periodically:
 /// 1. Checks for pending withdrawal requests
@@ -4843,8 +4962,54 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                     let batch_id = batch.id_hex();
                     info!(batch_id = %batch_id, "Formed settlement batch");
 
-                    // Build the batch transaction with estimated fee rate
-                    match executor.build_transaction(&batch, fee_rate) {
+                    // Collect undistributed L2 fees for inclusion in settlement
+                    let undistributed = state.db.get_undistributed_fees().unwrap_or_default();
+                    let l2_fee_pool: u64 = undistributed.iter().map(|(_, fee)| fee).sum();
+
+                    // Build the batch transaction, optionally including L2 fee outputs
+                    let build_result = if l2_fee_pool > 0 {
+                        // Query ghost-pool for treasury state + qualified Ghost Pay nodes
+                        match query_fee_distribution_context(&state).await {
+                            Some(ctx) => {
+                                use ghost_reconciliation::fee_distribution::{
+                                    L2FeeDistribution, TreasuryState,
+                                };
+                                let threshold_ts = ctx.threshold_reached_at.and_then(|ts| {
+                                    chrono::DateTime::from_timestamp(ts, 0)
+                                });
+                                let treasury_state = TreasuryState::from_stored(
+                                    ctx.treasury_balance_sats,
+                                    threshold_ts,
+                                );
+                                let dist = L2FeeDistribution::calculate(
+                                    l2_fee_pool,
+                                    &treasury_state,
+                                    chrono::Utc::now(),
+                                    &ctx.ghost_pay_nodes,
+                                );
+                                info!(
+                                    l2_fee_pool,
+                                    treasury_amount = dist.treasury_amount,
+                                    node_payouts = dist.node_payouts.len(),
+                                    "Including L2 fees in settlement batch"
+                                );
+                                executor.build_transaction_with_l2_fees(
+                                    &batch,
+                                    fee_rate,
+                                    dist.treasury_amount,
+                                    &dist.node_payouts,
+                                )
+                            }
+                            None => {
+                                warn!("Failed to get fee distribution context, building without L2 fees");
+                                executor.build_transaction(&batch, fee_rate)
+                            }
+                        }
+                    } else {
+                        executor.build_transaction(&batch, fee_rate)
+                    };
+
+                    match build_result {
                         Ok(batch_tx) => {
                             let txid = batch_tx.txid();
 
@@ -5071,6 +5236,26 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                         {
                                             retry_tracker.remove(&withdrawal.lock_id);
                                         }
+                                    }
+
+                                    // Mark L2 epoch fees as distributed after successful broadcast
+                                    if !undistributed.is_empty() {
+                                        for (epoch, _) in &undistributed {
+                                            if let Err(e) =
+                                                state.db.mark_epoch_fees_distributed(*epoch)
+                                            {
+                                                error!(
+                                                    epoch,
+                                                    error = %e,
+                                                    "Failed to mark epoch fees as distributed"
+                                                );
+                                            }
+                                        }
+                                        info!(
+                                            epochs = undistributed.len(),
+                                            l2_fee_pool,
+                                            "Marked L2 epoch fees as distributed"
+                                        );
                                     }
                                 }
                                 Err(e) => {

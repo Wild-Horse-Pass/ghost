@@ -227,8 +227,8 @@ mod tests {
     #[test]
     fn test_denomination_fees() {
         let denom = WraithDenomination::Small;
-        // Fixed service fee model: Small = 2,000 sats service fee
-        assert_eq!(denom.min_input_sats(), 1_002_000); // output + service_fee
+        // min_input_sats = output_sats (service fee charged at L2, not L1)
+        assert_eq!(denom.min_input_sats(), 1_000_000);
         assert_eq!(denom.service_fee(), 2_000);
         assert_eq!(denom.output_sats(), 1_000_000);
         // intermediate_sats now takes OPP parameter

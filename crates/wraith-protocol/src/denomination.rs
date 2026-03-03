@@ -66,11 +66,12 @@ impl WraithDenomination {
         }
     }
 
-    /// Get the minimum required input (output + service_fee, excludes mining cost)
+    /// Get the minimum required input (denomination output only, excludes mining cost)
     ///
-    /// Actual input required = min_input_sats + estimated mining cost per user.
+    /// Service fees are now charged at the L2 layer (shielded note = denomination - service_fee),
+    /// not at L1 input time. Mining cost is handled separately by the executor's fee estimation.
     pub fn min_input_sats(&self) -> u64 {
-        self.output_sats() + self.service_fee()
+        self.output_sats()
     }
 
     /// Get the intermediate UTXO size (output / outputs_per_participant)
@@ -198,11 +199,11 @@ mod tests {
 
     #[test]
     fn test_min_input_sats() {
-        // min_input = output + service_fee
-        assert_eq!(WraithDenomination::Micro.min_input_sats(), 100_500);
-        assert_eq!(WraithDenomination::Small.min_input_sats(), 1_002_000);
-        assert_eq!(WraithDenomination::Medium.min_input_sats(), 10_005_000);
-        assert_eq!(WraithDenomination::Large.min_input_sats(), 100_010_000);
+        // min_input = output only (service fees charged at L2 layer)
+        assert_eq!(WraithDenomination::Micro.min_input_sats(), 100_000);
+        assert_eq!(WraithDenomination::Small.min_input_sats(), 1_000_000);
+        assert_eq!(WraithDenomination::Medium.min_input_sats(), 10_000_000);
+        assert_eq!(WraithDenomination::Large.min_input_sats(), 100_000_000);
     }
 
     #[test]
@@ -251,19 +252,19 @@ mod tests {
 
     #[test]
     fn test_largest_fitting() {
-        // Below Micro min_input (100,500) → None
-        assert_eq!(WraithDenomination::largest_fitting(100_499), None);
+        // Below Micro min_input (100,000) → None
+        assert_eq!(WraithDenomination::largest_fitting(99_999), None);
         // At Micro min_input → Micro
         assert_eq!(
-            WraithDenomination::largest_fitting(100_500),
+            WraithDenomination::largest_fitting(100_000),
             Some(WraithDenomination::Micro)
         );
-        // Above Small min_input (1,002,000) → Small
+        // At Small min_input (1,000,000) → Small
         assert_eq!(
-            WraithDenomination::largest_fitting(1_002_000),
+            WraithDenomination::largest_fitting(1_000_000),
             Some(WraithDenomination::Small)
         );
-        // 2 BTC should fit Large (100,010,000)
+        // 2 BTC should fit Large (100,000,000)
         assert_eq!(
             WraithDenomination::largest_fitting(200_000_000),
             Some(WraithDenomination::Large)

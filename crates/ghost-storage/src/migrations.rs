@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 28;
+const SCHEMA_VERSION: u32 = 29;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -84,6 +84,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (26, migrate_v26),
         (27, migrate_v27),
         (28, migrate_v28),
+        (29, migrate_v29),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1707,6 +1708,22 @@ fn migrate_v28(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added l2_epoch_fees table");
+    Ok(())
+}
+
+/// Migration to v29: Add wraith fee tracking columns to ghost_locks
+fn migrate_v29(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v29: Add source and wraith_fee_sats to ghost_locks");
+
+    conn.execute_batch(
+        r#"
+        ALTER TABLE ghost_locks ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+        ALTER TABLE ghost_locks ADD COLUMN wraith_fee_sats INTEGER NOT NULL DEFAULT 0;
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added source and wraith_fee_sats columns to ghost_locks");
     Ok(())
 }
 

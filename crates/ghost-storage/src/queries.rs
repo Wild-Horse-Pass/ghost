@@ -1985,8 +1985,8 @@ impl Database {
                     denomination, amount_sats, timelock_tier, creation_height,
                     recovery_height, state, funding_txid, funding_vout,
                     spend_txid, output_script, jump_risk_tier, next_jump_height,
-                    created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                    created_at, updated_at, source, wraith_fee_sats
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
                 params![
                     lock.lock_id,
                     lock.owner_ghost_id,
@@ -2006,6 +2006,8 @@ impl Database {
                     lock.next_jump_height,
                     lock.created_at,
                     lock.updated_at,
+                    lock.source,
+                    lock.wraith_fee_sats,
                 ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2022,7 +2024,7 @@ impl Database {
                             denomination, amount_sats, timelock_tier, creation_height,
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
-                            created_at, updated_at
+                            created_at, updated_at, source, wraith_fee_sats
                      FROM ghost_locks WHERE lock_id = ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2050,7 +2052,7 @@ impl Database {
                             denomination, amount_sats, timelock_tier, creation_height,
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
-                            created_at, updated_at
+                            created_at, updated_at, source, wraith_fee_sats
                      FROM ghost_locks WHERE owner_ghost_id = ?1 ORDER BY created_at DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2082,7 +2084,7 @@ impl Database {
                             denomination, amount_sats, timelock_tier, creation_height,
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
-                            created_at, updated_at
+                            created_at, updated_at, source, wraith_fee_sats
                      FROM ghost_locks
                      WHERE owner_ghost_id = ?1 AND state = 'active'
                      ORDER BY created_at DESC LIMIT ?2",
@@ -2113,7 +2115,7 @@ impl Database {
                             denomination, amount_sats, timelock_tier, creation_height,
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
-                            created_at, updated_at
+                            created_at, updated_at, source, wraith_fee_sats
                      FROM ghost_locks
                      WHERE state = 'active' AND next_jump_height IS NOT NULL AND next_jump_height <= ?1
                      ORDER BY next_jump_height ASC LIMIT ?2",
@@ -2255,6 +2257,8 @@ fn ghost_lock_from_row(row: &rusqlite::Row) -> rusqlite::Result<GhostLockRecord>
         next_jump_height: row.get(15)?,
         created_at: row.get(16)?,
         updated_at: row.get(17)?,
+        source: row.get(18)?,
+        wraith_fee_sats: row.get(19)?,
     })
 }
 
@@ -7147,6 +7151,27 @@ impl Database {
         })
     }
 
+    /// Increment wraith service fees for an epoch (variable amount per denomination).
+    /// Unlike `increment_epoch_fee()` which computes fees from transfer count,
+    /// wraith fees are passed directly since they vary per denomination tier.
+    pub fn increment_wraith_fee(&self, epoch: u64, fee_sats: u64) -> GhostResult<()> {
+        if fee_sats == 0 {
+            return Ok(());
+        }
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO l2_epoch_fees (epoch, transfer_count, fee_total_sats, updated_at)
+                 VALUES (?1, 0, ?2, datetime('now'))
+                 ON CONFLICT(epoch) DO UPDATE SET
+                     fee_total_sats = fee_total_sats + excluded.fee_total_sats,
+                     updated_at = datetime('now')",
+                params![epoch as i64, fee_sats as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
     /// Get all undistributed epoch fees (for reconciliation batch formation).
     pub fn get_undistributed_fees(&self) -> GhostResult<Vec<(u64, u64)>> {
         self.with_connection(|conn| {
@@ -7322,6 +7347,8 @@ mod tests {
             next_jump_height: Some(802016),
             created_at: now,
             updated_at: now,
+            source: "manual".to_string(),
+            wraith_fee_sats: 0,
         };
 
         db.insert_ghost_lock(&lock)
@@ -7700,6 +7727,8 @@ mod tests {
             next_jump_height: None,
             created_at: now,
             updated_at: now,
+            source: "manual".to_string(),
+            wraith_fee_sats: 0,
         };
         db.insert_ghost_lock(&lock)
             .expect("LOW-STOR-8: Failed to insert ghost lock");
@@ -7779,6 +7808,8 @@ mod tests {
             next_jump_height: None,
             created_at: now,
             updated_at: now,
+            source: "manual".to_string(),
+            wraith_fee_sats: 0,
         };
         db.insert_ghost_lock(&lock)
             .expect("LOW-STOR-8: Failed to insert ghost lock");
@@ -7856,6 +7887,8 @@ mod tests {
             next_jump_height: None,
             created_at: now,
             updated_at: now,
+            source: "manual".to_string(),
+            wraith_fee_sats: 0,
         };
         db.insert_ghost_lock(&lock)
             .expect("LOW-STOR-8: Failed to insert ghost lock");

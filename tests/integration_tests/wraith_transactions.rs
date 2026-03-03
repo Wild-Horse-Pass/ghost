@@ -83,11 +83,12 @@ fn test_701_fixed_service_fees() {
 }
 
 #[test]
-fn test_702_min_input_equals_output_plus_service_fee() {
+fn test_702_min_input_equals_output_sats() {
+    // Service fee moved to L2 layer — L1 min_input is just the denomination output
     for denom in WraithDenomination::all() {
         assert_eq!(
             denom.min_input_sats(),
-            denom.output_sats() + denom.service_fee(),
+            denom.output_sats(),
             "min_input_sats mismatch for {:?}",
             denom
         );
@@ -152,8 +153,8 @@ fn test_706_from_output_sats_invalid_returns_none() {
 
 #[test]
 fn test_707_largest_fitting_boundary_values() {
-    // Below Micro min_input_sats (100_500) -> None
-    assert_eq!(WraithDenomination::largest_fitting(100_499), None);
+    // Below Micro min_input_sats (100_000) -> None
+    assert_eq!(WraithDenomination::largest_fitting(99_999), None);
 
     // Exactly at Micro boundary -> Micro
     assert_eq!(

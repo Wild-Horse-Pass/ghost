@@ -45,6 +45,7 @@ ghost-policy = { workspace = true }
 ghost-storage = { workspace = true }
 ghost-consensus = { workspace = true }
 ghost-accounting = { workspace = true }
+ghost-reconciliation = { workspace = true }
 ghost-verification = { workspace = true }
 ghost-template = { workspace = true }
 ghost-glyph = { workspace = true }

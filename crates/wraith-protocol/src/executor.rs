@@ -76,7 +76,7 @@ pub struct WraithTransactionBuilder {
     pub network: Network,
     /// Outputs per participant (tier-specific, replaces hardcoded SPLIT_RATIO)
     outputs_per_participant: usize,
-    /// Session type (Mix = service_fee + mining, Jump = mining only)
+    /// Session type (Mix = L2 service fee + mining, Jump = mining only)
     session_type: SessionType,
     /// Collected inputs
     inputs: Vec<WraithInput>,
@@ -120,13 +120,10 @@ impl WraithTransactionBuilder {
 
     /// Add an input UTXO
     pub fn add_input(&mut self, input: WraithInput) -> Result<(), WraithError> {
-        // Validate input amount: must cover output + service_fee (mining cost handled separately)
-        // Jump sessions have 0 service fee
-        let service_fee = match self.session_type {
-            SessionType::Mix => self.denomination.service_fee(),
-            SessionType::Jump => 0,
-        };
-        let expected = self.denomination.output_sats() + service_fee;
+        // Validate input amount: must cover denomination output
+        // Mining cost handled by total tx fee estimation, not per-input.
+        // Service fees are charged at L2 layer (shielded note reduction), not L1.
+        let expected = self.denomination.output_sats();
         if input.amount < expected {
             return Err(WraithError::InvalidInput(format!(
                 "Input amount {} too small, expected at least {}",
@@ -704,7 +701,7 @@ mod tests {
         let input = WraithInput {
             txid: test_txid(),
             vout: 0,
-            amount: 1_002_000, // Small denomination: output (1M) + service_fee (2K)
+            amount: 1_000_000, // Small denomination output
             script_pubkey: ScriptBuf::new(),
             participant_id: 0,
         };

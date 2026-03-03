@@ -201,6 +201,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Additional dashboard endpoints
         .route("/api/v1/swarm", get(api_swarm_handler))
         .route("/api/v1/network/treasury", get(api_treasury_handler))
+        .route(
+            "/api/v1/l2/fee-distribution-context",
+            get(api_l2_fee_distribution_context_handler),
+        )
         .route("/api/v1/rewards/current", get(api_rewards_current_handler))
         .route("/api/v1/rewards/history", get(api_rewards_history_handler))
         // HIGH-4: /api/v1/logs endpoint REMOVED - exposed journalctl output (security risk)
@@ -2081,6 +2085,78 @@ async fn api_treasury_handler(State(state): State<Arc<VerificationState>>) -> im
         "progress_percent": progress,
         "treasury_percent": 50.0,
         "node_pool_percent": 50.0
+    }))
+}
+
+/// L2 fee distribution context for ghost-pay settlement loop.
+/// Returns treasury state and qualified Ghost Pay nodes for fee distribution.
+async fn api_l2_fee_distribution_context_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let db = match state.database.as_ref() {
+        Some(db) => db,
+        None => {
+            return Json(serde_json::json!({
+                "error": "Database not available"
+            }));
+        }
+    };
+
+    // Get treasury balance
+    let treasury_balance_sats = db.get_treasury_balance().unwrap_or(0);
+
+    // Get treasury threshold timestamp
+    let threshold_reached_at: Option<i64> = db.get_treasury_threshold_reached().unwrap_or(None);
+
+    // Get nodes with Ghost Pay capability and their shares.
+    // Uses the nodes table which is updated by health pings. Filter for recently-seen
+    // nodes (last_seen within 5 min) that have ghost_pay in their capabilities JSON.
+    let now = chrono::Utc::now().timestamp();
+    let recent_cutoff = now - 300; // 5 minutes
+    let ghost_pay_nodes: Vec<serde_json::Value> = match db.get_top_nodes_by_shares(200) {
+        Ok(nodes) => nodes
+            .into_iter()
+            .filter(|node| node.last_seen >= recent_cutoff)
+            .filter_map(|node| {
+                let caps: serde_json::Value =
+                    serde_json::from_str(&node.capabilities).ok()?;
+                let ghost_pay_enabled = caps
+                    .get("ghost_pay")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !ghost_pay_enabled {
+                    return None;
+                }
+                // Compute total shares from capabilities
+                let archive = if caps.get("archive_mode").and_then(|v| v.as_bool()).unwrap_or(false) { 5i32 } else { 0 };
+                let ghost_pay_shares = 4i32;
+                let public_mining = if caps.get("public_mining").and_then(|v| v.as_bool()).unwrap_or(false) { 3 } else { 0 };
+                let reaper = if caps.get("reaper_strict").and_then(|v| v.as_bool()).unwrap_or(false) { 2 } else { 0 };
+                let elder = if node.is_elder { 1 } else { 0 };
+                let total_shares = archive + ghost_pay_shares + public_mining + reaper + elder;
+
+                // Get payout address from node record or fall back to public_address
+                let address = db
+                    .get_node_payout_address(&node.node_id)
+                    .ok()
+                    .flatten()
+                    .or_else(|| node.public_address.clone())
+                    .unwrap_or_default();
+
+                Some(serde_json::json!({
+                    "node_id": node.node_id,
+                    "address": address,
+                    "shares": total_shares,
+                }))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    Json(serde_json::json!({
+        "treasury_balance_sats": treasury_balance_sats,
+        "threshold_reached_at": threshold_reached_at,
+        "ghost_pay_nodes": ghost_pay_nodes,
     }))
 }
 

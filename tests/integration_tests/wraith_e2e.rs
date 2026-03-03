@@ -287,24 +287,20 @@ fn test_891_full_jump_session_lifecycle() {
 // =============================================================================
 
 #[test]
-fn test_892_mix_vs_jump_fee_difference() {
-    // Mix session requires output_sats + service_fee
+fn test_892_mix_and_jump_same_l1_minimum() {
+    // Service fee moved to L2 — both Mix and Jump require output_sats at L1
     let mix_min = WraithDenomination::Small.min_input_sats();
-    let mix_service_fee = WraithDenomination::Small.service_fee();
-
-    // Jump session requires only output_sats (no service fee)
     let jump_min = WraithDenomination::Small.output_sats();
 
-    // Mix must require more than Jump
-    assert!(
-        mix_min > jump_min,
-        "Mix min_input ({}) must exceed Jump min_input ({})",
-        mix_min,
-        jump_min
+    assert_eq!(
+        mix_min, jump_min,
+        "Mix and Jump L1 minimums should be equal (fee is L2)"
     );
-    assert_eq!(mix_min - jump_min, mix_service_fee);
 
-    // Verify via transaction builder: Jump accepts lower input that Mix rejects
+    // Service fee still exists for L2 accounting
+    assert!(WraithDenomination::Small.service_fee() > 0);
+
+    // Both builders accept output_sats as sufficient input
     use wraith_protocol::WraithTransactionBuilder;
     let opp = ParticipantTier::Small.outputs_per_participant();
 
@@ -324,14 +320,10 @@ fn test_892_mix_vs_jump_fee_difference() {
         SessionType::Jump,
     );
 
-    // Amount exactly at output_sats (no service fee headroom)
     let amount = WraithDenomination::Small.output_sats();
 
-    // Jump accepts this amount
     assert!(jump_builder.add_input(make_input(amount, 0)).is_ok());
-
-    // Mix rejects this amount (needs service fee on top)
-    assert!(mix_builder.add_input(make_input(amount, 0)).is_err());
+    assert!(mix_builder.add_input(make_input(amount, 0)).is_ok());
 }
 
 // =============================================================================
@@ -351,7 +343,7 @@ fn test_893_anonymous_token_submission_unlinkable() {
     .with_broadcaster(|_| Ok(FAKE_TXID.to_string()));
 
     let opp = coord.outputs_per_participant();
-    let input_amount = WraithDenomination::Small.min_input_sats() + 5_000;
+    let input_amount = WraithDenomination::Small.min_input_sats() + 7_000;
 
     // Register and set up N participants
     let ghost_ids: Vec<String> = (0..N).map(|i| format!("ghost_{}", i)).collect();
@@ -411,7 +403,7 @@ fn test_894_phase1_split_transaction_structure() {
 
     let opp = coord.outputs_per_participant();
     let denom = WraithDenomination::Small;
-    let input_amount = denom.min_input_sats() + 5_000;
+    let input_amount = denom.min_input_sats() + 7_000;
 
     // Set up full session through to Phase 1 build
     let ghost_ids: Vec<String> = (0..N).map(|i| format!("ghost_{}", i)).collect();
