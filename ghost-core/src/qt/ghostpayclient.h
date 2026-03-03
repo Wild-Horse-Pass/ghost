@@ -139,6 +139,17 @@ public:
     /** List jump queue (GET /jump/list) */
     void listJumpQueue();
 
+    // ========== Glyph Endpoints ==========
+
+    /** Claim a glyph (POST /api/v1/glyph/claim) */
+    void claimGlyph(const QString& ghostId, const QByteArray& pixels);
+
+    /** Get a glyph (GET /api/v1/glyph/:ghost_id) */
+    void getGlyph(const QString& ghostId);
+
+    /** Check glyph availability (GET /api/v1/glyph/check/:bitmap_hash_hex) */
+    void checkGlyphAvailability(const QString& bitmapHashHex);
+
 Q_SIGNALS:
     // Connection signals
     void connected();
@@ -180,6 +191,11 @@ Q_SIGNALS:
     void jumpStatusReceived(const GhostPay::JumpStatus& status);
     void jumpQueueReceived(const QList<GhostPay::JumpStatus>& queue);
     void jumpError(const QString& error);
+
+    void glyphClaimed(const QString& commitment, const QString& bitmapHash);
+    void glyphReceived(const QString& ghostId, const QByteArray& pixels, const QString& bitmapHash, const QString& commitment, const QString& status);
+    void glyphAvailabilityChecked(bool available);
+    void glyphError(const QString& error);
 
     // Generic error signal
     void error(const QString& method, const QString& message);

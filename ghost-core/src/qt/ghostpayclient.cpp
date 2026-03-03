@@ -300,6 +300,32 @@ void GhostPayClient::listJumpQueue()
     doGet(QStringLiteral("/jump/list"), QStringLiteral("listJumpQueue"));
 }
 
+// ========== Glyph Endpoints ==========
+
+void GhostPayClient::claimGlyph(const QString& ghostId, const QByteArray& pixels)
+{
+    QJsonArray pixelArray;
+    for (int i = 0; i < pixels.size(); ++i) {
+        pixelArray.append(static_cast<int>(static_cast<uint8_t>(pixels.at(i))));
+    }
+
+    QJsonObject body;
+    body[QStringLiteral("ghost_id")] = ghostId;
+    body[QStringLiteral("pixels")] = pixelArray;
+
+    doPost(QStringLiteral("/api/v1/glyph/claim"), body, QStringLiteral("glyph_claim"));
+}
+
+void GhostPayClient::getGlyph(const QString& ghostId)
+{
+    doGet(QStringLiteral("/api/v1/glyph/%1").arg(ghostId), QStringLiteral("glyph_get:%1").arg(ghostId));
+}
+
+void GhostPayClient::checkGlyphAvailability(const QString& bitmapHashHex)
+{
+    doGet(QStringLiteral("/api/v1/glyph/check/%1").arg(bitmapHashHex), QStringLiteral("glyph_check"));
+}
+
 // ========== Response Parsing ==========
 
 GhostPay::NodeStatus GhostPayClient::parseNodeStatus(const QJsonObject& json)
@@ -414,6 +440,8 @@ void GhostPayClient::handleNetworkReply(QNetworkReply* reply)
             Q_EMIT reconciliationError(errorMsg);
         } else if (tag.startsWith(QStringLiteral("jump"))) {
             Q_EMIT jumpError(errorMsg);
+        } else if (tag.startsWith(QStringLiteral("glyph_"))) {
+            Q_EMIT glyphError(errorMsg);
         }
         return;
     }
@@ -524,5 +552,27 @@ void GhostPayClient::handleNetworkReply(QNetworkReply* reply)
             queue.append(parseJumpStatus(v.toObject()));
         }
         Q_EMIT jumpQueueReceived(queue);
+    }
+    else if (tag == QStringLiteral("glyph_claim")) {
+        QString commitment = result[QStringLiteral("commitment")].toString();
+        QString bitmapHash = result[QStringLiteral("bitmap_hash")].toString();
+        Q_EMIT glyphClaimed(commitment, bitmapHash);
+    }
+    else if (tag.startsWith(QStringLiteral("glyph_get:"))) {
+        QString gid = result[QStringLiteral("ghost_id")].toString();
+        QJsonArray arr = result[QStringLiteral("pixels")].toArray();
+        QByteArray px;
+        px.reserve(arr.size());
+        for (const QJsonValue& v : arr) {
+            px.append(static_cast<char>(v.toInt()));
+        }
+        QString bitmapHash = result[QStringLiteral("bitmap_hash")].toString();
+        QString commitment = result[QStringLiteral("commitment")].toString();
+        QString glyphStatus = result[QStringLiteral("status")].toString();
+        Q_EMIT glyphReceived(gid, px, bitmapHash, commitment, glyphStatus);
+    }
+    else if (tag == QStringLiteral("glyph_check")) {
+        bool available = result[QStringLiteral("available")].toBool();
+        Q_EMIT glyphAvailabilityChecked(available);
     }
 }

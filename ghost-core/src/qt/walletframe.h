@@ -101,6 +101,8 @@ public Q_SLOTS:
     // Ghost Pay L2 navigation
     /** Switch to Ghost Locks page */
     void gotoGhostLocksPage();
+    /** Switch to Ghost Glyphs page */
+    void gotoGhostGlyphPage();
     /** Show deposit wizard */
     void showDepositWizard();
     /** Show withdraw wizard */

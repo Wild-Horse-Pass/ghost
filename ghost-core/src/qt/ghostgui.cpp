@@ -286,6 +286,13 @@ void GhostGUI::createActions()
     ghostLocksAction->setShortcut(QKeySequence(QStringLiteral("Alt+5")));
     tabGroup->addAction(ghostLocksAction);
 
+    ghostGlyphAction = new QAction(platformStyle->SingleColorIcon(":/icons/edit"), tr("Ghost G&lyphs"), this);
+    ghostGlyphAction->setStatusTip(tr("Design and claim Ghost Glyphs"));
+    ghostGlyphAction->setToolTip(ghostGlyphAction->statusTip());
+    ghostGlyphAction->setCheckable(true);
+    ghostGlyphAction->setShortcut(QKeySequence(QStringLiteral("Alt+6")));
+    tabGroup->addAction(ghostGlyphAction);
+
     depositAction = new QAction(tr("&Deposit to L2..."), this);
     depositAction->setStatusTip(tr("Deposit funds from L1 to Ghost Pay L2"));
 
@@ -305,6 +312,8 @@ void GhostGUI::createActions()
     connect(historyAction, &QAction::triggered, this, &GhostGUI::gotoHistoryPage);
     connect(ghostLocksAction, &QAction::triggered, [this]{ showNormalIfMinimized(); });
     connect(ghostLocksAction, &QAction::triggered, this, &GhostGUI::gotoGhostLocksPage);
+    connect(ghostGlyphAction, &QAction::triggered, [this]{ showNormalIfMinimized(); });
+    connect(ghostGlyphAction, &QAction::triggered, this, &GhostGUI::gotoGhostGlyphPage);
     connect(depositAction, &QAction::triggered, [this]{ showNormalIfMinimized(); });
     connect(depositAction, &QAction::triggered, walletFrame, &WalletFrame::showDepositWizard);
     connect(withdrawAction, &QAction::triggered, [this]{ showNormalIfMinimized(); });
@@ -546,6 +555,7 @@ void GhostGUI::createMenuBar()
     if (walletFrame) {
         ghostPayMenu = appMenuBar->addMenu(tr("&Ghost Pay"));
         ghostPayMenu->addAction(ghostLocksAction);
+        ghostPayMenu->addAction(ghostGlyphAction);
         ghostPayMenu->addSeparator();
         ghostPayMenu->addAction(depositAction);
         ghostPayMenu->addAction(withdrawAction);
@@ -864,6 +874,7 @@ void GhostGUI::setWalletActionsEnabled(bool enabled)
     m_close_all_wallets_action->setEnabled(enabled);
     // Ghost Pay L2 actions
     ghostLocksAction->setEnabled(enabled);
+    ghostGlyphAction->setEnabled(enabled);
     depositAction->setEnabled(enabled);
     withdrawAction->setEnabled(enabled);
 }
@@ -1047,6 +1058,12 @@ void GhostGUI::gotoGhostLocksPage()
 {
     ghostLocksAction->setChecked(true);
     if (walletFrame) walletFrame->gotoGhostLocksPage();
+}
+
+void GhostGUI::gotoGhostGlyphPage()
+{
+    ghostGlyphAction->setChecked(true);
+    if (walletFrame) walletFrame->gotoGhostGlyphPage();
 }
 #endif // ENABLE_WALLET
 

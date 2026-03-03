@@ -299,6 +299,13 @@ void WalletFrame::gotoGhostLocksPage()
         walletView->gotoGhostLocksPage();
 }
 
+void WalletFrame::gotoGhostGlyphPage()
+{
+    WalletView *walletView = currentWalletView();
+    if (walletView)
+        walletView->gotoGhostGlyphPage();
+}
+
 void WalletFrame::showDepositWizard()
 {
     WalletView *walletView = currentWalletView();

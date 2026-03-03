@@ -221,6 +221,8 @@ if(ENABLE_WALLET)
       ghostlockspage.h
       ghostlabelspage.cpp
       ghostlabelspage.h
+      ghostglyphpage.cpp
+      ghostglyphpage.h
       depositwizard.cpp
       depositwizard.h
       withdrawwizard.cpp

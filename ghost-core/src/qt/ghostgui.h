@@ -167,6 +167,7 @@ private:
 
     // Ghost Pay L2 actions
     QAction* ghostLocksAction{nullptr};
+    QAction* ghostGlyphAction{nullptr};
     QAction* depositAction{nullptr};
     QAction* withdrawAction{nullptr};
     QMenu* ghostPayMenu{nullptr};
@@ -290,6 +291,8 @@ public Q_SLOTS:
     void gotoReceiveCoinsPage();
     /** Switch to Ghost Locks page */
     void gotoGhostLocksPage();
+    /** Switch to Ghost Glyphs page */
+    void gotoGhostGlyphPage();
     /** Switch to send coins page */
     void gotoSendCoinsPage(QString addr = "");
 

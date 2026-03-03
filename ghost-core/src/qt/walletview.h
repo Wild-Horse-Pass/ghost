@@ -12,6 +12,7 @@
 
 class ClientModel;
 class GhostLabelsPage;
+class GhostGlyphPage;
 class GhostLocksPage;
 class L2WalletModel;
 class OverviewPage;
@@ -79,6 +80,7 @@ private:
     // Ghost Pay L2 pages
     GhostLocksPage *ghostLocksPage{nullptr};
     GhostLabelsPage *ghostLabelsPage{nullptr};
+    GhostGlyphPage *ghostGlyphPage{nullptr};
 
     TransactionView *transactionView;
 
@@ -98,6 +100,8 @@ public Q_SLOTS:
     void gotoGhostLocksPage();
     /** Switch to Ghost Labels page */
     void gotoGhostLabelsPage();
+    /** Switch to Ghost Glyphs page */
+    void gotoGhostGlyphPage();
 
     /** Show Sign/Verify Message dialog and switch to sign message tab */
     void gotoSignMessageTab(QString addr = "");
