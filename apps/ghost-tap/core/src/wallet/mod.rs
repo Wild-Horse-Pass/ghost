@@ -299,7 +299,7 @@ impl Wallet {
 
     /// Get the L2 owner public key for receiving encrypted notes.
     pub fn l2_owner_pubkey(&mut self) -> Result<PublicKey, WalletError> {
-        let secret = self.l2_scan_secret()?.clone();
+        let secret = *self.l2_scan_secret()?;
         let secp = Secp256k1::new();
         Ok(PublicKey::from_secret_key(&secp, &secret))
     }

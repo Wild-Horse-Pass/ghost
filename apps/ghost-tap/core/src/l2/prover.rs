@@ -119,6 +119,7 @@ impl L2Prover {
     }
 
     /// Generate a NoteSpend proof for a transfer.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_transfer(
         &self,
         tree: &CommitmentTree,
@@ -282,7 +283,7 @@ impl L2Prover {
             .public_inputs
             .nullifiers
             .iter()
-            .map(|n| hex::encode(n))
+            .map(hex::encode)
             .collect();
 
         let output_note = OwnedNote {

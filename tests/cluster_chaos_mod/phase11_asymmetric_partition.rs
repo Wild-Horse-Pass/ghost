@@ -5,6 +5,7 @@
 //!
 //! Scenario A (tests 01-04): One-Way Block — VM2 can't send to VM3, but VM3 can send to VM2.
 //! Scenario B (tests 05-08): Ring Partition — information flows only one direction around the ring.
+#![allow(clippy::expect_fun_call)]
 
 use std::time::Duration;
 

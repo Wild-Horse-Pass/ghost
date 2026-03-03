@@ -77,7 +77,7 @@ pub struct WraithTransactionBuilder {
     /// Outputs per participant (tier-specific, replaces hardcoded SPLIT_RATIO)
     outputs_per_participant: usize,
     /// Session type (Mix = L2 service fee + mining, Jump = mining only)
-    session_type: SessionType,
+    _session_type: SessionType,
     /// Collected inputs
     inputs: Vec<WraithInput>,
     /// Collected outputs (for merge phase)
@@ -100,7 +100,7 @@ impl WraithTransactionBuilder {
             denomination,
             network,
             outputs_per_participant,
-            session_type,
+            _session_type: session_type,
             inputs: Vec::new(),
             outputs: Vec::new(),
             fee_rate: 10, // Default 10 sat/vbyte

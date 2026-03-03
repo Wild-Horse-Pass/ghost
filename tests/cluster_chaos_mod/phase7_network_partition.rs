@@ -5,6 +5,7 @@
 //!
 //! Scenario A (tests 01-04): Single-node isolation (VM2 partitioned from all peers).
 //! Scenario B (tests 05-08): Split-brain (VM1+VM2 vs VM3+VM4).
+#![allow(clippy::expect_fun_call)]
 
 use std::time::Duration;
 

@@ -89,7 +89,7 @@ impl ClusterClient {
                 let temp_client = Client::builder()
                     .timeout(timeout)
                     .build()
-                    .unwrap_or_else(|_| client);
+                    .unwrap_or(client);
                 match temp_client.get(&url).send().await {
                     Ok(resp) => {
                         let status = resp.status().as_u16();

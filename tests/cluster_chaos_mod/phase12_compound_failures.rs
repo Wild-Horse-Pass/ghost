@@ -5,6 +5,7 @@
 //! Scenario A (tests 01-03): Split-Brain + Kill
 //! Scenario B (tests 04-06): Kill + Partition
 //! Scenario C (tests 07-08): Full Chaos Sequence
+#![allow(clippy::expect_fun_call)]
 
 use std::time::Duration;
 

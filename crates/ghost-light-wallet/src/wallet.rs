@@ -480,7 +480,7 @@ impl LightWallet {
         };
 
         // 2. Get scan secret and spending key from master key
-        let scan_secret = master_key.ghost_keys().scan_secret().clone();
+        let scan_secret = *master_key.ghost_keys().scan_secret();
         let spending_key = *master_key.confidential_spending_key();
 
         // 3. Lazy-init scanner if None

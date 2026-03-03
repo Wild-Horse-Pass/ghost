@@ -1132,7 +1132,7 @@ impl WalletHandle {
             let (height, epoch, root) = wallet
                 .tree_sync()
                 .map(|ts| {
-                    let root = ts.root().map(|r| hex::encode(r)).unwrap_or_default();
+                    let root = ts.root().map(hex::encode).unwrap_or_default();
                     (ts.last_synced_height(), 0u64, root)
                 })
                 .unwrap_or((0, 0, String::new()));

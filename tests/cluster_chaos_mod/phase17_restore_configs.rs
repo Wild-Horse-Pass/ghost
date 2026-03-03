@@ -2,6 +2,7 @@
 //!
 //! Restores all VMs to their pre-test configurations from backup files.
 //! This phase MUST run after Phases 14-16 to leave the cluster in its original state.
+#![allow(clippy::expect_fun_call)]
 
 use std::time::Duration;
 

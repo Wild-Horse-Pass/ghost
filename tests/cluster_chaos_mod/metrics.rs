@@ -31,7 +31,7 @@ impl TestMetrics {
     pub fn success_count(&self) -> usize {
         self.results
             .iter()
-            .filter(|r| r.error.is_none() && r.status.map_or(false, |s| s < 400))
+            .filter(|r| r.error.is_none() && r.status.is_some_and(|s| s < 400))
             .count()
     }
 
@@ -56,7 +56,7 @@ impl TestMetrics {
         }
         let successes = non_429
             .iter()
-            .filter(|r| r.error.is_none() && r.status.map_or(false, |s| s < 400))
+            .filter(|r| r.error.is_none() && r.status.is_some_and(|s| s < 400))
             .count();
         successes as f64 / non_429.len() as f64
     }
@@ -85,7 +85,7 @@ impl TestMetrics {
         }
         let successes = non_429
             .iter()
-            .filter(|r| r.error.is_none() && r.status.map_or(false, |s| s < 400))
+            .filter(|r| r.error.is_none() && r.status.is_some_and(|s| s < 400))
             .count();
         successes as f64 / non_429.len() as f64
     }
@@ -151,7 +151,7 @@ impl TestMetrics {
     pub fn error_count(&self) -> usize {
         self.results
             .iter()
-            .filter(|r| r.error.is_some() || r.status.map_or(true, |s| s >= 400))
+            .filter(|r| r.error.is_some() || r.status.is_none_or(|s| s >= 400))
             .count()
     }
 

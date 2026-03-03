@@ -43,6 +43,7 @@ pub struct FieldDef {
 
 /// Definition of a wizard step (page)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct WizardStepDef {
     pub id: &'static str,
     pub title: &'static str,

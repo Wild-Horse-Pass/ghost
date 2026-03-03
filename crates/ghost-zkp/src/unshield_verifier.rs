@@ -168,10 +168,11 @@ impl GhostUnshieldVerifier {
 
     /// Build public inputs in circuit order: commitment_root, nullifier, withdrawal_amount
     fn build_public_inputs(&self, inputs: &UnshieldPublicInputs) -> ZkResult<Vec<Fr>> {
-        let mut pi = Vec::with_capacity(3);
-        pi.push(bytes_to_field(&inputs.commitment_root)?);
-        pi.push(bytes_to_field(&inputs.nullifier)?);
-        pi.push(Fr::from(inputs.withdrawal_amount));
+        let pi = vec![
+            bytes_to_field(&inputs.commitment_root)?,
+            bytes_to_field(&inputs.nullifier)?,
+            Fr::from(inputs.withdrawal_amount),
+        ];
         Ok(pi)
     }
 

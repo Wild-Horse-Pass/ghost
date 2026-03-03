@@ -8,6 +8,7 @@
 //! - VM2: pruned + reaper disabled + permissive
 //! - VM3: archive + reaper strict + full_open
 //! - VM4: non-archive + reaper disabled + bitcoin_pure
+#![allow(clippy::expect_fun_call)]
 
 use std::sync::Arc;
 use std::time::Duration;

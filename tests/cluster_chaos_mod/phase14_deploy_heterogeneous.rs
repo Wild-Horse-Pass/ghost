@@ -12,6 +12,7 @@
 //! 2 bitcoin_pure + 1 permissive + 1 full_open.
 //!
 //! Scenario entry point (test 01) backs up all configs. Phase 17 restores them.
+#![allow(clippy::expect_fun_call)]
 
 use std::time::Duration;
 

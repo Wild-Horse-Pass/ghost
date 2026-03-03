@@ -21,10 +21,10 @@ pub fn validate_pay_url(url: &str) -> Result<(), NetworkError> {
         ));
     }
     // Reject embedded credentials (user:pass@host)
-    let after_scheme = if url.starts_with("https://") {
-        &url[8..]
+    let after_scheme = if let Some(rest) = url.strip_prefix("https://") {
+        rest
     } else {
-        &url[7..]
+        url.strip_prefix("http://").unwrap_or("")
     };
     if after_scheme.contains('@') {
         return Err(NetworkError::ConnectionFailed(

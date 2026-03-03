@@ -1,4 +1,5 @@
 //! Phase 6: Rolling Restart — sequential restart of non-genesis nodes with varying delays.
+#![allow(clippy::expect_fun_call)]
 
 use std::sync::Arc;
 use std::time::Duration;

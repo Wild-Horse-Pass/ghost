@@ -131,10 +131,9 @@ pub async fn l2_scan(state: State<'_, AppState>) -> AppResult<u32> {
             .lock()
             .map_err(|e| AppError::from(e.to_string()))?;
 
-        let scan_secret = wallet
+        let scan_secret = *wallet
             .l2_scan_secret()
-            .map_err(|e| AppError::from(e.to_string()))?
-            .clone();
+            .map_err(|e| AppError::from(e.to_string()))?;
         let height = wallet
             .tree_sync()
             .map(|ts| ts.last_synced_height())
@@ -193,7 +192,7 @@ pub fn l2_sync_status(state: State<'_, AppState>) -> AppResult<L2SyncStatusRespo
     let (height, root) = wallet
         .tree_sync()
         .map(|ts| {
-            let root = ts.root().map(|r| hex::encode(r)).unwrap_or_default();
+            let root = ts.root().map(hex::encode).unwrap_or_default();
             (ts.last_synced_height(), root)
         })
         .unwrap_or((0, String::new()));

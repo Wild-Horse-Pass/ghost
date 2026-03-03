@@ -107,6 +107,7 @@ impl NoteSpendClientProver {
     /// 4. Builds GhostNoteSpendWitness and calls GhostNoteProver::prove()
     /// 5. Encrypts change note for sender and recipient note for recipient
     /// 6. Returns proof + encrypted note data for submission
+    #[allow(clippy::too_many_arguments)]
     pub fn create_note_spend(
         &self,
         tree: &CommitmentTree,

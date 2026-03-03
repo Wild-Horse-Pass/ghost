@@ -2,6 +2,7 @@
 //!
 //! Tests the reconnect logic (100ms initial, 30s max backoff) by rapidly cycling
 //! nodes without waiting for full health between cycles.
+#![allow(clippy::expect_fun_call)]
 
 use std::sync::Arc;
 use std::time::Duration;

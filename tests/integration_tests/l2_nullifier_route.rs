@@ -1145,14 +1145,12 @@ fn test_896_submit_external_no_verifier() {
         );
     } else {
         // node_b would be the validator — adjust test to target node_b
-        // For simplicity, just verify the handler setup doesn't have a verifier
-        assert!(
-            handler.submit_external_transfer(&L2ConfidentialTransferMessage {
-                transaction: make_test_tx([0x01; 32], genesis_root),
-                sender: [0x99; 32],
-            }).is_ok() || true,
-            "Non-validator node returns Ok(None) from handle_transfer, which is fine"
-        );
+        // Non-validator node returns Ok(None) from handle_transfer, which is fine.
+        // We don't assert on the result — it's expected to succeed or be a no-op.
+        let _ = handler.submit_external_transfer(&L2ConfidentialTransferMessage {
+            transaction: make_test_tx([0x01; 32], genesis_root),
+            sender: [0x99; 32],
+        });
     }
 }
 

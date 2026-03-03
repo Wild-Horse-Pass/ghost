@@ -9,6 +9,7 @@
 //! - VM2: clearnet + ghostreaper=strict
 //! - VM3: tormode + (launcher defaults)
 //! - VM4: tormode + ghostreaper=moderate
+#![allow(clippy::expect_fun_call)]
 
 use std::sync::Arc;
 use std::time::Duration;
