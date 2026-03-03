@@ -2118,20 +2118,24 @@ async fn api_l2_fee_distribution_context_handler(
             .into_iter()
             .filter(|node| node.last_seen >= recent_cutoff)
             .filter_map(|node| {
-                let caps: serde_json::Value =
-                    serde_json::from_str(&node.capabilities).ok()?;
-                let ghost_pay_enabled = caps
-                    .get("ghost_pay")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if !ghost_pay_enabled {
+                // Parse "key:value,key:value" format stored by health_handler
+                let cap_map: std::collections::HashMap<&str, bool> = node
+                    .capabilities
+                    .split(',')
+                    .filter_map(|pair| {
+                        let (k, v) = pair.split_once(':')?;
+                        Some((k.trim(), v.trim() == "true"))
+                    })
+                    .collect();
+
+                if !cap_map.get("ghost_pay").copied().unwrap_or(false) {
                     return None;
                 }
                 // Compute total shares from capabilities
-                let archive = if caps.get("archive_mode").and_then(|v| v.as_bool()).unwrap_or(false) { 5i32 } else { 0 };
+                let archive = if cap_map.get("archive").copied().unwrap_or(false) { 5i32 } else { 0 };
                 let ghost_pay_shares = 4i32;
-                let public_mining = if caps.get("public_mining").and_then(|v| v.as_bool()).unwrap_or(false) { 3 } else { 0 };
-                let reaper = if caps.get("reaper_strict").and_then(|v| v.as_bool()).unwrap_or(false) { 2 } else { 0 };
+                let public_mining = if cap_map.get("public_mining").copied().unwrap_or(false) { 3 } else { 0 };
+                let reaper = if cap_map.get("reaper").copied().unwrap_or(false) { 2 } else { 0 };
                 let elder = if node.is_elder { 1 } else { 0 };
                 let total_shares = archive + ghost_pay_shares + public_mining + reaper + elder;
 
