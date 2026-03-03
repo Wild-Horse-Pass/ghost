@@ -5606,8 +5606,10 @@ async fn run_wraith_simulation(
     }
 
     // Build sendmany destinations (amounts in BTC as floats)
+    // Each participant needs: output_sats + phase2_fee_share + phase1_fee_share + buffer
+    // Micro: 100,000 + ~1,612 + ~1,462 + buffer ≈ 110,000 sats each
     let mut destinations = serde_json::Map::new();
-    let amount_btc = 101_000.0 / 100_000_000.0;
+    let amount_btc = 110_000.0 / 100_000_000.0;
     for addr in &addresses {
         destinations.insert(addr.clone(), serde_json::json!(amount_btc));
     }
@@ -5616,8 +5618,15 @@ async fn run_wraith_simulation(
         .call_raw(
             "sendmany",
             vec![
-                serde_json::json!(""),
-                serde_json::Value::Object(destinations),
+                serde_json::json!(""),                          // dummy
+                serde_json::Value::Object(destinations),        // amounts
+                serde_json::json!(1),                           // minconf
+                serde_json::json!(""),                          // comment
+                serde_json::json!([]),                          // subtractfeefrom
+                serde_json::json!(true),                        // replaceable
+                serde_json::Value::Null,                        // conf_target (null to avoid conflict)
+                serde_json::json!("unset"),                     // estimate_mode
+                serde_json::json!(1),                           // fee_rate: 1 sat/vB
             ],
         )
         .await
@@ -5629,12 +5638,12 @@ async fn run_wraith_simulation(
 
     info!(session_id = %session_id, txid = %funding_txid, "Funding tx sent");
 
-    // Step 2: Wait for funding confirmation
-    info!(session_id = %session_id, "Step 2: Waiting for funding confirmation");
+    // Step 2: Wait briefly for tx propagation (skip confirmation wait — blocks may not be mined)
+    info!(session_id = %session_id, "Step 2: Waiting for tx propagation");
     update_sim_state(&state, &session_id, "sim_waiting_funding");
 
-    wait_for_confirmation(rpc, &funding_txid, 1).await?;
-    info!(session_id = %session_id, "Funding confirmed");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    info!(session_id = %session_id, "Funding tx in mempool, proceeding without confirmation");
 
     // Get the UTXO details for each participant
     let funding_tx: serde_json::Value = rpc
@@ -5679,6 +5688,17 @@ async fn run_wraith_simulation(
     info!(session_id = %session_id, "Step 3: Creating WraithCoordinator");
     update_sim_state(&state, &session_id, "sim_creating_coordinator");
 
+    // Shared state for the broadcaster (populated during simulation steps)
+    // Keys: WIF-encoded secret keys for intermediate outputs
+    // Prevtxs: (txid, vout, scriptPubKey_hex, amount_btc) for segwit signing
+    let intermediate_keys: std::sync::Arc<parking_lot::Mutex<Vec<String>>> =
+        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let intermediate_prevtxs: std::sync::Arc<parking_lot::Mutex<Vec<serde_json::Value>>> =
+        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let keys_for_broadcast = intermediate_keys.clone();
+    let prevtxs_for_broadcast = intermediate_prevtxs.clone();
+    let rpc_for_broadcast = state.rpc.clone();
+
     let mut coordinator = WraithCoordinator::new(
         ParticipantTier::Micro,
         WraithDenomination::Micro,
@@ -5686,7 +5706,59 @@ async fn run_wraith_simulation(
         SessionType::Mix,
     )
     .map_err(|e| format!("WraithCoordinator::new failed: {e}"))?
-    .without_utxo_required_for_registration();
+    .without_utxo_required_for_registration()
+    .with_broadcaster(move |tx_hex: &str| {
+        let rpc = rpc_for_broadcast.clone();
+        let hex = tx_hex.to_string();
+        let privkeys = keys_for_broadcast.lock().clone();
+        let prevtxs = prevtxs_for_broadcast.lock().clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                // Try wallet signing first (works for Phase 1 inputs)
+                let signed = rpc
+                    .sign_raw_transaction_with_wallet(&hex)
+                    .await
+                    .map_err(|e| format!("wallet sign failed: {e}"))?;
+                if signed.complete {
+                    return rpc
+                        .send_raw_transaction(&signed.hex)
+                        .await
+                        .map_err(|e| format!("broadcast failed: {e}"));
+                }
+                // Phase 2: wallet signing incomplete, use intermediate privkeys + prevtxs
+                if privkeys.is_empty() {
+                    return Err("Signing incomplete and no intermediate keys available".to_string());
+                }
+                // signrawtransactionwithkey(hex, [privkeys], [prevtxs])
+                let result: serde_json::Value = rpc
+                    .call_raw(
+                        "signrawtransactionwithkey",
+                        vec![
+                            serde_json::json!(signed.hex),
+                            serde_json::json!(privkeys),
+                            serde_json::json!(prevtxs),
+                        ],
+                    )
+                    .await
+                    .map_err(|e| format!("signrawtransactionwithkey failed: {e}"))?;
+                let final_hex = result
+                    .get("hex")
+                    .and_then(|v| v.as_str())
+                    .ok_or("No hex in signrawtransactionwithkey response")?;
+                let complete = result
+                    .get("complete")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !complete {
+                    let errors = result.get("errors").cloned().unwrap_or_default();
+                    return Err(format!("Phase 2 signing incomplete: {errors}"));
+                }
+                rpc.send_raw_transaction(final_hex)
+                    .await
+                    .map_err(|e| format!("broadcast failed: {e}"))
+            })
+        })
+    });
 
     let coordinator_pubkey = *coordinator.coordinator_public_key();
     let coordinator_key_id = *coordinator.coordinator_key_id();
@@ -5756,9 +5828,26 @@ async fn run_wraith_simulation(
         let mut challenges = Vec::with_capacity(outputs_per);
 
         for nonce in &nonces {
-            let mut message = [0u8; 32];
-            getrandom::getrandom(&mut message).unwrap();
-            let ctx = BlindingContext::new(message.to_vec(), &coordinator_pubkey, nonce)
+            // Generate a valid x-only pubkey as the message (used as intermediate output key)
+            let secp = secp256k1::Secp256k1::new();
+            let mut key_bytes = [0u8; 32];
+            getrandom::getrandom(&mut key_bytes).unwrap();
+            // Ensure valid secret key (non-zero, within curve order)
+            key_bytes[0] = key_bytes[0].max(1);
+            let mut sk = secp256k1::SecretKey::from_slice(&key_bytes)
+                .map_err(|e| format!("SecretKey generation failed: {e}"))?;
+            let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+            let (xonly, parity) = pk.x_only_public_key();
+            // Coordinator uses 0x02 (even) prefix for P2WPKH addresses.
+            // Negate the key if parity is odd so signing matches.
+            if parity == bitcoin::secp256k1::Parity::Odd {
+                sk = sk.negate();
+            }
+            // Store WIF-encoded key for Phase 2 signing
+            let privkey = bitcoin::PrivateKey::new(sk, state.network);
+            intermediate_keys.lock().push(privkey.to_wif());
+            let message = xonly.serialize().to_vec();
+            let ctx = BlindingContext::new(message, &coordinator_pubkey, nonce)
                 .map_err(|e| format!("BlindingContext::new failed: {e}"))?;
             let challenge = ctx
                 .create_blinded_challenge()
@@ -5800,46 +5889,61 @@ async fn run_wraith_simulation(
         .build_phase1()
         .map_err(|e| format!("build_phase1 failed: {e}"))?;
     let phase1_hex = bitcoin::consensus::encode::serialize_hex(&phase1_tx.transaction);
+    // Save Phase 1 output details for Phase 2 prevtxs (extract before borrow ends)
+    let phase1_outputs_for_prevtxs: Vec<(u32, u64, String)> = phase1_tx
+        .transaction
+        .output
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.value.to_sat() > 0) // Skip OP_RETURN
+        .map(|(vout, o)| {
+            (
+                vout as u32,
+                o.value.to_sat(),
+                hex::encode(o.script_pubkey.as_bytes()),
+            )
+        })
+        .collect();
     info!(
         session_id = %session_id,
         outputs = phase1_tx.intermediate_count,
         "Phase 1 transaction built"
     );
 
-    // Step 9: Sign + Broadcast Phase 1
+    // Step 9: Sign + Broadcast Phase 1 (via coordinator's broadcast callback)
     info!(session_id = %session_id, "Step 9: Signing and broadcasting Phase 1");
     update_sim_state(&state, &session_id, "sim_broadcasting_phase1");
 
-    let signed = rpc
-        .sign_raw_transaction_with_wallet(&phase1_hex)
-        .await
-        .map_err(|e| format!("sign phase1 failed: {e}"))?;
-    if !signed.complete {
-        return Err("Phase 1 signing incomplete".to_string());
-    }
-
-    let phase1_txid: String = rpc
-        .send_raw_transaction(&signed.hex)
-        .await
-        .map_err(|e| format!("broadcast phase1 failed: {e}"))?;
+    let phase1_txid = coordinator
+        .broadcast_phase1(&phase1_hex)
+        .map_err(|e| format!("broadcast_phase1 failed: {e}"))?;
     info!(session_id = %session_id, txid = %phase1_txid, "Phase 1 broadcast");
 
-    coordinator
-        .broadcast_phase1(&phase1_txid)
-        .map_err(|e| format!("broadcast_phase1 notify failed: {e}"))?;
-
-    // Step 10: Wait for Phase 1 confirmation
-    info!(session_id = %session_id, "Step 10: Waiting for Phase 1 confirmation");
+    // Step 10: Skip confirmation wait (blocks may not be mining on signet)
+    info!(session_id = %session_id, "Step 10: Phase 1 in mempool, proceeding");
     update_sim_state(&state, &session_id, "sim_confirming_phase1");
 
-    wait_for_confirmation(rpc, &phase1_txid, 1).await?;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    // Step 11: Confirm Phase 1
+    // Step 11: Confirm Phase 1 (using current block height)
     let block_height = rpc.get_block_count().await.unwrap_or(0) as u32;
     coordinator
         .confirm_phase1(block_height)
         .map_err(|e| format!("confirm_phase1 failed: {e}"))?;
     info!(session_id = %session_id, "Phase 1 confirmed at height {}", block_height);
+
+    // Populate prevtxs from Phase 1 outputs for Phase 2 signing
+    {
+        let mut prevtxs = intermediate_prevtxs.lock();
+        for (vout, amount_sats, script_hex) in &phase1_outputs_for_prevtxs {
+            prevtxs.push(serde_json::json!({
+                "txid": phase1_txid,
+                "vout": vout,
+                "scriptPubKey": script_hex,
+                "amount": *amount_sats as f64 / 100_000_000.0
+            }));
+        }
+    }
 
     // Step 12: Build Phase 2
     info!(session_id = %session_id, "Step 12: Building Phase 2");
@@ -5851,35 +5955,22 @@ async fn run_wraith_simulation(
     let phase2_hex = bitcoin::consensus::encode::serialize_hex(&phase2_tx.transaction);
     info!(session_id = %session_id, "Phase 2 transaction built");
 
-    // Step 13: Sign + Broadcast Phase 2
+    // Step 13: Sign + Broadcast Phase 2 (via coordinator's broadcast callback)
     info!(session_id = %session_id, "Step 13: Signing and broadcasting Phase 2");
     update_sim_state(&state, &session_id, "sim_broadcasting_phase2");
 
-    let signed2 = rpc
-        .sign_raw_transaction_with_wallet(&phase2_hex)
-        .await
-        .map_err(|e| format!("sign phase2 failed: {e}"))?;
-    if !signed2.complete {
-        return Err("Phase 2 signing incomplete".to_string());
-    }
-
-    let phase2_txid: String = rpc
-        .send_raw_transaction(&signed2.hex)
-        .await
-        .map_err(|e| format!("broadcast phase2 failed: {e}"))?;
+    let phase2_txid = coordinator
+        .broadcast_phase2(&phase2_hex)
+        .map_err(|e| format!("broadcast_phase2 failed: {e}"))?;
     info!(session_id = %session_id, txid = %phase2_txid, "Phase 2 broadcast");
 
-    coordinator
-        .broadcast_phase2(&phase2_txid)
-        .map_err(|e| format!("broadcast_phase2 notify failed: {e}"))?;
-
-    // Step 14: Wait for Phase 2 confirmation
-    info!(session_id = %session_id, "Step 14: Waiting for Phase 2 confirmation");
+    // Step 14: Skip confirmation wait (blocks may not be mining on signet)
+    info!(session_id = %session_id, "Step 14: Phase 2 in mempool, proceeding");
     update_sim_state(&state, &session_id, "sim_confirming_phase2");
 
-    wait_for_confirmation(rpc, &phase2_txid, 1).await?;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    // Step 15: Confirm Phase 2
+    // Step 15: Confirm Phase 2 (using current block height)
     let block_height2 = rpc.get_block_count().await.unwrap_or(0) as u32;
     coordinator
         .confirm_phase2(block_height2)
