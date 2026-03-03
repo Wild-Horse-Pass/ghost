@@ -564,6 +564,7 @@ name = "bitcoin-ghost-tests"
 version = "1.8.0"
 dependencies = [
  "bitcoin",
+ "chrono",
  "futures-util",
  "ghost-buds",
  "ghost-common",

@@ -31,6 +31,7 @@
 //! | 28 | l2_cross_layer | 20 - Cross-layer L2 integration (850-869) |
 //! | 29 | l2_nullifier_route | 20 - L2 nullifier route, sender proofs (870-889) |
 //! | 30 | wraith_e2e | 19 - Wraith E2E sessions, Jump Lock lifecycle, affordability (890-908) |
+//! | 31 | wraith_fee_routing | 20 - Wraith fee routing pipeline, epoch tracking, settlement (910-929) |
 //!
 //! # Running Tests
 //!
@@ -89,5 +90,6 @@ pub mod stratum_payout_consensus;
 pub mod stratum_validation;
 pub mod wraith_blind_signatures;
 pub mod wraith_e2e;
+pub mod wraith_fee_routing;
 pub mod wraith_protocol;
 pub mod wraith_transactions;
