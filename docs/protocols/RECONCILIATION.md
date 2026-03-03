@@ -200,19 +200,50 @@ This prevents anonymity set degradation from stale UTXOs.
 
 ## Fee Distribution
 
-Reconciliation fees contribute to the L2 fee pool:
+L2 fees (reconciliation + wraith service fees + transfer fees) contribute to the L2 fee pool.
+
+**L2 Transfer Fee**: `L2_TRANSFER_FEE_SATS = 10` sats per transfer.
+
+**Treasury threshold**: 21 BTC (`TREASURY_THRESHOLD_SATS = 2_100_000_000_000`)
 
 ```
-Reconciliation Fee Income
+L2 Fee Income (all sources)
          │
-         ├──► Ghost Pay Node Reward Pool (50-100%)
-         │    Based on treasury decay schedule
+         ├──► Ghost Pay Node Reward Pool
+         │    Weighted distribution by node shares, with dust reclamation
+         │    Ratio determined by DECAY_SCHEDULE_BPS:
+         │    Pre-threshold:  50% nodes / 50% treasury
+         │    Post-threshold: 60/40 → 70/30 → 80/20 → 90/10 → 100/0
          │
-         └──► Treasury (0-50%)
-              Based on treasury decay schedule
+         └──► Treasury
+              Inverse of node ratio (50% → 40% → 30% → 20% → 10% → 0%)
 ```
 
 Only nodes running Ghost Pay (+4 shares) receive these fees.
+
+### DB Infrastructure
+
+| Table/Function | Purpose |
+|----------------|---------|
+| `l2_epoch_fees` | Epoch-based fee accumulation (schema v28+) |
+| `increment_wraith_fee(epoch, amount)` | Add fee to epoch bucket |
+| `get_undistributed_fees()` | Query pending epoch fees |
+| `mark_epoch_fees_distributed(epoch)` | Mark epoch as distributed |
+
+### Fee Distribution Flow
+
+```
+1. ghost-pay settlement loop queries ghost-pool:
+   GET /api/v1/l2/fee-distribution-context
+   → Returns: TreasuryState, qualified nodes, share weights
+
+2. L2FeeDistribution calculates per-node payouts:
+   - Total fee pool ÷ (node ratio from decay schedule)
+   - Weighted by each node's shares (out of total qualified shares)
+   - Dust amounts (< 546 sats) reclaimed to largest recipient
+
+3. build_transaction_with_l2_fees includes fee outputs in settlement TX
+```
 
 ## State Commitment
 

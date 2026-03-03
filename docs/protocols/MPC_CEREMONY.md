@@ -348,12 +348,15 @@ Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_c
 Proof size: 192 bytes (A: 48 G1, B: 96 G2, C: 48 G1)
 Proving time: ~170ms (sender-side). Verification: ~5ms.
 
-### 9.2 PayoutCircuit
+### 9.2 NoteConsolidateCircuit (Slot 2)
 
-Proves payout distribution validity (~2,500 constraints vs NoteSpend's ~12,675):
-- Sum preservation: miners + nodes + treasury = total
-- All amounts fit in 64 bits
-- Metadata commitment (epoch, counts)
+Merges up to 4 notes into a single note of equal total value (~2,500 constraints):
+- Proves ownership of each input note via spending key
+- Merkle inclusion for each input (depth 20)
+- Sum preservation: output_value = sum(input_values)
+- Public inputs: `commitment_root`, `nullifier_0..3`, `output_commitment`
+
+**Note**: This circuit occupies MPC slot 2 and its verifying key is stored as `payout_vk.bin` for historical reasons (the slot was originally used by PayoutCircuit). The filename was retained to avoid breaking deployed nodes.
 
 ### 9.3 GhostUnshieldCircuit
 
@@ -413,7 +416,7 @@ sqlite3 /home/ghost/.ghost/ghost.db \
   "SELECT position, hex(node_id), timestamp FROM mpc_contributions ORDER BY position;"
 
 # Check ceremony state
-curl http://localhost:8800/api/v1/mpc/contributors | jq length
+curl http://localhost:8080/api/v1/mpc/contributors | jq length
 ```
 
 ---

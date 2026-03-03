@@ -28,11 +28,14 @@ This document covers key management best practices for Bitcoin Ghost nodes, incl
 
 ## Overview
 
-Bitcoin Ghost uses three types of cryptographic keys:
+Bitcoin Ghost uses the following cryptographic keys:
 
 1. **Node Identity Key** - Ed25519 keypair for P2P authentication and consensus voting
 2. **Treasury Address** - Bitcoin address (single or multi-sig) for pool fee collection
 3. **Signing Key** (optional) - For registry authentication
+4. **Noise Protocol Keypair** - X25519 keypair for encrypted P2P communication (`noise.key`)
+5. **Ghost Pay API Secret** - HMAC secret for ghost-pay API authentication (`GHOST_PAY_API_SECRET` env var, unique per node)
+6. **SQLCipher Key** - Encryption key for ghost-pay database at rest (derived from password file)
 
 ## Node Identity Keys
 
@@ -312,6 +315,11 @@ chmod 600 ~/.ghost/node.key
 - Hardware security module backup partition
 - Air-gapped system
 - Secret management service (HashiCorp Vault, AWS Secrets Manager)
+
+**Items to back up:**
+- `~/.ghost/node.key` — Node identity key
+- `/etc/ghost/noise.key` — Noise Protocol keypair (auto-generated if missing, but loss means re-handshake with all peers)
+- Ghost Pay password file — Used to derive SQLCipher encryption key (loss means ghost-pay DB is unrecoverable)
 
 **Never store backups:**
 - On the same system as the primary key

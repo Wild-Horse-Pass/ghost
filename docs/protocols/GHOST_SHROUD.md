@@ -31,8 +31,19 @@ Ghost Shroud adds a random delay (0-5 seconds) before relaying transactions to p
 **Key properties:**
 - Enabled by default on all Ghost Core nodes
 - Mining is unaffected (transactions enter the mempool immediately)
-- Configurable via `-shroud=0` to disable
+- Configurable via `-shroud=0` to disable (ghost-core level)
 - Zero impact on transaction validity or confirmation time
+
+### Pool-Level Configuration
+
+In addition to the ghost-core `-shroud` flag, ghost-pool has its own `network.shroud_enabled` config field:
+
+```toml
+[network]
+shroud_enabled = true    # Pool-level relay delay (default: true)
+```
+
+This controls whether ghost-pool applies relay delays to its own P2P message forwarding, independent of the ghost-core transaction relay shroud. Both can be configured separately.
 
 ## How It Works
 

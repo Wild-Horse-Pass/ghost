@@ -58,6 +58,7 @@ This runbook provides step-by-step instructions for deploying Bitcoin Ghost in p
 - **Rust**: 1.75+ (for building from source)
 - **Bitcoin Core**: ghost-core (fork with Ghost extensions) or compatible Bitcoin Core 27+
 - **SQLite**: 3.35+ (bundled)
+- **SQLCipher**: Required for ghost-pay database encryption at rest
 
 ### Dependencies
 
@@ -260,6 +261,15 @@ noise_port = 8563                              # TCP port for encrypted connecti
 noise_keypair_path = "/etc/ghost/noise.key"   # X25519 keypair (auto-generated if missing)
 noise_required = false                         # Reject plaintext peers (set true after all nodes upgraded)
 
+# Ghost Mode (pool-level network participation)
+ghost_mode = "full"                            # full, relay, minimal
+
+# Shroud (pool-level relay delay, separate from ghost-core -shroud)
+shroud_enabled = true
+
+# Seed nodes (REQUIRED for mainnet — nodes discover peers through Noise-encrypted Discovery messages)
+seed_nodes = ["tcp://83.136.251.162:8559", "tcp://85.9.198.212:8559"]
+
 [policy]
 profile = "permissive"             # bitcoin_pure, permissive, full_open
 
@@ -268,6 +278,7 @@ db_path = "/var/lib/ghost/data"
 wal_mode = true
 archive_mode = false
 prune_height = 0
+haze_mode = "Standard"                # Standard, Hazed, FullArchive
 
 [pool]
 treasury_address = "bc1q..."      # Your treasury P2TR address
@@ -903,4 +914,25 @@ curl http://localhost:8080/api/v1/health
 
 ---
 
-*Last Updated: 2026-03-02*
+## Known Gotchas
+
+### SQLCipher Export
+`sqlcipher_export` does NOT copy `PRAGMA user_version`. After exporting, you must read the user_version from the source and restore it manually on the target database.
+
+### SQLite WAL Checkpoint
+When resetting state (e.g., DELETEs during MPC ceremony reset), you must run `PRAGMA wal_checkpoint(TRUNCATE)` before and after DELETEs. Otherwise WAL replay can restore old data.
+
+### Mainnet Security Enforcement
+On mainnet, the following are enforced (not optional):
+- Noise protocol encryption (`noise_enabled = true`)
+- API authentication
+- TLS for external connections
+- Seed nodes must be configured
+
+### Schema Version
+Current schema version: **29**. Migrations run automatically on startup. Key additions since v23:
+- v24: `ghost_locks` columns (`source`, `wraith_fee_sats`), wizard config fields
+- v28: `l2_epoch_fees` table for epoch-based fee accumulation
+- v29: Current
+
+*Last Updated: 2026-03-03*

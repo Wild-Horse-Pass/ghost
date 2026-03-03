@@ -22,12 +22,13 @@
 //|======================================================================================================================|
 ```
 
-# Bitcoin Ghost v1.5 - Canonical Specification
+# Bitcoin Ghost v1.6 - Canonical Specification
 
 ## Document Control
 
 | Version | Date | Author |
 |---------|------|--------|
+| 1.6.0 | 2026-03-03 | Bitcoin Ghost Team |
 | 1.5.0 | 2026-02-18 | Bitcoin Ghost Team |
 | 1.4.0 | 2026-01-22 | Bitcoin Ghost Team |
 
@@ -177,6 +178,7 @@ Each Ghost Node runs:
 | `ghost-core` | Bitcoin Core v30.1 fork with Ghost Pay L1 integration | Yes |
 | `translator` | SV1→SV2 proxy for upstream SV2 pools (future use) | Optional |
 | `ghost-pay` | L2 payment network node | Optional |
+| `ghost-setup` | Headless CLI for scripted node setup (`bins/ghost-setup/`) | Optional |
 
 ### 3.2 ghost-pool
 
@@ -442,7 +444,11 @@ See [Ghost Shroud](protocols/GHOST_SHROUD.md) for the full specification.
 
 ### 7.1 SQLite Database
 
-Location: `/var/lib/ghost/ghost_pool.db`
+Location: `/home/ghost/.ghost/ghost.db`
+
+**Ghost Pay database** (separate): `/home/ghost/.ghost/ghost-pay/ghost-pay.db` (SQLCipher encrypted)
+
+**Important**: ghost-pool and ghost-pay use **separate databases** with **separate commitment trees**. ghost-pool stores L2 consensus state in `l2_notes`; ghost-pay stores scanned notes in `confidential_notes`.
 
 ### 7.2 Core Tables
 
@@ -624,7 +630,46 @@ CREATE TABLE burned_elder_numbers (
     burned_at INTEGER NOT NULL,
     reason TEXT
 );
+
+-- L2 notes (ghost-pool consensus state)
+CREATE TABLE l2_notes (
+    note_id INTEGER PRIMARY KEY,
+    commitment BLOB NOT NULL,
+    nullifier BLOB,
+    value_sats INTEGER NOT NULL,
+    epoch INTEGER NOT NULL,
+    status TEXT DEFAULT 'active',       -- active, spent, consolidated
+    created_at INTEGER NOT NULL
+);
+
+-- L2 epoch fee accumulation (schema v28+)
+CREATE TABLE l2_epoch_fees (
+    epoch INTEGER PRIMARY KEY,
+    accumulated_fee_sats INTEGER NOT NULL DEFAULT 0,
+    distributed INTEGER NOT NULL DEFAULT 0,  -- 0 = pending, 1 = distributed
+    created_at INTEGER NOT NULL,
+    distributed_at INTEGER
+);
+
+-- Confidential notes (ghost-pay scanned notes, in ghost-pay.db)
+CREATE TABLE confidential_notes (
+    note_id INTEGER PRIMARY KEY,
+    commitment BLOB NOT NULL,
+    value_sats INTEGER NOT NULL,
+    spending_key_hash BLOB NOT NULL,
+    randomness BLOB NOT NULL,
+    epoch INTEGER NOT NULL,
+    tree_index INTEGER NOT NULL,
+    status TEXT DEFAULT 'active',
+    created_at INTEGER NOT NULL
+);
+
+-- Ghost Locks extended columns (schema v24+)
+-- ghost_locks.source: origin tracking ('wraith', 'direct', 'consolidation')
+-- ghost_locks.wraith_fee_sats: wraith service fee paid on this lock
 ```
+
+**Schema version**: 29
 
 ### 7.3 Indexes
 
@@ -681,7 +726,7 @@ min_interval = 5
 
 # Ghost economics
 pool_fee_percent = 1.0
-database_path = "/var/lib/ghost/ghost_pool.db"
+database_path = "/home/ghost/.ghost/ghost.db"
 ipc_socket_path = "/var/run/ghost/pool.sock"
 tx_fee_address = "addr(tb1q...)"  # TX fees go here (node operator)
 
@@ -712,6 +757,26 @@ noise_enabled = true                           # Enable Noise encryption (defaul
 noise_port = 8563                              # TCP port for Noise connections
 noise_keypair_path = "/etc/ghost/noise.key"   # X25519 keypair (auto-generated)
 noise_required = false                         # Reject plaintext peers (default: false)
+
+# Ghost Mode (pool-level network participation mode)
+ghost_mode = "full"                            # full, relay, minimal
+
+# Shroud (pool-level relay delay, separate from ghost-core -shroud flag)
+shroud_enabled = true                          # Enable relay delay for privacy
+
+# Seed nodes (required for mainnet)
+seed_nodes = ["tcp://83.136.251.162:8559", "tcp://85.9.198.212:8559"]
+
+[storage]
+# Haze mode (ghost-core archive stripping)
+haze_mode = "Standard"                         # Standard, Hazed, FullArchive
+
+# Ghost Pay L2 (optional)
+[ghost_pay]
+enabled = false
+api_port = 8800
+# GHOST_PAY_API_SECRET: set via systemd Environment (unique per node)
+# Database: ~/.ghost/ghost-pay/ghost-pay.db (SQLCipher encrypted, separate from ghost.db)
 
 # Bitcoin Core ZMQ
 [core_zmq_config]
@@ -827,6 +892,7 @@ TX Fees:
   - Year 4: 0.2% → 0.1%
   - Year 5: 0.1% → 0%
 - **After decay**: Full 1% pool fee goes to node rewards
+- **L2 fee decay**: Follows the same schedule for L2 transfer and wraith fees (see §16.7)
 
 ### 9.3 Node Reward Pool (5-4-3-2-1 System)
 
@@ -1486,21 +1552,35 @@ NoteSpend Transfer Flow:
 
 ### 16.7 L2 Fee Distribution
 
-L2 fees (Wraith mixing + reconciliation) are distributed:
+L2 fees (Wraith mixing + reconciliation + L2 transfers) are distributed:
+
+**L2 Transfer Fee**: `L2_TRANSFER_FEE_SATS = 10` sats per transfer, accumulated per epoch in the `l2_epoch_fees` table.
 
 ```
-L2 Fee Income
+L2 Fee Income (Wraith service fees + transfer fees)
      │
      ├──► Ghost Pay Node Reward Pool (split among +4 share nodes)
      │    Ratio: Inverse of treasury decay
      │    Pre-threshold: 50%
      │    Post-decay: 100%
+     │    Distribution: Weighted by node shares, with dust reclamation
      │
      └──► Treasury
           Ratio: Same as L1 treasury allocation
           Pre-threshold: 50%
           Post-decay: 0%
 ```
+
+**Epoch-Based Fee Accumulation**:
+- Each wraith session completion increments `l2_epoch_fees` for the current epoch
+- Transfer fees (10 sats each) accumulate in the same epoch bucket
+- At settlement, ghost-pay queries `GET /api/v1/l2/fee-distribution-context` from ghost-pool for treasury state and qualified node list
+- Settlement TX includes L2 fee outputs via `build_transaction_with_l2_fees`
+- DB operations: `increment_wraith_fee`, `get_undistributed_fees`, `mark_epoch_fees_distributed`
+
+**Fee Decay Schedule** (`DECAY_SCHEDULE_BPS`):
+- Pre-threshold (treasury < 21 BTC): 50% nodes / 50% treasury
+- Post-threshold decay: 60/40 → 70/30 → 80/20 → 90/10 → 100/0
 
 **Example (pre-threshold)**:
 - Wraith fees collected: 100,000 sats
@@ -2120,9 +2200,15 @@ NEW (GOOD):
 └── translator/
     └── config.toml
 
-/var/lib/ghost/
-├── ghost_pool.db
-└── logs/
+/home/ghost/.ghost/
+├── ghost.db
+├── ghost-pay/
+│   └── ghost-pay.db          # SQLCipher encrypted (separate from ghost.db)
+├── mpc_params/
+│   ├── note_spend_vk.bin
+│   ├── payout_vk.bin
+│   └── unshield_vk.bin
+└── noise.key
 ```
 
 ### 19.2 Systemd Services
@@ -2307,6 +2393,8 @@ Ghost uses Groth16 proofs over BLS12-381 with a sender-side proof architecture:
 | Proof Type | Purpose | Public Inputs | Constraints | Size |
 |-----------|---------|---------------|-------------|------|
 | NoteSpend | Note spending / transfer validity | commitment_root, nullifier, change_commitment, recipient_commitment | ~12,675 (depth-20) | 192 bytes |
+| NoteConsolidate | Merge up to 4 notes into 1 | commitment_root, nullifier_0..3, output_commitment | ~2,500 (depth-20) | 192 bytes |
+| Unshield | L2→L1 withdrawal (burn note) | commitment_root, nullifier, withdrawal_amount | ~6,300 (depth-20) | 192 bytes |
 | Payout | Distribution validity | epoch, totals | ~2,500 | 192 bytes |
 
 Proof structure: A (48 bytes, G1) + B (96 bytes, G2) + C (48 bytes, G1).
@@ -2314,6 +2402,10 @@ Proof structure: A (48 bytes, G1) + B (96 bytes, G2) + C (48 bytes, G1).
 ### 21.2 Circuit Design
 
 **GhostNoteSpendCircuit**: Sender-side proof for spending a note in the L2 commitment tree. Uses MiMC (82 rounds) for hashing, depth-20 Merkle inclusion proofs. Senders generate proofs locally (~170ms); validators verify in ~5ms. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Replaced the earlier BlockCircuit (February 2026 L2 redesign).
+
+**NoteConsolidateCircuit**: Merges up to 4 notes into a single note of equal total value. ~2,500 constraints at depth-20. Proves ownership of each input, Merkle inclusion, and sum preservation. Required field: `encrypted_output` (hex, min 218 chars = 109 bytes).
+
+**GhostUnshieldCircuit**: Burns a note for L2→L1 withdrawal. ~6,300 constraints at depth-20. Simpler than NoteSpend — full note value only, no change or recipient commitments. 3 public inputs: `commitment_root`, `nullifier`, `withdrawal_amount`.
 
 **PayoutCircuit**: Proves payout distribution preserves sum (miners + nodes + treasury = total) with 64-bit amount bounds.
 
@@ -2323,7 +2415,17 @@ Proof structure: A (48 bytes, G1) + B (96 bytes, G2) + C (48 bytes, G1).
 
 ### 21.3 MPC Ceremony
 
-Parameters are generated through a rolling Multi-Party Computation ceremony. See [MPC Ceremony](protocols/MPC_CEREMONY.md) for the full specification. MPC uses `GhostNoteSpendCircuit::dummy(20)` for parameter generation (~3-4s per contribution).
+Parameters are generated through a rolling Multi-Party Computation ceremony. See [MPC Ceremony](protocols/MPC_CEREMONY.md) for the full specification.
+
+**MPC Slot Assignment (3 circuits)**:
+
+| Slot | Circuit | Dummy Call | VK File |
+|------|---------|------------|---------|
+| 1 | GhostNoteSpendCircuit(depth=20) | `GhostNoteSpendCircuit::dummy(20)` | `note_spend_vk.bin` |
+| 2 | NoteConsolidateCircuit(depth=20) | `NoteConsolidateCircuit::dummy(20)` | `payout_vk.bin` |
+| 3 | GhostUnshieldCircuit(depth=20) | `GhostUnshieldCircuit::dummy(20)` | `unshield_vk.bin` |
+
+Each contribution takes ~3-4s per circuit.
 
 Summary:
 - First 101 contributors become Elders (+1 share)
@@ -2559,10 +2661,16 @@ const POLICY_PASS_RATE: f64 = 0.95;
 const STRATUM_PASS_RATE: f64 = 0.95;
 const GHOSTPAY_PASS_RATE: f64 = 0.90;
 
+// L2 Fees
+const L2_TRANSFER_FEE_SATS: u64 = 10;       // Per-transfer fee (accumulated per epoch)
+const NOTE_TREE_DEPTH: usize = 20;           // Commitment tree depth (~1M capacity)
+
 // Ports
 const SV1_STRATUM_PORT: u16 = 3333;          // Main pool (active)
 const SV2_STRATUM_PORT: u16 = 34255;         // Reserved for future use
 const HTTP_API_PORT: u16 = 8080;
+const GHOST_PAY_API_PORT: u16 = 8800;        // Ghost Pay L2 API
+const GSP_WEBSOCKET_PORT: u16 = 8900;        // GSP light wallet backend
 const COORDINATOR_PORT: u16 = 8333;
 const SHARE_PROPAGATION_PORT: u16 = 8555;
 const BLOCK_ANNOUNCEMENT_PORT: u16 = 8556;
@@ -2611,4 +2719,4 @@ const NOISE_ENCRYPTED_PORT: u16 = 8563;      // Noise Protocol encrypted channel
 
 ---
 
-*End of Specification*
+*End of Specification — Last Updated: 2026-03-03*

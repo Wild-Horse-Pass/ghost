@@ -99,7 +99,7 @@ Bitcoin Ghost is a full Bitcoin node implementation with incentivized operation,
 
 | Document | Description |
 |----------|-------------|
-| [Specification](./SPECIFICATION.md) | Canonical technical specification (v1.5) |
+| [Specification](./SPECIFICATION.md) | Canonical technical specification (v1.6) |
 | [API Endpoints](./API_ENDPOINTS.md) | HTTP API reference |
 | [RPC Commands](./RPC_COMMANDS.md) | Bitcoin Core RPC extensions |
 | [Ghost Core Integration](./GHOST_CORE_INTEGRATION.md) | Bitcoin Core modification details |

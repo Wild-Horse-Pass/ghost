@@ -163,7 +163,7 @@ The main pool node API for mining operations, status monitoring, and dashboard i
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/v1/logs` | Recent logs |
+| ~~GET~~ | ~~`/api/v1/logs`~~ | **Removed** (security audit S-4: log exposure risk) |
 
 ### Verification Challenges
 
@@ -192,6 +192,7 @@ The main pool node API for mining operations, status monitoring, and dashboard i
 |--------|----------|-------------|
 | POST | `/api/v1/l2/submit` | L2 transaction relay to mesh (localhost only) |
 | POST | `/api/v1/l2/sync-commitment` | Commitment tree sync (localhost only) |
+| GET | `/api/v1/l2/fee-distribution-context` | Treasury state + qualified nodes for L2 fee distribution (localhost only) |
 
 ### MPC Ceremony (`/api/v1/mpc/*`)
 

@@ -501,6 +501,20 @@ fn test_note_spend_circuit() {
 }
 ```
 
+## MPC Slot Assignment
+
+The MPC ceremony generates parameters for 3 circuits, each assigned a slot:
+
+| Slot | Circuit | VK File | Constraints |
+|------|---------|---------|-------------|
+| 1 | GhostNoteSpendCircuit(depth=20) | `note_spend_vk.bin` | ~12,675 |
+| 2 | NoteConsolidateCircuit(depth=20) | `payout_vk.bin` | ~2,500 |
+| 3 | GhostUnshieldCircuit(depth=20) | `unshield_vk.bin` | ~6,300 |
+
+**Note**: Slot 2 uses the filename `payout_vk.bin` for historical reasons (originally the PayoutCircuit slot). The circuit was replaced by NoteConsolidateCircuit but the VK filename was retained to avoid breaking deployed nodes.
+
+See [MPC Ceremony](MPC_CEREMONY.md) for the full ceremony specification.
+
 ## Related Documentation
 
 - [Ghost Pay](GHOST_PAY.md) - L2 network using ZK proofs

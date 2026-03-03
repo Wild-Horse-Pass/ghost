@@ -73,6 +73,7 @@ Miners use Node Finder (web tool) to discover nodes and test latency.
 | `pool-sv2` | SRI Pool - SV2 protocol distribution (TDP mode) | For SV2 |
 | `translator-sv1` | SRI Translator - SV1↔SV2 conversion (TDP mode) | For SV1 miners |
 | `ghost-pay` | L2 payment network node | Optional |
+| `ghost-setup` | Headless CLI for scripted node setup | Optional |
 | `ghost-cli` | Administration CLI for pool management | Yes |
 
 ## Crate Structure
@@ -81,6 +82,7 @@ Miners use Node Finder (web tool) to discover nodes and test latency.
 bitcoin-ghost/
 ├── crates/
 │   ├── ghost-common/        # Shared types, config, identity
+│   │   └── src/setup.rs     # Shared wizard/setup logic (TUI + CLI)
 │   ├── ghost-buds/          # Transaction classification (BUDS)
 │   ├── ghost-policy/        # Mining policy enforcement
 │   ├── ghost-storage/       # SQLite database layer
@@ -90,13 +92,21 @@ bitcoin-ghost/
 │   ├── ghost-template/      # Block template construction
 │   ├── ghost-keys/          # Silent Payment keys (Ghost Keys)
 │   ├── ghost-locks/         # Timelocked P2TR outputs
+│   ├── ghost-zkp/           # Zero-knowledge proof circuits and ceremony
 │   ├── wraith-protocol/     # CoinJoin mixing
-│   └── ghost-reconciliation/# L1 settlement
+│   └── ghost-reconciliation/# L1 settlement + L2 fee distribution
 ├── bins/
 │   ├── ghost-pool/          # Main pool node
 │   ├── ghost-pay/           # L2 payment node
+│   ├── ghost-setup/         # Headless CLI for scripted node setup
 │   ├── ghost-cli/           # Admin CLI
 │   └── translator/          # SV1↔SV2 bridge
+├── apps/
+│   └── ghost-tap/           # GhostTap mobile wallet + merchant terminal
+│       ├── core/            # ghost-tap-core Rust crate (UniFFI bindings)
+│       ├── desktop/         # Tauri v2 + React desktop merchant terminal
+│       ├── ios/             # Swift/SwiftUI app
+│       └── android/         # Kotlin/Compose app
 ├── ghost-core/              # Bitcoin Core fork (in-repo)
 ├── docker/                  # Docker deployment
 ├── docs/                    # Documentation
@@ -312,6 +322,9 @@ Key tables:
 | balances | Miner/node balances |
 | archive_challenges | Archive verification results |
 | policy_challenges | Policy verification results |
+| l2_notes | L2 note commitments (ghost-pool consensus) |
+| l2_epoch_fees | Epoch-based L2 fee accumulation (schema v28+) |
+| confidential_notes | Scanned notes (ghost-pay DB, separate from ghost.db) |
 
 ## Ghost Core Integration
 

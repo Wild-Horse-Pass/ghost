@@ -89,11 +89,28 @@ No part of Bitcoin's consensus, transaction graph, balance verification, or wall
 
 **Minimal divergence.** Ghost Core stays as close to Bitcoin Core as possible. The stripped block format is derived from Bitcoin Core's existing `SERIALIZE_TRANSACTION_NO_WITNESS` serialization. Exorcism is a single code path change in block writing. The checkpoint system extends Bitcoin Core's existing `assumevalid` and `assumeUTXO` infrastructure.
 
-**Opt-in modes.** Ghost Core supports two modes: Hazed (Mode A) and Full Archive (Mode B). Both benefit from the daily checkpoint infrastructure. The operator chooses at first launch.
+**Opt-in modes.** Ghost Core supports three modes via the `storage.haze_mode` config field: Standard, Hazed, and FullArchive. Both Hazed and FullArchive benefit from the daily checkpoint infrastructure. The operator chooses at first launch.
 
 ---
 
 ## 4. Node Modes
+
+### Configuration
+
+The haze mode is configured in `pool.toml`:
+
+```toml
+[storage]
+haze_mode = "Standard"    # Standard | Hazed | FullArchive
+```
+
+| Value | Description |
+|-------|-------------|
+| `Standard` | Default Bitcoin Core behavior with Ghost pool integration. No stripping. |
+| `Hazed` | Ghost Haze and Ghost Exorcism active. All hazeable content stripped from archive. |
+| `FullArchive` | Full archive retained but with daily checkpoint infrastructure for faster IBD. |
+
+The `HazeMode` enum is defined in `ghost-common` and used by both the TUI wizard and `ghost-setup` CLI.
 
 ### 4.1 Mode A: Hazed Node
 

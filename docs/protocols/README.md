@@ -179,7 +179,7 @@ Users always control their funds:
 
 ## Version
 
-This documentation covers Bitcoin Ghost v1.5.
+This documentation covers Bitcoin Ghost v1.6.
 
 ## Contributing
 

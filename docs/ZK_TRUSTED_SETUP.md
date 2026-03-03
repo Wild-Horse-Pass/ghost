@@ -93,7 +93,10 @@ Ghost can leverage existing Powers of Tau ceremonies:
 ### Before Production Deployment
 
 - [x] Rolling MPC ceremony implemented (up to 101 contributors)
-- [x] GhostNoteSpendCircuit parameter generation via `GhostNoteSpendCircuit::dummy(20)`
+- [x] All 3 circuit dummies with depth 20:
+  - [x] Slot 1: `GhostNoteSpendCircuit::dummy(20)` — ~12,675 constraints → `note_spend_vk.bin`
+  - [x] Slot 2: `NoteConsolidateCircuit::dummy(20)` — ~2,500 constraints → `payout_vk.bin`
+  - [x] Slot 3: `GhostUnshieldCircuit::dummy(20)` — ~6,300 constraints → `unshield_vk.bin`
 - [x] Toxic waste zeroed automatically via `ZeroizeOnDrop`
 - [x] Parameters stored in `~/.ghost/mpc_params/` with versioned files
 - [x] P2P contributor sync via `/api/v1/mpc/contributors`

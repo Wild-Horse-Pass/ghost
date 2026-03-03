@@ -59,7 +59,7 @@ Users
 
 | Service | Fee |
 |---------|-----|
-| Transfer | Share of batch mining costs |
+| Transfer | `L2_TRANSFER_FEE_SATS` = 10 sats per transfer + share of batch mining costs |
 | Wraith Mix | Fixed service fee (500-10,000 sats) + mining cost share |
 
 ### Fee Details
@@ -310,6 +310,7 @@ Nodes running Ghost Pay earn:
 | `/api/v1/confidential/tree` | GET | ghost-pay | Current commitment tree state (root, next_index) |
 | `/api/v1/l2/submit` | POST | ghost-pool | Mesh relay (called by ghost-pay after verification) |
 | `/api/v1/l2/finalize` | POST | ghost-pay | Consensus finalization callback (from ghost-pool) |
+| `/api/v1/l2/fee-distribution-context` | GET | ghost-pool | Treasury state + qualified nodes for fee distribution (localhost only) |
 | `/api/v1/mpc/params` | GET | ghost-pool | MPC parameter download for light wallets |
 
 ## ParamsCache Flow
@@ -529,6 +530,44 @@ ghost-wallet accept-instant --from lock_abc123 --amount 5000
 # Settlement block: 847201
 # Confidence: 0.97
 ```
+
+## Database Architecture
+
+Ghost Pay uses **separate databases** from ghost-pool:
+
+| Service | Database | Path | Encryption |
+|---------|----------|------|------------|
+| ghost-pool | `ghost.db` | `/home/ghost/.ghost/ghost.db` | None (SQLite) |
+| ghost-pay | `ghost-pay.db` | `/home/ghost/.ghost/ghost-pay/ghost-pay.db` | SQLCipher |
+
+**Separate commitment trees**: ghost-pool tracks L2 consensus state in `l2_notes`; ghost-pay tracks user-scanned notes in `confidential_notes`. These are independent tables in independent databases.
+
+**SQLCipher gotcha**: `sqlcipher_export` does NOT copy `PRAGMA user_version`. After exporting, read and restore user_version manually.
+
+## Wraith Fee Routing
+
+Wraith service fees are tracked per session and accumulated per epoch:
+
+```
+Wraith session completes
+    │
+    ├── ghost-pay session coordinator records wraith_fee_sats
+    ├── Calls increment_wraith_fee for current epoch in l2_epoch_fees table
+    │
+    ▼
+Settlement loop
+    │
+    ├── ghost-pay queries ghost-pool GET /api/v1/l2/fee-distribution-context
+    │   └── Returns: treasury state, qualified Ghost Pay nodes, share weights
+    ├── Calls get_undistributed_fees to find pending epoch fees
+    ├── Builds settlement TX with L2 fee outputs via build_transaction_with_l2_fees
+    ├── Marks epochs distributed via mark_epoch_fees_distributed
+    │
+    ▼
+Fee outputs included in reconciliation settlement TX
+```
+
+Distribution follows the treasury decay schedule (see RECONCILIATION.md).
 
 ## Related Documentation
 
