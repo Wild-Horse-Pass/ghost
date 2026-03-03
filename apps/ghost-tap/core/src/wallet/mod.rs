@@ -13,6 +13,7 @@ pub use history::*;
 pub use keys::*;
 
 use secrecy::SecretString;
+use secp256k1::{PublicKey, SecretKey, Secp256k1};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
@@ -66,6 +67,18 @@ pub struct Wallet {
     history: TransactionHistory,
     /// Whether wallet is locked
     is_locked: bool,
+    /// L2 confidential spending key (lazily derived from seed)
+    l2_spending_key: Option<Zeroizing<[u8; 32]>>,
+    /// L2 scan secret key (lazily derived from seed)
+    l2_scan_secret: Option<SecretKey>,
+    /// L2 note store (lazily initialized)
+    note_store: Option<crate::l2::NoteStore>,
+    /// L2 tree sync (lazily initialized)
+    tree_sync: Option<crate::l2::TreeSync>,
+    /// L2 prover (lazily initialized, heavy — loads MPC params)
+    l2_prover: Option<crate::l2::L2Prover>,
+    /// L2 params cache
+    params_cache: Option<crate::l2::ParamsCache>,
 }
 
 impl Wallet {
@@ -97,6 +110,12 @@ impl Wallet {
             utxo_set: UtxoSet::new(),
             history: TransactionHistory::new(),
             is_locked: false,
+            l2_spending_key: None,
+            l2_scan_secret: None,
+            note_store: None,
+            tree_sync: None,
+            l2_prover: None,
+            params_cache: None,
         })
     }
 
@@ -249,6 +268,126 @@ impl Wallet {
     /// Get pending transactions
     pub fn get_pending_transactions(&self) -> Vec<&HistoryEntry> {
         self.history.pending()
+    }
+
+    // =============================================================================
+    // L2 Confidential Key Access
+    // =============================================================================
+
+    /// Ensure L2 keys are derived. Lazily derives from seed on first call.
+    pub fn ensure_l2_keys(&mut self) -> Result<(), WalletError> {
+        if self.l2_spending_key.is_none() {
+            self.l2_spending_key = Some(derive_l2_spending_key(&self.seed)?);
+        }
+        if self.l2_scan_secret.is_none() {
+            self.l2_scan_secret = Some(derive_l2_scan_secret(&self.seed)?);
+        }
+        Ok(())
+    }
+
+    /// Get the L2 confidential spending key (derives if needed).
+    pub fn l2_spending_key(&mut self) -> Result<&[u8; 32], WalletError> {
+        self.ensure_l2_keys()?;
+        Ok(self.l2_spending_key.as_ref().unwrap())
+    }
+
+    /// Get the L2 scan secret key (derives if needed).
+    pub fn l2_scan_secret(&mut self) -> Result<&SecretKey, WalletError> {
+        self.ensure_l2_keys()?;
+        Ok(self.l2_scan_secret.as_ref().unwrap())
+    }
+
+    /// Get the L2 owner public key for receiving encrypted notes.
+    pub fn l2_owner_pubkey(&mut self) -> Result<PublicKey, WalletError> {
+        let secret = self.l2_scan_secret()?.clone();
+        let secp = Secp256k1::new();
+        Ok(PublicKey::from_secret_key(&secp, &secret))
+    }
+
+    /// Get the raw seed bytes (for L2 key derivation by external modules).
+    pub fn seed(&self) -> &[u8; 64] {
+        &self.seed
+    }
+
+    /// Ensure the L2 NoteStore is initialized.
+    pub fn ensure_note_store(&mut self) -> Result<(), WalletError> {
+        if self.note_store.is_none() {
+            let spending_key = derive_l2_spending_key(&self.seed)?;
+            self.note_store = Some(crate::l2::NoteStore::new(*spending_key));
+        }
+        Ok(())
+    }
+
+    /// Ensure the L2 TreeSync is initialized.
+    pub fn ensure_tree_sync(&mut self) {
+        if self.tree_sync.is_none() {
+            self.tree_sync = Some(crate::l2::TreeSync::new(20));
+        }
+    }
+
+    /// Get L2 confidential balance.
+    pub fn l2_balance(&mut self) -> Result<u64, WalletError> {
+        self.ensure_note_store()?;
+        Ok(self.note_store.as_ref().unwrap().l2_balance())
+    }
+
+    /// Get count of unspent L2 notes.
+    pub fn l2_note_count(&mut self) -> Result<usize, WalletError> {
+        self.ensure_note_store()?;
+        Ok(self.note_store.as_ref().unwrap().unspent_count())
+    }
+
+    /// Get a reference to the note store (initializes if needed).
+    pub fn note_store_mut(&mut self) -> Result<&mut crate::l2::NoteStore, WalletError> {
+        self.ensure_note_store()?;
+        Ok(self.note_store.as_mut().unwrap())
+    }
+
+    /// Get a reference to the tree sync (initializes if needed).
+    pub fn tree_sync_mut(&mut self) -> &mut crate::l2::TreeSync {
+        self.ensure_tree_sync();
+        self.tree_sync.as_mut().unwrap()
+    }
+
+    /// Get the NoteStore (immutable, for reading).
+    pub fn note_store(&self) -> Option<&crate::l2::NoteStore> {
+        self.note_store.as_ref()
+    }
+
+    /// Get the TreeSync (immutable).
+    pub fn tree_sync(&self) -> Option<&crate::l2::TreeSync> {
+        self.tree_sync.as_ref()
+    }
+
+    /// Set the note store (e.g., loaded from storage).
+    pub fn set_note_store(&mut self, store: crate::l2::NoteStore) {
+        self.note_store = Some(store);
+    }
+
+    /// Set the params cache directory.
+    pub fn set_params_cache(&mut self, cache: crate::l2::ParamsCache) {
+        self.params_cache = Some(cache);
+    }
+
+    /// Ensure the L2 prover is loaded from cached MPC params.
+    pub fn ensure_l2_prover(&mut self, params_dir: &std::path::Path) -> Result<(), WalletError> {
+        if self.l2_prover.is_some() {
+            return Ok(());
+        }
+        let prover = crate::l2::L2Prover::from_params_dir(params_dir, 20)
+            .map_err(|e| WalletError::KeyDerivation(format!("Failed to load L2 prover: {}", e)))?;
+        self.l2_prover = Some(prover);
+        Ok(())
+    }
+
+    /// Get a reference to the L2 prover (must be initialized first).
+    pub fn l2_prover(&self) -> Option<&crate::l2::L2Prover> {
+        self.l2_prover.as_ref()
+    }
+
+    /// Get the params cache (if set).
+    pub fn params_cache(&self) -> Option<&crate::l2::ParamsCache> {
+        self.params_cache.as_ref()
     }
 }
 

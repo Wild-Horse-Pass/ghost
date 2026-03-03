@@ -412,6 +412,40 @@ pub struct FfiWashStats {
     pub total_count: u32,
 }
 
+// --- L2 Confidential Payment Record Types ---
+
+/// L2 balance information
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiL2Balance {
+    pub confirmed: u64,
+    pub note_count: u32,
+}
+
+/// L2 owned note
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiL2Note {
+    pub index: u64,
+    pub value: u64,
+    pub epoch: u64,
+    pub spent: bool,
+}
+
+/// L2 transfer result
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiL2TransferResult {
+    pub nullifier: String,
+    pub commitment_root: String,
+}
+
+/// L2 sync status
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiL2SyncStatus {
+    pub last_synced_height: u64,
+    pub current_epoch: u64,
+    pub tree_root: String,
+    pub has_params: bool,
+}
+
 /// Opaque handle to a wallet instance
 #[derive(uniffi::Object)]
 pub struct WalletHandle {
@@ -1112,6 +1146,84 @@ impl WalletHandle {
         })?;
         washer.attach_storage(wash_storage);
         Ok(())
+    }
+
+    // --- L2 Confidential Payment Operations ---
+
+    /// Get the L2 confidential balance.
+    pub fn l2_balance(&self) -> Result<FfiL2Balance, GhostTapFfiError> {
+        self.with_wallet_mut(|wallet| {
+            let balance = wallet.l2_balance().map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
+            let count = wallet.l2_note_count().map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
+            Ok(FfiL2Balance {
+                confirmed: balance,
+                note_count: count as u32,
+            })
+        })
+    }
+
+    /// Get all owned L2 notes.
+    pub fn l2_notes(&self) -> Result<Vec<FfiL2Note>, GhostTapFfiError> {
+        self.with_wallet_mut(|wallet| {
+            wallet.ensure_note_store().map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
+            let notes: Vec<FfiL2Note> = wallet
+                .note_store()
+                .map(|store| {
+                    store
+                        .unspent_notes()
+                        .iter()
+                        .map(|n| FfiL2Note {
+                            index: n.index,
+                            value: n.value,
+                            epoch: n.epoch,
+                            spent: n.spent,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(notes)
+        })
+    }
+
+    /// Get the L2 owner public key (hex-encoded compressed secp256k1 pubkey).
+    pub fn l2_owner_pubkey(&self) -> Result<String, GhostTapFfiError> {
+        self.with_wallet_mut(|wallet| {
+            let pubkey = wallet.l2_owner_pubkey().map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
+            Ok(hex::encode(pubkey.serialize()))
+        })
+    }
+
+    /// Get the current L2 sync status.
+    pub fn l2_sync_status(&self) -> Result<FfiL2SyncStatus, GhostTapFfiError> {
+        self.with_wallet(|wallet| {
+            let (height, epoch, root) = wallet
+                .tree_sync()
+                .map(|ts| {
+                    let root = ts.root().map(|r| hex::encode(r)).unwrap_or_default();
+                    (ts.last_synced_height(), 0u64, root)
+                })
+                .unwrap_or((0, 0, String::new()));
+
+            let has_params = wallet
+                .params_cache()
+                .map(|pc| pc.has_cached_params())
+                .unwrap_or(false);
+
+            FfiL2SyncStatus {
+                last_synced_height: height,
+                current_epoch: epoch,
+                tree_root: root,
+                has_params,
+            }
+        })
     }
 }
 

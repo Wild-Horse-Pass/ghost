@@ -27,6 +27,10 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Shared HTTP client for API calls (avoids per-request connection pool creation).
     pub http_client: reqwest::Client,
+    /// Ghost Pay API URL for L2 operations (e.g. "http://127.0.0.1:8800").
+    pub ghost_pay_url: Mutex<Option<String>>,
+    /// Ghost Pay API secret for HMAC auth on write endpoints.
+    pub ghost_pay_secret: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -53,6 +57,8 @@ impl AppState {
             pin_hash: Mutex::new(pin_hash),
             data_dir,
             http_client,
+            ghost_pay_url: Mutex::new(None),
+            ghost_pay_secret: Mutex::new(None),
         }
     }
 

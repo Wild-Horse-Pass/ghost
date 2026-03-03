@@ -5,6 +5,7 @@
 //! mode (WebSocket to a service provider) and direct RPC mode
 //! (JSON-RPC to a Ghost daemon) at runtime.
 
+use super::ghost_pay::{GhostPayClient, PayConfig};
 use super::gsp::MobileGspClient;
 use super::{GhostClient, NetworkError, NodeConfig};
 use parking_lot::Mutex;
@@ -46,6 +47,8 @@ pub struct ConnectionManager {
     rpc_config: Arc<Mutex<NodeConfig>>,
     /// M-7: Track RPC client creation without lock contention.
     rpc_connected: Arc<AtomicBool>,
+    /// Ghost Pay configuration for L2 operations.
+    ghost_pay_config: Arc<Mutex<PayConfig>>,
 }
 
 impl ConnectionManager {
@@ -61,6 +64,7 @@ impl ConnectionManager {
             rpc_client: Arc::new(tokio::sync::Mutex::new(None)),
             rpc_config: Arc::new(Mutex::new(NodeConfig::default())),
             rpc_connected: Arc::new(AtomicBool::new(false)),
+            ghost_pay_config: Arc::new(Mutex::new(PayConfig::default())),
         }
     }
 
@@ -76,6 +80,7 @@ impl ConnectionManager {
             rpc_client: Arc::new(tokio::sync::Mutex::new(None)),
             rpc_config: Arc::new(Mutex::new(rpc_config)),
             rpc_connected: Arc::new(AtomicBool::new(false)),
+            ghost_pay_config: Arc::new(Mutex::new(PayConfig::default())),
         }
     }
 
@@ -296,6 +301,22 @@ impl ConnectionManager {
                 client.send_private_to_public(to_address, amount_ghost).await
             }
         }
+    }
+
+    // --- L2 Confidential Operations ---
+
+    /// Configure the Ghost Pay connection for L2 operations.
+    pub fn set_ghost_pay_config(&self, config: PayConfig) {
+        *self.ghost_pay_config.lock() = config;
+    }
+
+    /// Create a new Ghost Pay client with the current configuration.
+    ///
+    /// Each call creates a fresh client instance. The underlying reqwest::Client
+    /// is shared via connection pooling, so this is lightweight.
+    pub fn create_ghost_pay_client(&self) -> Result<GhostPayClient, NetworkError> {
+        let config = self.ghost_pay_config.lock().clone();
+        GhostPayClient::new(config)
     }
 
     /// Get a new public receive address (for the exit leg of a wash).

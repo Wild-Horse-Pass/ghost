@@ -212,6 +212,66 @@ pub fn pubkey_to_address(pubkey: &PublicKey) -> String {
     bs58::encode(&address_bytes).into_string()
 }
 
+// =============================================================================
+// L2 Confidential Key Derivation (BIP-352 style)
+// =============================================================================
+
+/// Build the BIP-352 base derivation path: m/352'/0'/0'
+fn build_l2_base_path() -> Result<DerivationPath, WalletError> {
+    "m/352'/0'/0'"
+        .parse()
+        .map_err(|e| WalletError::KeyDerivation(format!("Invalid L2 base path: {}", e)))
+}
+
+/// Derive the confidential spending key at m/352'/0'/0'/3'.
+///
+/// Used for nullifier computation in ZK proofs. Returns 32 bytes with
+/// the top 2 bits cleared to ensure a valid BLS12-381 scalar.
+pub fn derive_l2_spending_key(seed: &[u8; 64]) -> Result<Zeroizing<[u8; 32]>, WalletError> {
+    let master = ExtendedKey::from_seed(seed)?;
+    let base_path = build_l2_base_path()?;
+    let base = master.derive_path(&base_path)?;
+
+    // m/352'/0'/0'/3' (hardened child index 3)
+    let child = base.derive_child(ChildNumber::new(3, true).map_err(|e| {
+        WalletError::KeyDerivation(format!("Invalid child number: {}", e))
+    })?)?;
+
+    let mut key = child.private_key_bytes();
+    // Ensure valid BLS12-381 scalar by clearing top 2 bits (~255 bit field)
+    key[31] &= 0x3F;
+    Ok(key)
+}
+
+/// Derive the L2 scan secret key at m/352'/0'/0'/0'.
+///
+/// Used for ECIES note detection — the wallet decrypts encrypted note data
+/// using this key to discover which L2 notes belong to it.
+pub fn derive_l2_scan_secret(seed: &[u8; 64]) -> Result<SecretKey, WalletError> {
+    let master = ExtendedKey::from_seed(seed)?;
+    let base_path = build_l2_base_path()?;
+    let base = master.derive_path(&base_path)?;
+
+    // m/352'/0'/0'/0' (hardened child index 0)
+    let child = base.derive_child(ChildNumber::new(0, true).map_err(|e| {
+        WalletError::KeyDerivation(format!("Invalid child number: {}", e))
+    })?)?;
+
+    let key_bytes = child.private_key_bytes();
+    SecretKey::from_slice(&*key_bytes)
+        .map_err(|e| WalletError::KeyDerivation(format!("Invalid scan secret key: {}", e)))
+}
+
+/// Derive the L2 scan public key at m/352'/0'/0'/0'.
+///
+/// This is the "owner pubkey" used in ghost-pay — recipients share this
+/// so senders can encrypt note data to them via ECIES.
+pub fn derive_l2_scan_pubkey(seed: &[u8; 64]) -> Result<PublicKey, WalletError> {
+    let scan_secret = derive_l2_scan_secret(seed)?;
+    let secp = Secp256k1::new();
+    Ok(PublicKey::from_secret_key(&secp, &scan_secret))
+}
+
 /// Derive an address at the given path
 pub fn derive_address_at_path(
     seed: &[u8; 64],

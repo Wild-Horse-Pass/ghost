@@ -729,3 +729,428 @@ mod e2e_tests {
         assert_eq!(loaded_history[0].memo.as_deref(), Some("Persisted"));
     }
 }
+
+// =============================================================================
+// L2 Confidential Payment Tests
+// =============================================================================
+
+#[cfg(test)]
+mod l2_note_tests {
+    use ghost_tap_core::l2::{NoteSelection, NoteStore, OwnedNote};
+
+    fn test_note(index: u64, value: u64) -> OwnedNote {
+        OwnedNote {
+            index,
+            value,
+            blinding: [index as u8; 32],
+            spent: false,
+            created_height: 1,
+            epoch: 0,
+        }
+    }
+
+    #[test]
+    fn test_note_store_crud() {
+        let mut store = NoteStore::new([42u8; 32]);
+        assert_eq!(store.l2_balance(), 0);
+        assert_eq!(store.count(), 0);
+
+        store.add_note(test_note(0, 100_000));
+        store.add_note(test_note(1, 50_000));
+        assert_eq!(store.l2_balance(), 150_000);
+        assert_eq!(store.count(), 2);
+        assert_eq!(store.unspent_count(), 2);
+
+        // Mark one spent
+        assert!(store.mark_spent(0));
+        assert_eq!(store.l2_balance(), 50_000);
+        assert_eq!(store.unspent_count(), 1);
+
+        // Get note
+        let note = store.get_note(1).unwrap();
+        assert_eq!(note.value, 50_000);
+        assert!(!note.spent);
+    }
+
+    #[test]
+    fn test_note_selection_direct() {
+        let mut store = NoteStore::new([42u8; 32]);
+        store.add_note(test_note(0, 100_000));
+        store.add_note(test_note(1, 50_000));
+
+        match store.select_notes_for_transfer(50_000).unwrap() {
+            NoteSelection::Direct { note_index } => {
+                assert_eq!(note_index, 1); // Should pick smallest sufficient note
+            }
+            _ => panic!("Expected Direct selection"),
+        }
+    }
+
+    #[test]
+    fn test_note_selection_consolidation_needed() {
+        let mut store = NoteStore::new([42u8; 32]);
+        for i in 0..5 {
+            store.add_note(test_note(i, 30_000));
+        }
+
+        match store.select_notes_for_transfer(100_000).unwrap() {
+            NoteSelection::NeedsConsolidation { plan } => {
+                assert!(plan.total_value >= 100_000);
+                assert!(plan.input_indices.len() <= 4);
+            }
+            _ => panic!("Expected NeedsConsolidation"),
+        }
+    }
+
+    #[test]
+    fn test_note_selection_insufficient() {
+        let mut store = NoteStore::new([42u8; 32]);
+        store.add_note(test_note(0, 10_000));
+        assert!(store.select_notes_for_transfer(1_000_000).is_err());
+    }
+
+    #[test]
+    fn test_epoch_transition_invalidates_old_notes() {
+        let mut store = NoteStore::new([42u8; 32]);
+        store.add_note(OwnedNote {
+            index: 0,
+            value: 100_000,
+            blinding: [1u8; 32],
+            spent: false,
+            created_height: 1,
+            epoch: 0,
+        });
+        store.add_note(OwnedNote {
+            index: 1,
+            value: 50_000,
+            blinding: [2u8; 32],
+            spent: false,
+            created_height: 2,
+            epoch: 1,
+        });
+
+        assert!(store.handle_epoch_transition(1));
+        // Epoch 0 note should be invalidated, epoch 1 note still valid
+        assert_eq!(store.l2_balance(), 50_000);
+    }
+
+    #[test]
+    fn test_json_serialization_roundtrip() {
+        let mut store = NoteStore::new([99u8; 32]);
+        store.add_note(test_note(5, 75_000));
+        store.add_note(test_note(10, 25_000));
+        store.mark_spent(5);
+
+        let json = store.to_json().unwrap();
+        let restored = NoteStore::from_json(&json, [99u8; 32]).unwrap();
+
+        assert_eq!(restored.count(), 2);
+        assert_eq!(restored.l2_balance(), 25_000); // Only unspent note
+        assert!(restored.get_note(5).unwrap().spent);
+        assert!(!restored.get_note(10).unwrap().spent);
+    }
+
+    #[test]
+    fn test_nullifier_computation() {
+        let store = NoteStore::new([42u8; 32]);
+        let note = test_note(0, 100_000);
+        let nullifier = store.compute_nullifier(&note, 0).unwrap();
+        assert_eq!(nullifier.len(), 32);
+
+        // Same inputs should produce same nullifier
+        let nullifier2 = store.compute_nullifier(&note, 0).unwrap();
+        assert_eq!(nullifier, nullifier2);
+
+        // Different epoch should produce different nullifier
+        let nullifier3 = store.compute_nullifier(&note, 1).unwrap();
+        assert_ne!(nullifier, nullifier3);
+    }
+}
+
+#[cfg(test)]
+mod l2_scanner_tests {
+    use ghost_tap_core::l2::scanner::{L2TransactionInfo, NoteScanner};
+
+    #[test]
+    fn test_scanner_tracks_epoch() {
+        let key = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let mut scanner = NoteScanner::new(key);
+
+        let txs = vec![
+            L2TransactionInfo {
+                tx_type: "transfer".into(),
+                checkpoint_height: 10,
+                epoch: 3,
+                encrypted_change: None,
+                change_commitment: None,
+                encrypted_recipient: None,
+                recipient_commitment: None,
+                encrypted_output: None,
+                output_commitment: None,
+            },
+            L2TransactionInfo {
+                tx_type: "transfer".into(),
+                checkpoint_height: 11,
+                epoch: 5,
+                encrypted_change: None,
+                change_commitment: None,
+                encrypted_recipient: None,
+                recipient_commitment: None,
+                encrypted_output: None,
+                output_commitment: None,
+            },
+        ];
+
+        scanner.scan_transactions(&txs);
+        assert_eq!(scanner.last_seen_epoch(), 5);
+    }
+
+    #[test]
+    fn test_scanner_height_tracking() {
+        let key = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let mut scanner = NoteScanner::new_from_height(key, 50);
+        assert_eq!(scanner.last_scanned_height(), 50);
+
+        scanner.set_last_scanned_height(100);
+        assert_eq!(scanner.last_scanned_height(), 100);
+    }
+
+    #[test]
+    fn test_scanner_no_matches_wrong_key() {
+        let key = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let mut scanner = NoteScanner::new(key);
+
+        let txs = vec![L2TransactionInfo {
+            tx_type: "transfer".into(),
+            checkpoint_height: 10,
+            epoch: 0,
+            encrypted_change: Some("ff".repeat(109)),
+            change_commitment: Some("00".repeat(32)),
+            encrypted_recipient: Some("ee".repeat(109)),
+            recipient_commitment: Some("11".repeat(32)),
+            encrypted_output: None,
+            output_commitment: None,
+        }];
+
+        let discovered = scanner.scan_transactions(&txs);
+        assert!(discovered.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod l2_storage_tests {
+    use ghost_tap_core::l2::{NoteStore, OwnedNote};
+    use ghost_tap_core::storage::WalletStorage;
+
+    fn test_storage() -> WalletStorage {
+        WalletStorage::open(":memory:", &[42u8; 32]).unwrap()
+    }
+
+    #[test]
+    fn test_l2_notes_persistence() {
+        let storage = test_storage();
+        let mut store = NoteStore::new([99u8; 32]);
+        store.add_note(OwnedNote {
+            index: 0,
+            value: 100_000,
+            blinding: [1u8; 32],
+            spent: false,
+            created_height: 1,
+            epoch: 0,
+        });
+        store.add_note(OwnedNote {
+            index: 1,
+            value: 50_000,
+            blinding: [2u8; 32],
+            spent: true,
+            created_height: 2,
+            epoch: 0,
+        });
+
+        storage.save_l2_notes(&store).unwrap();
+        let loaded = storage.load_l2_notes([99u8; 32]).unwrap().unwrap();
+        assert_eq!(loaded.count(), 2);
+        assert_eq!(loaded.l2_balance(), 100_000); // Only unspent
+    }
+
+    #[test]
+    fn test_l2_notes_empty() {
+        let storage = test_storage();
+        let loaded = storage.load_l2_notes([99u8; 32]).unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_l2_sync_state_roundtrip() {
+        let storage = test_storage();
+        storage.save_l2_sync_state(100, 5, "abcdef1234567890").unwrap();
+
+        let (height, epoch, root) = storage.load_l2_sync_state().unwrap();
+        assert_eq!(height, 100);
+        assert_eq!(epoch, 5);
+        assert_eq!(root, "abcdef1234567890");
+    }
+
+    #[test]
+    fn test_l2_sync_state_not_found() {
+        let storage = test_storage();
+        assert!(storage.load_l2_sync_state().is_err());
+    }
+
+    #[test]
+    fn test_l2_params_info_roundtrip() {
+        let storage = test_storage();
+        storage.save_l2_params_info("/tmp/params", 1234567890).unwrap();
+
+        let (path, ts) = storage.load_l2_params_info().unwrap();
+        assert_eq!(path, "/tmp/params");
+        assert_eq!(ts, 1234567890);
+    }
+}
+
+#[cfg(test)]
+mod l2_api_tests {
+    use ghost_tap_core::network::ghost_pay::{
+        ConsolidateRequest, PayConfig, ShieldRequest, TransferRequest, UnshieldRequest,
+    };
+
+    #[test]
+    fn test_transfer_request_serialization() {
+        let req = TransferRequest {
+            proof_hex: "aa".repeat(96),
+            commitment_root: "bb".repeat(32),
+            nullifier: "cc".repeat(32),
+            change_commitment: "dd".repeat(32),
+            recipient_commitment: "ee".repeat(32),
+            sender_index: 0,
+            recipient_index: 1,
+            recipient_owner_pubkey: "ff".repeat(33),
+            epoch: 5,
+            encrypted_change: "11".repeat(109),
+            encrypted_recipient: "22".repeat(109),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("proof_hex"));
+        assert!(json.contains("nullifier"));
+    }
+
+    #[test]
+    fn test_consolidate_request_serialization() {
+        let req = ConsolidateRequest {
+            proof_hex: "aa".repeat(96),
+            commitment_root: "bb".repeat(32),
+            nullifiers: vec!["cc".repeat(32); 4],
+            output_commitment: "dd".repeat(32),
+            encrypted_output: "ee".repeat(109),
+            epoch: 3,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("nullifiers"));
+        assert!(json.contains("encrypted_output"));
+    }
+
+    #[test]
+    fn test_unshield_request_serialization() {
+        let req = UnshieldRequest {
+            proof_hex: "aa".repeat(96),
+            commitment_root: "bb".repeat(32),
+            nullifier: "cc".repeat(32),
+            withdrawal_amount_sats: 100_000,
+            destination_address: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("withdrawal_amount_sats"));
+        assert!(json.contains("destination_address"));
+    }
+
+    #[test]
+    fn test_shield_request_serialization() {
+        let req = ShieldRequest {
+            amount_sats: 50_000,
+            blinding_hex: "ab".repeat(32),
+            owner_pubkey: "cd".repeat(33),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("amount_sats"));
+        assert!(json.contains("blinding_hex"));
+    }
+
+    #[test]
+    fn test_pay_config_with_secret() {
+        let config = PayConfig {
+            base_url: "http://localhost:8800".into(),
+            timeout_ms: 5000,
+            api_secret: Some("test_secret".into()),
+        };
+        assert_eq!(config.api_secret.as_deref(), Some("test_secret"));
+    }
+}
+
+#[cfg(test)]
+mod l2_key_tests {
+    use ghost_tap_core::wallet::{
+        derive_l2_scan_pubkey, derive_l2_scan_secret, derive_l2_spending_key,
+        derive_seed_from_mnemonic,
+    };
+    use secrecy::SecretString;
+
+    fn test_seed() -> [u8; 64] {
+        let mnemonic = SecretString::new(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into(),
+        );
+        *derive_seed_from_mnemonic(&mnemonic, None).unwrap()
+    }
+
+    #[test]
+    fn test_l2_spending_key_derivation() {
+        let seed = test_seed();
+        let key = derive_l2_spending_key(&seed).unwrap();
+        assert_eq!(key.len(), 32);
+        // Top 2 bits should be cleared (BLS12-381 safe)
+        assert_eq!(key[31] & 0xC0, 0);
+    }
+
+    #[test]
+    fn test_l2_spending_key_deterministic() {
+        let seed = test_seed();
+        let key1 = derive_l2_spending_key(&seed).unwrap();
+        let key2 = derive_l2_spending_key(&seed).unwrap();
+        assert_eq!(AsRef::<[u8]>::as_ref(&key1), AsRef::<[u8]>::as_ref(&key2));
+    }
+
+    #[test]
+    fn test_l2_scan_secret_derivation() {
+        let seed = test_seed();
+        let secret = derive_l2_scan_secret(&seed).unwrap();
+        // Should be a valid secp256k1 secret key (32 bytes, non-zero)
+        assert_eq!(secret.secret_bytes().len(), 32);
+    }
+
+    #[test]
+    fn test_l2_scan_pubkey_derivation() {
+        let seed = test_seed();
+        let pubkey = derive_l2_scan_pubkey(&seed).unwrap();
+        // Compressed pubkey is 33 bytes
+        assert_eq!(pubkey.serialize().len(), 33);
+    }
+
+    #[test]
+    fn test_l2_scan_pubkey_matches_secret() {
+        let seed = test_seed();
+        let secret = derive_l2_scan_secret(&seed).unwrap();
+        let pubkey = derive_l2_scan_pubkey(&seed).unwrap();
+
+        let secp = secp256k1::Secp256k1::new();
+        let derived_pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret);
+        assert_eq!(pubkey, derived_pubkey);
+    }
+
+    #[test]
+    fn test_l2_spending_key_different_from_scan() {
+        let seed = test_seed();
+        let spending = derive_l2_spending_key(&seed).unwrap();
+        let scan = derive_l2_scan_secret(&seed).unwrap();
+        // Spending key (m/352'/0'/0'/3') should differ from scan key (m/352'/0'/0'/0')
+        assert_ne!(&spending[..], &scan.secret_bytes()[..]);
+    }
+}

@@ -16,6 +16,12 @@ uniffi-cli = ["uniffi/cli"]
 # Internal crates
 ghost-common.workspace = true
 ghost-glyph.workspace = true
+ghost-zkp.workspace = true
+ghost-keys.workspace = true
+
+# ZK proving
+bellperson.workspace = true
+blstrs.workspace = true
 
 # Crypto
 bip39.workspace = true

@@ -83,7 +83,8 @@ impl WalletStorage {
     /// Schema version history:
     /// - 0/1: Original plaintext columns for utxos, history, wash_queue
     /// - 2: Encrypted blob storage for utxos, history, wash_queue (M-14 audit fix)
-    const SCHEMA_VERSION: i32 = 2;
+    /// - 3: L2 confidential payment tables (l2_notes, l2_sync, l2_params)
+    const SCHEMA_VERSION: i32 = 3;
 
     fn create_tables(&self) -> Result<(), StorageError> {
         let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
@@ -139,6 +140,25 @@ impl WalletStorage {
                 status TEXT NOT NULL,
                 updated_at INTEGER NOT NULL,
                 data BLOB NOT NULL
+            );
+
+            -- L2 confidential payment tables
+            CREATE TABLE IF NOT EXISTS l2_notes (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                data BLOB
+            );
+
+            CREATE TABLE IF NOT EXISTS l2_sync (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_synced_height INTEGER DEFAULT 0,
+                current_epoch INTEGER DEFAULT 0,
+                tree_root TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS l2_params (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                params_path TEXT,
+                downloaded_at INTEGER
             );",
         )?;
 
@@ -423,6 +443,119 @@ impl WalletStorage {
         conn.execute("DELETE FROM wash_queue WHERE txid = ?1", params![txid])?;
         Ok(())
     }
+
+    // --- L2 Notes ---
+
+    /// Save the NoteStore as an encrypted blob.
+    pub fn save_l2_notes(&self, note_store: &crate::l2::NoteStore) -> Result<(), StorageError> {
+        let json = note_store
+            .to_json()
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let encrypted = self.encrypt_value(json.as_bytes())?;
+        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO l2_notes (id, data) VALUES (1, ?1)",
+            params![encrypted],
+        )?;
+        Ok(())
+    }
+
+    /// Load the NoteStore from encrypted storage.
+    pub fn load_l2_notes(
+        &self,
+        spending_key: [u8; 32],
+    ) -> Result<Option<crate::l2::NoteStore>, StorageError> {
+        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let encrypted: Vec<u8> = match conn.query_row(
+            "SELECT data FROM l2_notes WHERE id = 1",
+            [],
+            |row| row.get(0),
+        ) {
+            Ok(data) => data,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(StorageError::Database(e.to_string())),
+        };
+        drop(conn);
+
+        let json_bytes = self.decrypt_value(&encrypted)?;
+        let json = String::from_utf8(json_bytes)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let store = crate::l2::NoteStore::from_json(&json, spending_key)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        Ok(Some(store))
+    }
+
+    // --- L2 Sync State ---
+
+    /// Save L2 sync state (plaintext metadata).
+    pub fn save_l2_sync_state(
+        &self,
+        height: u64,
+        epoch: u64,
+        root: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO l2_sync (id, last_synced_height, current_epoch, tree_root)
+             VALUES (1, ?1, ?2, ?3)",
+            params![height as i64, epoch as i64, root],
+        )?;
+        Ok(())
+    }
+
+    /// Load L2 sync state.
+    pub fn load_l2_sync_state(&self) -> Result<(u64, u64, String), StorageError> {
+        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        conn.query_row(
+            "SELECT last_synced_height, current_epoch, tree_root FROM l2_sync WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound("l2_sync".into()),
+            _ => StorageError::Database(e.to_string()),
+        })
+    }
+
+    // --- L2 Params Metadata ---
+
+    /// Save MPC params cache metadata.
+    pub fn save_l2_params_info(&self, path: &str, timestamp: u64) -> Result<(), StorageError> {
+        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO l2_params (id, params_path, downloaded_at)
+             VALUES (1, ?1, ?2)",
+            params![path, timestamp as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Load MPC params cache metadata.
+    pub fn load_l2_params_info(&self) -> Result<(String, u64), StorageError> {
+        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        conn.query_row(
+            "SELECT params_path, downloaded_at FROM l2_params WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u64,
+                ))
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound("l2_params".into()),
+            _ => StorageError::Database(e.to_string()),
+        })
+    }
+
+    // --- Wash Queue ---
 
     /// Prune completed/failed wash requests older than max_age seconds
     pub fn prune_wash_queue(&self, now: u64, max_age: u64) -> Result<(), StorageError> {

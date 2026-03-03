@@ -65,6 +65,15 @@ pub fn run() {
             commands::glyph::render_glyph,
             commands::glyph::get_glyph_palette,
             commands::glyph::validate_glyph_pixels,
+            // L2 Confidential
+            commands::l2::l2_balance,
+            commands::l2::l2_notes,
+            commands::l2::l2_scan,
+            commands::l2::l2_transfer,
+            commands::l2::l2_consolidate,
+            commands::l2::l2_unshield,
+            commands::l2::l2_shield,
+            commands::l2::l2_sync_status,
         ])
         .run(tauri::generate_context!())
         .expect("error running GhostTap Desktop");
