@@ -14,6 +14,7 @@ import Invoices from "./pages/Invoices";
 import Receipts from "./pages/Receipts";
 import Export from "./pages/Export";
 import WraithWash from "./pages/WraithWash";
+import GlyphDesigner from "./pages/GlyphDesigner";
 import Settings from "./pages/Settings";
 
 type AppState = "loading" | "setup" | "pin" | "ready";
@@ -118,6 +119,7 @@ function AppRoutes() {
         <Route path="/receipts" element={<Receipts />} />
         <Route path="/export" element={<Export />} />
         <Route path="/wraith" element={<WraithWash />} />
+        <Route path="/glyph" element={<GlyphDesigner />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
       <Route

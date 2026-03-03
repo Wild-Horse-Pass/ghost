@@ -11,6 +11,7 @@ const navItems = [
   { path: "/receipts", label: "Receipts" },
   { path: "/export", label: "Export" },
   { path: "/wraith", label: "Wraith Wash" },
+  { path: "/glyph", label: "Glyph Designer" },
   { path: "/settings", label: "Settings" },
 ];
 

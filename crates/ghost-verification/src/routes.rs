@@ -4558,7 +4558,7 @@ async fn metrics_handler(State(state): State<Arc<VerificationState>>) -> impl In
                 axum::http::header::CONTENT_TYPE,
                 "text/plain; version=0.0.4; charset=utf-8",
             )],
-            metrics.render(),
+            metrics.render_cached(),
         )
     } else {
         (

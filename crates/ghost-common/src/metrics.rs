@@ -37,9 +37,10 @@
 //! let output = metrics.render();
 //! ```
 
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Metrics configuration
 #[derive(Debug, Clone)]
@@ -280,6 +281,9 @@ pub struct Metrics {
     pub template_latency_ms: Histogram,
     /// RPC call latency (milliseconds)
     pub rpc_latency_ms: Histogram,
+
+    /// Cached render output with TTL
+    cached_render: RwLock<(String, Instant)>,
 }
 
 impl Metrics {
@@ -340,6 +344,8 @@ impl Metrics {
             share_latency_ms: Histogram::latency_buckets(),
             template_latency_ms: Histogram::latency_buckets(),
             rpc_latency_ms: Histogram::latency_buckets(),
+
+            cached_render: RwLock::new((String::new(), Instant::now())),
         })
     }
 
@@ -556,6 +562,29 @@ impl Metrics {
         output
     }
 
+    /// Render with 5-second TTL cache. Avoids regenerating Prometheus text on every scrape.
+    pub fn render_cached(&self) -> String {
+        const TTL: Duration = Duration::from_secs(5);
+
+        // Fast path: read lock
+        {
+            let cached = self.cached_render.read();
+            if !cached.0.is_empty() && cached.1.elapsed() < TTL {
+                return cached.0.clone();
+            }
+        }
+
+        // Slow path: write lock, double-check
+        let mut cached = self.cached_render.write();
+        if !cached.0.is_empty() && cached.1.elapsed() < TTL {
+            return cached.0.clone();
+        }
+
+        let rendered = self.render();
+        *cached = (rendered.clone(), Instant::now());
+        rendered
+    }
+
     fn write_histogram(&self, output: &mut String, name: &str, help: &str, histogram: &Histogram) {
         let prefix = &self.config.prefix;
         let full_name = format!("{}_{}", prefix, name);
@@ -647,6 +676,16 @@ mod tests {
         assert!(output.contains("ghost_pool_miners_connected 42"));
         assert!(output.contains("ghost_pool_shares_total 1000"));
         assert!(output.contains("ghost_pool_blocks_found_total 1"));
+    }
+
+    #[test]
+    fn test_metrics_render_cached() {
+        let metrics = Metrics::new(MetricsConfig::default());
+        let first = metrics.render_cached();
+        assert!(!first.is_empty());
+        // Second call within 5s returns same cached string
+        let second = metrics.render_cached();
+        assert_eq!(first, second);
     }
 
     #[test]
