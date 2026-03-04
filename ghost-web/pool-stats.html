@@ -563,13 +563,8 @@
 
         <div class="api-endpoint">
           <span class="api-method">GET</span>
-          <span class="api-url">https://pool.bitcoinghost.org/api/v1/stats</span>
+          <span class="api-url">https://pool.bitcoinghost.org/api/v1/network/pool</span>
           <span class="api-desc">Pool overview stats</span>
-        </div>
-        <div class="api-endpoint">
-          <span class="api-method">GET</span>
-          <span class="api-url">https://pool.bitcoinghost.org/api/v1/stats/hashrate?period=24h</span>
-          <span class="api-desc">Historical hashrate</span>
         </div>
         <div class="api-endpoint">
           <span class="api-method">GET</span>
@@ -623,13 +618,12 @@
 
     async function fetchStats() {
       try {
-        const response = await fetch('https://pool.bitcoinghost.org/api/v1/stats');
-        const data = await response.json();
-        const stats = data.response;
+        const response = await fetch('https://pool.bitcoinghost.org/api/v1/network/pool');
+        const stats = await response.json();
 
-        // Available from pool health endpoint
+        // Available from pool network endpoint
         document.getElementById('active-miners').textContent = stats.miner_count || '0';
-        document.getElementById('active-nodes').textContent = (stats.peer_count + 1) || '1'; // +1 for self
+        document.getElementById('active-nodes').textContent = stats.active_nodes || '--';
 
         // Show block height instead of blocks-24h (not tracked yet)
         document.getElementById('blocks-24h').textContent = stats.block_height || '--';
@@ -641,17 +635,9 @@
         document.getElementById('avg-block-time').textContent = stats.avg_block_time || '--:--';
         document.getElementById('total-paid').textContent = stats.total_paid || '-- BTC';
 
-        // Update status indicator
-        const statusEl = document.querySelector('.pool-status');
-        if (statusEl && stats.healthy) {
-          statusEl.classList.remove('status-offline');
-          statusEl.classList.add('status-online');
-          statusEl.textContent = 'Online';
-        }
-
         console.log('Pool stats updated:', {
           miners: stats.miner_count,
-          nodes: stats.peer_count + 1,
+          nodes: stats.active_nodes,
           block: stats.block_height,
           uptime: formatUptime(stats.uptime_secs),
           version: stats.version
