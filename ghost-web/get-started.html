@@ -580,18 +580,18 @@
           <div class="step">
             <div class="step-header">
               <div class="step-num">1</div>
-              <div class="step-title">Download Ghost Wallet</div>
+              <div class="step-title">Download GhostTap</div>
             </div>
             <div class="step-content">
-              <p>Ghost Wallet lets you send and receive fast, private Bitcoin payments without running a full node.</p>
+              <p>GhostTap lets you send and receive fast, private Bitcoin payments without running a full node. Available on mobile and desktop.</p>
               <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px;">
-                <a href="#" class="btn btn-primary">Download for macOS</a>
-                <a href="#" class="btn btn-secondary">Download for Windows</a>
-                <a href="#" class="btn btn-secondary">Download for Linux</a>
+                <a href="#" class="btn btn-primary">Download for iOS</a>
+                <a href="#" class="btn btn-secondary">Download for Android</a>
+                <a href="#" class="btn btn-secondary">Download Desktop (Tauri)</a>
               </div>
               <div class="info-box">
-                <div class="info-box-title">Coming Soon</div>
-                <div class="info-box-content">Ghost Wallet is currently in development. Join the waitlist to be notified when it's ready.</div>
+                <div class="info-box-title">Available Now</div>
+                <div class="info-box-content">GhostTap is available on iOS, Android, and desktop (macOS, Windows, Linux). NFC tap-to-pay for merchants, QR codes, and biometric authentication.</div>
               </div>
             </div>
           </div>
@@ -748,7 +748,7 @@ bash install.sh</code></div>
             </div>
             <div class="step-content">
               <p>The installer creates a config file. Here are the key settings:</p>
-              <div class="config-block"><span class="comment"># /etc/ghost/ghost.conf</span>
+              <div class="config-block"><span class="comment"># /etc/ghost/pool.toml</span>
 
 <span class="comment"># Your payout address (required)</span>
 <span class="key">payout_address</span>=<span class="value">bc1qYourBitcoinAddress</span>
@@ -767,7 +767,7 @@ bash install.sh</code></div>
 <span class="key">mempool_profile</span>=<span class="value">pure</span>
 <span class="key">template_profile</span>=<span class="value">pure</span></div>
               <p>After editing, restart the node:</p>
-              <div class="code-block"><code>sudo systemctl restart ghost-node</code></div>
+              <div class="code-block"><code>sudo systemctl restart ghost-pool</code></div>
             </div>
           </div>
 
@@ -782,7 +782,7 @@ bash install.sh</code></div>
               <p>You'll start earning node rewards once sync completes and your node is registered.</p>
               <div class="info-box">
                 <div class="info-box-title">Elder Status</div>
-                <div class="info-box-content">The first 101 nodes to register become Elders (+1 share forever). Currently ~89 spots remain. Elder status is lost permanently if offline for 7+ continuous days.</div>
+                <div class="info-box-content">The first 101 nodes to register become Elders (+1 share forever). Currently 97 spots remain. Elder status is lost permanently if offline for 7+ continuous days.</div>
               </div>
             </div>
           </div>

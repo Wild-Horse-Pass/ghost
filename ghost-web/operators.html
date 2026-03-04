@@ -183,7 +183,7 @@
       <div class="nav-links">
         <a href="index.html">Home</a>
         <a href="network.html">Network</a>
-        <a href="stats.html">Pool</a>
+        <a href="pool-stats.html">Pool</a>
         <a href="how-it-works.html">How It Works</a>
         <a href="economics.html">Economics</a>
         <a href="docs/index.html">Docs</a>
@@ -301,7 +301,7 @@
         <label style="display: flex; align-items: center; gap: 8px; background: var(--gray-800); padding: 12px 16px; border-radius: 8px; cursor: pointer; border: 2px solid var(--gray-700);">
           <input type="checkbox" style="accent-color: var(--orange);"> 
           <span style="font-size: 14px; font-weight: 500;">Ghost Pay</span>
-          <span style="font-size: 11px; color: var(--gray-500);">(future)</span>
+          <span style="font-size: 11px; color: var(--green);">(active)</span>
         </label>
       </div>
 
@@ -377,9 +377,9 @@
               <div style="color: var(--gray-500); font-size: 11px;">Stratum + share DB</div>
             </div>
             <div style="background: var(--gray-800); padding: 12px; border-radius: 8px;">
-              <div style="color: var(--gray-500); font-weight: 600;">Ghost Pay</div>
-              <div style="color: var(--gray-500);">~1 GB (est.)</div>
-              <div style="color: var(--gray-500); font-size: 11px;">Future L2 module</div>
+              <div style="color: var(--orange); font-weight: 600;">Ghost Pay</div>
+              <div style="color: var(--gray-400);">~1 GB</div>
+              <div style="color: var(--gray-500); font-size: 11px;">Active L2 module</div>
             </div>
           </div>
         </div>
@@ -455,10 +455,10 @@
   <section>
     <div class="container">
       <h2 class="section-title">Configuration Example</h2>
-      <p class="section-subtitle">Sample ghost.conf for a typical node operator (v0.1.0).</p>
+      <p class="section-subtitle">Sample pool.toml for a typical node operator (v0.1.0).</p>
 
       <div class="code-block" style="font-size: 13px; line-height: 1.8;">
-        <span class="comment"># ghost.conf - Ghost Node Configuration v0.1.0</span><br>
+        <span class="comment"># pool.toml - Ghost Node Configuration v0.1.0</span><br>
         <span class="comment"># https://github.com/bitcoin-ghost/ghost-node</span><br><br>
         <span class="comment"># === Network ===</span><br>
         mainnet=1<br>

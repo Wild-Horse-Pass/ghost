@@ -140,7 +140,7 @@
       <div class="nav-links">
         <a href="../index.html">Home</a>
         <a href="../network.html">Network</a>
-        <a href="../stats.html">Pool</a>
+        <a href="../pool-stats.html">Pool</a>
         <a href="../how-it-works.html">How It Works</a>
         <a href="../economics.html">Economics</a>
       </div>
@@ -426,10 +426,9 @@ dashboard:
         
         <h3>Authentication</h3>
         <ul>
-          <li><strong>JWT tokens</strong> — Cryptographically signed, no passwords stored</li>
-          <li><strong>Auto-generated</strong> — Token created on first boot</li>
-          <li><strong>Never expires</strong> — But can be regenerated anytime</li>
-          <li><strong>Auto-injected</strong> — Dashboard reads token automatically when accessed via localhost</li>
+          <li><strong>HMAC secret</strong> — Configured via <code>internal_api_secret</code> in <code>pool.toml</code></li>
+          <li><strong>No passwords stored</strong> — Secret is a hex string used for request signing</li>
+          <li><strong>Localhost only</strong> — Internal API and admin endpoints bound to 127.0.0.1</li>
         </ul>
         
         <h3>Network Security</h3>
@@ -440,14 +439,13 @@ dashboard:
           <li><strong>Audit logging</strong> — All admin actions logged</li>
         </ul>
         
-        <h3>Regenerate Token</h3>
-        <p>If you suspect your token is compromised:</p>
-        <div class="code-block"><code><span class="comment"># Via CLI</span>
-<span class="prompt">$</span> ghost-node token regenerate
+        <h3>Regenerate Secret</h3>
+        <p>If you suspect your API secret is compromised:</p>
+        <div class="code-block"><code><span class="comment"># Generate a new 32-byte hex secret</span>
+<span class="prompt">$</span> openssl rand -hex 32
 
-<span class="comment"># Or via API</span>
-<span class="prompt">$</span> curl -X POST -H "Authorization: Bearer $OLD_TOKEN" \
-     http://localhost:8080/api/v1/admin/regenerate-token</code></div>
+<span class="comment"># Update internal_api_secret in pool.toml, then restart</span>
+<span class="prompt">$</span> sudo systemctl restart ghost-pool</code></div>
         
         <h3>Best Practices</h3>
         <ol>
