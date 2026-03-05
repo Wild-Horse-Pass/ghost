@@ -487,6 +487,43 @@ nav {
 .json-number { color: var(--hash-color); }
 .json-bool { color: var(--recurse-color); }
 .json-null { color: var(--gray-400); }
+
+/* ── Phase tabs ── */
+.phase-bar {
+  display: flex; align-items: center; gap: 4px; padding: 8px 0 0;
+  border-bottom: 1px solid var(--gray-800); margin-bottom: 16px;
+}
+.phase-tab {
+  padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer;
+  border: none; background: none; color: var(--gray-400); border-bottom: 2px solid transparent;
+  font-family: var(--font-mono); transition: all 0.15s; white-space: nowrap;
+}
+.phase-tab:hover { color: var(--gray-200); }
+.phase-tab.active { color: var(--green); border-bottom-color: var(--green); }
+.phase-tab .phase-num { color: var(--gray-500); margin-right: 4px; font-size: 10px; }
+.phase-add-btn {
+  padding: 6px 10px; font-size: 11px; cursor: pointer; border: 1px dashed var(--gray-700);
+  background: none; color: var(--gray-500); border-radius: 4px; font-family: var(--font-mono);
+  transition: all 0.15s; margin-left: 4px;
+}
+.phase-add-btn:hover { border-color: var(--green); color: var(--green); }
+.phase-del-btn {
+  font-size: 10px; margin-left: 4px; color: var(--gray-500); cursor: pointer;
+  background: none; border: none; padding: 2px 4px; border-radius: 3px; transition: all 0.15s;
+}
+.phase-del-btn:hover { color: var(--red); }
+.phase-link-btn {
+  padding: 4px 10px; border-radius: 4px; font-size: 10px; cursor: pointer;
+  background: rgba(0, 255, 179, 0.06); border: 1px solid rgba(0, 255, 179, 0.2);
+  color: var(--green); font-family: var(--font-mono); font-weight: 600;
+  transition: all 0.15s; margin-left: auto;
+}
+.phase-link-btn:hover { background: rgba(0, 255, 179, 0.12); border-color: var(--green); }
+.phase-flow-arrow {
+  display: flex; align-items: center; justify-content: center; padding: 8px 0;
+  color: var(--gray-500); font-size: 12px; font-family: var(--font-mono);
+}
+.phase-flow-arrow .arrow { color: var(--green); font-size: 16px; margin: 0 8px; }
 </style>
 </head>
 <body>
@@ -538,23 +575,11 @@ nav {
     <!-- Templates Bar -->
     <div class="templates-bar" id="templates-bar"></div>
 
-    <!-- Inputs Section -->
-    <div class="canvas-section">
-      <div class="canvas-section-header">
-        <div class="canvas-section-label">Inputs</div>
-        <button class="canvas-add-btn" onclick="addInput()">+ Add Input</button>
-      </div>
-      <div id="inputs-list"></div>
-    </div>
+    <!-- Phase Tabs -->
+    <div class="phase-bar" id="phase-bar"></div>
 
-    <!-- Outputs Section -->
-    <div class="canvas-section">
-      <div class="canvas-section-header">
-        <div class="canvas-section-label">Outputs</div>
-        <button class="canvas-add-btn" onclick="addOutput()">+ Add Output</button>
-      </div>
-      <div id="outputs-list"></div>
-    </div>
+    <!-- Phase Content (inputs + outputs for active phase) -->
+    <div id="phase-content"></div>
   </div>
 
   <!-- Right Panel -->
@@ -698,13 +723,24 @@ function categoryColor(cat) {
 // State
 // ═══════════════════════════════════════════════════════════════════════════
 
+function emptyPhase(name) {
+  return {
+    name: name || 'Phase 1',
+    inputs: [{ txid: '', vout: 0, sequence: 0xfffffffe }],
+    outputs: [{ amount: '', rungs: [{ blocks: [], coil: 'UNLOCK' }] }],
+  };
+}
+
 let state = {
-  inputs: [{ txid: '', vout: 0, sequence: 0xfffffffe }],
-  outputs: [{ amount: '', rungs: [{ blocks: [], coil: 'UNLOCK' }] }],
+  phases: [emptyPhase('Phase 1')],
+  activePhase: 0,
   connected: false,
   rpcUrl: '', rpcUser: '', rpcPass: '',
-  modalTarget: null,  // { outputIdx, rungIdx, blockIdx }
+  modalTarget: null,
 };
+
+// Convenience accessors for the active phase
+function P() { return state.phases[state.activePhase]; }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Palette
@@ -735,36 +771,81 @@ function buildPalette() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function render() {
-  renderInputs();
-  renderOutputs();
+  renderPhaseBar();
+  renderPhaseContent();
   updateStats();
   updateJSON();
 }
 
-function renderInputs() {
-  const el = document.getElementById('inputs-list');
+function renderPhaseBar() {
+  const el = document.getElementById('phase-bar');
   let html = '';
-  state.inputs.forEach((inp, i) => {
-    html += `<div class="input-row">`;
-    html += `<label>#${i}</label>`;
-    html += `<label>txid</label><input class="txid-input" value="${inp.txid}" onchange="state.inputs[${i}].txid=this.value;updateJSON()">`;
-    html += `<label>vout</label><input class="vout-input" type="number" value="${inp.vout}" onchange="state.inputs[${i}].vout=+this.value;updateJSON()">`;
-    html += `<label>seq</label><input class="seq-input" value="${inp.sequence}" onchange="state.inputs[${i}].sequence=+this.value;updateJSON()">`;
-    if (state.inputs.length > 1) html += `<button class="del-btn" onclick="removeInput(${i})">&times;</button>`;
-    html += '</div>';
+  state.phases.forEach((phase, pi) => {
+    const active = pi === state.activePhase ? ' active' : '';
+    html += `<button class="phase-tab${active}" onclick="switchPhase(${pi})">`;
+    html += `<span class="phase-num">${pi + 1}</span>${phase.name}`;
+    if (state.phases.length > 1) html += `<button class="phase-del-btn" onclick="event.stopPropagation();removePhase(${pi})" title="Delete phase">&times;</button>`;
+    html += '</button>';
   });
+  html += `<button class="phase-add-btn" onclick="addPhase()">+ Phase</button>`;
+  // Link from previous phase button
+  if (state.activePhase > 0) {
+    html += `<button class="phase-link-btn" onclick="linkFromPrevious()" title="Auto-populate inputs from previous phase outputs">&#x21E9; Link inputs from Phase ${state.activePhase}</button>`;
+  }
   el.innerHTML = html;
 }
 
-function renderOutputs() {
-  const el = document.getElementById('outputs-list');
+function renderPhaseContent() {
+  const el = document.getElementById('phase-content');
+  const p = P();
   let html = '';
-  state.outputs.forEach((out, oi) => {
+
+  // Inputs section
+  html += '<div class="canvas-section">';
+  html += '<div class="canvas-section-header">';
+  html += '<div class="canvas-section-label">Inputs</div>';
+  html += '<button class="canvas-add-btn" onclick="addInput()">+ Add Input</button>';
+  html += '</div>';
+  html += '<div id="inputs-list">';
+  p.inputs.forEach((inp, i) => {
+    html += `<div class="input-row">`;
+    html += `<label>#${i}</label>`;
+    html += `<label>txid</label><input class="txid-input" value="${inp.txid}" onchange="P().inputs[${i}].txid=this.value;updateJSON()">`;
+    html += `<label>vout</label><input class="vout-input" type="number" value="${inp.vout}" onchange="P().inputs[${i}].vout=+this.value;updateJSON()">`;
+    html += `<label>seq</label><input class="seq-input" value="${inp.sequence}" onchange="P().inputs[${i}].sequence=+this.value;updateJSON()">`;
+    if (p.inputs.length > 1) html += `<button class="del-btn" onclick="removeInput(${i})">&times;</button>`;
+    html += '</div>';
+  });
+  html += '</div></div>';
+
+  // Outputs section
+  html += '<div class="canvas-section">';
+  html += '<div class="canvas-section-header">';
+  html += '<div class="canvas-section-label">Outputs</div>';
+  html += '<button class="canvas-add-btn" onclick="addOutput()">+ Add Output</button>';
+  html += '</div>';
+  html += '<div id="outputs-list">';
+  html += renderOutputsHTML(p);
+  html += '</div></div>';
+
+  el.innerHTML = html;
+}
+
+function renderOutputsHTML(p) {
+  let html = '';
+  p.outputs.forEach((out, oi) => {
+    html += renderSingleOutput(out, oi, p);
+  });
+  return html;
+}
+
+function renderSingleOutput(out, oi, p) {
+  let html = '';
     html += `<div class="output-card">`;
     html += `<div class="output-header">`;
     html += `<span class="output-label">OUTPUT ${oi}</span>`;
-    html += `<input class="output-amount-input" placeholder="amount (BTC)" value="${out.amount}" onchange="state.outputs[${oi}].amount=this.value;updateJSON()">`;
-    if (state.outputs.length > 1) html += `<button class="output-del-btn" onclick="removeOutput(${oi})">&times;</button>`;
+    html += `<input class="output-amount-input" placeholder="amount (BTC)" value="${out.amount}" onchange="P().outputs[${oi}].amount=this.value;updateJSON()">`;
+    if (p.outputs.length > 1) html += `<button class="output-del-btn" onclick="removeOutput(${oi})">&times;</button>`;
     html += '</div>';
     html += '<div class="ladder">';
 
@@ -813,8 +894,7 @@ function renderOutputs() {
     html += `<button class="add-rung-btn" onclick="addRung(${oi})">+ Add Rung</button>`;
     html += '</div>'; // ladder
     html += '</div>'; // output-card
-  });
-  el.innerHTML = html;
+  return html;
 }
 
 function blockParamLabel(block) {
@@ -830,39 +910,82 @@ function blockParamLabel(block) {
 }
 
 function updateStats() {
-  document.getElementById('stat-inputs').textContent = state.inputs.length;
-  document.getElementById('stat-outputs').textContent = state.outputs.length;
-  let rungs = 0, blocks = 0;
-  state.outputs.forEach(o => { rungs += o.rungs.length; o.rungs.forEach(r => { blocks += r.blocks.length; }); });
-  document.getElementById('stat-rungs').textContent = rungs;
-  document.getElementById('stat-blocks').textContent = blocks;
+  let totalInputs = 0, totalOutputs = 0, totalRungs = 0, totalBlocks = 0;
+  state.phases.forEach(p => {
+    totalInputs += p.inputs.length;
+    totalOutputs += p.outputs.length;
+    p.outputs.forEach(o => { totalRungs += o.rungs.length; o.rungs.forEach(r => { totalBlocks += r.blocks.length; }); });
+  });
+  document.getElementById('stat-inputs').textContent = totalInputs;
+  document.getElementById('stat-outputs').textContent = totalOutputs;
+  document.getElementById('stat-rungs').textContent = totalRungs;
+  document.getElementById('stat-blocks').textContent = totalBlocks;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Input / Output Management
 // ═══════════════════════════════════════════════════════════════════════════
 
-function addInput() { state.inputs.push({ txid: '', vout: 0, sequence: 0xfffffffe }); render(); }
-function removeInput(i) { state.inputs.splice(i, 1); render(); }
-function addOutput() { state.outputs.push({ amount: '', rungs: [{ blocks: [], coil: 'UNLOCK' }] }); render(); }
-function removeOutput(i) { state.outputs.splice(i, 1); render(); }
-function addRung(oi) { state.outputs[oi].rungs.push({ blocks: [], coil: 'UNLOCK' }); render(); }
+function addInput() { P().inputs.push({ txid: '', vout: 0, sequence: 0xfffffffe }); render(); }
+function removeInput(i) { P().inputs.splice(i, 1); render(); }
+function addOutput() { P().outputs.push({ amount: '', rungs: [{ blocks: [], coil: 'UNLOCK' }] }); render(); }
+function removeOutput(i) { P().outputs.splice(i, 1); render(); }
+function addRung(oi) { P().outputs[oi].rungs.push({ blocks: [], coil: 'UNLOCK' }); render(); }
 function removeRung(oi, ri) {
-  if (state.outputs[oi].rungs.length <= 1) { toast('Need at least one rung', 'error'); return; }
-  state.outputs[oi].rungs.splice(ri, 1); render();
+  if (P().outputs[oi].rungs.length <= 1) { toast('Need at least one rung', 'error'); return; }
+  P().outputs[oi].rungs.splice(ri, 1); render();
 }
 function moveRung(oi, ri, dir) {
-  const rungs = state.outputs[oi].rungs;
+  const rungs = P().outputs[oi].rungs;
   const ni = ri + dir;
   if (ni < 0 || ni >= rungs.length) return;
   [rungs[ri], rungs[ni]] = [rungs[ni], rungs[ri]];
   render();
 }
 function cycleCoil(oi, ri) {
-  const rung = state.outputs[oi].rungs[ri];
+  const rung = P().outputs[oi].rungs[ri];
   const idx = COIL_TYPES.indexOf(rung.coil);
   rung.coil = COIL_TYPES[(idx + 1) % COIL_TYPES.length];
   render();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase Management
+// ═══════════════════════════════════════════════════════════════════════════
+
+function switchPhase(pi) {
+  state.activePhase = pi;
+  render();
+}
+
+function addPhase() {
+  const n = state.phases.length + 1;
+  state.phases.push(emptyPhase('Phase ' + n));
+  state.activePhase = state.phases.length - 1;
+  render();
+  toast(`Added Phase ${n}`, 'success');
+}
+
+function removePhase(pi) {
+  if (state.phases.length <= 1) { toast('Need at least one phase', 'error'); return; }
+  state.phases.splice(pi, 1);
+  if (state.activePhase >= state.phases.length) state.activePhase = state.phases.length - 1;
+  render();
+}
+
+function linkFromPrevious() {
+  const prevPhase = state.phases[state.activePhase - 1];
+  if (!prevPhase) return;
+  const p = P();
+  // Create one input per output from previous phase, with placeholder txid
+  const fakeTxid = '<phase' + state.activePhase + '_txid>';
+  p.inputs = prevPhase.outputs.map((out, i) => ({
+    txid: fakeTxid,
+    vout: i,
+    sequence: 0xfffffffe,
+  }));
+  render();
+  toast(`Linked ${p.inputs.length} inputs from ${prevPhase.name}`, 'success');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -888,12 +1011,12 @@ function onDrop(e) {
     const fromOi = +e.dataTransfer.getData('application/x-oi');
     const fromRi = +e.dataTransfer.getData('application/x-ri');
     const fromBi = +e.dataTransfer.getData('application/x-bi');
-    const block = state.outputs[fromOi].rungs[fromRi].blocks.splice(fromBi, 1)[0];
-    state.outputs[oi].rungs[ri].blocks.push(block);
+    const block = P().outputs[fromOi].rungs[fromRi].blocks.splice(fromBi, 1)[0];
+    P().outputs[oi].rungs[ri].blocks.push(block);
   } else {
     const blockType = e.dataTransfer.getData('text/plain');
     if (!BLOCK_DEFS[blockType]) return;
-    state.outputs[oi].rungs[ri].blocks.push({ type: blockType, inverted: false, params: {} });
+    P().outputs[oi].rungs[ri].blocks.push({ type: blockType, inverted: false, params: {} });
     toast(`Added ${blockType}`, 'success');
   }
   render();
@@ -905,7 +1028,7 @@ function onDrop(e) {
 
 function onContactDragStart(e, oi, ri, bi) {
   e.stopPropagation();
-  e.dataTransfer.setData('text/plain', state.outputs[oi].rungs[ri].blocks[bi].type);
+  e.dataTransfer.setData('text/plain', P().outputs[oi].rungs[ri].blocks[bi].type);
   e.dataTransfer.setData('application/x-source', 'contact');
   e.dataTransfer.setData('application/x-oi', oi);
   e.dataTransfer.setData('application/x-ri', ri);
@@ -941,15 +1064,15 @@ function onBlockSlotDrop(e) {
     const fromRi = +e.dataTransfer.getData('application/x-ri');
     const fromBi = +e.dataTransfer.getData('application/x-bi');
     // Remove from old position
-    const block = state.outputs[fromOi].rungs[fromRi].blocks.splice(fromBi, 1)[0];
+    const block = P().outputs[fromOi].rungs[fromRi].blocks.splice(fromBi, 1)[0];
     // Adjust target index if same rung and removing shifted it
     if (fromOi === toOi && fromRi === toRi && fromBi < toBi) toBi--;
-    state.outputs[toOi].rungs[toRi].blocks.splice(toBi, 0, block);
+    P().outputs[toOi].rungs[toRi].blocks.splice(toBi, 0, block);
   } else {
     // From palette
     const blockType = e.dataTransfer.getData('text/plain');
     if (!BLOCK_DEFS[blockType]) return;
-    state.outputs[toOi].rungs[toRi].blocks.splice(toBi, 0, { type: blockType, inverted: false, params: {} });
+    P().outputs[toOi].rungs[toRi].blocks.splice(toBi, 0, { type: blockType, inverted: false, params: {} });
     toast(`Added ${blockType}`, 'success');
   }
   render();
@@ -981,7 +1104,7 @@ function showBlockPicker(e, oi, ri) {
       item.className = 'block-picker-item';
       item.innerHTML = `<div class="bp-dot" style="background:${cat.color}"></div>${def.label}`;
       item.onclick = () => {
-        state.outputs[oi].rungs[ri].blocks.push({ type: key, inverted: false, params: {} });
+        P().outputs[oi].rungs[ri].blocks.push({ type: key, inverted: false, params: {} });
         closeBlockPicker();
         render();
         toast(`Added ${key}`, 'success');
@@ -1007,7 +1130,7 @@ function closeBlockPicker() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function openBlockModal(oi, ri, bi) {
-  const block = state.outputs[oi].rungs[ri].blocks[bi];
+  const block = P().outputs[oi].rungs[ri].blocks[bi];
   const def = BLOCK_DEFS[block.type];
   if (!def) return;
   state.modalTarget = { oi, ri, bi };
@@ -1051,14 +1174,14 @@ function setInverted(val) {
   document.getElementById('inv-inverted').classList.toggle('active', val);
   if (state.modalTarget) {
     const { oi, ri, bi } = state.modalTarget;
-    state.outputs[oi].rungs[ri].blocks[bi].inverted = val;
+    P().outputs[oi].rungs[ri].blocks[bi].inverted = val;
   }
 }
 
 function applyModal() {
   if (!state.modalTarget) { closeModal(); return; }
   const { oi, ri, bi } = state.modalTarget;
-  const block = state.outputs[oi].rungs[ri].blocks[bi];
+  const block = P().outputs[oi].rungs[ri].blocks[bi];
   const def = BLOCK_DEFS[block.type];
   if (!def) { closeModal(); return; }
 
@@ -1074,7 +1197,7 @@ function applyModal() {
 function deleteBlock() {
   if (!state.modalTarget) return;
   const { oi, ri, bi } = state.modalTarget;
-  state.outputs[oi].rungs[ri].blocks.splice(bi, 1);
+  P().outputs[oi].rungs[ri].blocks.splice(bi, 1);
   closeModal();
   render();
 }
@@ -1088,14 +1211,14 @@ function closeModal() {
 // JSON Preview
 // ═══════════════════════════════════════════════════════════════════════════
 
-function buildTxJSON() {
-  const inputs = state.inputs.map(inp => ({
+function buildPhaseJSON(phase) {
+  const inputs = phase.inputs.map(inp => ({
     txid: inp.txid || '0000000000000000000000000000000000000000000000000000000000000000',
     vout: inp.vout,
     ...(inp.sequence !== 0xfffffffe ? { sequence: inp.sequence } : {})
   }));
 
-  const outputs = state.outputs.map(out => {
+  const outputs = phase.outputs.map(out => {
     const conditions = out.rungs.map(rung => {
       const blocks = rung.blocks.map(block => {
         const def = BLOCK_DEFS[block.type];
@@ -1130,6 +1253,15 @@ function buildTxJSON() {
   return { inputs, outputs };
 }
 
+function buildAllPhasesJSON() {
+  if (state.phases.length === 1) return buildPhaseJSON(state.phases[0]);
+  return state.phases.map((p, i) => ({
+    phase: i + 1,
+    name: p.name,
+    tx: buildPhaseJSON(p),
+  }));
+}
+
 function numericHex(val) {
   const buf = new ArrayBuffer(4);
   new DataView(buf).setUint32(0, val >>> 0, true);
@@ -1137,7 +1269,7 @@ function numericHex(val) {
 }
 
 function updateJSON() {
-  const obj = buildTxJSON();
+  const obj = buildAllPhasesJSON();
   const el = document.getElementById('json-preview');
   el.innerHTML = syntaxHighlight(JSON.stringify(obj, null, 2));
 }
@@ -1157,7 +1289,7 @@ function syntaxHighlight(json) {
 }
 
 function copyJSON() {
-  const obj = buildTxJSON();
+  const obj = buildAllPhasesJSON();
   navigator.clipboard.writeText(JSON.stringify(obj, null, 2)).then(() => toast('Copied JSON', 'success'));
 }
 
@@ -1230,7 +1362,7 @@ function updateConnectionUI() {
 async function broadcastTx() {
   if (!state.connected) { toast('Not connected', 'error'); return; }
   try {
-    const tx = buildTxJSON();
+    const tx = buildPhaseJSON(P());
     toast('Creating transaction...', 'success');
 
     // Build createrungtx params
@@ -1421,44 +1553,68 @@ const TEMPLATES = [
     }),
   },
   {
-    name: 'Wraith Fan-out',
+    name: 'Wraith (full)',
     color: '#FF44AA',
-    desc: '3-user wraith mix — fan-out to 9 equal outputs (3 per user, shuffled)',
+    desc: '3-user wraith mix — Phase 1: fan-out, Phase 2-4: fan-in per user',
     build: () => {
-      // 3 users, each gets 3 outputs = 9 total, all equal denomination
-      // Pubkeys: Alice (02a1..), Bob (03f0..), Carol (03a2..)
       const alice = '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc';
       const bob   = '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a';
       const carol = '03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708';
-      // Shuffle order so outputs don't reveal ownership
+      // Shuffled ownership: [bob, alice, carol, carol, bob, alice, alice, carol, bob]
       const owners = [bob, alice, carol, carol, bob, alice, alice, carol, bob];
-      return {
-        inputs: [
-          { txid: 'aaaa000000000000000000000000000000000000000000000000000000000001', vout: 0, sequence: 0xfffffffe },
-          { txid: 'bbbb000000000000000000000000000000000000000000000000000000000002', vout: 0, sequence: 0xfffffffe },
-          { txid: 'cccc000000000000000000000000000000000000000000000000000000000003', vout: 0, sequence: 0xfffffffe },
-        ],
-        outputs: owners.map(pk => ({
-          amount: '0.11',
-          rungs: [{ blocks: [{ type: 'SIG', inverted: false, params: { pubkey: pk } }], coil: 'UNLOCK' }],
-        })),
-      };
+      const fanoutTxid = '<fanout_txid>';
+      return [
+        // Phase 1: Fan-out — 3 inputs → 9 equal outputs (shuffled)
+        {
+          name: 'Fan-out',
+          inputs: [
+            { txid: 'aaaa000000000000000000000000000000000000000000000000000000000001', vout: 0, sequence: 0xfffffffe },
+            { txid: 'bbbb000000000000000000000000000000000000000000000000000000000002', vout: 0, sequence: 0xfffffffe },
+            { txid: 'cccc000000000000000000000000000000000000000000000000000000000003', vout: 0, sequence: 0xfffffffe },
+          ],
+          outputs: owners.map(pk => ({
+            amount: '0.11',
+            rungs: [{ blocks: [{ type: 'SIG', inverted: false, params: { pubkey: pk } }], coil: 'UNLOCK' }],
+          })),
+        },
+        // Phase 2: Alice fan-in — her 3 outputs (vouts 1, 5, 6) → 1 output
+        {
+          name: 'Alice fan-in',
+          inputs: [
+            { txid: fanoutTxid, vout: 1, sequence: 0xfffffffe },
+            { txid: fanoutTxid, vout: 5, sequence: 0xfffffffe },
+            { txid: fanoutTxid, vout: 6, sequence: 0xfffffffe },
+          ],
+          outputs: [{ amount: '0.329', rungs: [
+            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: alice } }], coil: 'UNLOCK' },
+          ]}],
+        },
+        // Phase 3: Bob fan-in — his 3 outputs (vouts 0, 4, 8) → 1 output
+        {
+          name: 'Bob fan-in',
+          inputs: [
+            { txid: fanoutTxid, vout: 0, sequence: 0xfffffffe },
+            { txid: fanoutTxid, vout: 4, sequence: 0xfffffffe },
+            { txid: fanoutTxid, vout: 8, sequence: 0xfffffffe },
+          ],
+          outputs: [{ amount: '0.329', rungs: [
+            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: bob } }], coil: 'UNLOCK' },
+          ]}],
+        },
+        // Phase 4: Carol fan-in — her 3 outputs (vouts 2, 3, 7) → 1 output
+        {
+          name: 'Carol fan-in',
+          inputs: [
+            { txid: fanoutTxid, vout: 2, sequence: 0xfffffffe },
+            { txid: fanoutTxid, vout: 3, sequence: 0xfffffffe },
+            { txid: fanoutTxid, vout: 7, sequence: 0xfffffffe },
+          ],
+          outputs: [{ amount: '0.329', rungs: [
+            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: carol } }], coil: 'UNLOCK' },
+          ]}],
+        },
+      ];
     },
-  },
-  {
-    name: 'Wraith Fan-in',
-    color: '#FF44AA',
-    desc: 'Consolidate 3 wraith outputs back to 1 — done per-user after delay',
-    build: () => ({
-      inputs: [
-        { txid: 'dddd000000000000000000000000000000000000000000000000000000000001', vout: 1, sequence: 0xfffffffe },
-        { txid: 'dddd000000000000000000000000000000000000000000000000000000000001', vout: 5, sequence: 0xfffffffe },
-        { txid: 'dddd000000000000000000000000000000000000000000000000000000000001', vout: 8, sequence: 0xfffffffe },
-      ],
-      outputs: [{ amount: '0.329', rungs: [
-        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }], coil: 'UNLOCK' },
-      ]}],
-    }),
   },
   {
     name: 'Multi-IO',
@@ -1495,15 +1651,22 @@ function buildTemplatesBar() {
 function loadTemplate(idx) {
   const t = TEMPLATES[idx];
   const data = t.build();
-  state.inputs = data.inputs;
-  state.outputs = data.outputs;
+  // Multi-phase template: array of {name, inputs, outputs}
+  if (Array.isArray(data)) {
+    state.phases = data.map((d, i) => ({ name: d.name || `Phase ${i+1}`, inputs: d.inputs, outputs: d.outputs }));
+    state.activePhase = 0;
+  } else {
+    // Single-phase template
+    state.phases = [{ name: 'Phase 1', inputs: data.inputs, outputs: data.outputs }];
+    state.activePhase = 0;
+  }
   render();
   toast(`Loaded template: ${t.name}`, 'success');
 }
 
 function clearCanvas() {
-  state.inputs = [{ txid: '', vout: 0, sequence: 0xfffffffe }];
-  state.outputs = [{ amount: '', rungs: [{ blocks: [], coil: 'UNLOCK' }] }];
+  state.phases = [emptyPhase('Phase 1')];
+  state.activePhase = 0;
   render();
   toast('Canvas cleared', 'success');
 }
