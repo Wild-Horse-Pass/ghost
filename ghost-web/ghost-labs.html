@@ -174,7 +174,7 @@ nav {
 /* ── Canvas: Output / Ladder Diagram ── */
 .output-card {
   background: var(--gray-900); border: 1px solid var(--gray-800);
-  border-radius: 12px; margin-bottom: 16px; overflow: hidden;
+  border-radius: 12px; margin-bottom: 16px; overflow: visible;
 }
 .output-header {
   display: flex; align-items: center; gap: 10px; padding: 10px 16px;
@@ -207,16 +207,19 @@ nav {
 .rung-wire { flex: 1; display: flex; align-items: center; gap: 0; padding: 6px 0; }
 .wire-segment {
   height: 2px; background: var(--gray-600); min-width: 12px; flex-shrink: 0;
+  transition: min-width 0.1s, background 0.1s;
 }
+.block-drop-target { min-width: 8px; }
 .wire-grow { flex: 1; }
 
 /* Contact block on rung */
 .contact {
   display: flex; align-items: center; padding: 4px 10px; border-radius: 4px;
   font-family: var(--font-mono); font-size: 11px; font-weight: 600;
-  border: 1px solid; cursor: pointer; white-space: nowrap; transition: all 0.15s;
+  border: 1px solid; cursor: grab; white-space: nowrap; transition: all 0.15s;
   position: relative; flex-shrink: 0;
 }
+.contact:active { cursor: grabbing; }
 .contact:hover { filter: brightness(1.2); transform: translateY(-1px); }
 .contact .inv-slash { margin-right: 2px; }
 .contact .contact-param {
@@ -233,18 +236,58 @@ nav {
 .coil-paren { font-size: 16px; color: inherit; }
 .coil-label { padding: 0 3px; }
 
-/* Rung controls */
-.rung-controls {
-  position: absolute; right: -28px; top: 50%; transform: translateY(-50%);
-  display: flex; flex-direction: column; gap: 2px; opacity: 0; transition: opacity 0.15s;
+/* Rung toolbar (inline, between rail-right and controls) */
+.rung-toolbar {
+  display: flex; align-items: center; gap: 3px; margin-left: 8px;
+  opacity: 0; transition: opacity 0.15s; flex-shrink: 0;
 }
-.rung-row:hover .rung-controls { opacity: 1; }
-.rung-ctrl-btn {
+.rung-row:hover .rung-toolbar { opacity: 1; }
+.rung-toolbar-btn {
   background: var(--gray-800); border: 1px solid var(--gray-700); color: var(--gray-400);
-  width: 18px; height: 18px; border-radius: 3px; cursor: pointer; font-size: 10px;
+  width: 22px; height: 22px; border-radius: 4px; cursor: pointer; font-size: 11px;
   display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+  font-family: var(--font-mono); font-weight: 600;
 }
-.rung-ctrl-btn:hover { border-color: var(--orange); color: var(--orange); }
+.rung-toolbar-btn:hover { border-color: var(--orange); color: var(--orange); }
+.rung-toolbar-btn.del:hover { border-color: var(--red); color: var(--red); }
+.rung-toolbar-btn.add-block { color: var(--green); border-color: var(--gray-600); }
+.rung-toolbar-btn.add-block:hover { border-color: var(--green); }
+
+/* Block picker dropdown (for + button) */
+.block-picker {
+  position: absolute; top: 100%; right: 0; z-index: 50;
+  background: var(--gray-900); border: 1px solid var(--gray-800);
+  border-radius: 8px; padding: 6px; min-width: 180px; max-height: 260px;
+  overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.block-picker-item {
+  display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+  border-radius: 4px; cursor: pointer; font-family: var(--font-mono);
+  font-size: 11px; color: var(--gray-200); transition: background 0.1s;
+}
+.block-picker-item:hover { background: var(--gray-800); }
+.block-picker-item .bp-dot { width: 6px; height: 6px; border-radius: 2px; flex-shrink: 0; }
+.block-picker-cat {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--gray-500); padding: 6px 8px 2px; font-weight: 600;
+}
+
+/* Templates bar */
+.templates-bar {
+  display: flex; align-items: center; gap: 8px; padding: 12px 0 16px;
+  border-bottom: 1px solid var(--gray-800); margin-bottom: 16px; flex-wrap: wrap;
+}
+.templates-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--gray-400); font-weight: 600; margin-right: 4px;
+}
+.template-btn {
+  padding: 5px 12px; border-radius: 6px; font-size: 11px; font-weight: 500;
+  cursor: pointer; border: 1px solid var(--gray-700); background: var(--gray-800);
+  color: var(--gray-200); font-family: var(--font-mono); transition: all 0.15s;
+}
+.template-btn:hover { border-color: var(--green); color: var(--green); background: rgba(0, 255, 179, 0.05); }
+.template-btn .tpl-dot { display: inline-block; width: 6px; height: 6px; border-radius: 2px; margin-right: 5px; }
 
 /* Drop zone */
 .drop-zone {
@@ -492,6 +535,9 @@ nav {
 
   <!-- Canvas -->
   <div class="canvas" id="canvas">
+    <!-- Templates Bar -->
+    <div class="templates-bar" id="templates-bar"></div>
+
     <!-- Inputs Section -->
     <div class="canvas-section">
       <div class="canvas-section-header">
@@ -733,15 +779,17 @@ function renderOutputs() {
         const color = def ? categoryColor(def.category) : '#888';
         const inv = block.inverted ? '<span class="inv-slash">/</span>' : '';
         const param = blockParamLabel(block);
-        html += `<div class="contact" style="border-color:${color};color:${color}" onclick="openBlockModal(${oi},${ri},${bi})" title="${block.type}">`;
+        // Each contact is draggable for reordering within the rung
+        html += `<div class="contact" style="border-color:${color};color:${color}" draggable="true" ondragstart="onContactDragStart(event,${oi},${ri},${bi})" onclick="openBlockModal(${oi},${ri},${bi})" title="${block.type} — drag to reorder">`;
         html += `${inv}${block.type}`;
         if (param) html += `<span class="contact-param">${param}</span>`;
         html += '</div>';
-        html += '<div class="wire-segment"></div>';
+        // Drop zone between blocks for reordering
+        html += `<div class="wire-segment block-drop-target" data-oi="${oi}" data-ri="${ri}" data-bi="${bi+1}" ondragover="onBlockSlotOver(event)" ondragleave="onBlockSlotLeave(event)" ondrop="onBlockSlotDrop(event)"></div>`;
       });
 
-      // Drop zone for adding blocks
-      html += `<div class="drop-zone wire-grow" data-oi="${oi}" data-ri="${ri}" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">drop block</div>`;
+      // Drop zone for adding new blocks from palette
+      html += `<div class="drop-zone wire-grow" data-oi="${oi}" data-ri="${ri}" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">${rung.blocks.length ? '+' : 'drop block'}</div>`;
       html += '<div class="wire-segment"></div>';
 
       // Coil
@@ -752,11 +800,12 @@ function renderOutputs() {
       html += '</div>'; // rung-wire
       html += '<div class="rail-right"></div>';
 
-      // Rung controls
-      html += '<div class="rung-controls">';
-      if (ri > 0) html += `<button class="rung-ctrl-btn" onclick="moveRung(${oi},${ri},-1)" title="Move up">&#x25B2;</button>`;
-      if (ri < out.rungs.length - 1) html += `<button class="rung-ctrl-btn" onclick="moveRung(${oi},${ri},1)" title="Move down">&#x25BC;</button>`;
-      html += `<button class="rung-ctrl-btn" onclick="removeRung(${oi},${ri})" title="Delete rung">&times;</button>`;
+      // Inline rung toolbar
+      html += '<div class="rung-toolbar">';
+      html += `<button class="rung-toolbar-btn add-block" onclick="showBlockPicker(event,${oi},${ri})" title="Add block to rung">+</button>`;
+      if (ri > 0) html += `<button class="rung-toolbar-btn" onclick="moveRung(${oi},${ri},-1)" title="Move rung up">&#x25B2;</button>`;
+      if (ri < out.rungs.length - 1) html += `<button class="rung-toolbar-btn" onclick="moveRung(${oi},${ri},1)" title="Move rung down">&#x25BC;</button>`;
+      html += `<button class="rung-toolbar-btn del" onclick="removeRung(${oi},${ri})" title="Delete rung">&times;</button>`;
       html += '</div>';
       html += '</div>'; // rung-row
     });
@@ -817,11 +866,12 @@ function cycleCoil(oi, ri) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Drag & Drop
+// Drag & Drop — Palette to Rung
 // ═══════════════════════════════════════════════════════════════════════════
 
 function onDragStart(e, blockType) {
   e.dataTransfer.setData('text/plain', blockType);
+  e.dataTransfer.setData('application/x-source', 'palette');
   e.dataTransfer.effectAllowed = 'copy';
 }
 function onDragOver(e) { e.preventDefault(); e.currentTarget.classList.add('drag-over'); }
@@ -829,13 +879,127 @@ function onDragLeave(e) { e.currentTarget.classList.remove('drag-over'); }
 function onDrop(e) {
   e.preventDefault();
   e.currentTarget.classList.remove('drag-over');
-  const blockType = e.dataTransfer.getData('text/plain');
-  if (!BLOCK_DEFS[blockType]) return;
+  const src = e.dataTransfer.getData('application/x-source');
   const oi = +e.currentTarget.dataset.oi;
   const ri = +e.currentTarget.dataset.ri;
-  state.outputs[oi].rungs[ri].blocks.push({ type: blockType, inverted: false, params: {} });
+
+  if (src === 'contact') {
+    // Move block from another position to end of this rung
+    const fromOi = +e.dataTransfer.getData('application/x-oi');
+    const fromRi = +e.dataTransfer.getData('application/x-ri');
+    const fromBi = +e.dataTransfer.getData('application/x-bi');
+    const block = state.outputs[fromOi].rungs[fromRi].blocks.splice(fromBi, 1)[0];
+    state.outputs[oi].rungs[ri].blocks.push(block);
+  } else {
+    const blockType = e.dataTransfer.getData('text/plain');
+    if (!BLOCK_DEFS[blockType]) return;
+    state.outputs[oi].rungs[ri].blocks.push({ type: blockType, inverted: false, params: {} });
+    toast(`Added ${blockType}`, 'success');
+  }
   render();
-  toast(`Added ${blockType}`, 'success');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Drag & Drop — Reorder Blocks Within / Between Rungs
+// ═══════════════════════════════════════════════════════════════════════════
+
+function onContactDragStart(e, oi, ri, bi) {
+  e.stopPropagation();
+  e.dataTransfer.setData('text/plain', state.outputs[oi].rungs[ri].blocks[bi].type);
+  e.dataTransfer.setData('application/x-source', 'contact');
+  e.dataTransfer.setData('application/x-oi', oi);
+  e.dataTransfer.setData('application/x-ri', ri);
+  e.dataTransfer.setData('application/x-bi', bi);
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function onBlockSlotOver(e) {
+  e.preventDefault();
+  e.currentTarget.style.background = 'var(--orange)';
+  e.currentTarget.style.minWidth = '24px';
+  e.currentTarget.style.borderRadius = '4px';
+}
+function onBlockSlotLeave(e) {
+  e.currentTarget.style.background = '';
+  e.currentTarget.style.minWidth = '';
+  e.currentTarget.style.borderRadius = '';
+}
+function onBlockSlotDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  e.currentTarget.style.background = '';
+  e.currentTarget.style.minWidth = '';
+  e.currentTarget.style.borderRadius = '';
+
+  const toOi = +e.currentTarget.dataset.oi;
+  const toRi = +e.currentTarget.dataset.ri;
+  let toBi = +e.currentTarget.dataset.bi;
+
+  const src = e.dataTransfer.getData('application/x-source');
+  if (src === 'contact') {
+    const fromOi = +e.dataTransfer.getData('application/x-oi');
+    const fromRi = +e.dataTransfer.getData('application/x-ri');
+    const fromBi = +e.dataTransfer.getData('application/x-bi');
+    // Remove from old position
+    const block = state.outputs[fromOi].rungs[fromRi].blocks.splice(fromBi, 1)[0];
+    // Adjust target index if same rung and removing shifted it
+    if (fromOi === toOi && fromRi === toRi && fromBi < toBi) toBi--;
+    state.outputs[toOi].rungs[toRi].blocks.splice(toBi, 0, block);
+  } else {
+    // From palette
+    const blockType = e.dataTransfer.getData('text/plain');
+    if (!BLOCK_DEFS[blockType]) return;
+    state.outputs[toOi].rungs[toRi].blocks.splice(toBi, 0, { type: blockType, inverted: false, params: {} });
+    toast(`Added ${blockType}`, 'success');
+  }
+  render();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Block Picker (+ button on rung toolbar)
+// ═══════════════════════════════════════════════════════════════════════════
+
+let activePickerCleanup = null;
+
+function showBlockPicker(e, oi, ri) {
+  e.stopPropagation();
+  closeBlockPicker();
+
+  const btn = e.currentTarget;
+  const picker = document.createElement('div');
+  picker.className = 'block-picker';
+
+  for (const cat of CATEGORIES) {
+    const blocks = Object.entries(BLOCK_DEFS).filter(([, d]) => d.category === cat.id && d.phase === 1);
+    if (!blocks.length) continue;
+    const catEl = document.createElement('div');
+    catEl.className = 'block-picker-cat';
+    catEl.textContent = cat.name;
+    picker.appendChild(catEl);
+    for (const [key, def] of blocks) {
+      const item = document.createElement('div');
+      item.className = 'block-picker-item';
+      item.innerHTML = `<div class="bp-dot" style="background:${cat.color}"></div>${def.label}`;
+      item.onclick = () => {
+        state.outputs[oi].rungs[ri].blocks.push({ type: key, inverted: false, params: {} });
+        closeBlockPicker();
+        render();
+        toast(`Added ${key}`, 'success');
+      };
+      picker.appendChild(item);
+    }
+  }
+
+  btn.parentElement.style.position = 'relative';
+  btn.parentElement.appendChild(picker);
+
+  const dismiss = (ev) => { if (!picker.contains(ev.target) && ev.target !== btn) closeBlockPicker(); };
+  setTimeout(() => document.addEventListener('click', dismiss), 0);
+  activePickerCleanup = () => { document.removeEventListener('click', dismiss); picker.remove(); activePickerCleanup = null; };
+}
+
+function closeBlockPicker() {
+  if (activePickerCleanup) activePickerCleanup();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1147,10 +1311,146 @@ function toast(msg, type = '') {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Templates
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TEMPLATES = [
+  {
+    name: 'Simple SIG',
+    color: '#00FFB3',
+    desc: 'Single signature spend',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }], coil: 'UNLOCK' },
+      ]}],
+    }),
+  },
+  {
+    name: 'SIG + CSV',
+    color: '#FFB700',
+    desc: 'Signature with 144-block relative timelock',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 144 }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [
+          { type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } },
+          { type: 'CSV', inverted: false, params: { blocks: '144' } },
+        ], coil: 'UNLOCK' },
+      ]}],
+    }),
+  },
+  {
+    name: 'HTLC',
+    color: '#4488FF',
+    desc: 'Hash preimage OR timeout — classic atomic swap',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [{ type: 'HASH_PREIMAGE', inverted: false, params: { hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } }], coil: 'UNLOCK' },
+        { blocks: [
+          { type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } },
+          { type: 'CSV', inverted: false, params: { blocks: '144' } },
+        ], coil: 'UNLOCK' },
+      ]}],
+    }),
+  },
+  {
+    name: '2-of-3 Multisig',
+    color: '#00FFB3',
+    desc: 'Threshold multisig — 2 of 3 keys required',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [{ type: 'MULTISIG', inverted: false, params: {
+          threshold: '2',
+          pubkeys: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc\n03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a\n03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708'
+        } }], coil: 'UNLOCK' },
+      ]}],
+    }),
+  },
+  {
+    name: 'Vault',
+    color: '#FF6644',
+    desc: 'Hot key with delay OR cold key immediate',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [
+          { type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } },
+          { type: 'CSV', inverted: false, params: { blocks: '1008' } },
+        ], coil: 'UNLOCK' },
+        { blocks: [
+          { type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } },
+        ], coil: 'UNLOCK' },
+      ]}],
+    }),
+  },
+  {
+    name: 'Inverted CSV',
+    color: '#FFB700',
+    desc: 'Spendable BEFORE timelock — inverted contact',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0 }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [{ type: 'CSV', inverted: true, params: { blocks: '144' } }], coil: 'UNLOCK' },
+      ]}],
+    }),
+  },
+  {
+    name: 'Multi-IO',
+    color: '#AA44FF',
+    desc: '2 inputs, 2 outputs — batch spend',
+    build: () => ({
+      inputs: [
+        { txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe },
+        { txid: '11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff', vout: 1, sequence: 0xfffffffe },
+      ],
+      outputs: [
+        { amount: '0.5', rungs: [
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }], coil: 'UNLOCK' },
+        ]},
+        { amount: '0.498', rungs: [
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } }], coil: 'UNLOCK' },
+        ]},
+      ],
+    }),
+  },
+];
+
+function buildTemplatesBar() {
+  const el = document.getElementById('templates-bar');
+  let html = '<span class="templates-label">Templates</span>';
+  for (let i = 0; i < TEMPLATES.length; i++) {
+    const t = TEMPLATES[i];
+    html += `<button class="template-btn" onclick="loadTemplate(${i})" title="${t.desc}"><span class="tpl-dot" style="background:${t.color}"></span>${t.name}</button>`;
+  }
+  html += `<button class="template-btn" onclick="clearCanvas()" title="Reset to empty" style="margin-left:auto;border-color:var(--gray-600)">Clear</button>`;
+  el.innerHTML = html;
+}
+
+function loadTemplate(idx) {
+  const t = TEMPLATES[idx];
+  const data = t.build();
+  state.inputs = data.inputs;
+  state.outputs = data.outputs;
+  render();
+  toast(`Loaded template: ${t.name}`, 'success');
+}
+
+function clearCanvas() {
+  state.inputs = [{ txid: '', vout: 0, sequence: 0xfffffffe }];
+  state.outputs = [{ amount: '', rungs: [{ blocks: [], coil: 'UNLOCK' }] }];
+  render();
+  toast('Canvas cleared', 'success');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Init
 // ═══════════════════════════════════════════════════════════════════════════
 
 buildPalette();
+buildTemplatesBar();
 render();
 </script>
 </body>
