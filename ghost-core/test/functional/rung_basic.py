@@ -118,6 +118,37 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_rate_limit(node)
         self.test_sequencer(node)
 
+        # Remaining block type tests
+        self.test_adaptor_sig(node)
+        self.test_anchor(node)
+        self.test_anchor_channel(node)
+        self.test_anchor_pool(node)
+        self.test_anchor_reserve(node)
+        self.test_anchor_seal(node)
+        self.test_anchor_oracle(node)
+        self.test_recurse_decay(node)
+        self.test_hysteresis_fee(node)
+        self.test_timer_continuous(node)
+        self.test_timer_off_delay(node)
+        self.test_latch_set(node)
+        self.test_latch_reset(node)
+        self.test_counter_down(node)
+        self.test_counter_preset(node)
+        self.test_counter_up(node)
+        self.test_one_shot(node)
+
+        # Negative tests for remaining block types
+        self.test_negative_adaptor_sig_wrong_key(node)
+        self.test_negative_anchor_reserve_n_gt_m(node)
+        self.test_negative_hysteresis_fee_low_gt_high(node)
+        self.test_negative_anchor_channel_zero_commitment(node)
+        self.test_negative_anchor_pool_zero_count(node)
+        self.test_negative_anchor_oracle_zero_count(node)
+        self.test_negative_timer_continuous_zero(node)
+        self.test_negative_counter_preset_missing_field(node)
+        self.test_negative_one_shot_missing_hash(node)
+        self.test_negative_recurse_decay_wrong_delta(node)
+
     # =========================================================================
     # Helpers
     # =========================================================================
@@ -2135,6 +2166,964 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         tx_info = node.getrawtransaction(spend_txid, True)
         assert tx_info["confirmations"] >= 1
         self.log.info("  SEQUENCER spend confirmed!")
+
+
+    def test_adaptor_sig(self, node):
+        """ADAPTOR_SIG: adapted signature with signing_key + adaptor_point."""
+        self.log.info("Testing ADAPTOR_SIG spend...")
+
+        # ADAPTOR_SIG needs 2 pubkeys + 1 signature
+        # The adapted sig verifies against signing_key (adaptor secret already applied)
+        signing_wif, signing_pubkey = make_keypair()
+        _adaptor_wif, adaptor_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "ADAPTOR_SIG", "fields": [
+            {"type": "PUBKEY", "hex": signing_pubkey},
+            {"type": "PUBKEY", "hex": adaptor_pubkey},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ADAPTOR_SIG output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        # Sign via block-level privkey (ADAPTOR_SIG handler in signrungtx)
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ADAPTOR_SIG", "privkey": signing_wif}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  ADAPTOR_SIG spend confirmed!")
+
+    def test_anchor(self, node):
+        """ANCHOR: generic anchor with at least one field."""
+        self.log.info("Testing ANCHOR spend...")
+
+        conditions = [{"blocks": [{"type": "ANCHOR", "fields": [
+            {"type": "HASH256", "hex": os.urandom(32).hex()},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ANCHOR output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  ANCHOR spend confirmed!")
+
+    def test_anchor_channel(self, node):
+        """ANCHOR_CHANNEL: 2 pubkeys + optional commitment > 0."""
+        self.log.info("Testing ANCHOR_CHANNEL spend...")
+
+        _local_wif, local_pubkey = make_keypair()
+        _remote_wif, remote_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "ANCHOR_CHANNEL", "fields": [
+            {"type": "PUBKEY", "hex": local_pubkey},
+            {"type": "PUBKEY", "hex": remote_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(42)},  # commitment_number
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ANCHOR_CHANNEL output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_CHANNEL"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  ANCHOR_CHANNEL spend confirmed!")
+
+    def test_anchor_pool(self, node):
+        """ANCHOR_POOL: vtxo tree root hash + optional participant count."""
+        self.log.info("Testing ANCHOR_POOL spend...")
+
+        conditions = [{"blocks": [{"type": "ANCHOR_POOL", "fields": [
+            {"type": "HASH256", "hex": os.urandom(32).hex()},
+            {"type": "NUMERIC", "hex": numeric_hex(42)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ANCHOR_POOL output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_POOL"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  ANCHOR_POOL spend confirmed!")
+
+    def test_anchor_reserve(self, node):
+        """ANCHOR_RESERVE: 2 numerics (n <= m) + 1 hash."""
+        self.log.info("Testing ANCHOR_RESERVE spend...")
+
+        conditions = [{"blocks": [{"type": "ANCHOR_RESERVE", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(3)},   # threshold_n
+            {"type": "NUMERIC", "hex": numeric_hex(5)},   # threshold_m
+            {"type": "HASH256", "hex": os.urandom(32).hex()},  # guardian set hash
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ANCHOR_RESERVE output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_RESERVE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  ANCHOR_RESERVE spend confirmed!")
+
+    def test_anchor_seal(self, node):
+        """ANCHOR_SEAL: 2 hashes (asset_id + state_transition)."""
+        self.log.info("Testing ANCHOR_SEAL spend...")
+
+        conditions = [{"blocks": [{"type": "ANCHOR_SEAL", "fields": [
+            {"type": "HASH256", "hex": os.urandom(32).hex()},  # asset_id
+            {"type": "HASH256", "hex": os.urandom(32).hex()},  # state_transition
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ANCHOR_SEAL output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_SEAL"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  ANCHOR_SEAL spend confirmed!")
+
+    def test_anchor_oracle(self, node):
+        """ANCHOR_ORACLE: 1 pubkey + optional outcome count."""
+        self.log.info("Testing ANCHOR_ORACLE spend...")
+
+        _oracle_wif, oracle_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "ANCHOR_ORACLE", "fields": [
+            {"type": "PUBKEY", "hex": oracle_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(10)},  # outcome_count
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ANCHOR_ORACLE output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_ORACLE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  ANCHOR_ORACLE spend confirmed!")
+
+    def test_recurse_decay(self, node):
+        """RECURSE_DECAY: covenant with parameter subtraction per hop."""
+        self.log.info("Testing RECURSE_DECAY (parameter decay per hop)...")
+
+        # Conditions: RECURSE_DECAY + COMPARE(GT threshold) in same rung
+        # Decay spec: block_idx=1 (COMPARE), param_idx=1 (value_b = threshold), decay_per_step=500
+        # Each hop DECREASES the threshold by 500 (relaxing constraint)
+        initial_threshold = 5000
+        conditions = [{"blocks": [
+            {"type": "RECURSE_DECAY", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},   # max_depth
+                {"type": "NUMERIC", "hex": numeric_hex(1)},    # decay_block_idx (COMPARE is block 1)
+                {"type": "NUMERIC", "hex": numeric_hex(1)},    # decay_param_idx (second NUMERIC = threshold)
+                {"type": "NUMERIC", "hex": numeric_hex(500)},  # decay_per_step
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},  # GT operator
+                {"type": "NUMERIC", "hex": numeric_hex(initial_threshold)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  RECURSE_DECAY output: {txid}:{vout} (threshold={initial_threshold})")
+
+        # Hop 1: decay threshold from 5000 to 4500
+        new_threshold = initial_threshold - 500
+        decayed_conditions = [{"blocks": [
+            {"type": "RECURSE_DECAY", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(500)},
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                {"type": "NUMERIC", "hex": numeric_hex(new_threshold)},
+            ]},
+        ]}]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": decayed_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_DECAY"}, {"type": "COMPARE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  RECURSE_DECAY hop (threshold {initial_threshold}→{new_threshold}): {txid}")
+        self.log.info("  RECURSE_DECAY passed!")
+
+    def test_hysteresis_fee(self, node):
+        """HYSTERESIS_FEE: 2 numerics (high >= low), structural only."""
+        self.log.info("Testing HYSTERESIS_FEE spend...")
+
+        conditions = [{"blocks": [{"type": "HYSTERESIS_FEE", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(100)},  # high_sat_vb
+            {"type": "NUMERIC", "hex": numeric_hex(10)},   # low_sat_vb
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  HYSTERESIS_FEE output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "HYSTERESIS_FEE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  HYSTERESIS_FEE spend confirmed!")
+
+    def test_timer_continuous(self, node):
+        """TIMER_CONTINUOUS: 1 numeric > 0, structural only."""
+        self.log.info("Testing TIMER_CONTINUOUS spend...")
+
+        conditions = [{"blocks": [{"type": "TIMER_CONTINUOUS", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(144)},  # block count
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  TIMER_CONTINUOUS output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "TIMER_CONTINUOUS"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  TIMER_CONTINUOUS spend confirmed!")
+
+    def test_timer_off_delay(self, node):
+        """TIMER_OFF_DELAY: 1 numeric > 0, structural only."""
+        self.log.info("Testing TIMER_OFF_DELAY spend...")
+
+        conditions = [{"blocks": [{"type": "TIMER_OFF_DELAY", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(72)},  # hold blocks
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  TIMER_OFF_DELAY output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "TIMER_OFF_DELAY"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  TIMER_OFF_DELAY spend confirmed!")
+
+    def test_latch_set(self, node):
+        """LATCH_SET: 1 pubkey required, structural only."""
+        self.log.info("Testing LATCH_SET spend...")
+
+        _setter_wif, setter_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "LATCH_SET", "fields": [
+            {"type": "PUBKEY", "hex": setter_pubkey},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  LATCH_SET output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "LATCH_SET"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  LATCH_SET spend confirmed!")
+
+    def test_latch_reset(self, node):
+        """LATCH_RESET: 1 pubkey + 1 numeric required, structural only."""
+        self.log.info("Testing LATCH_RESET spend...")
+
+        _resetter_wif, resetter_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "LATCH_RESET", "fields": [
+            {"type": "PUBKEY", "hex": resetter_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(6)},  # delay blocks
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  LATCH_RESET output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "LATCH_RESET"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  LATCH_RESET spend confirmed!")
+
+    def test_counter_down(self, node):
+        """COUNTER_DOWN: 1 pubkey + 1 numeric required, structural only."""
+        self.log.info("Testing COUNTER_DOWN spend...")
+
+        _event_wif, event_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "COUNTER_DOWN", "fields": [
+            {"type": "PUBKEY", "hex": event_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(10)},  # initial count
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  COUNTER_DOWN output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "COUNTER_DOWN"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  COUNTER_DOWN spend confirmed!")
+
+    def test_counter_preset(self, node):
+        """COUNTER_PRESET: 2 numerics required, structural only."""
+        self.log.info("Testing COUNTER_PRESET spend...")
+
+        conditions = [{"blocks": [{"type": "COUNTER_PRESET", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(5)},    # preset_count
+            {"type": "NUMERIC", "hex": numeric_hex(100)},  # window_blocks
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  COUNTER_PRESET output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "COUNTER_PRESET"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  COUNTER_PRESET spend confirmed!")
+
+    def test_counter_up(self, node):
+        """COUNTER_UP: 1 pubkey + 1 numeric required, structural only."""
+        self.log.info("Testing COUNTER_UP spend...")
+
+        _event_wif, event_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "COUNTER_UP", "fields": [
+            {"type": "PUBKEY", "hex": event_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(0)},  # initial count
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  COUNTER_UP output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "COUNTER_UP"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  COUNTER_UP spend confirmed!")
+
+    def test_one_shot(self, node):
+        """ONE_SHOT: 1 numeric + 1 hash required, structural only."""
+        self.log.info("Testing ONE_SHOT spend...")
+
+        conditions = [{"blocks": [{"type": "ONE_SHOT", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(144)},  # duration blocks
+            {"type": "HASH256", "hex": os.urandom(32).hex()},  # commitment
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ONE_SHOT output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ONE_SHOT"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  ONE_SHOT spend confirmed!")
+
+
+    # =========================================================================
+    # Negative tests for remaining block types
+    # =========================================================================
+
+    def test_negative_adaptor_sig_wrong_key(self, node):
+        """ADAPTOR_SIG: wrong signing key should fail."""
+        self.log.info("Testing ADAPTOR_SIG negative (wrong key)...")
+
+        _signing_wif, signing_pubkey = make_keypair()
+        _adaptor_wif, adaptor_pubkey = make_keypair()
+        wrong_wif, _wrong_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "ADAPTOR_SIG", "fields": [
+            {"type": "PUBKEY", "hex": signing_pubkey},
+            {"type": "PUBKEY", "hex": adaptor_pubkey},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ADAPTOR_SIG", "privkey": wrong_wif}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  ADAPTOR_SIG (wrong key) correctly rejected!")
+
+    def test_negative_anchor_reserve_n_gt_m(self, node):
+        """ANCHOR_RESERVE: n > m should fail (UNSATISFIED)."""
+        self.log.info("Testing ANCHOR_RESERVE negative (n > m)...")
+
+        conditions = [{"blocks": [{"type": "ANCHOR_RESERVE", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(7)},   # threshold_n > threshold_m
+            {"type": "NUMERIC", "hex": numeric_hex(5)},   # threshold_m
+            {"type": "HASH256", "hex": os.urandom(32).hex()},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_RESERVE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  ANCHOR_RESERVE (n > m) correctly rejected!")
+
+    def test_negative_hysteresis_fee_low_gt_high(self, node):
+        """HYSTERESIS_FEE: low > high should fail (UNSATISFIED)."""
+        self.log.info("Testing HYSTERESIS_FEE negative (low > high)...")
+
+        conditions = [{"blocks": [{"type": "HYSTERESIS_FEE", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(10)},   # high_sat_vb
+            {"type": "NUMERIC", "hex": numeric_hex(100)},  # low_sat_vb > high
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "HYSTERESIS_FEE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  HYSTERESIS_FEE (low > high) correctly rejected!")
+
+    def test_negative_anchor_channel_zero_commitment(self, node):
+        """ANCHOR_CHANNEL: commitment_number = 0 should fail (UNSATISFIED)."""
+        self.log.info("Testing ANCHOR_CHANNEL negative (zero commitment)...")
+
+        _local_wif, local_pubkey = make_keypair()
+        _remote_wif, remote_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "ANCHOR_CHANNEL", "fields": [
+            {"type": "PUBKEY", "hex": local_pubkey},
+            {"type": "PUBKEY", "hex": remote_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(0)},  # commitment_number = 0
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_CHANNEL"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  ANCHOR_CHANNEL (zero commitment) correctly rejected!")
+
+    def test_negative_anchor_pool_zero_count(self, node):
+        """ANCHOR_POOL: participant_count = 0 should fail (UNSATISFIED)."""
+        self.log.info("Testing ANCHOR_POOL negative (zero count)...")
+
+        conditions = [{"blocks": [{"type": "ANCHOR_POOL", "fields": [
+            {"type": "HASH256", "hex": os.urandom(32).hex()},
+            {"type": "NUMERIC", "hex": numeric_hex(0)},  # participant_count = 0
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_POOL"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  ANCHOR_POOL (zero count) correctly rejected!")
+
+    def test_negative_anchor_oracle_zero_count(self, node):
+        """ANCHOR_ORACLE: outcome_count = 0 should fail (UNSATISFIED)."""
+        self.log.info("Testing ANCHOR_ORACLE negative (zero count)...")
+
+        _oracle_wif, oracle_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "ANCHOR_ORACLE", "fields": [
+            {"type": "PUBKEY", "hex": oracle_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(0)},  # outcome_count = 0
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ANCHOR_ORACLE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  ANCHOR_ORACLE (zero count) correctly rejected!")
+
+    def test_negative_timer_continuous_zero(self, node):
+        """TIMER_CONTINUOUS: value = 0 should fail (UNSATISFIED)."""
+        self.log.info("Testing TIMER_CONTINUOUS negative (zero value)...")
+
+        conditions = [{"blocks": [{"type": "TIMER_CONTINUOUS", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(0)},  # 0 is invalid
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "TIMER_CONTINUOUS"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  TIMER_CONTINUOUS (zero) correctly rejected!")
+
+    def test_negative_counter_preset_missing_field(self, node):
+        """COUNTER_PRESET: only 1 numeric (needs 2) should fail (ERROR)."""
+        self.log.info("Testing COUNTER_PRESET negative (missing field)...")
+
+        conditions = [{"blocks": [{"type": "COUNTER_PRESET", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(5)},  # only preset_count, missing window_blocks
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "COUNTER_PRESET"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  COUNTER_PRESET (missing field) correctly rejected!")
+
+    def test_negative_one_shot_missing_hash(self, node):
+        """ONE_SHOT: numeric only (missing hash) should fail (ERROR)."""
+        self.log.info("Testing ONE_SHOT negative (missing hash)...")
+
+        conditions = [{"blocks": [{"type": "ONE_SHOT", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(144)},  # duration only, no commitment hash
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ONE_SHOT"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  ONE_SHOT (missing hash) correctly rejected!")
+
+    def test_negative_recurse_decay_wrong_delta(self, node):
+        """RECURSE_DECAY: wrong decay delta should fail."""
+        self.log.info("Testing RECURSE_DECAY negative (wrong delta)...")
+
+        initial_threshold = 5000
+        conditions = [{"blocks": [
+            {"type": "RECURSE_DECAY", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(500)},  # decay_per_step = 500
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                {"type": "NUMERIC", "hex": numeric_hex(initial_threshold)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Apply wrong delta: subtract 300 instead of 500
+        wrong_threshold = initial_threshold - 300
+        wrong_conditions = [{"blocks": [
+            {"type": "RECURSE_DECAY", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(500)},
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                {"type": "NUMERIC", "hex": numeric_hex(wrong_threshold)},
+            ]},
+        ]}]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": wrong_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_DECAY"}, {"type": "COMPARE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  RECURSE_DECAY (wrong delta) correctly rejected!")
 
 
 if __name__ == '__main__':
