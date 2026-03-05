@@ -88,6 +88,7 @@ add_executable(test_ghost
   result_tests.cpp
   reverselock_tests.cpp
   rpc_tests.cpp
+  rung_tests.cpp
   sanity_tests.cpp
   scheduler_tests.cpp
   script_assets_tests.cpp

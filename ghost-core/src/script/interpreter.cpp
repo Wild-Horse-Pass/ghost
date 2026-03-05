@@ -8,6 +8,7 @@
 #include <crypto/ripemd160.h>
 #include <crypto/sha1.h>
 #include <crypto/sha256.h>
+#include <primitives/transaction.h>
 #include <pubkey.h>
 #include <script/script.h>
 #include <uint256.h>
@@ -1403,6 +1404,18 @@ void PrecomputedTransactionData::Init(const T& txTo, std::vector<CTxOut>&& spent
     if (!m_spent_outputs.empty()) {
         assert(m_spent_outputs.size() == txTo.vin.size());
         m_spent_outputs_ready = true;
+    }
+
+    // LADDER SCRIPT: v3 RUNG_TX transactions use ladder sighash caches.
+    // They reuse the same precomputed hashes (prevouts, sequences, outputs, spent amounts)
+    // but with a different tagged hash (LadderSighash instead of TapSighash).
+    if (txTo.version == CTransaction::RUNG_TX_VERSION && m_spent_outputs_ready) {
+        m_prevouts_single_hash = GetPrevoutsSHA256(txTo);
+        m_sequences_single_hash = GetSequencesSHA256(txTo);
+        m_outputs_single_hash = GetOutputsSHA256(txTo);
+        m_spent_amounts_single_hash = GetSpentAmountsSHA256(m_spent_outputs);
+        m_ladder_ready = true;
+        return; // Ladder txs don't need BIP143/BIP341 caches
     }
 
     // Determine which precomputation-impacting features this transaction uses.
