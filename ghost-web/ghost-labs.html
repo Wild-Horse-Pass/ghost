@@ -227,14 +227,66 @@ nav {
 }
 
 /* Coil (right side of rung) */
-.coil {
-  display: flex; align-items: center; gap: 0; flex-shrink: 0;
-  font-family: var(--font-mono); font-size: 10px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s; color: var(--gray-200);
+/* ── Coil Section (below ladder) ── */
+.coil-section {
+  border-top: 1px solid var(--gray-800); margin-top: 8px; padding-top: 8px;
 }
-.coil:hover { color: var(--orange); }
-.coil-paren { font-size: 16px; color: inherit; }
-.coil-label { padding: 0 3px; }
+.coil-section-header {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.coil-symbol {
+  display: flex; align-items: center; gap: 0; flex-shrink: 0;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+}
+.coil-paren { font-size: 18px; color: inherit; }
+.coil-type-select {
+  appearance: none; -webkit-appearance: none; background: transparent; border: none;
+  color: inherit; font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  padding: 0 2px; cursor: pointer; outline: none;
+}
+.coil-type-select:hover { color: var(--orange); }
+.coil-type-select option { background: var(--gray-900); color: var(--gray-100); font-size: 12px; }
+.coil-desc {
+  font-size: 10px; color: var(--gray-500); font-family: var(--font-mono);
+}
+.coil-addr-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding-left: 4px;
+}
+.coil-addr-label {
+  font-size: 10px; color: var(--gray-500); font-family: var(--font-mono); flex-shrink: 0;
+}
+.coil-addr-input {
+  flex: 1; background: var(--gray-900); border: 1px solid var(--gray-700); border-radius: 4px;
+  color: var(--gray-100); font-family: var(--font-mono); font-size: 11px;
+  padding: 4px 8px; outline: none; transition: border-color 0.15s;
+}
+.coil-addr-input:focus { border-color: var(--orange); }
+.coil-addr-input::placeholder { color: var(--gray-500); }
+.coil-logic-section { margin-top: 4px; }
+.coil-logic-label {
+  font-size: 9px; color: var(--gray-500); font-family: var(--font-mono);
+  text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; padding-left: 4px;
+}
+.coil-ladder { display: flex; flex-direction: column; gap: 0; }
+.coil-rung-row {
+  display: flex; align-items: center; min-height: 28px;
+}
+.coil-logic-empty {
+  font-size: 10px; color: var(--gray-500); font-family: var(--font-mono);
+  cursor: pointer; padding: 4px 8px;
+}
+.coil-logic-empty:hover { color: var(--orange); }
+.coil-add-rung {
+  background: none; border: 1px dashed var(--gray-700); color: var(--gray-500);
+  font-size: 10px; font-family: var(--font-mono); padding: 3px 10px; border-radius: 4px;
+  cursor: pointer; margin-top: 4px; transition: all 0.15s; align-self: flex-start;
+}
+.coil-add-rung:hover { border-color: var(--orange); color: var(--orange); }
+.coil-rung-del {
+  background: none; border: none; color: var(--gray-600); cursor: pointer;
+  font-size: 12px; padding: 0 4px; transition: color 0.15s;
+}
+.coil-rung-del:hover { color: var(--red); }
 
 /* Rung toolbar (inline, between rail-right and controls) */
 .rung-toolbar {
@@ -687,20 +739,20 @@ const BLOCK_DEFS = {
   HASH_PREIMAGE:     { category: 'hash',     phase: 1, label: 'HASH_PREIMAGE',     fields: [{name:'hash', type:'HASH256', placeholder:'sha256 hash'}] },
   HASH160_PREIMAGE:  { category: 'hash',     phase: 1, label: 'HASH160_PREIMAGE',  fields: [{name:'hash', type:'HASH160', placeholder:'ripemd160(sha256) hash'}] },
   TAGGED_HASH:       { category: 'hash',     phase: 1, label: 'TAGGED_HASH',       fields: [{name:'hash', type:'HASH256', placeholder:'tagged hash'}] },
-  ANCHOR_CHANNEL:    { category: 'anchor',   phase: 2, label: 'ANCHOR_CHANNEL',    fields: [] },
-  ANCHOR_POOL:       { category: 'anchor',   phase: 2, label: 'ANCHOR_POOL',       fields: [] },
-  ANCHOR_SEAL:       { category: 'anchor',   phase: 2, label: 'ANCHOR_SEAL',       fields: [] },
-  ANCHOR_ORACLE:     { category: 'anchor',   phase: 2, label: 'ANCHOR_ORACLE',     fields: [] },
-  ANCHOR_PROOF:      { category: 'anchor',   phase: 2, label: 'ANCHOR_PROOF',      fields: [] },
-  ANCHOR_ESCROW:     { category: 'anchor',   phase: 2, label: 'ANCHOR_ESCROW',     fields: [] },
+  ANCHOR_CHANNEL:    { category: 'anchor',   phase: 2, label: 'ANCHOR_CHANNEL',    fields: [{name:'channel_id', type:'HASH256', placeholder:'channel identifier'}, {name:'counterparty', type:'PUBKEY', placeholder:'02... counterparty pubkey'}] },
+  ANCHOR_POOL:       { category: 'anchor',   phase: 2, label: 'ANCHOR_POOL',       fields: [{name:'pool_id', type:'HASH256', placeholder:'pool identifier'}, {name:'operator', type:'PUBKEY', placeholder:'02... pool operator pubkey'}] },
+  ANCHOR_SEAL:       { category: 'anchor',   phase: 2, label: 'ANCHOR_SEAL',       fields: [{name:'seal_hash', type:'HASH256', placeholder:'sealed data hash'}] },
+  ANCHOR_ORACLE:     { category: 'anchor',   phase: 2, label: 'ANCHOR_ORACLE',     fields: [{name:'oracle_pubkey', type:'PUBKEY', placeholder:'02... oracle pubkey'}, {name:'event_id', type:'HASH256', placeholder:'event identifier'}] },
+  ANCHOR_PROOF:      { category: 'anchor',   phase: 2, label: 'ANCHOR_PROOF',      fields: [{name:'proof_hash', type:'HASH256', placeholder:'proof digest'}] },
+  ANCHOR_ESCROW:     { category: 'anchor',   phase: 2, label: 'ANCHOR_ESCROW',     fields: [{name:'escrow_pubkey', type:'PUBKEY', placeholder:'02... escrow agent pubkey'}, {name:'timeout', type:'NUMERIC', placeholder:'blocks until refund'}] },
   CTV:               { category: 'covenant', phase: 2, label: 'CTV',               fields: [{name:'hash', type:'HASH256', placeholder:'template hash'}] },
-  VAULT_LOCK:        { category: 'covenant', phase: 2, label: 'VAULT_LOCK',        fields: [] },
-  RECURSE_UNTIL:     { category: 'recurse',  phase: 3, label: 'RECURSE_UNTIL',     fields: [] },
-  RECURSE_SPLIT:     { category: 'recurse',  phase: 3, label: 'RECURSE_SPLIT',     fields: [] },
-  RECURSE_DECAY:     { category: 'recurse',  phase: 3, label: 'RECURSE_DECAY',     fields: [] },
-  RECURSE_MIRROR:    { category: 'recurse',  phase: 3, label: 'RECURSE_MIRROR',    fields: [] },
-  RECURSE_CASCADE:   { category: 'recurse',  phase: 3, label: 'RECURSE_CASCADE',   fields: [] },
-  RECURSE_SWEEP:     { category: 'recurse',  phase: 3, label: 'RECURSE_SWEEP',     fields: [] },
+  VAULT_LOCK:        { category: 'covenant', phase: 2, label: 'VAULT_LOCK',        fields: [{name:'recovery_pubkey', type:'PUBKEY', placeholder:'02... recovery key'}, {name:'delay', type:'NUMERIC', placeholder:'unvault delay (blocks)'}] },
+  RECURSE_UNTIL:     { category: 'recurse',  phase: 3, label: 'RECURSE_UNTIL',     fields: [{name:'condition_hash', type:'HASH256', placeholder:'termination condition hash'}, {name:'max_depth', type:'NUMERIC', placeholder:'max recursion depth'}] },
+  RECURSE_SPLIT:     { category: 'recurse',  phase: 3, label: 'RECURSE_SPLIT',     fields: [{name:'split_count', type:'NUMERIC', placeholder:'number of outputs'}, {name:'min_value', type:'NUMERIC', placeholder:'min sats per output'}] },
+  RECURSE_DECAY:     { category: 'recurse',  phase: 3, label: 'RECURSE_DECAY',     fields: [{name:'decay_rate', type:'NUMERIC', placeholder:'decay rate (basis points)'}, {name:'floor', type:'NUMERIC', placeholder:'floor value (sats)'}] },
+  RECURSE_MIRROR:    { category: 'recurse',  phase: 3, label: 'RECURSE_MIRROR',    fields: [{name:'mirror_hash', type:'HASH256', placeholder:'mirror target hash'}] },
+  RECURSE_CASCADE:   { category: 'recurse',  phase: 3, label: 'RECURSE_CASCADE',   fields: [{name:'cascade_depth', type:'NUMERIC', placeholder:'cascade depth'}, {name:'cascade_hash', type:'HASH256', placeholder:'cascade chain hash'}] },
+  RECURSE_SWEEP:     { category: 'recurse',  phase: 3, label: 'RECURSE_SWEEP',     fields: [{name:'sweep_pubkey', type:'PUBKEY', placeholder:'02... sweep destination key'}, {name:'sweep_delay', type:'NUMERIC', placeholder:'sweep delay (blocks)'}] },
 };
 
 const CATEGORIES = [
@@ -712,7 +764,12 @@ const CATEGORIES = [
   { id: 'recurse',  name: 'RECURSE',   color: '#FF44AA' },
 ];
 
-const COIL_TYPES = ['UNLOCK', 'UNLOCK_TO', 'COVENANT'];
+const COIL_DEFS = {
+  UNLOCK:    { label: 'UNLOCK',    desc: 'Send to address — standard spend.', hasAddress: true, hasLogic: false },
+  UNLOCK_TO: { label: 'UNLOCK_TO', desc: 'Send to address — with additional conditions the recipient must satisfy.', hasAddress: true, hasLogic: true },
+  COVENANT:  { label: 'COVENANT',  desc: 'Constrains the spending transaction structure.', hasAddress: false, hasLogic: true },
+};
+const COIL_TYPES = Object.keys(COIL_DEFS);
 
 function categoryColor(cat) {
   const c = CATEGORIES.find(c => c.id === cat);
@@ -727,8 +784,20 @@ function emptyPhase(name) {
   return {
     name: name || 'Phase 1',
     inputs: [{ txid: '', vout: 0, sequence: 0xfffffffe }],
-    outputs: [{ amount: '', rungs: [{ blocks: [], coil: 'UNLOCK' }] }],
+    outputs: [emptyOutput()],
   };
+}
+
+function emptyCoil(type) {
+  return { type: type || 'UNLOCK', address: '', rungs: [] };
+}
+
+function emptyOutput() {
+  return { amount: '', rungs: [{ blocks: [] }], coil: emptyCoil('UNLOCK') };
+}
+
+function emptyRung() {
+  return { blocks: [] };
 }
 
 let state = {
@@ -872,12 +941,6 @@ function renderSingleOutput(out, oi, p) {
       // Drop zone for adding new blocks from palette
       html += `<div class="drop-zone wire-grow" data-oi="${oi}" data-ri="${ri}" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">${rung.blocks.length ? '+' : 'drop block'}</div>`;
       html += '<div class="wire-segment"></div>';
-
-      // Coil
-      html += `<div class="coil" onclick="cycleCoil(${oi},${ri})" title="Click to cycle coil type">`;
-      html += `<span class="coil-paren">(</span><span class="coil-label">${rung.coil || 'UNLOCK'}</span><span class="coil-paren">)</span>`;
-      html += '</div>';
-      html += '<div class="wire-segment"></div>';
       html += '</div>'; // rung-wire
       html += '<div class="rail-right"></div>';
 
@@ -893,6 +956,75 @@ function renderSingleOutput(out, oi, p) {
 
     html += `<button class="add-rung-btn" onclick="addRung(${oi})">+ Add Rung</button>`;
     html += '</div>'; // ladder
+
+    // ── Coil Section (below ladder) ──
+    const coil = (out.coil && typeof out.coil === 'object') ? out.coil : emptyCoil(out.coil || 'UNLOCK');
+    if (typeof out.coil !== 'object') out.coil = coil; // migrate old format
+    const coilType = coil.type;
+    const coilDef = COIL_DEFS[coilType];
+    const coilColor = coilType === 'UNLOCK' ? 'var(--gray-200)' : coilType === 'UNLOCK_TO' ? 'var(--green)' : 'var(--orange)';
+
+    html += '<div class="coil-section">';
+    html += '<div class="coil-section-header">';
+    html += `<div class="coil-symbol" style="color:${coilColor}">`;
+    html += `<span class="coil-paren">(</span>`;
+    html += `<select class="coil-type-select" style="color:${coilColor}" onchange="setCoilType(${oi},this.value)" onclick="event.stopPropagation()">`;
+    for (const ct of COIL_TYPES) {
+      html += `<option value="${ct}"${ct === coilType ? ' selected' : ''}>${ct}</option>`;
+    }
+    html += `</select>`;
+    html += `<span class="coil-paren">)</span>`;
+    html += '</div>';
+    html += `<span class="coil-desc">${coilDef ? coilDef.desc : ''}</span>`;
+    html += '</div>';
+
+    // Address field
+    if (coilDef && coilDef.hasAddress) {
+      html += '<div class="coil-addr-row">';
+      html += `<span class="coil-addr-label">&#x2192; address</span>`;
+      html += `<input class="coil-addr-input" type="text" value="${coil.address || ''}" placeholder="bc1q... destination address" onchange="setCoilAddress(${oi},this.value)" onclick="event.stopPropagation()">`;
+      html += '</div>';
+    }
+
+    // Coil logic ladder
+    if (coilDef && coilDef.hasLogic) {
+      html += '<div class="coil-logic-section">';
+      html += '<div class="coil-logic-label">Coil Conditions</div>';
+      html += '<div class="coil-ladder">';
+      if (coil.rungs.length === 0) {
+        html += `<div class="coil-logic-empty" onclick="addCoilRung(${oi})">+ add coil logic rung</div>`;
+      } else {
+        coil.rungs.forEach((cr, cri) => {
+          html += '<div class="coil-rung-row">';
+          html += '<div class="rail-left" style="border-color:var(--orange)"></div>';
+          html += '<div class="rung-wire">';
+          html += '<div class="wire-segment"></div>';
+          cr.blocks.forEach((cb, cbi) => {
+            const cdef = BLOCK_DEFS[cb.type];
+            const cc = cdef ? categoryColor(cdef.category) : '#888';
+            const cinv = cb.inverted ? '<span class="inv-slash">/</span>' : '';
+            const cparam = blockParamLabel(cb);
+            html += `<div class="contact" style="border-color:${cc};color:${cc}" onclick="openCoilBlockModal(${oi},${cri},${cbi})">${cinv}${cb.type}`;
+            if (cparam) html += `<span class="contact-param">${cparam}</span>`;
+            html += '</div>';
+            html += '<div class="wire-segment"></div>';
+          });
+          html += `<div class="drop-zone wire-grow" data-oi="${oi}" data-cri="${cri}" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onCoilDrop(event)" onclick="showCoilBlockPicker(event,${oi},${cri})">${cr.blocks.length ? '+' : 'drop block'}</div>`;
+          html += '<div class="wire-segment"></div>';
+          html += '</div>'; // rung-wire
+          html += '<div class="rail-right" style="border-color:var(--orange)"></div>';
+          html += '<div class="rung-toolbar">';
+          html += `<button class="coil-rung-del" onclick="removeCoilRung(${oi},${cri})" title="Delete coil rung">&times;</button>`;
+          html += '</div>';
+          html += '</div>'; // coil-rung-row
+        });
+      }
+      html += `<button class="coil-add-rung" onclick="addCoilRung(${oi})">+ Add Coil Rung</button>`;
+      html += '</div>'; // coil-ladder
+      html += '</div>'; // coil-logic-section
+    }
+
+    html += '</div>'; // coil-section
     html += '</div>'; // output-card
   return html;
 }
@@ -908,6 +1040,7 @@ function blockParamLabel(block) {
   if (typeof val === 'string' && val.length > 12) return val.slice(0, 6) + '...' + val.slice(-4);
   return val;
 }
+
 
 function updateStats() {
   let totalInputs = 0, totalOutputs = 0, totalRungs = 0, totalBlocks = 0;
@@ -928,9 +1061,9 @@ function updateStats() {
 
 function addInput() { P().inputs.push({ txid: '', vout: 0, sequence: 0xfffffffe }); render(); }
 function removeInput(i) { P().inputs.splice(i, 1); render(); }
-function addOutput() { P().outputs.push({ amount: '', rungs: [{ blocks: [], coil: 'UNLOCK' }] }); render(); }
+function addOutput() { P().outputs.push(emptyOutput()); render(); }
 function removeOutput(i) { P().outputs.splice(i, 1); render(); }
-function addRung(oi) { P().outputs[oi].rungs.push({ blocks: [], coil: 'UNLOCK' }); render(); }
+function addRung(oi) { P().outputs[oi].rungs.push({ blocks: [] }); render(); }
 function removeRung(oi, ri) {
   if (P().outputs[oi].rungs.length <= 1) { toast('Need at least one rung', 'error'); return; }
   P().outputs[oi].rungs.splice(ri, 1); render();
@@ -942,11 +1075,85 @@ function moveRung(oi, ri, dir) {
   [rungs[ri], rungs[ni]] = [rungs[ni], rungs[ri]];
   render();
 }
-function cycleCoil(oi, ri) {
-  const rung = P().outputs[oi].rungs[ri];
-  const idx = COIL_TYPES.indexOf(rung.coil);
-  rung.coil = COIL_TYPES[(idx + 1) % COIL_TYPES.length];
+function setCoilType(oi, val) {
+  const out = P().outputs[oi];
+  if (!out.coil || typeof out.coil === 'string') out.coil = emptyCoil(val);
+  else { out.coil.type = val; out.coil.rungs = []; }
   render();
+}
+function setCoilAddress(oi, val) {
+  const out = P().outputs[oi];
+  if (typeof out.coil === 'object') out.coil.address = val;
+}
+function addCoilRung(oi) {
+  P().outputs[oi].coil.rungs.push({ blocks: [] });
+  render();
+}
+function removeCoilRung(oi, cri) {
+  P().outputs[oi].coil.rungs.splice(cri, 1);
+  render();
+}
+function openCoilBlockModal(oi, cri, cbi) {
+  const coilRung = P().outputs[oi].coil.rungs[cri];
+  const block = coilRung.blocks[cbi];
+  state.modalTarget = { oi, cri, cbi, isCoilBlock: true };
+  // Reuse the same block modal UI
+  const def = BLOCK_DEFS[block.type];
+  if (!def) return;
+  const color = categoryColor(def.category);
+  document.getElementById('modal-title').innerHTML = `<span style="color:${color}">${block.type}</span> — COIL LOGIC`;
+
+  let html = '';
+  html += '<div class="form-group"><label class="form-label">Mode</label>';
+  html += '<div class="inv-toggle">';
+  html += `<button id="inv-normal" class="${!block.inverted ? 'active' : ''}" onclick="setCoilBlockInverted(false)">NORMAL</button>`;
+  html += `<button id="inv-inverted" class="${block.inverted ? 'active' : ''}" onclick="setCoilBlockInverted(true)">/INVERTED</button>`;
+  html += '</div>';
+  html += '<div class="inv-hint">Normal: condition must be satisfied. Inverted: condition must NOT be satisfied.</div></div>';
+
+  for (const field of def.fields) {
+    const val = block.params?.[field.name] || '';
+    if (field.type === 'PUBKEY_LIST') {
+      html += `<div class="form-group"><label class="form-label">${field.name}</label>`;
+      html += `<textarea class="form-input" id="field-${field.name}" rows="3" placeholder="${field.placeholder}" style="resize:vertical">${val}</textarea></div>`;
+    } else {
+      const inputType = field.type === 'NUMERIC' ? 'number' : 'text';
+      html += `<div class="form-group"><label class="form-label">${field.name}</label>`;
+      html += `<input class="form-input" id="field-${field.name}" type="${inputType}" value="${val}" placeholder="${field.placeholder}"></div>`;
+    }
+  }
+  html += `<button class="modal-btn" style="background:var(--red);color:#fff;margin-top:8px" onclick="deleteCoilBlock()">Delete Block</button>`;
+
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('block-modal').classList.add('active');
+}
+function setCoilBlockInverted(val) {
+  document.getElementById('inv-normal').classList.toggle('active', !val);
+  document.getElementById('inv-inverted').classList.toggle('active', val);
+  if (state.modalTarget && state.modalTarget.isCoilBlock) {
+    const { oi, cri, cbi } = state.modalTarget;
+    P().outputs[oi].coil.rungs[cri].blocks[cbi].inverted = val;
+  }
+}
+function deleteCoilBlock() {
+  if (!state.modalTarget || !state.modalTarget.isCoilBlock) return;
+  const { oi, cri, cbi } = state.modalTarget;
+  P().outputs[oi].coil.rungs[cri].blocks.splice(cbi, 1);
+  closeModal(); render();
+}
+function applyCoilBlockModal() {
+  if (!state.modalTarget || !state.modalTarget.isCoilBlock) return;
+  const { oi, cri, cbi } = state.modalTarget;
+  const block = P().outputs[oi].coil.rungs[cri].blocks[cbi];
+  const def = BLOCK_DEFS[block.type];
+  if (def) {
+    if (!block.params) block.params = {};
+    for (const field of def.fields) {
+      const el = document.getElementById(`field-${field.name}`);
+      if (el) block.params[field.name] = el.value;
+    }
+  }
+  closeModal(); render();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1019,6 +1226,18 @@ function onDrop(e) {
     P().outputs[oi].rungs[ri].blocks.push({ type: blockType, inverted: false, params: {} });
     toast(`Added ${blockType}`, 'success');
   }
+  render();
+}
+
+function onCoilDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const blockType = e.dataTransfer.getData('text/plain');
+  if (!BLOCK_DEFS[blockType]) return;
+  const oi = +e.currentTarget.dataset.oi;
+  const cri = +e.currentTarget.dataset.cri;
+  P().outputs[oi].coil.rungs[cri].blocks.push({ type: blockType, inverted: false, params: {} });
+  toast(`Added ${blockType} to coil logic`, 'success');
   render();
 }
 
@@ -1125,6 +1344,43 @@ function closeBlockPicker() {
   if (activePickerCleanup) activePickerCleanup();
 }
 
+function showCoilBlockPicker(e, oi, cri) {
+  e.stopPropagation();
+  closeBlockPicker();
+
+  const btn = e.currentTarget;
+  const picker = document.createElement('div');
+  picker.className = 'block-picker';
+
+  for (const cat of CATEGORIES) {
+    const blocks = Object.entries(BLOCK_DEFS).filter(([, d]) => d.category === cat.id && d.phase === 1);
+    if (!blocks.length) continue;
+    const catEl = document.createElement('div');
+    catEl.className = 'block-picker-cat';
+    catEl.textContent = cat.name;
+    picker.appendChild(catEl);
+    for (const [key, def] of blocks) {
+      const item = document.createElement('div');
+      item.className = 'block-picker-item';
+      item.innerHTML = `<div class="bp-dot" style="background:${cat.color}"></div>${def.label}`;
+      item.onclick = () => {
+        P().outputs[oi].coil.rungs[cri].blocks.push({ type: key, inverted: false, params: {} });
+        closeBlockPicker();
+        render();
+        toast(`Added ${key} to coil logic`, 'success');
+      };
+      picker.appendChild(item);
+    }
+  }
+
+  btn.parentElement.style.position = 'relative';
+  btn.parentElement.appendChild(picker);
+
+  const dismiss = (ev) => { if (!picker.contains(ev.target) && ev.target !== btn) closeBlockPicker(); };
+  setTimeout(() => document.addEventListener('click', dismiss), 0);
+  activePickerCleanup = () => { document.removeEventListener('click', dismiss); picker.remove(); activePickerCleanup = null; };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Block Edit Modal
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1180,6 +1436,7 @@ function setInverted(val) {
 
 function applyModal() {
   if (!state.modalTarget) { closeModal(); return; }
+  if (state.modalTarget.isCoilBlock) { applyCoilBlockModal(); return; }
   const { oi, ri, bi } = state.modalTarget;
   const block = P().outputs[oi].rungs[ri].blocks[bi];
   const def = BLOCK_DEFS[block.type];
@@ -1241,13 +1498,36 @@ function buildPhaseJSON(phase) {
         }
         return b;
       });
-      const r = { blocks };
-      if (rung.coil && rung.coil !== 'UNLOCK') {
-        r.coil = { type: rung.coil };
-      }
-      return r;
+      return { blocks };
     });
-    return { amount: out.amount ? parseFloat(out.amount) : 0, conditions };
+
+    // Coil (output-level)
+    const coil = (out.coil && typeof out.coil === 'object') ? out.coil : { type: out.coil || 'UNLOCK', address: '', rungs: [] };
+    const coilObj = { type: coil.type };
+    if (coil.address) coilObj.address = coil.address;
+    if (coil.rungs && coil.rungs.length > 0) {
+      coilObj.conditions = coil.rungs.map(cr => {
+        return cr.blocks.map(cb => {
+          const cdef = BLOCK_DEFS[cb.type];
+          const b = { type: cb.type };
+          if (cb.inverted) b.inverted = true;
+          if (cdef && cdef.fields.length > 0) {
+            b.fields = [];
+            for (const fd of cdef.fields) {
+              const val = cb.params?.[fd.name];
+              if (!val) continue;
+              if (fd.type === 'NUMERIC') b.fields.push({ type: 'NUMERIC', hex: numericHex(+val) });
+              else if (fd.type === 'PUBKEY_LIST') {
+                val.split(/[,\n]/).map(s => s.trim()).filter(Boolean).forEach(k => b.fields.push({ type: 'PUBKEY', hex: k }));
+              } else b.fields.push({ type: fd.type, hex: val });
+            }
+          }
+          return b;
+        });
+      });
+    }
+
+    return { amount: out.amount ? parseFloat(out.amount) : 0, conditions, coil: coilObj };
   });
 
   return { inputs, outputs };
@@ -1454,7 +1734,7 @@ const TEMPLATES = [
     build: () => ({
       inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
       outputs: [{ amount: '0.999', rungs: [
-        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }], coil: 'UNLOCK' },
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }] },
       ]}],
     }),
   },
@@ -1468,7 +1748,7 @@ const TEMPLATES = [
         { blocks: [
           { type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } },
           { type: 'CSV', inverted: false, params: { blocks: '144' } },
-        ], coil: 'UNLOCK' },
+        ] },
       ]}],
     }),
   },
@@ -1479,11 +1759,11 @@ const TEMPLATES = [
     build: () => ({
       inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
       outputs: [{ amount: '0.999', rungs: [
-        { blocks: [{ type: 'HASH_PREIMAGE', inverted: false, params: { hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } }], coil: 'UNLOCK' },
+        { blocks: [{ type: 'HASH_PREIMAGE', inverted: false, params: { hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } }] },
         { blocks: [
           { type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } },
           { type: 'CSV', inverted: false, params: { blocks: '144' } },
-        ], coil: 'UNLOCK' },
+        ] },
       ]}],
     }),
   },
@@ -1497,7 +1777,7 @@ const TEMPLATES = [
         { blocks: [{ type: 'MULTISIG', inverted: false, params: {
           threshold: '2',
           pubkeys: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc\n03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a\n03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708'
-        } }], coil: 'UNLOCK' },
+        } }] },
       ]}],
     }),
   },
@@ -1511,10 +1791,10 @@ const TEMPLATES = [
         { blocks: [
           { type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } },
           { type: 'CSV', inverted: false, params: { blocks: '1008' } },
-        ], coil: 'UNLOCK' },
+        ] },
         { blocks: [
           { type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } },
-        ], coil: 'UNLOCK' },
+        ] },
       ]}],
     }),
   },
@@ -1525,7 +1805,7 @@ const TEMPLATES = [
     build: () => ({
       inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0 }],
       outputs: [{ amount: '0.999', rungs: [
-        { blocks: [{ type: 'CSV', inverted: true, params: { blocks: '144' } }], coil: 'UNLOCK' },
+        { blocks: [{ type: 'CSV', inverted: true, params: { blocks: '144' } }] },
       ]}],
     }),
   },
@@ -1541,13 +1821,13 @@ const TEMPLATES = [
       ],
       outputs: [
         { amount: '0.1', rungs: [
-          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }], coil: 'UNLOCK' },
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }] },
         ]},
         { amount: '0.1', rungs: [
-          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } }], coil: 'UNLOCK' },
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } }] },
         ]},
         { amount: '0.1', rungs: [
-          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708' } }], coil: 'UNLOCK' },
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708' } }] },
         ]},
       ],
     }),
@@ -1574,7 +1854,7 @@ const TEMPLATES = [
           ],
           outputs: owners.map(pk => ({
             amount: '0.11',
-            rungs: [{ blocks: [{ type: 'SIG', inverted: false, params: { pubkey: pk } }], coil: 'UNLOCK' }],
+            rungs: [{ blocks: [{ type: 'SIG', inverted: false, params: { pubkey: pk } }] }],
           })),
         },
         // Phase 2: Alice fan-in — her 3 outputs (vouts 1, 5, 6) → 1 output
@@ -1586,7 +1866,7 @@ const TEMPLATES = [
             { txid: fanoutTxid, vout: 6, sequence: 0xfffffffe },
           ],
           outputs: [{ amount: '0.329', rungs: [
-            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: alice } }], coil: 'UNLOCK' },
+            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: alice } }] },
           ]}],
         },
         // Phase 3: Bob fan-in — his 3 outputs (vouts 0, 4, 8) → 1 output
@@ -1598,7 +1878,7 @@ const TEMPLATES = [
             { txid: fanoutTxid, vout: 8, sequence: 0xfffffffe },
           ],
           outputs: [{ amount: '0.329', rungs: [
-            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: bob } }], coil: 'UNLOCK' },
+            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: bob } }] },
           ]}],
         },
         // Phase 4: Carol fan-in — her 3 outputs (vouts 2, 3, 7) → 1 output
@@ -1610,7 +1890,7 @@ const TEMPLATES = [
             { txid: fanoutTxid, vout: 7, sequence: 0xfffffffe },
           ],
           outputs: [{ amount: '0.329', rungs: [
-            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: carol } }], coil: 'UNLOCK' },
+            { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: carol } }] },
           ]}],
         },
       ];
@@ -1627,12 +1907,85 @@ const TEMPLATES = [
       ],
       outputs: [
         { amount: '0.5', rungs: [
-          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }], coil: 'UNLOCK' },
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }] },
         ]},
         { amount: '0.498', rungs: [
-          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } }], coil: 'UNLOCK' },
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } }] },
         ]},
       ],
+    }),
+  },
+  {
+    name: 'Pay To Address',
+    color: '#00FFB3',
+    desc: 'SIG unlocks funds → sent to a specific address',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }] },
+      ], coil: { type: 'UNLOCK', address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', rungs: [] }}],
+    }),
+  },
+  {
+    name: 'Escrow (UNLOCK_TO)',
+    color: '#00FFB3',
+    desc: '2-of-3 multisig releases funds → but only to buyer address + buyer must sign',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [{ type: 'MULTISIG', inverted: false, params: { threshold: '2', pubkeys: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc\n03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a\n03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708' } }] },
+      ], coil: { type: 'UNLOCK_TO', address: 'bc1qrp33g0q5b5698ahp5jnf5yzjmgcem8tlc7us37', rungs: [
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708' } }] },
+      ]}}],
+    }),
+  },
+  {
+    name: 'Timed Release',
+    color: '#FFB700',
+    desc: 'Funds unlock after 1008 blocks → must go to cold key, recipient waits 144 more blocks',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 1008 }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [
+          { type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } },
+          { type: 'CSV', inverted: false, params: { blocks: '1008' } },
+        ] },
+      ], coil: { type: 'UNLOCK_TO', address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', rungs: [
+        { blocks: [
+          { type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } },
+          { type: 'CSV', inverted: false, params: { blocks: '144' } },
+        ] },
+      ]}}],
+    }),
+  },
+  {
+    name: 'Covenant Lock',
+    color: '#FF6644',
+    desc: 'Anyone can spend → but spending tx must include a hash preimage and a specific SIG',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }] },
+      ], coil: { type: 'COVENANT', address: '', rungs: [
+        { blocks: [{ type: 'HASH_PREIMAGE', inverted: false, params: { hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } }] },
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } }] },
+      ]}}],
+    }),
+  },
+  {
+    name: 'Dead Man Switch',
+    color: '#FF44AA',
+    desc: 'Owner can spend anytime → if inactive 52560 blocks, heir gets it (UNLOCK_TO heir)',
+    build: () => ({
+      inputs: [{ txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe }],
+      outputs: [{ amount: '0.999', rungs: [
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }] },
+        { blocks: [
+          { type: 'CSV', inverted: false, params: { blocks: '52560' } },
+        ] },
+      ], coil: { type: 'UNLOCK_TO', address: 'bc1qrp33g0q5b5698ahp5jnf5yzjmgcem8tlc7us37', rungs: [
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708' } }] },
+      ]}}],
     }),
   },
 ];
