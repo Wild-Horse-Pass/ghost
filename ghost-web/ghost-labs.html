@@ -1507,7 +1507,7 @@ function buildPhaseJSON(phase) {
     if (coil.address) coilObj.address = coil.address;
     if (coil.rungs && coil.rungs.length > 0) {
       coilObj.conditions = coil.rungs.map(cr => {
-        return cr.blocks.map(cb => {
+        const blocks = cr.blocks.map(cb => {
           const cdef = BLOCK_DEFS[cb.type];
           const b = { type: cb.type };
           if (cb.inverted) b.inverted = true;
@@ -1524,6 +1524,7 @@ function buildPhaseJSON(phase) {
           }
           return b;
         });
+        return { blocks };
       });
     }
 
@@ -1647,7 +1648,7 @@ async function broadcastTx() {
 
     // Build createrungtx params
     const inputs = tx.inputs.map(i => ({ txid: i.txid, vout: i.vout, ...(i.sequence !== undefined ? { sequence: i.sequence } : {}) }));
-    const outputs = tx.outputs.map(o => ({ amount: o.amount, conditions: o.conditions }));
+    const outputs = tx.outputs.map(o => ({ amount: o.amount, conditions: o.conditions, ...(o.coil ? { coil: o.coil } : {}) }));
 
     const result = await rpcCall('createrungtx', [inputs, outputs]);
     toast(`Created unsigned tx: ${result.hex.length / 2} bytes`, 'success');
