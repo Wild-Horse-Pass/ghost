@@ -26,6 +26,26 @@ bool VerifyPQSignature(RungScheme scheme,
                        std::span<const uint8_t> msg,
                        std::span<const uint8_t> pubkey);
 
+/** Sign a message with a post-quantum private key.
+ *  @param scheme    The PQ signature scheme
+ *  @param privkey   The private key bytes
+ *  @param msg       The message to sign
+ *  @param sig_out   Output: the generated signature bytes
+ *  @return true on success */
+bool SignPQ(RungScheme scheme,
+            std::span<const uint8_t> privkey,
+            std::span<const uint8_t> msg,
+            std::vector<uint8_t>& sig_out);
+
+/** Generate a post-quantum keypair.
+ *  @param scheme      The PQ signature scheme
+ *  @param pubkey_out  Output: the public key bytes
+ *  @param privkey_out Output: the private key bytes
+ *  @return true on success */
+bool GeneratePQKeypair(RungScheme scheme,
+                       std::vector<uint8_t>& pubkey_out,
+                       std::vector<uint8_t>& privkey_out);
+
 } // namespace rung
 
 #endif // BITCOIN_RUNG_PQ_VERIFY_H

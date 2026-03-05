@@ -5,6 +5,7 @@
 #include <rung/conditions.h>
 #include <rung/evaluator.h>
 #include <rung/policy.h>
+#include <rung/pq_verify.h>
 #include <rung/serialize.h>
 #include <rung/sighash.h>
 #include <rung/types.h>
@@ -87,13 +88,21 @@ BOOST_AUTO_TEST_CASE(field_validation_pubkey_various_sizes)
     RungField pk32{RungDataType::PUBKEY, std::vector<uint8_t>(32, 0xAA)};
     BOOST_CHECK(pk32.IsValid(reason));
 
-    // 64 bytes: valid (max size for PQ)
+    // 64 bytes: valid
     RungField pk64{RungDataType::PUBKEY, std::vector<uint8_t>(64, 0xAA)};
     BOOST_CHECK(pk64.IsValid(reason));
 
-    // 65 bytes: too large
-    RungField pk65{RungDataType::PUBKEY, std::vector<uint8_t>(65, 0x02)};
-    BOOST_CHECK(!pk65.IsValid(reason));
+    // 897 bytes: valid (FALCON512 pubkey size)
+    RungField pk897{RungDataType::PUBKEY, std::vector<uint8_t>(897, 0xAA)};
+    BOOST_CHECK(pk897.IsValid(reason));
+
+    // 2048 bytes: valid (max size for PQ)
+    RungField pk2048{RungDataType::PUBKEY, std::vector<uint8_t>(2048, 0xAA)};
+    BOOST_CHECK(pk2048.IsValid(reason));
+
+    // 2049 bytes: too large
+    RungField pk2049{RungDataType::PUBKEY, std::vector<uint8_t>(2049, 0x02)};
+    BOOST_CHECK(!pk2049.IsValid(reason));
     BOOST_CHECK(reason.find("too large") != std::string::npos);
 
     // 0 bytes: too small
@@ -127,12 +136,16 @@ BOOST_AUTO_TEST_CASE(field_validation_signature_various_sizes)
     RungField sig1{RungDataType::SIGNATURE, std::vector<uint8_t>(1, 0xBB)};
     BOOST_CHECK(sig1.IsValid(reason));
 
-    // 7856 bytes: valid (max size for SPHINCS_SHA)
-    RungField sig_max{RungDataType::SIGNATURE, std::vector<uint8_t>(7856, 0xBB)};
+    // 49216 bytes: valid (SPHINCS+ sig size)
+    RungField sig_sphincs{RungDataType::SIGNATURE, std::vector<uint8_t>(49216, 0xBB)};
+    BOOST_CHECK(sig_sphincs.IsValid(reason));
+
+    // 50000 bytes: valid (max size)
+    RungField sig_max{RungDataType::SIGNATURE, std::vector<uint8_t>(50000, 0xBB)};
     BOOST_CHECK(sig_max.IsValid(reason));
 
-    // 7857 bytes: too large
-    RungField sig_over{RungDataType::SIGNATURE, std::vector<uint8_t>(7857, 0xBB)};
+    // 50001 bytes: too large
+    RungField sig_over{RungDataType::SIGNATURE, std::vector<uint8_t>(50001, 0xBB)};
     BOOST_CHECK(!sig_over.IsValid(reason));
     BOOST_CHECK(reason.find("too large") != std::string::npos);
 
@@ -457,7 +470,7 @@ BOOST_AUTO_TEST_CASE(deserialize_rejects_oversized_pubkey)
     Rung rung;
     RungBlock block;
     block.type = RungBlockType::SIG;
-    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(65, 0x02)}); // max is 64
+    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(2049, 0x02)}); // max is 2048
     rung.blocks.push_back(block);
     ladder.rungs.push_back(rung);
 
@@ -2639,8 +2652,8 @@ BOOST_AUTO_TEST_CASE(deserialize_max_fields_exceeded)
 
 BOOST_AUTO_TEST_CASE(deserialize_oversized_witness)
 {
-    // > 10000 bytes
-    std::vector<uint8_t> data(10001, 0x00);
+    // > 100000 bytes
+    std::vector<uint8_t> data(100001, 0x00);
     data[0] = 0x01; // n_rungs = 1
 
     LadderWitness ladder;
@@ -2695,6 +2708,156 @@ BOOST_AUTO_TEST_CASE(eval_sig_ecdsa_wrong_key)
 
     ScriptExecutionData execdata;
     BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+// ============================================================================
+// PQ signature verification tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_sig_pq_no_liboqs)
+{
+    // If PQ support is not compiled in, PQ scheme blocks return UNSATISFIED (not ERROR)
+    if (HasPQSupport()) {
+        // Skip: this test is for builds without liboqs
+        return;
+    }
+
+    MockSignatureChecker checker;
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::FALCON512)}});
+    // Fake PQ pubkey (897 bytes for FALCON512)
+    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(897, 0xAA)});
+    block.fields.push_back({RungDataType::SIGNATURE, std::vector<uint8_t>(690, 0xBB)});
+
+    ScriptExecutionData execdata;
+    // Without LadderSignatureChecker, dynamic_cast fails → ERROR
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sig_pq_bad_sig)
+{
+    // PQ scheme with wrong signature → UNSATISFIED (or ERROR if no liboqs / no ladder checker)
+    MockSignatureChecker checker;
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::FALCON512)}});
+    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(897, 0xAA)});
+    block.fields.push_back({RungDataType::SIGNATURE, std::vector<uint8_t>(690, 0xBB)});
+
+    ScriptExecutionData execdata;
+    // MockSignatureChecker is not a LadderSignatureChecker, so dynamic_cast → ERROR
+    auto result = EvalSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sig_pq_missing_scheme_field)
+{
+    // No SCHEME field → existing size-based routing (Schnorr for 64-byte sig)
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sig_schnorr_scheme_field_fallthrough)
+{
+    // SCHEME=SCHNORR → falls through to existing size-based routing
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::SCHNORR)}});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_multisig_pq_no_ladder_checker)
+{
+    // PQ multisig with MockSignatureChecker (not LadderSignatureChecker) → ERROR
+    MockSignatureChecker checker;
+
+    RungBlock block;
+    block.type = RungBlockType::MULTISIG;
+    block.fields.push_back({RungDataType::NUMERIC, {0x01}}); // threshold = 1
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::FALCON512)}});
+    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(897, 0xAA)});
+    block.fields.push_back({RungDataType::SIGNATURE, std::vector<uint8_t>(690, 0xBB)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalMultisigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(field_size_pq_pubkey)
+{
+    // PUBKEY with 897 bytes (FALCON512 pubkey size) should validate OK
+    RungField field{RungDataType::PUBKEY, std::vector<uint8_t>(897, 0xAA)};
+    std::string reason;
+    BOOST_CHECK(field.IsValid(reason));
+
+    // PUBKEY with 1952 bytes (Dilithium3 pubkey size) should validate OK
+    RungField field2{RungDataType::PUBKEY, std::vector<uint8_t>(1952, 0xAA)};
+    BOOST_CHECK(field2.IsValid(reason));
+
+    // PUBKEY with 2048 bytes (max) should validate OK
+    RungField field3{RungDataType::PUBKEY, std::vector<uint8_t>(2048, 0xAA)};
+    BOOST_CHECK(field3.IsValid(reason));
+
+    // PUBKEY with 2049 bytes should fail
+    RungField field4{RungDataType::PUBKEY, std::vector<uint8_t>(2049, 0xAA)};
+    BOOST_CHECK(!field4.IsValid(reason));
+}
+
+BOOST_AUTO_TEST_CASE(field_size_pq_signature)
+{
+    // SIGNATURE with 49216 bytes (SPHINCS+ sig size) should validate OK
+    RungField field{RungDataType::SIGNATURE, std::vector<uint8_t>(49216, 0xBB)};
+    std::string reason;
+    BOOST_CHECK(field.IsValid(reason));
+
+    // SIGNATURE with 50000 bytes (max) should validate OK
+    RungField field2{RungDataType::SIGNATURE, std::vector<uint8_t>(50000, 0xBB)};
+    BOOST_CHECK(field2.IsValid(reason));
+
+    // SIGNATURE with 50001 bytes should fail
+    RungField field3{RungDataType::SIGNATURE, std::vector<uint8_t>(50001, 0xBB)};
+    BOOST_CHECK(!field3.IsValid(reason));
+}
+
+BOOST_AUTO_TEST_CASE(pq_keygen_and_sign_verify)
+{
+    // End-to-end: generate keypair, sign, verify (only if liboqs available)
+    if (!HasPQSupport()) {
+        return;
+    }
+
+    std::vector<uint8_t> pubkey, privkey;
+    BOOST_CHECK(GeneratePQKeypair(RungScheme::FALCON512, pubkey, privkey));
+    BOOST_CHECK(!pubkey.empty());
+    BOOST_CHECK(!privkey.empty());
+
+    std::vector<uint8_t> msg(32, 0x42); // fake sighash
+    std::vector<uint8_t> sig;
+    BOOST_CHECK(SignPQ(RungScheme::FALCON512, privkey, msg, sig));
+    BOOST_CHECK(!sig.empty());
+
+    BOOST_CHECK(VerifyPQSignature(RungScheme::FALCON512, sig, msg, pubkey));
+
+    // Tamper with sig → verification fails
+    sig[0] ^= 0xFF;
+    BOOST_CHECK(!VerifyPQSignature(RungScheme::FALCON512, sig, msg, pubkey));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

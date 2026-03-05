@@ -48,6 +48,12 @@ public:
                                SigVersion sigversion,
                                ScriptExecutionData& execdata,
                                ScriptError* serror = nullptr) const override;
+
+    /** Compute the ladder sighash for PQ signature verification.
+     *  @param[in]  hash_type  Sighash type (SIGHASH_DEFAULT=0, etc.)
+     *  @param[out] hash_out   The computed sighash
+     *  @return true on success */
+    bool ComputeSighash(uint8_t hash_type, uint256& hash_out) const;
 };
 
 /** Extended evaluation context for Phase 2+ block types.

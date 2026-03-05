@@ -4,6 +4,7 @@
 
 #include <rung/evaluator.h>
 #include <rung/conditions.h>
+#include <rung/pq_verify.h>
 #include <rung/serialize.h>
 #include <rung/sighash.h>
 
@@ -66,6 +67,11 @@ bool LadderSignatureChecker::CheckSchnorrSignature(std::span<const unsigned char
         return false;
     }
     return true;
+}
+
+bool LadderSignatureChecker::ComputeSighash(uint8_t hash_type, uint256& hash_out) const
+{
+    return SignatureHashLadder(m_txdata, m_tx, m_nIn, hash_type, m_conditions, hash_out);
 }
 
 /** Helper: find the first field of a given type in a block. Returns nullptr if not found. */
@@ -170,6 +176,35 @@ EvalResult ApplyInversion(EvalResult raw, bool inverted)
 }
 
 // ============================================================================
+// PQ signature verification helper
+// ============================================================================
+
+/** Verify a post-quantum signature using the SCHEME field routing.
+ *  Computes the ladder sighash via dynamic_cast to LadderSignatureChecker. */
+static EvalResult EvalPQSig(RungScheme scheme,
+                             const RungField& sig_field,
+                             const RungField& pubkey_field,
+                             const BaseSignatureChecker& checker)
+{
+    auto* ladder_checker = dynamic_cast<const LadderSignatureChecker*>(&checker);
+    if (!ladder_checker) return EvalResult::ERROR;
+
+    uint256 sighash;
+    if (!ladder_checker->ComputeSighash(SIGHASH_DEFAULT, sighash)) {
+        return EvalResult::ERROR;
+    }
+
+    std::span<const uint8_t> sig{sig_field.data.data(), sig_field.data.size()};
+    std::span<const uint8_t> msg{sighash.begin(), 32};
+    std::span<const uint8_t> pubkey{pubkey_field.data.data(), pubkey_field.data.size()};
+
+    if (VerifyPQSignature(scheme, sig, msg, pubkey)) {
+        return EvalResult::SATISFIED;
+    }
+    return EvalResult::UNSATISFIED;
+}
+
+// ============================================================================
 // Phase 1 evaluators
 // ============================================================================
 
@@ -183,6 +218,16 @@ EvalResult EvalSigBlock(const RungBlock& block,
 
     if (!pubkey_field || !sig_field) {
         return EvalResult::ERROR;
+    }
+
+    // Check for explicit SCHEME field — routes to PQ verifier if present
+    const RungField* scheme_field = FindField(block, RungDataType::SCHEME);
+    if (scheme_field && !scheme_field->data.empty()) {
+        auto scheme = static_cast<RungScheme>(scheme_field->data[0]);
+        if (IsPQScheme(scheme)) {
+            return EvalPQSig(scheme, *sig_field, *pubkey_field, checker);
+        }
+        // SCHNORR/ECDSA scheme values fall through to existing size-based routing
     }
 
     std::span<const unsigned char> sig_span{sig_field->data.data(), sig_field->data.size()};
@@ -243,6 +288,41 @@ EvalResult EvalMultisigBlock(const RungBlock& block,
     }
     if (sigs.size() < threshold) {
         return EvalResult::UNSATISFIED;
+    }
+
+    // Check for explicit SCHEME field — routes to PQ verifier if present
+    const RungField* scheme_field = FindField(block, RungDataType::SCHEME);
+    if (scheme_field && !scheme_field->data.empty()) {
+        auto scheme = static_cast<RungScheme>(scheme_field->data[0]);
+        if (IsPQScheme(scheme)) {
+            // PQ multisig: compute sighash once, verify each sig against pubkeys
+            auto* ladder_checker = dynamic_cast<const LadderSignatureChecker*>(&checker);
+            if (!ladder_checker) return EvalResult::ERROR;
+
+            uint256 sighash;
+            if (!ladder_checker->ComputeSighash(SIGHASH_DEFAULT, sighash)) {
+                return EvalResult::ERROR;
+            }
+
+            std::span<const uint8_t> msg{sighash.begin(), 32};
+            std::vector<bool> pubkey_used(pubkeys.size(), false);
+            uint32_t valid_count = 0;
+
+            for (const auto* sig_f : sigs) {
+                std::span<const uint8_t> sig_span{sig_f->data.data(), sig_f->data.size()};
+                for (size_t k = 0; k < pubkeys.size(); ++k) {
+                    if (pubkey_used[k]) continue;
+                    std::span<const uint8_t> pk_span{pubkeys[k]->data.data(), pubkeys[k]->data.size()};
+                    if (VerifyPQSignature(scheme, sig_span, msg, pk_span)) {
+                        pubkey_used[k] = true;
+                        valid_count++;
+                        break;
+                    }
+                }
+            }
+            return (valid_count >= threshold) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
+        }
+        // SCHNORR/ECDSA scheme values fall through to existing size-based routing
     }
 
     // Verify signatures: each signature must match a distinct pubkey.

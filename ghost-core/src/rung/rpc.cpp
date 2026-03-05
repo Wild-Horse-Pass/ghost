@@ -5,6 +5,7 @@
 #include <rung/conditions.h>
 #include <rung/evaluator.h>
 #include <rung/policy.h>
+#include <rung/pq_verify.h>
 #include <rung/serialize.h>
 #include <rung/sighash.h>
 #include <rung/types.h>
@@ -690,6 +691,40 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
 
     switch (btype) {
     case RungBlockType::SIG: {
+        // Check for PQ scheme
+        if (block_spec.exists("scheme") && block_spec.exists("pq_privkey")) {
+            std::string scheme_str = block_spec["scheme"].get_str();
+            RungScheme scheme;
+            if (scheme_str == "FALCON512") scheme = RungScheme::FALCON512;
+            else if (scheme_str == "FALCON1024") scheme = RungScheme::FALCON1024;
+            else if (scheme_str == "DILITHIUM3") scheme = RungScheme::DILITHIUM3;
+            else if (scheme_str == "SPHINCS_SHA") scheme = RungScheme::SPHINCS_SHA;
+            else throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown PQ scheme: " + scheme_str);
+
+            if (!rung::HasPQSupport()) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "PQ signing requires liboqs support");
+            }
+
+            auto pq_privkey = ParseHex(block_spec["pq_privkey"].get_str());
+            if (pq_privkey.empty()) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "Empty pq_privkey");
+            }
+
+            uint256 sighash;
+            if (!rung::SignatureHashLadder(txdata, mtx, input_idx, SIGHASH_DEFAULT, conditions, sighash)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to compute sighash");
+            }
+
+            std::vector<uint8_t> pq_sig;
+            std::span<const uint8_t> msg{sighash.begin(), 32};
+            if (!rung::SignPQ(scheme, pq_privkey, msg, pq_sig)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "PQ signing failed");
+            }
+
+            block.fields.push_back({RungDataType::SIGNATURE, std::move(pq_sig)});
+            break;
+        }
+
         std::string wif = block_spec["privkey"].get_str();
         CKey privkey = DecodeSecret(wif);
         if (!privkey.IsValid()) {
@@ -711,6 +746,42 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
         break;
     }
     case RungBlockType::MULTISIG: {
+        // Check for PQ scheme
+        if (block_spec.exists("scheme") && block_spec.exists("pq_privkeys")) {
+            std::string scheme_str = block_spec["scheme"].get_str();
+            RungScheme scheme;
+            if (scheme_str == "FALCON512") scheme = RungScheme::FALCON512;
+            else if (scheme_str == "FALCON1024") scheme = RungScheme::FALCON1024;
+            else if (scheme_str == "DILITHIUM3") scheme = RungScheme::DILITHIUM3;
+            else if (scheme_str == "SPHINCS_SHA") scheme = RungScheme::SPHINCS_SHA;
+            else throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown PQ scheme: " + scheme_str);
+
+            if (!rung::HasPQSupport()) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "PQ signing requires liboqs support");
+            }
+
+            const UniValue& pq_privkeys_arr = block_spec["pq_privkeys"].get_array();
+            if (pq_privkeys_arr.empty()) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "MULTISIG PQ requires at least one pq_privkey");
+            }
+
+            uint256 sighash;
+            if (!rung::SignatureHashLadder(txdata, mtx, input_idx, SIGHASH_DEFAULT, conditions, sighash)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to compute sighash");
+            }
+
+            std::span<const uint8_t> msg{sighash.begin(), 32};
+            for (size_t s = 0; s < pq_privkeys_arr.size(); ++s) {
+                auto pq_privkey = ParseHex(pq_privkeys_arr[s].get_str());
+                std::vector<uint8_t> pq_sig;
+                if (!rung::SignPQ(scheme, pq_privkey, msg, pq_sig)) {
+                    throw JSONRPCError(RPC_INTERNAL_ERROR, "PQ MULTISIG signing failed");
+                }
+                block.fields.push_back({RungDataType::SIGNATURE, std::move(pq_sig)});
+            }
+            break;
+        }
+
         const UniValue& privkeys_arr = block_spec["privkeys"].get_array();
         if (privkeys_arr.empty()) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "MULTISIG requires at least one privkey");
@@ -1050,6 +1121,52 @@ static RPCHelpMan computectvhash()
     };
 }
 
+static RPCHelpMan generatepqkeypair()
+{
+    return RPCHelpMan{
+        "generatepqkeypair",
+        "Generate a post-quantum keypair for the specified scheme.\n"
+        "Requires liboqs support.\n",
+        {
+            {"scheme", RPCArg::Type::STR, RPCArg::Optional::NO,
+             "PQ scheme: FALCON512, FALCON1024, DILITHIUM3, SPHINCS_SHA"},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {
+            {RPCResult::Type::STR, "scheme", "The scheme used"},
+            {RPCResult::Type::STR_HEX, "pubkey", "The public key (hex)"},
+            {RPCResult::Type::STR_HEX, "privkey", "The private key (hex)"},
+        }},
+        RPCExamples{
+            HelpExampleCli("generatepqkeypair", "FALCON512")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+    {
+        std::string scheme_str = self.Arg<std::string>("scheme");
+        RungScheme scheme;
+        if (scheme_str == "FALCON512") scheme = RungScheme::FALCON512;
+        else if (scheme_str == "FALCON1024") scheme = RungScheme::FALCON1024;
+        else if (scheme_str == "DILITHIUM3") scheme = RungScheme::DILITHIUM3;
+        else if (scheme_str == "SPHINCS_SHA") scheme = RungScheme::SPHINCS_SHA;
+        else throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown PQ scheme: " + scheme_str);
+
+        if (!rung::HasPQSupport()) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "PQ keygen requires liboqs support (not compiled in)");
+        }
+
+        std::vector<uint8_t> pubkey, privkey;
+        if (!rung::GeneratePQKeypair(scheme, pubkey, privkey)) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "PQ keypair generation failed");
+        }
+
+        UniValue result(UniValue::VOBJ);
+        result.pushKV("scheme", scheme_str);
+        result.pushKV("pubkey", HexStr(pubkey));
+        result.pushKV("privkey", HexStr(privkey));
+        return result;
+    },
+    };
+}
+
 void RegisterRungRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
@@ -1059,6 +1176,7 @@ void RegisterRungRPCCommands(CRPCTable& t)
         {"rung", &createrungtx},
         {"rung", &signrungtx},
         {"rung", &computectvhash},
+        {"rung", &generatepqkeypair},
     };
     for (const auto& c : commands) {
         t.appendCommand(c.name, &c);

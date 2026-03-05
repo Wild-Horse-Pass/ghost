@@ -163,6 +163,10 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_rpc_createrungtx_negative_amount(node)
         self.test_rpc_signrungtx_missing_spent_info(node)
 
+        # PQ tests (only run if node has liboqs support)
+        self.test_pq_keygen_rpc(node)
+        self.test_pq_falcon512_sig(node)
+
     # =========================================================================
     # Helpers
     # =========================================================================
@@ -309,9 +313,9 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         # Unknown data type (0xff): 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, ff type, 01 len, aa data, coil bytes
         assert_raises_rpc_error(-22, "unknown data type", node.decoderung, "010101000001ff01aa010101" + "0000")
 
-        # Oversized PUBKEY field (65 bytes, max is 64):
-        # 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, 01 PUBKEY, 41 len=65, 65 bytes, coil bytes
-        oversized = "0101010000010141" + "02" * 65 + "010101" + "0000"
+        # Oversized PUBKEY field (2049 bytes, max is 2048):
+        # 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, 01 PUBKEY, varint len=2049, 2049 bytes, coil bytes
+        oversized = "010101000001" + "01" + "fd0108" + "02" * 2049 + "010101" + "0000"
         assert_raises_rpc_error(-22, "too large", node.decoderung, oversized)
 
         self.log.info("  All malformed inputs correctly rejected")
@@ -3356,6 +3360,87 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         )
         assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
         self.log.info("  RECURSE_DECAY (wrong delta) correctly rejected!")
+
+
+    # =========================================================================
+    # PQ tests
+    # =========================================================================
+
+    def skip_if_no_pq(self, node):
+        """Return True if PQ support is not available (skip PQ tests)."""
+        try:
+            node.generatepqkeypair("FALCON512")
+            return False
+        except Exception as e:
+            if "liboqs" in str(e).lower() or "not compiled" in str(e).lower():
+                self.log.info("  Skipping PQ test: liboqs not available")
+                return True
+            raise
+
+    def test_pq_keygen_rpc(self, node):
+        """Test generatepqkeypair RPC returns valid hex keys."""
+        self.log.info("Testing PQ keygen RPC...")
+
+        if self.skip_if_no_pq(node):
+            return
+
+        for scheme in ["FALCON512", "FALCON1024", "DILITHIUM3", "SPHINCS_SHA"]:
+            result = node.generatepqkeypair(scheme)
+            assert_equal(result["scheme"], scheme)
+            assert len(result["pubkey"]) > 0, f"Empty pubkey for {scheme}"
+            assert len(result["privkey"]) > 0, f"Empty privkey for {scheme}"
+            # Verify hex decodes cleanly
+            bytes.fromhex(result["pubkey"])
+            bytes.fromhex(result["privkey"])
+            self.log.info(f"  {scheme}: pubkey={len(result['pubkey'])//2}B, privkey={len(result['privkey'])//2}B")
+
+        self.log.info("  PQ keygen RPC passed!")
+
+    def test_pq_falcon512_sig(self, node):
+        """End-to-end: create output with SCHEME=FALCON512, spend with PQ sig."""
+        self.log.info("Testing PQ FALCON512 signature spend...")
+
+        if self.skip_if_no_pq(node):
+            return
+
+        # Generate FALCON512 keypair
+        keypair = node.generatepqkeypair("FALCON512")
+        pq_pubkey = keypair["pubkey"]
+        pq_privkey = keypair["privkey"]
+
+        # Create conditions requiring a FALCON512 signature
+        conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "SCHEME", "hex": "10"},  # FALCON512 = 0x10
+            {"type": "PUBKEY", "hex": pq_pubkey},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Spend using PQ signature
+        output_amount = amount - Decimal("0.001")
+        spend_wif, spend_pubkey = make_keypair()
+        spend_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": spend_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": spend_conditions}]
+        )
+
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "SIG", "scheme": "FALCON512", "pq_privkey": pq_privkey}
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_equal(sign_result["complete"], True)
+
+        # Submit to mempool and mine
+        node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        self.log.info("  PQ FALCON512 signature spend confirmed!")
 
 
 if __name__ == '__main__':

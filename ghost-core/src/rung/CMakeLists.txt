@@ -33,8 +33,8 @@ target_link_libraries(bitcoin_rung
 )
 
 # Optional post-quantum signature support via liboqs
-find_package(OQS QUIET)
-if(OQS_FOUND)
+find_package(liboqs QUIET)
+if(liboqs_FOUND)
   message(STATUS "liboqs found — post-quantum signature verification enabled")
   target_compile_definitions(bitcoin_rung PRIVATE HAVE_LIBOQS)
   target_link_libraries(bitcoin_rung PRIVATE OQS::oqs)
