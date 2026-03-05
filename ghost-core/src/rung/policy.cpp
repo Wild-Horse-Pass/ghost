@@ -123,9 +123,9 @@ bool IsStandardRungTx(const CTransaction& tx, std::string& reason)
 
             for (const auto& block : rung.blocks) {
                 uint16_t btype = static_cast<uint16_t>(block.type);
-                // Policy: only Phase 1 block types are standard
-                if (!IsPhase1BlockType(btype)) {
-                    reason = "rung-non-standard-block-type: " + BlockTypeName(block.type);
+                // Policy: all known block types are standard
+                if (!IsKnownBlockType(btype)) {
+                    reason = "rung-unknown-block-type: " + BlockTypeName(block.type);
                     return false;
                 }
 
@@ -165,8 +165,8 @@ bool IsStandardRungOutput(const CScript& scriptPubKey, std::string& reason)
 
         for (const auto& block : rung.blocks) {
             uint16_t btype = static_cast<uint16_t>(block.type);
-            if (!IsPhase1BlockType(btype)) {
-                reason = "rung-output-non-standard-block-type: " + BlockTypeName(block.type);
+            if (!IsKnownBlockType(btype)) {
+                reason = "rung-output-unknown-block-type: " + BlockTypeName(block.type);
                 return false;
             }
             for (const auto& field : block.fields) {

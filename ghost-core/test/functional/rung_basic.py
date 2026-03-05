@@ -46,7 +46,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         self.setup_clean_chain = True
-        self.extra_args = [["-txindex", "-acceptnonstdtxn"]]
+        self.extra_args = [["-txindex"]]
 
     def run_test(self):
         node = self.nodes[0]
@@ -89,6 +89,21 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_compare_block(node)
         self.test_ctv_template(node)
         self.test_vault_lock(node)
+
+        # Phase 2+ negative tests
+        self.test_negative_ctv_wrong_template(node)
+        self.test_negative_vault_wrong_key(node)
+        self.test_negative_compare_fails(node)
+        self.test_negative_tagged_hash_wrong_preimage(node)
+
+        # Recursion tests
+        self.test_recurse_same(node)
+        self.test_negative_recurse_same_different(node)
+        self.test_recurse_same_chain(node)
+        self.test_recurse_until_re_encumber(node)
+        self.test_recurse_until_termination(node)
+        self.test_negative_recurse_until_no_reencumber(node)
+        self.test_recurse_count(node)
 
     # =========================================================================
     # Helpers
@@ -1117,16 +1132,13 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info("  COMPARE(GT) spend confirmed!")
 
     def test_ctv_template(self, node):
-        """CTV: CheckTemplateVerify with matching template hash."""
-        self.log.info("Testing CTV template verify...")
+        """CTV: Full end-to-end CheckTemplateVerify — lock and spend."""
+        self.log.info("Testing CTV template verify (full spend cycle)...")
 
-        # CTV requires pre-computing the template hash before creating the output.
-        # We need to know the exact spending tx format in advance.
-        # Create a simple CTV: lock to a template that sends to a specific output.
         privkey_wif, pubkey_hex = make_keypair()
         dest_wif, dest_pubkey = make_keypair()
 
-        # First get a UTXO to spend
+        # Step 1: Bootstrap a SIG-locked output that we control
         utxo = self.wallet.get_utxo()
         input_amount = utxo["value"]
         input_txid = utxo["txid"]
@@ -1135,39 +1147,108 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         txout_info = node.gettxout(input_txid, input_vout)
         spent_spk = txout_info["scriptPubKey"]["hex"]
 
-        intermediate_amount = Decimal(input_amount) - Decimal("0.001")
+        sig_amount = Decimal("1.0")
+        change_amount = Decimal(input_amount) - sig_amount - Decimal("0.001")
 
-        # Create an intermediate SIG output that we'll spend into CTV later
-        # For now, test that CTV conditions can be created and decoded
-        placeholder_hash = os.urandom(32)
-        conditions = [{"blocks": [{"type": "CTV", "fields": [
-            {"type": "HASH256", "hex": placeholder_hash.hex()}
+        sig_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": pubkey_hex}
+        ]}]}]
+        change_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": pubkey_hex}
         ]}]}]
 
-        # Create the CTV output
-        result = node.createrungtx(
+        bootstrap = node.createrungtx(
             [{"txid": input_txid, "vout": input_vout}],
-            [{"amount": intermediate_amount, "conditions": conditions}]
+            [
+                {"amount": sig_amount, "conditions": sig_conditions},
+                {"amount": change_amount, "conditions": change_conditions},
+            ]
         )
-
-        # Sign bootstrap
-        sign_result = node.signrungtx(
-            result["hex"],
+        sign_boot = node.signrungtx(
+            bootstrap["hex"],
             [{"privkey": privkey_wif, "input": 0}],
             [{"amount": input_amount, "scriptPubKey": spent_spk}]
         )
-        assert sign_result["complete"]
-
-        txid = node.sendrawtransaction(sign_result["hex"])
+        assert sign_boot["complete"]
+        boot_txid = node.sendrawtransaction(sign_boot["hex"])
         self.generate(node, 1)
 
-        # Verify the CTV output was created and is decodable
-        tx_info = node.getrawtransaction(txid, True)
-        assert tx_info["confirmations"] >= 1
+        # Step 2: Pre-compute the CTV template hash.
+        # CTV hash commits to: version, locktime, scriptsigs_hash, num_inputs,
+        # sequences_hash, num_outputs, outputs_hash, input_index.
+        # It does NOT commit to input outpoints — so we can compute it with a
+        # placeholder input and the hash will match any spending tx with the
+        # same outputs/version/locktime/sequences.
+        spend_amount = sig_amount - Decimal("0.002")  # fee for CTV output creation + spending
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
 
-        validate = node.validateladder(node.getrawtransaction(txid))
-        self.log.info(f"  CTV output created: {txid} (valid={validate['valid']})")
-        self.log.info("  CTV template output created and decoded!")
+        # Build a template tx with a dummy input (same structure as the real spend)
+        template_tx = node.createrungtx(
+            [{"txid": boot_txid, "vout": 0}],  # placeholder input — outpoint not in CTV hash
+            [{"amount": spend_amount, "conditions": dest_conditions}]
+        )
+        ctv_result = node.computectvhash(template_tx["hex"], 0)
+        ctv_hash = ctv_result["hash"]
+        self.log.info(f"  CTV hash: {ctv_hash}")
+
+        # Step 3: Create the CTV-locked output using the computed hash
+        ctv_conditions = [{"blocks": [{"type": "CTV", "fields": [
+            {"type": "HASH256", "hex": ctv_hash}
+        ]}]}]
+
+        ctv_lock_amount = sig_amount - Decimal("0.001")  # leave fee for this tx
+        ctv_create = node.createrungtx(
+            [{"txid": boot_txid, "vout": 0}],
+            [{"amount": ctv_lock_amount, "conditions": ctv_conditions}]
+        )
+
+        boot_txinfo = node.getrawtransaction(boot_txid, True)
+        boot_spk = boot_txinfo["vout"][0]["scriptPubKey"]["hex"]
+
+        ctv_sign = node.signrungtx(
+            ctv_create["hex"],
+            [{"input": 0, "blocks": [{"type": "SIG", "privkey": privkey_wif}]}],
+            [{"amount": float(sig_amount), "scriptPubKey": boot_spk}]
+        )
+        assert ctv_sign["complete"]
+        ctv_txid = node.sendrawtransaction(ctv_sign["hex"])
+        self.generate(node, 1)
+        self.log.info(f"  CTV output: {ctv_txid}:0")
+
+        # Step 4: Spend the CTV output with a tx matching the template exactly.
+        # The spending tx must produce the same outputs/version/locktime/sequences
+        # that were used to compute the CTV hash.
+        ctv_txinfo = node.getrawtransaction(ctv_txid, True)
+        ctv_spk = ctv_txinfo["vout"][0]["scriptPubKey"]["hex"]
+        ctv_out_amount = Decimal(str(ctv_txinfo["vout"][0]["value"]))
+
+        # Build the real spending tx — must match template structure exactly
+        real_spend = node.createrungtx(
+            [{"txid": ctv_txid, "vout": 0}],
+            [{"amount": spend_amount, "conditions": dest_conditions}]
+        )
+
+        # Verify the hash matches
+        verify_hash = node.computectvhash(real_spend["hex"], 0)
+        assert verify_hash["hash"] == ctv_hash, f"CTV hash mismatch: {verify_hash['hash']} != {ctv_hash}"
+
+        # Sign — CTV block needs no witness data
+        real_sign = node.signrungtx(
+            real_spend["hex"],
+            [{"input": 0, "blocks": [{"type": "CTV"}]}],
+            [{"amount": float(ctv_out_amount), "scriptPubKey": ctv_spk}]
+        )
+        assert real_sign["complete"]
+
+        final_txid = node.sendrawtransaction(real_sign["hex"])
+        self.generate(node, 1)
+
+        final_info = node.getrawtransaction(final_txid, True)
+        assert final_info["confirmations"] >= 1
+        self.log.info(f"  CTV spend confirmed: {final_txid}")
+        self.log.info("  CTV full spend cycle passed!")
 
     def test_vault_lock(self, node):
         """VAULT_LOCK: two-path vault with recovery key and hot key."""
@@ -1208,6 +1289,485 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         tx_info = node.getrawtransaction(spend_txid, True)
         assert tx_info["confirmations"] >= 1
         self.log.info("  VAULT_LOCK cold sweep confirmed!")
+
+    def test_negative_ctv_wrong_template(self, node):
+        """CTV negative: spending tx doesn't match committed template hash."""
+        self.log.info("Testing CTV negative (wrong template)...")
+
+        privkey_wif, pubkey_hex = make_keypair()
+        dest_wif, dest_pubkey = make_keypair()
+
+        # Lock to a random hash (no valid spending tx matches)
+        wrong_hash = os.urandom(32).hex()
+        conditions = [{"blocks": [{"type": "CTV", "fields": [
+            {"type": "HASH256", "hex": wrong_hash}
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "CTV"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  CTV (wrong template) correctly rejected!")
+
+    def test_negative_vault_wrong_key(self, node):
+        """VAULT_LOCK negative: wrong key cannot spend."""
+        self.log.info("Testing VAULT_LOCK negative (wrong key)...")
+
+        recovery_wif, recovery_pubkey = make_keypair()
+        hot_wif, hot_pubkey = make_keypair()
+        wrong_wif, wrong_pubkey = make_keypair()
+
+        conditions = [{"blocks": [{"type": "VAULT_LOCK", "fields": [
+            {"type": "PUBKEY", "hex": recovery_pubkey},
+            {"type": "PUBKEY", "hex": hot_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(10)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": [{"blocks": [{
+                "type": "SIG", "fields": [{"type": "PUBKEY", "hex": dest_pubkey}]
+            }]}]}]
+        )
+        # Sign with wrong key (not recovery_key or hot_key)
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "VAULT_LOCK", "privkey": wrong_wif}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  VAULT_LOCK (wrong key) correctly rejected!")
+
+    def test_negative_compare_fails(self, node):
+        """COMPARE negative: amount below threshold fails GT check."""
+        self.log.info("Testing COMPARE negative (below threshold)...")
+
+        privkey_wif, pubkey_hex = make_keypair()
+
+        # COMPARE GT 500000000 (5 BTC) — but input will be ~1 BTC
+        conditions = [{"blocks": [{"type": "COMPARE", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(0x03)},      # GT operator
+            {"type": "NUMERIC", "hex": numeric_hex(500000000)},  # 5 BTC threshold
+        ]}]}]
+
+        # Bootstrap with a controlled 1 BTC output
+        utxo = self.wallet.get_utxo()
+        input_amount = utxo["value"]
+        input_txid = utxo["txid"]
+        input_vout = utxo["vout"]
+        txout_info = node.gettxout(input_txid, input_vout)
+        spent_spk = txout_info["scriptPubKey"]["hex"]
+
+        lock_amount = Decimal("1.0")
+        change_amount = Decimal(input_amount) - lock_amount - Decimal("0.001")
+        change_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": pubkey_hex}
+        ]}]}]
+
+        bootstrap = node.createrungtx(
+            [{"txid": input_txid, "vout": input_vout}],
+            [
+                {"amount": lock_amount, "conditions": conditions},
+                {"amount": change_amount, "conditions": change_conditions},
+            ]
+        )
+        sign_boot = node.signrungtx(
+            bootstrap["hex"],
+            [{"privkey": privkey_wif, "input": 0}],
+            [{"amount": input_amount, "scriptPubKey": spent_spk}]
+        )
+        assert sign_boot["complete"]
+        boot_txid = node.sendrawtransaction(sign_boot["hex"])
+        self.generate(node, 1)
+
+        # Try to spend — COMPARE GT 5 BTC will fail on ~1 BTC input
+        boot_info = node.getrawtransaction(boot_txid, True)
+        boot_spk = boot_info["vout"][0]["scriptPubKey"]["hex"]
+        boot_amount = Decimal(str(boot_info["vout"][0]["value"]))
+
+        dest_wif, dest_pubkey = make_keypair()
+        spend = node.createrungtx(
+            [{"txid": boot_txid, "vout": 0}],
+            [{"amount": boot_amount - Decimal("0.001"), "conditions": [{"blocks": [{
+                "type": "SIG", "fields": [{"type": "PUBKEY", "hex": dest_pubkey}]
+            }]}]}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "COMPARE"}]}],
+            [{"amount": float(boot_amount), "scriptPubKey": boot_spk}]
+        )
+        assert sign_result["complete"]
+
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  COMPARE (below threshold) correctly rejected!")
+
+    def test_negative_tagged_hash_wrong_preimage(self, node):
+        """TAGGED_HASH negative: wrong preimage fails verification."""
+        self.log.info("Testing TAGGED_HASH negative (wrong preimage)...")
+
+        privkey_wif, pubkey_hex = make_keypair()
+
+        # Create tagged hash conditions
+        tag = b"ghost/test-tag"
+        preimage = b"correct_preimage_data"
+        tag_hash = hashlib.sha256(tag).digest()
+
+        # Compute correct tagged hash: SHA256(SHA256(tag) || SHA256(tag) || preimage)
+        tagged_hasher = hashlib.sha256()
+        tagged_hasher.update(tag_hash)
+        tagged_hasher.update(tag_hash)
+        tagged_hasher.update(preimage)
+        expected_hash = tagged_hasher.digest()
+
+        conditions = [{"blocks": [{"type": "TAGGED_HASH", "fields": [
+            {"type": "HASH256", "hex": tag_hash.hex()},
+            {"type": "HASH256", "hex": expected_hash.hex()},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": [{"blocks": [{
+                "type": "SIG", "fields": [{"type": "PUBKEY", "hex": dest_pubkey}]
+            }]}]}]
+        )
+
+        # Sign with WRONG preimage
+        wrong_preimage = b"wrong_preimage_data"
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "TAGGED_HASH", "preimage": wrong_preimage.hex()}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  TAGGED_HASH (wrong preimage) correctly rejected!")
+
+    def test_recurse_same(self, node):
+        """RECURSE_SAME: spend into output with identical conditions."""
+        self.log.info("Testing RECURSE_SAME (covenant re-encumbrance)...")
+
+        privkey_wif, pubkey_hex = make_keypair()
+
+        # RECURSE_SAME with max_depth=5
+        conditions = [{"blocks": [{"type": "RECURSE_SAME", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(5)},  # max_depth
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  RECURSE_SAME output: {txid}:{vout}")
+
+        # Spend into output with IDENTICAL conditions (same RECURSE_SAME block)
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": conditions}]  # same conditions
+        )
+
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_SAME"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  RECURSE_SAME spend confirmed: {spend_txid}")
+
+        # Verify the output still has the same conditions
+        validate = node.validateladder(node.getrawtransaction(spend_txid))
+        assert validate["valid"]
+        self.log.info("  RECURSE_SAME covenant re-encumbrance passed!")
+
+    def test_negative_recurse_same_different(self, node):
+        """RECURSE_SAME negative: output with different conditions rejected."""
+        self.log.info("Testing RECURSE_SAME negative (different output conditions)...")
+
+        privkey_wif, pubkey_hex = make_keypair()
+
+        conditions = [{"blocks": [{"type": "RECURSE_SAME", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(5)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Try to spend into output with DIFFERENT conditions
+        different_conditions = [{"blocks": [{"type": "RECURSE_SAME", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(10)},  # different max_depth
+        ]}]}]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": different_conditions}]
+        )
+
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_SAME"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  RECURSE_SAME (different conditions) correctly rejected!")
+
+    def test_recurse_same_chain(self, node):
+        """RECURSE_SAME: multi-hop covenant chain (3 consecutive spends)."""
+        self.log.info("Testing RECURSE_SAME chain (3-hop covenant)...")
+
+        conditions = [{"blocks": [{"type": "RECURSE_SAME", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(10)},  # max_depth
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  Hop 0 (bootstrap): {txid}:{vout}")
+
+        # Chain 3 spends, each re-encumbering with identical conditions
+        for hop in range(1, 4):
+            output_amount = amount - Decimal("0.001")
+            spend = node.createrungtx(
+                [{"txid": txid, "vout": vout}],
+                [{"amount": output_amount, "conditions": conditions}]
+            )
+            sign_result = node.signrungtx(
+                spend["hex"],
+                [{"input": 0, "blocks": [{"type": "RECURSE_SAME"}]}],
+                [{"amount": amount, "scriptPubKey": spk}]
+            )
+            assert sign_result["complete"]
+
+            txid = node.sendrawtransaction(sign_result["hex"])
+            self.generate(node, 1)
+            tx_info = node.getrawtransaction(txid, True)
+            assert tx_info["confirmations"] >= 1
+            spk = tx_info["vout"][0]["scriptPubKey"]["hex"]
+            amount = output_amount
+            vout = 0
+            self.log.info(f"  Hop {hop}: {txid}")
+
+        self.log.info("  RECURSE_SAME 3-hop chain passed!")
+
+    def test_recurse_until_re_encumber(self, node):
+        """RECURSE_UNTIL: before termination height, must re-encumber with same conditions."""
+        self.log.info("Testing RECURSE_UNTIL (re-encumber before termination)...")
+
+        current_height = node.getblockcount()
+        until_height = current_height + 100  # far in the future
+
+        conditions = [{"blocks": [{"type": "RECURSE_UNTIL", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(until_height)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  RECURSE_UNTIL output: {txid}:{vout} (until_height={until_height})")
+
+        # Spend BEFORE until_height — must re-encumber with identical conditions
+        # nLockTime = current height (below until_height)
+        current = node.getblockcount()
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": conditions}],  # same conditions
+            current,  # nLockTime < until_height
+        )
+
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_UNTIL"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  RECURSE_UNTIL re-encumber confirmed: {spend_txid}")
+        self.log.info("  RECURSE_UNTIL re-encumber before termination passed!")
+
+    def test_recurse_until_termination(self, node):
+        """RECURSE_UNTIL: covenant terminates when block height >= until_height."""
+        self.log.info("Testing RECURSE_UNTIL (termination at target height)...")
+
+        # Get current height and set until_height just a few blocks ahead
+        current_height = node.getblockcount()
+        until_height = current_height + 3
+
+        conditions = [{"blocks": [{"type": "RECURSE_UNTIL", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(until_height)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  RECURSE_UNTIL output: {txid}:{vout} (until_height={until_height})")
+
+        # Mine past the until_height
+        blocks_needed = until_height - node.getblockcount() + 1
+        if blocks_needed > 0:
+            self.generate(node, blocks_needed)
+        self.log.info(f"  Current height: {node.getblockcount()} (>= {until_height})")
+
+        # Now spend freely — covenant terminates at/past until_height
+        # Set nLockTime to current height (like CLTV, consensus uses nLockTime as height proxy)
+        current = node.getblockcount()
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}],
+            current,  # nLockTime = current height (>= until_height)
+        )
+
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_UNTIL"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  RECURSE_UNTIL termination confirmed: {spend_txid}")
+        self.log.info("  RECURSE_UNTIL termination at target height passed!")
+
+    def test_negative_recurse_until_no_reencumber(self, node):
+        """RECURSE_UNTIL negative: before termination, spending without re-encumbering rejected."""
+        self.log.info("Testing RECURSE_UNTIL negative (no re-encumber before termination)...")
+
+        current_height = node.getblockcount()
+        until_height = current_height + 100
+
+        conditions = [{"blocks": [{"type": "RECURSE_UNTIL", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(until_height)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Try to spend into DIFFERENT conditions before until_height
+        current = node.getblockcount()
+        dest_wif, dest_pubkey = make_keypair()
+        different_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": different_conditions}],
+            current,  # nLockTime < until_height
+        )
+
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_UNTIL"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  RECURSE_UNTIL (no re-encumber) correctly rejected!")
+
+    def test_recurse_count(self, node):
+        """RECURSE_COUNT: countdown covenant from 2→1→0 then free spend."""
+        self.log.info("Testing RECURSE_COUNT (countdown 2→0 then free spend)...")
+
+        initial_count = 2
+        conditions = [{"blocks": [{"type": "RECURSE_COUNT", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(initial_count)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  Count {initial_count} (bootstrap): {txid}:{vout}")
+
+        # Decrement: count=2 → output count=1 → output count=0
+        for remaining in range(initial_count - 1, -1, -1):
+            output_amount = amount - Decimal("0.001")
+            next_conditions = [{"blocks": [{"type": "RECURSE_COUNT", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(remaining)},
+            ]}]}]
+
+            spend = node.createrungtx(
+                [{"txid": txid, "vout": vout}],
+                [{"amount": output_amount, "conditions": next_conditions}]
+            )
+
+            sign_result = node.signrungtx(
+                spend["hex"],
+                [{"input": 0, "blocks": [{"type": "RECURSE_COUNT"}]}],
+                [{"amount": amount, "scriptPubKey": spk}]
+            )
+            assert sign_result["complete"]
+
+            txid = node.sendrawtransaction(sign_result["hex"])
+            self.generate(node, 1)
+            tx_info = node.getrawtransaction(txid, True)
+            assert tx_info["confirmations"] >= 1
+            spk = tx_info["vout"][0]["scriptPubKey"]["hex"]
+            amount = output_amount
+            vout = 0
+            self.log.info(f"  Count {remaining}: {txid}")
+
+        # Now count=0 — covenant terminates, spend freely to any output
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        free_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": free_conditions}]
+        )
+
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_COUNT"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Free spend (count=0 terminated): {txid}")
+        self.log.info("  RECURSE_COUNT countdown + free spend passed!")
 
 
 if __name__ == '__main__':

@@ -499,22 +499,11 @@ EvalResult EvalTaggedHashBlock(const RungBlock& block)
 // Phase 2 evaluators — Covenant
 // ============================================================================
 
-EvalResult EvalCTVBlock(const RungBlock& block, const RungEvalContext& ctx)
+uint256 ComputeCTVHash(const CTransaction& tx, uint32_t input_index)
 {
-    // CheckTemplateVerify: verify template hash matches spending transaction
-    const RungField* template_hash = FindField(block, RungDataType::HASH256);
-    if (!template_hash || template_hash->data.size() != 32) {
-        return EvalResult::ERROR;
-    }
-
-    if (!ctx.tx) {
-        return EvalResult::UNSATISFIED;
-    }
-
-    // Compute BIP-119 template hash:
+    // BIP-119 template hash:
     // SHA256(version || locktime || scriptsigs_hash || num_inputs || sequences_hash ||
     //        num_outputs || outputs_hash || input_index)
-    const CTransaction& tx = *ctx.tx;
 
     // scriptsigs hash (SHA256 of all scriptSigs concatenated)
     CSHA256 scriptsigs_hasher;
@@ -555,20 +544,17 @@ EvalResult EvalCTVBlock(const RungBlock& block, const RungEvalContext& ctx)
 
     // Compute final template hash
     CSHA256 hasher;
-    // version (4 bytes LE)
     unsigned char version_buf[4];
     uint32_t version = static_cast<uint32_t>(tx.version);
     for (int i = 0; i < 4; ++i) version_buf[i] = (version >> (8 * i)) & 0xFF;
     hasher.Write(version_buf, 4);
 
-    // locktime (4 bytes LE)
     unsigned char locktime_buf[4];
     for (int i = 0; i < 4; ++i) locktime_buf[i] = (tx.nLockTime >> (8 * i)) & 0xFF;
     hasher.Write(locktime_buf, 4);
 
     hasher.Write(scriptsigs_hash, 32);
 
-    // num_inputs (4 bytes LE)
     unsigned char nins_buf[4];
     uint32_t nins = static_cast<uint32_t>(tx.vin.size());
     for (int i = 0; i < 4; ++i) nins_buf[i] = (nins >> (8 * i)) & 0xFF;
@@ -576,7 +562,6 @@ EvalResult EvalCTVBlock(const RungBlock& block, const RungEvalContext& ctx)
 
     hasher.Write(sequences_hash, 32);
 
-    // num_outputs (4 bytes LE)
     unsigned char nouts_buf[4];
     uint32_t nouts = static_cast<uint32_t>(tx.vout.size());
     for (int i = 0; i < 4; ++i) nouts_buf[i] = (nouts >> (8 * i)) & 0xFF;
@@ -584,15 +569,33 @@ EvalResult EvalCTVBlock(const RungBlock& block, const RungEvalContext& ctx)
 
     hasher.Write(outputs_hash, 32);
 
-    // input_index (4 bytes LE)
     unsigned char idx_buf[4];
-    for (int i = 0; i < 4; ++i) idx_buf[i] = (ctx.input_index >> (8 * i)) & 0xFF;
+    for (int i = 0; i < 4; ++i) idx_buf[i] = (input_index >> (8 * i)) & 0xFF;
     hasher.Write(idx_buf, 4);
 
     unsigned char computed[32];
     hasher.Finalize(computed);
 
-    if (memcmp(computed, template_hash->data.data(), 32) == 0) {
+    uint256 result;
+    memcpy(result.data(), computed, 32);
+    return result;
+}
+
+EvalResult EvalCTVBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    // CheckTemplateVerify: verify template hash matches spending transaction
+    const RungField* template_hash = FindField(block, RungDataType::HASH256);
+    if (!template_hash || template_hash->data.size() != 32) {
+        return EvalResult::ERROR;
+    }
+
+    if (!ctx.tx) {
+        return EvalResult::UNSATISFIED;
+    }
+
+    uint256 computed = ComputeCTVHash(*ctx.tx, ctx.input_index);
+
+    if (memcmp(computed.data(), template_hash->data.data(), 32) == 0) {
         return EvalResult::SATISFIED;
     }
     return EvalResult::UNSATISFIED;
@@ -884,8 +887,13 @@ EvalResult EvalRecurseUntilBlock(const RungBlock& block, const RungEvalContext& 
     if (until_height < 0) {
         return EvalResult::ERROR;
     }
-    // If current block height >= until_height, covenant terminates unconditionally
-    if (ctx.block_height >= until_height) {
+    // Use tx nLockTime as height proxy (like CLTV — consensus ensures tx can't
+    // be included before nLockTime). If nLockTime >= until_height, covenant terminates.
+    int64_t effective_height = ctx.block_height;
+    if (ctx.tx && ctx.tx->nLockTime < LOCKTIME_THRESHOLD) {
+        effective_height = std::max(effective_height, static_cast<int64_t>(ctx.tx->nLockTime));
+    }
+    if (effective_height >= until_height) {
         return EvalResult::SATISFIED;
     }
     // Before until_height: must re-encumber output with same conditions
@@ -1481,7 +1489,8 @@ bool VerifyRungTx(const CTransaction& tx,
                   unsigned int /*flags*/,
                   const BaseSignatureChecker& checker,
                   const PrecomputedTransactionData& txdata,
-                  ScriptError* serror)
+                  ScriptError* serror,
+                  int32_t block_height)
 {
     if (nIn >= tx.vin.size()) {
         if (serror) *serror = SCRIPT_ERR_UNKNOWN_ERROR;
@@ -1514,6 +1523,7 @@ bool VerifyRungTx(const CTransaction& tx,
     eval_ctx.tx = &tx;
     eval_ctx.input_index = nIn;
     eval_ctx.input_amount = spent_output.nValue;
+    eval_ctx.block_height = block_height;
     // output_amount: use first output amount as default (callers can refine)
     if (!tx.vout.empty()) {
         eval_ctx.output_amount = tx.vout[0].nValue;

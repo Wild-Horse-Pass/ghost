@@ -142,6 +142,9 @@ bool EvalLadder(const LadderWitness& ladder,
                 ScriptExecutionData& execdata,
                 const RungEvalContext& ctx = {});
 
+/** Compute the BIP-119 CTV template hash for a transaction at a given input index. */
+uint256 ComputeCTVHash(const CTransaction& tx, uint32_t input_index);
+
 /** Top-level verification entry point for v3 RUNG_TX transactions. */
 bool VerifyRungTx(const CTransaction& tx,
                   unsigned int nIn,
@@ -149,7 +152,8 @@ bool VerifyRungTx(const CTransaction& tx,
                   unsigned int flags,
                   const BaseSignatureChecker& checker,
                   const PrecomputedTransactionData& txdata,
-                  ScriptError* serror);
+                  ScriptError* serror,
+                  int32_t block_height = 0);
 
 } // namespace rung
 

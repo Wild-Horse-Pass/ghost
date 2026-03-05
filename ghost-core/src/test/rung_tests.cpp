@@ -1618,13 +1618,14 @@ BOOST_AUTO_TEST_CASE(policy_missing_witness)
     BOOST_CHECK(reason.find("missing-witness") != std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(policy_phase2_non_standard)
+BOOST_AUTO_TEST_CASE(policy_all_phases_standard)
 {
-    // Phase 2/3 block types are consensus-valid but policy-non-standard
+    // All known block types are standard (no phased activation)
     LadderWitness ladder;
     Rung rung;
     RungBlock block;
-    block.type = RungBlockType::CTV; // Phase 2
+    block.type = RungBlockType::CTV; // Phase 2 — should be standard
+    block.fields.push_back({RungDataType::HASH256, std::vector<uint8_t>(32, 0xaa)});
     rung.blocks.push_back(block);
     ladder.rungs.push_back(rung);
 
@@ -1632,8 +1633,25 @@ BOOST_AUTO_TEST_CASE(policy_phase2_non_standard)
     CTransaction tx(mtx);
 
     std::string reason;
-    BOOST_CHECK(!IsStandardRungTx(tx, reason));
-    BOOST_CHECK(reason.find("non-standard-block-type") != std::string::npos);
+    // CTV is a known block type — passes policy
+    // (May fail for other reasons like missing witness fields, but not "unknown-block-type")
+    bool result = IsStandardRungTx(tx, reason);
+    if (!result) {
+        BOOST_CHECK(reason.find("unknown-block-type") == std::string::npos);
+    }
+
+    // Unknown block type 0xFFFF should be rejected
+    LadderWitness ladder2;
+    Rung rung2;
+    RungBlock block2;
+    block2.type = static_cast<RungBlockType>(0xFFFF);
+    rung2.blocks.push_back(block2);
+    ladder2.rungs.push_back(rung2);
+    auto mtx2 = MakeRungTx(ladder2);
+    CTransaction tx2(mtx2);
+    std::string reason2;
+    BOOST_CHECK(!IsStandardRungTx(tx2, reason2));
+    BOOST_CHECK(reason2.find("unknown block type") != std::string::npos);
 }
 
 // ============================================================================

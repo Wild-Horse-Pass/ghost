@@ -1002,6 +1002,54 @@ static RPCHelpMan signrungtx()
     };
 }
 
+static RPCHelpMan computectvhash()
+{
+    return RPCHelpMan{
+        "computectvhash",
+        "Compute the BIP-119 CTV template hash for a v3 RUNG_TX transaction.\n"
+        "The hash commits to the transaction's version, locktime, inputs, outputs, and input index.\n"
+        "Use this to create CTV conditions that constrain how an output can be spent.\n",
+        {
+            {"hex", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The spending transaction hex (the tx that will spend the CTV output)"},
+            {"input_index", RPCArg::Type::NUM, RPCArg::Default{0}, "The input index being constrained by CTV"},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::STR_HEX, "hash", "The 32-byte CTV template hash"},
+            }
+        },
+        RPCExamples{
+            HelpExampleCli("computectvhash", "\"0300000001...\" 0")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        {
+            CMutableTransaction mtx;
+            if (!DecodeHexTx(mtx, request.params[0].get_str())) {
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Failed to decode transaction hex");
+            }
+
+            uint32_t input_index = 0;
+            if (!request.params[1].isNull()) {
+                input_index = request.params[1].getInt<uint32_t>();
+            }
+
+            if (input_index >= mtx.vin.size()) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                    "input_index " + std::to_string(input_index) + " out of range (tx has " +
+                    std::to_string(mtx.vin.size()) + " inputs)");
+            }
+
+            CTransaction tx(mtx);
+            uint256 hash = rung::ComputeCTVHash(tx, input_index);
+
+            UniValue result(UniValue::VOBJ);
+            result.pushKV("hash", HexStr(hash));
+            return result;
+        },
+    };
+}
+
 void RegisterRungRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
@@ -1010,6 +1058,7 @@ void RegisterRungRPCCommands(CRPCTable& t)
         {"rung", &validateladder},
         {"rung", &createrungtx},
         {"rung", &signrungtx},
+        {"rung", &computectvhash},
     };
     for (const auto& c : commands) {
         t.appendCommand(c.name, &c);
