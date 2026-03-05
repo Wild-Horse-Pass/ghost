@@ -278,7 +278,18 @@ static RPCHelpMan decoderung()
                     {RPCResult::Type::STR, "attestation", "Attestation mode"},
                     {RPCResult::Type::STR, "scheme", "Signature scheme"},
                     {RPCResult::Type::STR_HEX, "address", /*optional=*/ true, "Destination scriptPubKey hex"},
-                    {RPCResult::Type::ARR, "conditions", /*optional=*/ true, "Coil condition rungs", {}},
+                    {RPCResult::Type::ARR, "conditions", /*optional=*/ true, "Coil condition rungs (same block format as input rungs)",
+                        {
+                            {RPCResult::Type::OBJ, "", "", {
+                                {RPCResult::Type::ARR, "blocks", "Function blocks",
+                                    {
+                                        {RPCResult::Type::OBJ, "", "", {
+                                            {RPCResult::Type::STR, "type", "Block type name"},
+                                            {RPCResult::Type::BOOL, "inverted", "Whether block is inverted"},
+                                        }},
+                                    }},
+                            }},
+                        }},
                 }},
         }},
         RPCExamples{
