@@ -99,17 +99,17 @@ check_node() {
     [[ -z "$block_height" ]] && block_height="?"
     echo "block_height=$block_height" >> "$out"
 
-    # 4. L2 block height
+    # 4. L2 block height (from ghost-pool's authoritative checkpoint state)
     local l2_height
-    l2_height=$(curl -sf --connect-timeout 3 "http://$ip:$POOL_PORT/api/v1/ghostpay/status" 2>/dev/null \
-        | jq -r '.l2_height // .height // "?"' 2>/dev/null) || l2_height="?"
+    l2_height=$(curl -sf --connect-timeout 3 "http://$ip:$POOL_PORT/api/v1/l2/tree-state" 2>/dev/null \
+        | jq -r '.checkpoint_height // "?"' 2>/dev/null) || l2_height="?"
     [[ -z "$l2_height" ]] && l2_height="?"
     echo "l2_height=$l2_height" >> "$out"
 
     # 5. Peer count
     local peers
     peers=$(curl -sf --connect-timeout 3 "http://$ip:$POOL_PORT/peers" 2>/dev/null \
-        | jq 'length // 0' 2>/dev/null) || peers="?"
+        | jq '.peer_count // (if type == "array" then length else .peers | length end) // 0' 2>/dev/null) || peers="?"
     [[ -z "$peers" ]] && peers="?"
     echo "peers=$peers" >> "$out"
 
@@ -192,7 +192,9 @@ for i in "${!VM_IPS[@]}"; do
         ALERT_PARTS+=("$name ghost-pay DOWN")
     fi
 
-    if [[ "${R_SVC[$i]}" != "active" ]]; then
+    if [[ "${R_SVC[$i]}" != "active" && "${R_POOL_OK[$i]}" != "1" ]]; then
+        # Only flag service status if the pool is also unreachable via HTTP.
+        # SSH systemctl checks can timeout transiently without indicating a real problem.
         HAS_PROBLEMS=true
         ALERT_PARTS+=("$name service ${R_SVC[$i]}")
     fi
