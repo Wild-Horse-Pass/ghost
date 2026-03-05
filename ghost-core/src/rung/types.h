@@ -230,11 +230,16 @@ enum class RungScheme : uint8_t {
     ECDSA     = 0x02, //!< ECDSA (legacy compat)
 };
 
-/** Coil metadata — attached to each rung, determines unlock semantics. */
+/** Coil metadata — attached to each output (LadderWitness), determines unlock semantics.
+ *  UNLOCK:    Standard spend to an address.
+ *  UNLOCK_TO: Send to an address, but recipient must also satisfy coil conditions.
+ *  COVENANT:  Constrains the spending transaction structure via coil conditions. */
 struct RungCoil {
     RungCoilType coil_type{RungCoilType::UNLOCK};
     RungAttestationMode attestation{RungAttestationMode::INLINE};
     RungScheme scheme{RungScheme::SCHNORR};
+    std::vector<uint8_t> address;              //!< Destination address (raw scriptPubKey bytes), empty if none
+    std::vector<struct Rung> conditions;        //!< Coil condition rungs (AND within rung, OR across rungs)
 };
 
 /** A single typed field within a block. Type constrains the allowed data size. */
@@ -257,13 +262,15 @@ struct RungBlock {
 /** A single rung in a ladder. All blocks must be satisfied (AND logic). */
 struct Rung {
     std::vector<RungBlock> blocks;
-    RungCoil coil;        //!< Coil metadata for this rung
     uint8_t rung_id{0};   //!< Rung identifier within the ladder
 };
 
-/** The complete ladder witness for one input. First satisfied rung wins (OR logic). */
+/** The complete ladder witness for one output.
+ *  Rungs define input conditions (OR logic — first satisfied rung wins).
+ *  Coil defines output semantics (destination, constraints). */
 struct LadderWitness {
-    std::vector<Rung> rungs;
+    std::vector<Rung> rungs;     //!< Input condition rungs
+    RungCoil coil;               //!< Output coil (per-output, not per-rung)
 
     bool IsEmpty() const { return rungs.empty(); }
 };

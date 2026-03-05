@@ -473,6 +473,7 @@ static bool MergeConditionsAndWitness(const RungConditions& conditions,
     }
 
     merged.rungs.resize(conditions.rungs.size());
+    merged.coil = conditions.coil;
     for (size_t r = 0; r < conditions.rungs.size(); ++r) {
         const auto& cond_rung = conditions.rungs[r];
         const auto& wit_rung = witness.rungs[r];
@@ -483,7 +484,6 @@ static bool MergeConditionsAndWitness(const RungConditions& conditions,
         }
 
         merged.rungs[r].blocks.resize(cond_rung.blocks.size());
-        merged.rungs[r].coil = cond_rung.coil;
         merged.rungs[r].rung_id = cond_rung.rung_id;
 
         for (size_t b = 0; b < cond_rung.blocks.size(); ++b) {

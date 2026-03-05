@@ -40,9 +40,15 @@ static constexpr size_t MAX_LADDER_WITNESS_SIZE = 10000;
  *          [data_type: uint8_t]
  *          [data_len: varint]
  *          [data: bytes]
- *      [coil_type: uint8_t]
- *      [attestation: uint8_t]
- *      [scheme: uint8_t]
+ *    [coil_type: uint8_t]
+ *    [attestation: uint8_t]
+ *    [scheme: uint8_t]
+ *    [address_len: varint]
+ *    [address: bytes]              (raw scriptPubKey, 0 len = no address)
+ *    [n_coil_conditions: varint]   (0 = no coil conditions)
+ *    for each coil condition rung:
+ *      [n_blocks: varint]
+ *      for each block: (same format as input blocks)
  */
 bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
                               LadderWitness& ladder_out,

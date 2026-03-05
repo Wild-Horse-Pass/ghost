@@ -35,6 +35,32 @@ using rung::RungCoilType;
 using rung::RungAttestationMode;
 using rung::RungScheme;
 
+/** Convert blocks to JSON array (shared between input rungs and coil condition rungs). */
+static UniValue BlocksToJSON(const std::vector<RungBlock>& blocks)
+{
+    UniValue arr(UniValue::VARR);
+    for (const auto& block : blocks) {
+        UniValue block_obj(UniValue::VOBJ);
+        block_obj.pushKV("type", rung::BlockTypeName(block.type));
+        uint16_t btype = static_cast<uint16_t>(block.type);
+        std::vector<uint8_t> type_bytes = {static_cast<uint8_t>(btype & 0xFF), static_cast<uint8_t>((btype >> 8) & 0xFF)};
+        block_obj.pushKV("type_hex", HexStr(type_bytes));
+        block_obj.pushKV("inverted", block.inverted);
+
+        UniValue fields_arr(UniValue::VARR);
+        for (const auto& field : block.fields) {
+            UniValue field_obj(UniValue::VOBJ);
+            field_obj.pushKV("type", rung::DataTypeName(field.type));
+            field_obj.pushKV("size", static_cast<int>(field.data.size()));
+            field_obj.pushKV("hex", HexStr(field.data));
+            fields_arr.push_back(field_obj);
+        }
+        block_obj.pushKV("fields", fields_arr);
+        arr.push_back(block_obj);
+    }
+    return arr;
+}
+
 /** Convert a coil to JSON. */
 static UniValue CoilToJSON(const RungCoil& coil)
 {
@@ -56,42 +82,37 @@ static UniValue CoilToJSON(const RungCoil& coil)
     case RungScheme::ECDSA:   obj.pushKV("scheme", "ECDSA"); break;
     default: obj.pushKV("scheme", "UNKNOWN"); break;
     }
+    if (!coil.address.empty()) {
+        obj.pushKV("address", HexStr(coil.address));
+    }
+    if (!coil.conditions.empty()) {
+        UniValue cond_arr(UniValue::VARR);
+        for (const auto& crung : coil.conditions) {
+            UniValue crung_obj(UniValue::VOBJ);
+            crung_obj.pushKV("blocks", BlocksToJSON(crung.blocks));
+            cond_arr.push_back(crung_obj);
+        }
+        obj.pushKV("conditions", cond_arr);
+    }
     return obj;
 }
 
-/** Convert a LadderWitness to JSON for RPC display. */
+/** Convert a LadderWitness to JSON for RPC display.
+ *  Returns an object with "rungs" array and "coil" object. */
 static UniValue LadderWitnessToJSON(const LadderWitness& ladder)
 {
-    UniValue result(UniValue::VARR);
+    UniValue result(UniValue::VOBJ);
+
+    UniValue rungs_arr(UniValue::VARR);
     for (size_t r = 0; r < ladder.rungs.size(); ++r) {
         UniValue rung_obj(UniValue::VOBJ);
         rung_obj.pushKV("rung_index", static_cast<int>(r));
-
-        UniValue blocks_arr(UniValue::VARR);
-        for (const auto& block : ladder.rungs[r].blocks) {
-            UniValue block_obj(UniValue::VOBJ);
-            block_obj.pushKV("type", rung::BlockTypeName(block.type));
-            // type_hex: 2-byte little-endian hex
-            uint16_t btype = static_cast<uint16_t>(block.type);
-            std::vector<uint8_t> type_bytes = {static_cast<uint8_t>(btype & 0xFF), static_cast<uint8_t>((btype >> 8) & 0xFF)};
-            block_obj.pushKV("type_hex", HexStr(type_bytes));
-            block_obj.pushKV("inverted", block.inverted);
-
-            UniValue fields_arr(UniValue::VARR);
-            for (const auto& field : block.fields) {
-                UniValue field_obj(UniValue::VOBJ);
-                field_obj.pushKV("type", rung::DataTypeName(field.type));
-                field_obj.pushKV("size", static_cast<int>(field.data.size()));
-                field_obj.pushKV("hex", HexStr(field.data));
-                fields_arr.push_back(field_obj);
-            }
-            block_obj.pushKV("fields", fields_arr);
-            blocks_arr.push_back(block_obj);
-        }
-        rung_obj.pushKV("blocks", blocks_arr);
-        rung_obj.pushKV("coil", CoilToJSON(ladder.rungs[r].coil));
-        result.push_back(rung_obj);
+        rung_obj.pushKV("blocks", BlocksToJSON(ladder.rungs[r].blocks));
+        rungs_arr.push_back(rung_obj);
     }
+    result.pushKV("rungs", rungs_arr);
+    result.pushKV("coil", CoilToJSON(ladder.coil));
+
     return result;
 }
 
@@ -144,6 +165,40 @@ static bool ParseDataType(const std::string& name, RungDataType& out)
     return false;
 }
 
+/** Parse a block spec from JSON (shared between input and coil conditions). */
+static RungBlock ParseBlockSpec(const UniValue& block_obj, bool conditions_only)
+{
+    RungBlock block;
+    std::string type_str = block_obj["type"].get_str();
+    if (!ParseBlockType(type_str, block.type)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown block type: " + type_str);
+    }
+    if (block_obj.exists("inverted") && block_obj["inverted"].get_bool()) {
+        block.inverted = true;
+    }
+    const UniValue& fields_arr = block_obj["fields"].get_array();
+    for (size_t f = 0; f < fields_arr.size(); ++f) {
+        const UniValue& field_obj = fields_arr[f];
+        RungField field;
+        std::string ftype_str = field_obj["type"].get_str();
+        if (!ParseDataType(ftype_str, field.type)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown data type: " + ftype_str);
+        }
+        if (conditions_only && !rung::IsConditionDataType(field.type)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "Data type " + ftype_str + " not allowed in conditions (witness-only)");
+        }
+        std::string hex_data = field_obj["hex"].get_str();
+        field.data = ParseHex(hex_data);
+        std::string reason;
+        if (!field.IsValid(reason)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid field: " + reason);
+        }
+        block.fields.push_back(std::move(field));
+    }
+    return block;
+}
+
 /** Parse coil from JSON. Defaults to UNLOCK/INLINE/SCHNORR. */
 static RungCoil ParseCoil(const UniValue& obj)
 {
@@ -166,6 +221,21 @@ static RungCoil ParseCoil(const UniValue& obj)
         std::string s = obj["scheme"].get_str();
         if (s == "SCHNORR") coil.scheme = RungScheme::SCHNORR;
         else if (s == "ECDSA") coil.scheme = RungScheme::ECDSA;
+    }
+    if (obj.exists("address")) {
+        coil.address = ParseHex(obj["address"].get_str());
+    }
+    if (obj.exists("conditions")) {
+        const UniValue& cond_arr = obj["conditions"].get_array();
+        for (size_t i = 0; i < cond_arr.size(); ++i) {
+            const UniValue& crung_obj = cond_arr[i];
+            Rung crung;
+            const UniValue& cblocks_arr = crung_obj["blocks"].get_array();
+            for (size_t b = 0; b < cblocks_arr.size(); ++b) {
+                crung.blocks.push_back(ParseBlockSpec(cblocks_arr[b], false));
+            }
+            coil.conditions.push_back(std::move(crung));
+        }
     }
     return coil;
 }
@@ -200,13 +270,15 @@ static RPCHelpMan decoderung()
                                         }},
                                 }},
                             }},
-                        {RPCResult::Type::OBJ, "coil", "Coil metadata",
-                            {
-                                {RPCResult::Type::STR, "type", "Coil type"},
-                                {RPCResult::Type::STR, "attestation", "Attestation mode"},
-                                {RPCResult::Type::STR, "scheme", "Signature scheme"},
-                            }},
                     }},
+                }},
+            {RPCResult::Type::OBJ, "coil", "Coil metadata (per-output)",
+                {
+                    {RPCResult::Type::STR, "type", "Coil type"},
+                    {RPCResult::Type::STR, "attestation", "Attestation mode"},
+                    {RPCResult::Type::STR, "scheme", "Signature scheme"},
+                    {RPCResult::Type::STR_HEX, "address", /*optional=*/ true, "Destination scriptPubKey hex"},
+                    {RPCResult::Type::ARR, "conditions", /*optional=*/ true, "Coil condition rungs", {}},
                 }},
         }},
         RPCExamples{
@@ -226,9 +298,8 @@ static RPCHelpMan decoderung()
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Failed to decode ladder witness: " + error);
     }
 
-    UniValue result(UniValue::VOBJ);
+    UniValue result = LadderWitnessToJSON(ladder);
     result.pushKV("num_rungs", static_cast<int>(ladder.rungs.size()));
-    result.pushKV("rungs", LadderWitnessToJSON(ladder));
     return result;
 },
     };
@@ -265,15 +336,16 @@ static RPCHelpMan createrung()
                                     },
                                 },
                             },
-                            {"coil", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "Coil metadata (default UNLOCK/INLINE/SCHNORR)",
-                                {
-                                    {"type", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "UNLOCK, UNLOCK_TO, or COVENANT"},
-                                    {"attestation", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "INLINE, AGGREGATE, or DEFERRED"},
-                                    {"scheme", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "SCHNORR or ECDSA"},
-                                },
-                            },
                         },
                     },
+                },
+            },
+            {"coil", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "Coil metadata (default UNLOCK/INLINE/SCHNORR). For UNLOCK_TO/COVENANT, conditions array uses same block format as input rungs.",
+                {
+                    {"type", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "UNLOCK, UNLOCK_TO, or COVENANT"},
+                    {"attestation", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "INLINE, AGGREGATE, or DEFERRED"},
+                    {"scheme", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "SCHNORR or ECDSA"},
+                    {"address", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "Destination scriptPubKey hex"},
                 },
             },
         },
@@ -295,48 +367,15 @@ static RPCHelpMan createrung()
 
         const UniValue& blocks_arr = rung_obj["blocks"].get_array();
         for (size_t b = 0; b < blocks_arr.size(); ++b) {
-            const UniValue& block_obj = blocks_arr[b];
-            RungBlock block;
-
-            std::string type_str = block_obj["type"].get_str();
-            if (!ParseBlockType(type_str, block.type)) {
-                throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown block type: " + type_str);
-            }
-
-            if (block_obj.exists("inverted") && block_obj["inverted"].get_bool()) {
-                block.inverted = true;
-            }
-
-            const UniValue& fields_arr = block_obj["fields"].get_array();
-            for (size_t f = 0; f < fields_arr.size(); ++f) {
-                const UniValue& field_obj = fields_arr[f];
-                RungField field;
-
-                std::string ftype_str = field_obj["type"].get_str();
-                if (!ParseDataType(ftype_str, field.type)) {
-                    throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown data type: " + ftype_str);
-                }
-
-                std::string hex_data = field_obj["hex"].get_str();
-                field.data = ParseHex(hex_data);
-
-                // Validate field size
-                std::string reason;
-                if (!field.IsValid(reason)) {
-                    throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid field: " + reason);
-                }
-
-                block.fields.push_back(std::move(field));
-            }
-            rung.blocks.push_back(std::move(block));
-        }
-
-        // Parse optional coil
-        if (rung_obj.exists("coil")) {
-            rung.coil = ParseCoil(rung_obj["coil"]);
+            rung.blocks.push_back(ParseBlockSpec(blocks_arr[b], /*conditions_only=*/false));
         }
 
         ladder.rungs.push_back(std::move(rung));
+    }
+
+    // Parse optional coil (per-ladder, not per-rung)
+    if (!request.params[1].isNull()) {
+        ladder.coil = ParseCoil(request.params[1]);
     }
 
     auto serialized = rung::SerializeLadderWitness(ladder);
@@ -438,8 +477,9 @@ static RPCHelpMan validateladder()
     };
 }
 
-/** Helper: parse a conditions JSON spec into a RungConditions struct. */
-static RungConditions ParseConditionsSpec(const UniValue& rungs_arr)
+/** Helper: parse a conditions JSON spec into a RungConditions struct.
+ *  rungs_arr is the array of rung specs; coil_obj is the optional coil spec (per-output). */
+static RungConditions ParseConditionsSpec(const UniValue& rungs_arr, const UniValue& coil_obj = UniValue())
 {
     RungConditions conditions;
 
@@ -449,52 +489,15 @@ static RungConditions ParseConditionsSpec(const UniValue& rungs_arr)
 
         const UniValue& blocks_arr = rung_obj["blocks"].get_array();
         for (size_t b = 0; b < blocks_arr.size(); ++b) {
-            const UniValue& block_obj = blocks_arr[b];
-            RungBlock block;
-
-            std::string type_str = block_obj["type"].get_str();
-            if (!ParseBlockType(type_str, block.type)) {
-                throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown block type: " + type_str);
-            }
-
-            if (block_obj.exists("inverted") && block_obj["inverted"].get_bool()) {
-                block.inverted = true;
-            }
-
-            const UniValue& fields_arr = block_obj["fields"].get_array();
-            for (size_t f = 0; f < fields_arr.size(); ++f) {
-                const UniValue& field_obj = fields_arr[f];
-                RungField field;
-
-                std::string ftype_str = field_obj["type"].get_str();
-                if (!ParseDataType(ftype_str, field.type)) {
-                    throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown data type: " + ftype_str);
-                }
-
-                // Reject witness-only fields in conditions
-                if (!rung::IsConditionDataType(field.type)) {
-                    throw JSONRPCError(RPC_INVALID_PARAMETER,
-                        "Data type " + ftype_str + " not allowed in conditions (witness-only)");
-                }
-
-                std::string hex_data = field_obj["hex"].get_str();
-                field.data = ParseHex(hex_data);
-
-                std::string reason;
-                if (!field.IsValid(reason)) {
-                    throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid field: " + reason);
-                }
-
-                block.fields.push_back(std::move(field));
-            }
-            rung.blocks.push_back(std::move(block));
-        }
-
-        if (rung_obj.exists("coil")) {
-            rung.coil = ParseCoil(rung_obj["coil"]);
+            rung.blocks.push_back(ParseBlockSpec(blocks_arr[b], /*conditions_only=*/true));
         }
 
         conditions.rungs.push_back(std::move(rung));
+    }
+
+    // Parse coil at output level (not per-rung)
+    if (!coil_obj.isNull() && coil_obj.isObject()) {
+        conditions.coil = ParseCoil(coil_obj);
     }
 
     return conditions;
@@ -547,15 +550,16 @@ static RPCHelpMan createrungtx()
                                                     },
                                                 },
                                             },
-                                            {"coil", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "Coil metadata",
-                                                {
-                                                    {"type", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Coil type"},
-                                                    {"attestation", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Attestation mode"},
-                                                    {"scheme", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Signature scheme"},
-                                                },
-                                            },
                                         },
                                     },
+                                },
+                            },
+                            {"coil", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "Coil metadata (per-output, default UNLOCK/INLINE/SCHNORR). For UNLOCK_TO/COVENANT, conditions uses same block format as input rungs.",
+                                {
+                                    {"type", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "UNLOCK, UNLOCK_TO, or COVENANT"},
+                                    {"attestation", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "INLINE, AGGREGATE, or DEFERRED"},
+                                    {"scheme", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "SCHNORR or ECDSA"},
+                                    {"address", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "Destination scriptPubKey hex"},
                                 },
                             },
                         },
@@ -607,7 +611,8 @@ static RPCHelpMan createrungtx()
         CAmount amount = AmountFromValue(outp["amount"]);
 
         const UniValue& cond_arr = outp["conditions"].get_array();
-        RungConditions conditions = ParseConditionsSpec(cond_arr);
+        UniValue coil_val = outp.exists("coil") ? outp["coil"] : UniValue();
+        RungConditions conditions = ParseConditionsSpec(cond_arr, coil_val);
 
         CTxOut txout;
         txout.nValue = amount;

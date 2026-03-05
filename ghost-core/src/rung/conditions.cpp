@@ -61,6 +61,7 @@ bool DeserializeRungConditions(const CScript& scriptPubKey, RungConditions& out,
     }
 
     out.rungs = std::move(ladder.rungs);
+    out.coil = std::move(ladder.coil);
     return true;
 }
 
@@ -69,6 +70,7 @@ CScript SerializeRungConditions(const RungConditions& conditions)
     // Serialize the conditions as a ladder witness
     LadderWitness ladder;
     ladder.rungs = conditions.rungs;
+    ladder.coil = conditions.coil;
     auto bytes = SerializeLadderWitness(ladder);
 
     // Prepend the conditions prefix

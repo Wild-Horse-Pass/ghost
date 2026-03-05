@@ -245,10 +245,10 @@ BOOST_AUTO_TEST_CASE(serialize_roundtrip_sig_block)
     BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data.size(), 33u);
     BOOST_CHECK(decoded.rungs[0].blocks[0].fields[1].type == RungDataType::SIGNATURE);
     BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[1].data.size(), 64u);
-    // Default coil
-    BOOST_CHECK(decoded.rungs[0].coil.coil_type == RungCoilType::UNLOCK);
-    BOOST_CHECK(decoded.rungs[0].coil.attestation == RungAttestationMode::INLINE);
-    BOOST_CHECK(decoded.rungs[0].coil.scheme == RungScheme::SCHNORR);
+    // Default coil (per-ladder, not per-rung)
+    BOOST_CHECK(decoded.coil.coil_type == RungCoilType::UNLOCK);
+    BOOST_CHECK(decoded.coil.attestation == RungAttestationMode::INLINE);
+    BOOST_CHECK(decoded.coil.scheme == RungScheme::SCHNORR);
 }
 
 BOOST_AUTO_TEST_CASE(serialize_roundtrip_multi_rung)
@@ -309,18 +309,18 @@ BOOST_AUTO_TEST_CASE(serialize_roundtrip_coil)
     block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
     block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
     rung.blocks.push_back(block);
-    rung.coil.coil_type = RungCoilType::COVENANT;
-    rung.coil.attestation = RungAttestationMode::AGGREGATE;
-    rung.coil.scheme = RungScheme::ECDSA;
     ladder.rungs.push_back(rung);
+    ladder.coil.coil_type = RungCoilType::COVENANT;
+    ladder.coil.attestation = RungAttestationMode::AGGREGATE;
+    ladder.coil.scheme = RungScheme::ECDSA;
 
     auto bytes = SerializeLadderWitness(ladder);
     LadderWitness decoded;
     std::string error;
     BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
-    BOOST_CHECK(decoded.rungs[0].coil.coil_type == RungCoilType::COVENANT);
-    BOOST_CHECK(decoded.rungs[0].coil.attestation == RungAttestationMode::AGGREGATE);
-    BOOST_CHECK(decoded.rungs[0].coil.scheme == RungScheme::ECDSA);
+    BOOST_CHECK(decoded.coil.coil_type == RungCoilType::COVENANT);
+    BOOST_CHECK(decoded.coil.attestation == RungAttestationMode::AGGREGATE);
+    BOOST_CHECK(decoded.coil.scheme == RungScheme::ECDSA);
 }
 
 BOOST_AUTO_TEST_CASE(deserialize_rejects_empty)

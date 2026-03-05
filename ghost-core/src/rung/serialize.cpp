@@ -122,12 +122,95 @@ bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
                 }
             }
 
-            // Read coil (3 bytes: coil_type, attestation, scheme)
-            uint8_t coil_type_byte, attestation_byte, scheme_byte;
-            ss >> coil_type_byte >> attestation_byte >> scheme_byte;
-            ladder_out.rungs[r].coil.coil_type = static_cast<RungCoilType>(coil_type_byte);
-            ladder_out.rungs[r].coil.attestation = static_cast<RungAttestationMode>(attestation_byte);
-            ladder_out.rungs[r].coil.scheme = static_cast<RungScheme>(scheme_byte);
+        }
+
+        // Read coil (per-ladder, after all rungs)
+        uint8_t coil_type_byte, attestation_byte, scheme_byte;
+        ss >> coil_type_byte >> attestation_byte >> scheme_byte;
+        ladder_out.coil.coil_type = static_cast<RungCoilType>(coil_type_byte);
+        ladder_out.coil.attestation = static_cast<RungAttestationMode>(attestation_byte);
+        ladder_out.coil.scheme = static_cast<RungScheme>(scheme_byte);
+
+        // Read coil address (variable-length scriptPubKey)
+        uint64_t addr_len = ReadCompactSize(ss);
+        if (addr_len > 520) { // Max scriptPubKey size
+            error = "coil address too large: " + std::to_string(addr_len);
+            return false;
+        }
+        if (addr_len > 0) {
+            ladder_out.coil.address.resize(addr_len);
+            ss.read(MakeWritableByteSpan(ladder_out.coil.address));
+        }
+
+        // Read coil condition rungs
+        uint64_t n_coil_rungs = ReadCompactSize(ss);
+        if (n_coil_rungs > MAX_RUNGS) {
+            error = "too many coil condition rungs: " + std::to_string(n_coil_rungs);
+            return false;
+        }
+        ladder_out.coil.conditions.resize(n_coil_rungs);
+        for (uint64_t cr = 0; cr < n_coil_rungs; ++cr) {
+            uint64_t n_cblocks = ReadCompactSize(ss);
+            if (n_cblocks == 0) {
+                error = "coil condition rung " + std::to_string(cr) + " has zero blocks";
+                return false;
+            }
+            if (n_cblocks > MAX_BLOCKS_PER_RUNG) {
+                error = "coil condition rung has too many blocks: " + std::to_string(n_cblocks);
+                return false;
+            }
+            ladder_out.coil.conditions[cr].blocks.resize(n_cblocks);
+            for (uint64_t cb = 0; cb < n_cblocks; ++cb) {
+                uint8_t clo, chi;
+                ss >> clo >> chi;
+                uint16_t cblock_type = static_cast<uint16_t>(clo) | (static_cast<uint16_t>(chi) << 8);
+                if (!IsKnownBlockType(cblock_type)) {
+                    error = "unknown coil block type: 0x" + HexStr(std::vector<uint8_t>{clo, chi});
+                    return false;
+                }
+                ladder_out.coil.conditions[cr].blocks[cb].type = static_cast<RungBlockType>(cblock_type);
+
+                uint8_t cinv;
+                ss >> cinv;
+                if (cinv > 0x01) {
+                    error = "invalid coil inverted flag";
+                    return false;
+                }
+                ladder_out.coil.conditions[cr].blocks[cb].inverted = (cinv == 0x01);
+
+                uint64_t cn_fields = ReadCompactSize(ss);
+                if (cn_fields > MAX_FIELDS_PER_BLOCK) {
+                    error = "coil block has too many fields: " + std::to_string(cn_fields);
+                    return false;
+                }
+                ladder_out.coil.conditions[cr].blocks[cb].fields.resize(cn_fields);
+                for (uint64_t cf = 0; cf < cn_fields; ++cf) {
+                    uint8_t cdt;
+                    ss >> cdt;
+                    if (!IsKnownDataType(cdt)) {
+                        error = "unknown coil data type: 0x" + HexStr(std::span<const uint8_t>{&cdt, 1});
+                        return false;
+                    }
+                    RungDataType cdtype = static_cast<RungDataType>(cdt);
+                    uint64_t cdl = ReadCompactSize(ss);
+                    size_t cmin = FieldMinSize(cdtype);
+                    size_t cmax = FieldMaxSize(cdtype);
+                    if (cdl < cmin || cdl > cmax) {
+                        error = DataTypeName(cdtype) + " size out of range in coil condition";
+                        return false;
+                    }
+                    ladder_out.coil.conditions[cr].blocks[cb].fields[cf].type = cdtype;
+                    ladder_out.coil.conditions[cr].blocks[cb].fields[cf].data.resize(cdl);
+                    if (cdl > 0) {
+                        ss.read(MakeWritableByteSpan(ladder_out.coil.conditions[cr].blocks[cb].fields[cf].data));
+                    }
+                    std::string cfield_reason;
+                    if (!ladder_out.coil.conditions[cr].blocks[cb].fields[cf].IsValid(cfield_reason)) {
+                        error = cfield_reason;
+                        return false;
+                    }
+                }
+            }
         }
 
         // Reject trailing bytes — no extra data allowed
@@ -168,10 +251,37 @@ std::vector<uint8_t> SerializeLadderWitness(const LadderWitness& ladder)
                 }
             }
         }
-        // Write coil (3 bytes)
-        ss << static_cast<uint8_t>(rung.coil.coil_type);
-        ss << static_cast<uint8_t>(rung.coil.attestation);
-        ss << static_cast<uint8_t>(rung.coil.scheme);
+    }
+
+    // Write coil (per-ladder, after all rungs)
+    ss << static_cast<uint8_t>(ladder.coil.coil_type);
+    ss << static_cast<uint8_t>(ladder.coil.attestation);
+    ss << static_cast<uint8_t>(ladder.coil.scheme);
+
+    // Write coil address
+    WriteCompactSize(ss, ladder.coil.address.size());
+    if (!ladder.coil.address.empty()) {
+        ss.write(MakeByteSpan(ladder.coil.address));
+    }
+
+    // Write coil condition rungs
+    WriteCompactSize(ss, ladder.coil.conditions.size());
+    for (const auto& crung : ladder.coil.conditions) {
+        WriteCompactSize(ss, crung.blocks.size());
+        for (const auto& cblock : crung.blocks) {
+            uint16_t cbtype = static_cast<uint16_t>(cblock.type);
+            ss << static_cast<uint8_t>(cbtype & 0xFF);
+            ss << static_cast<uint8_t>((cbtype >> 8) & 0xFF);
+            ss << static_cast<uint8_t>(cblock.inverted ? 0x01 : 0x00);
+            WriteCompactSize(ss, cblock.fields.size());
+            for (const auto& cfield : cblock.fields) {
+                ss << static_cast<uint8_t>(cfield.type);
+                WriteCompactSize(ss, cfield.data.size());
+                if (!cfield.data.empty()) {
+                    ss.write(MakeByteSpan(cfield.data));
+                }
+            }
+        }
     }
 
     // Extract serialized bytes

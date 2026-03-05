@@ -171,8 +171,8 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         assert_equal(block["fields"][1]["type"], "SIGNATURE")
         assert_equal(block["fields"][1]["size"], 64)
 
-        # Check coil defaults
-        coil = rung["coil"]
+        # Check coil defaults (per-ladder, not per-rung)
+        coil = result["coil"]
         assert_equal(coil["type"], "UNLOCK")
         assert_equal(coil["attestation"], "INLINE")
         assert_equal(coil["scheme"], "SCHNORR")
@@ -209,15 +209,15 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         # Empty / truncated
         assert_raises_rpc_error(-22, "Failed to decode", node.decoderung, "00")
 
-        # Unknown block type (0x00ff LE): 01 rung, 01 block, ff00 type, 00 inverted, 00 fields, 010101 coil
-        assert_raises_rpc_error(-22, "unknown block type", node.decoderung, "0101ff0000000101 01".replace(" ", ""))
+        # Unknown block type (0x00ff LE): 01 rung, 01 block, ff00 type, 00 inverted, 00 fields, coil bytes
+        assert_raises_rpc_error(-22, "unknown block type", node.decoderung, "0101ff000000010101" + "0000")
 
-        # Unknown data type (0xff): 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, ff type, 01 len, aa data, 010101 coil
-        assert_raises_rpc_error(-22, "unknown data type", node.decoderung, "010101000001ff01aa010101")
+        # Unknown data type (0xff): 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, ff type, 01 len, aa data, coil bytes
+        assert_raises_rpc_error(-22, "unknown data type", node.decoderung, "010101000001ff01aa010101" + "0000")
 
         # Oversized PUBKEY field (34 bytes, expects 33):
-        # 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, 01 PUBKEY, 22 len=34, 34 bytes, 010101 coil
-        oversized = "0101010000010122" + "02" * 34 + "010101"
+        # 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, 01 PUBKEY, 22 len=34, 34 bytes, coil bytes
+        oversized = "0101010000010122" + "02" * 34 + "010101" + "0000"
         assert_raises_rpc_error(-22, "too large", node.decoderung, oversized)
 
         self.log.info("  All malformed inputs correctly rejected")

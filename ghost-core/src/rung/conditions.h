@@ -24,6 +24,7 @@ static constexpr uint8_t RUNG_CONDITIONS_PREFIX = 0xc1;
  *  HASH160, NUMERIC, SCHEME, SPEND_INDEX) — never SIGNATURE or PREIMAGE. */
 struct RungConditions {
     std::vector<Rung> rungs;
+    RungCoil coil;               //!< Output coil (per-output, serialized with conditions)
 
     bool IsEmpty() const { return rungs.empty(); }
 };
