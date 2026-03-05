@@ -17,6 +17,7 @@ import os
 from decimal import Decimal
 
 from test_framework.key import ECKey
+from test_framework.script import hash160
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
 from test_framework.wallet import MiniWallet
@@ -96,6 +97,11 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_negative_compare_fails(node)
         self.test_negative_tagged_hash_wrong_preimage(node)
 
+        # Additional Phase 1 tests
+        self.test_hash160_preimage_spend(node)
+        self.test_csv_time_spend(node)
+        self.test_cltv_time_spend(node)
+
         # Recursion tests
         self.test_recurse_same(node)
         self.test_negative_recurse_same_different(node)
@@ -104,6 +110,13 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_recurse_until_termination(node)
         self.test_negative_recurse_until_no_reencumber(node)
         self.test_recurse_count(node)
+        self.test_recurse_modified(node)
+        self.test_recurse_split(node)
+
+        # PLC block tests
+        self.test_hysteresis_value(node)
+        self.test_rate_limit(node)
+        self.test_sequencer(node)
 
     # =========================================================================
     # Helpers
@@ -111,7 +124,8 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
     def bootstrap_v3_output(self, node, conditions, output_amount=None):
         """Create and confirm a v3 output with given conditions.
-        Returns (txid, vout, amount, scriptPubKey_hex)."""
+        Returns (txid, vout, amount, scriptPubKey_hex).
+        If output_amount is specified and leaves excess, a change output is added."""
         utxo = self.wallet.get_utxo()
         input_amount = utxo["value"]
         input_txid = utxo["txid"]
@@ -126,9 +140,20 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         # We need a bootstrap key to sign the MiniWallet UTXO spend
         boot_wif, boot_pubkey = make_keypair()
 
+        outputs = [{"amount": output_amount, "conditions": conditions}]
+
+        # Add change output if there's significant excess (> 0.01 BTC)
+        change = Decimal(input_amount) - output_amount - Decimal("0.001")
+        if change > Decimal("0.01"):
+            change_wif, change_pubkey = make_keypair()
+            change_conditions = [{"blocks": [{"type": "SIG", "fields": [
+                {"type": "PUBKEY", "hex": change_pubkey}
+            ]}]}]
+            outputs.append({"amount": change, "conditions": change_conditions})
+
         result = node.createrungtx(
             [{"txid": input_txid, "vout": input_vout}],
-            [{"amount": output_amount, "conditions": conditions}]
+            outputs
         )
         unsigned_hex = result["hex"]
 
@@ -1768,6 +1793,348 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         assert tx_info["confirmations"] >= 1
         self.log.info(f"  Free spend (count=0 terminated): {txid}")
         self.log.info("  RECURSE_COUNT countdown + free spend passed!")
+
+    def test_recurse_modified(self, node):
+        """RECURSE_MODIFIED: covenant with single-parameter increase per hop."""
+        self.log.info("Testing RECURSE_MODIFIED (single mutation per hop)...")
+
+        # Conditions: RECURSE_MODIFIED + COMPARE(GT threshold) in same rung
+        # Mutation spec: block_idx=1 (COMPARE), param_idx=1 (value_b = threshold), delta=+1000
+        # Each hop increases the minimum threshold for COMPARE
+        initial_threshold = 10000  # GT 10000 sats
+        conditions = [{"blocks": [
+            {"type": "RECURSE_MODIFIED", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},   # max_depth
+                {"type": "NUMERIC", "hex": numeric_hex(1)},    # mutation_block_idx (COMPARE is block 1)
+                {"type": "NUMERIC", "hex": numeric_hex(1)},    # mutation_param_idx (second NUMERIC = threshold)
+                {"type": "NUMERIC", "hex": numeric_hex(1000)},  # delta = +1000
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},  # GT operator
+                {"type": "NUMERIC", "hex": numeric_hex(initial_threshold)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  RECURSE_MODIFIED output: {txid}:{vout} (threshold={initial_threshold})")
+
+        # Hop 1: mutate threshold from 10000 to 11000
+        new_threshold = initial_threshold + 1000
+        mutated_conditions = [{"blocks": [
+            {"type": "RECURSE_MODIFIED", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1000)},
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},  # GT operator (unchanged)
+                {"type": "NUMERIC", "hex": numeric_hex(new_threshold)},
+            ]},
+        ]}]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": mutated_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_MODIFIED"}, {"type": "COMPARE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  RECURSE_MODIFIED hop (threshold {initial_threshold}→{new_threshold}): {txid}")
+        self.log.info("  RECURSE_MODIFIED passed!")
+
+    def test_recurse_split(self, node):
+        """RECURSE_SPLIT: split one UTXO into two re-encumbered outputs."""
+        self.log.info("Testing RECURSE_SPLIT (1→2 split)...")
+
+        min_split_sats = 10000  # 0.0001 BTC
+        conditions = [{"blocks": [{"type": "RECURSE_SPLIT", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(3)},          # max_splits
+            {"type": "NUMERIC", "hex": numeric_hex(min_split_sats)},  # min_split_sats
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  RECURSE_SPLIT output: {txid}:{vout} ({amount} BTC)")
+
+        # Split into two outputs, each carrying RECURSE_SPLIT with max_splits-1
+        split_conditions = [{"blocks": [{"type": "RECURSE_SPLIT", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(2)},          # decremented
+            {"type": "NUMERIC", "hex": numeric_hex(min_split_sats)},
+        ]}]}]
+
+        half = (amount - Decimal("0.001")) / 2
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [
+                {"amount": half, "conditions": split_conditions},
+                {"amount": half, "conditions": split_conditions},
+            ]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_SPLIT"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid, True)
+        assert tx_info["confirmations"] >= 1
+        assert len(tx_info["vout"]) == 2
+        self.log.info(f"  RECURSE_SPLIT confirmed (2 outputs): {txid}")
+        self.log.info("  RECURSE_SPLIT passed!")
+
+    def test_hash160_preimage_spend(self, node):
+        """HASH160_PREIMAGE: RIPEMD160(SHA256(preimage)) spend."""
+        self.log.info("Testing HASH160_PREIMAGE spend...")
+
+        preimage = os.urandom(16)
+        h160 = hash160(preimage)
+
+        conditions = [{"blocks": [{"type": "HASH160_PREIMAGE", "fields": [
+            {"type": "HASH160", "hex": h160.hex()},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  HASH160_PREIMAGE output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "HASH160_PREIMAGE", "preimage": preimage.hex()}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  HASH160_PREIMAGE spend confirmed!")
+
+    def test_csv_time_spend(self, node):
+        """CSV_TIME: relative time-based sequence lock spend."""
+        self.log.info("Testing CSV_TIME spend...")
+
+        # 512 seconds = 1 unit in time-based CSV (each unit is 512 seconds)
+        # Set TYPE_FLAG (bit 22 = 0x00400000) to indicate time-based
+        csv_time_units = 1  # 512 seconds
+        csv_sequence = 0x00400000 | csv_time_units  # TYPE_FLAG | units
+
+        conditions = [{"blocks": [{"type": "CSV_TIME", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(csv_sequence)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  CSV_TIME output: {txid}:{vout} (sequence=0x{csv_sequence:08x})")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        # Advance mocktime by 600 seconds (> 512) and mine blocks to push MTP forward
+        current_time = node.getblock(node.getbestblockhash())["time"]
+        node.setmocktime(current_time + 600)
+        self.generate(node, 11)  # MTP = median of last 11 blocks
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout, "sequence": csv_sequence}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "CSV_TIME"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        # Reset mocktime
+        node.setmocktime(0)
+        self.log.info("  CSV_TIME spend confirmed!")
+
+    def test_cltv_time_spend(self, node):
+        """CLTV_TIME: absolute time-based locktime spend."""
+        self.log.info("Testing CLTV_TIME spend...")
+
+        # Use a timestamp above LOCKTIME_THRESHOLD (500_000_000)
+        # Get current MTP and set target to current MTP - 1 (already passed)
+        current_mtp = node.getblock(node.getbestblockhash())["mediantime"]
+        target_time = current_mtp - 1  # one second in the past
+
+        conditions = [{"blocks": [{"type": "CLTV_TIME", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(target_time)},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  CLTV_TIME output: {txid}:{vout} (target_time={target_time})")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        # nLockTime must be >= target_time, and MTP must be >= nLockTime
+        # Use target_time as locktime (MTP is already past it since we used MTP-1)
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}],
+            target_time,  # nLockTime = target timestamp
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "CLTV_TIME"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  CLTV_TIME spend confirmed!")
+
+    def test_hysteresis_value(self, node):
+        """HYSTERESIS_VALUE: input amount must be within [low, high] band."""
+        self.log.info("Testing HYSTERESIS_VALUE spend...")
+
+        # Set band: 0.1 BTC to ~42.9 BTC (max uint32 in sats)
+        low_sats = 10_000_000   # 0.1 BTC
+        high_sats = 0xFFFFFFFF  # ~42.9 BTC (max uint32)
+
+        conditions = [{"blocks": [{"type": "HYSTERESIS_VALUE", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(high_sats)},
+            {"type": "NUMERIC", "hex": numeric_hex(low_sats)},
+        ]}]}]
+
+        # Use 10 BTC output to stay within uint32 NUMERIC range
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions, output_amount=Decimal("10.0"))
+        self.log.info(f"  HYSTERESIS_VALUE output: {txid}:{vout} ({amount} BTC)")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "HYSTERESIS_VALUE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  HYSTERESIS_VALUE spend confirmed!")
+
+    def test_rate_limit(self, node):
+        """RATE_LIMIT: output amount must be within per-block limit."""
+        self.log.info("Testing RATE_LIMIT spend...")
+
+        max_per_block = 0xFFFFFFFF  # ~42.9 BTC per block limit (max uint32)
+        accumulation_cap = 0xFFFFFFFF  # same
+        refill_blocks = 10
+
+        conditions = [{"blocks": [{"type": "RATE_LIMIT", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(max_per_block)},
+            {"type": "NUMERIC", "hex": numeric_hex(accumulation_cap)},
+            {"type": "NUMERIC", "hex": numeric_hex(refill_blocks)},
+        ]}]}]
+
+        # Use 10 BTC output to stay within uint32 NUMERIC range
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions, output_amount=Decimal("10.0"))
+        self.log.info(f"  RATE_LIMIT output: {txid}:{vout} ({amount} BTC)")
+
+        # Spend within limit (output_amount is the first output's value, checked by RATE_LIMIT)
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RATE_LIMIT"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  RATE_LIMIT spend confirmed!")
+
+    def test_sequencer(self, node):
+        """SEQUENCER: step 0 of 3 is valid."""
+        self.log.info("Testing SEQUENCER spend...")
+
+        conditions = [{"blocks": [{"type": "SEQUENCER", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(0)},  # current_step
+            {"type": "NUMERIC", "hex": numeric_hex(3)},  # total_steps
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  SEQUENCER output: {txid}:{vout}")
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "SEQUENCER"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info("  SEQUENCER spend confirmed!")
 
 
 if __name__ == '__main__':
