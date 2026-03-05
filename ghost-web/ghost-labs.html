@@ -1398,6 +1398,29 @@ const TEMPLATES = [
     }),
   },
   {
+    name: 'CoinJoin',
+    color: '#00FFB3',
+    desc: '3-party CoinJoin — equal outputs, unlinkable inputs',
+    build: () => ({
+      inputs: [
+        { txid: 'aaaa000000000000000000000000000000000000000000000000000000000001', vout: 0, sequence: 0xfffffffe },
+        { txid: 'bbbb000000000000000000000000000000000000000000000000000000000002', vout: 0, sequence: 0xfffffffe },
+        { txid: 'cccc000000000000000000000000000000000000000000000000000000000003', vout: 0, sequence: 0xfffffffe },
+      ],
+      outputs: [
+        { amount: '0.1', rungs: [
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }], coil: 'UNLOCK' },
+        ]},
+        { amount: '0.1', rungs: [
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a' } }], coil: 'UNLOCK' },
+        ]},
+        { amount: '0.1', rungs: [
+          { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708' } }], coil: 'UNLOCK' },
+        ]},
+      ],
+    }),
+  },
+  {
     name: 'Multi-IO',
     color: '#AA44FF',
     desc: '2 inputs, 2 outputs — batch spend',
