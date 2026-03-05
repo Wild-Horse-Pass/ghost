@@ -78,8 +78,12 @@ static UniValue CoilToJSON(const RungCoil& coil)
     default: obj.pushKV("attestation", "UNKNOWN"); break;
     }
     switch (coil.scheme) {
-    case RungScheme::SCHNORR: obj.pushKV("scheme", "SCHNORR"); break;
-    case RungScheme::ECDSA:   obj.pushKV("scheme", "ECDSA"); break;
+    case RungScheme::SCHNORR:     obj.pushKV("scheme", "SCHNORR"); break;
+    case RungScheme::ECDSA:       obj.pushKV("scheme", "ECDSA"); break;
+    case RungScheme::FALCON512:   obj.pushKV("scheme", "FALCON512"); break;
+    case RungScheme::FALCON1024:  obj.pushKV("scheme", "FALCON1024"); break;
+    case RungScheme::DILITHIUM3:  obj.pushKV("scheme", "DILITHIUM3"); break;
+    case RungScheme::SPHINCS_SHA: obj.pushKV("scheme", "SPHINCS_SHA"); break;
     default: obj.pushKV("scheme", "UNKNOWN"); break;
     }
     if (!coil.address.empty()) {
@@ -119,32 +123,58 @@ static UniValue LadderWitnessToJSON(const LadderWitness& ladder)
 /** Parse a block type string to enum. Returns false on unknown type. */
 static bool ParseBlockType(const std::string& name, RungBlockType& out)
 {
+    // Phase 1 — Signature
     if (name == "SIG")              { out = RungBlockType::SIG; return true; }
     if (name == "MULTISIG")         { out = RungBlockType::MULTISIG; return true; }
     if (name == "ADAPTOR_SIG")      { out = RungBlockType::ADAPTOR_SIG; return true; }
+    // Phase 1 — Timelock
     if (name == "CSV")              { out = RungBlockType::CSV; return true; }
     if (name == "CSV_TIME")         { out = RungBlockType::CSV_TIME; return true; }
     if (name == "CLTV")             { out = RungBlockType::CLTV; return true; }
     if (name == "CLTV_TIME")        { out = RungBlockType::CLTV_TIME; return true; }
+    // Phase 1 — Hash
     if (name == "HASH_PREIMAGE")    { out = RungBlockType::HASH_PREIMAGE; return true; }
     if (name == "HASH160_PREIMAGE") { out = RungBlockType::HASH160_PREIMAGE; return true; }
     if (name == "TAGGED_HASH")      { out = RungBlockType::TAGGED_HASH; return true; }
+    // Phase 2 — Covenant
     if (name == "CTV")              { out = RungBlockType::CTV; return true; }
     if (name == "VAULT_LOCK")       { out = RungBlockType::VAULT_LOCK; return true; }
-    if (name == "RECURSE_UNTIL")    { out = RungBlockType::RECURSE_UNTIL; return true; }
-    if (name == "RECURSE_SPLIT")    { out = RungBlockType::RECURSE_SPLIT; return true; }
-    if (name == "RECURSE_DECAY")    { out = RungBlockType::RECURSE_DECAY; return true; }
-    if (name == "RECURSE_COLLECT")  { out = RungBlockType::RECURSE_COLLECT; return true; }
-    if (name == "RECURSE_MERGE")    { out = RungBlockType::RECURSE_MERGE; return true; }
-    if (name == "RECURSE_SWEEP")    { out = RungBlockType::RECURSE_SWEEP; return true; }
+    if (name == "AMOUNT_LOCK")      { out = RungBlockType::AMOUNT_LOCK; return true; }
+    // Phase 2 — Anchor
+    if (name == "ANCHOR")           { out = RungBlockType::ANCHOR; return true; }
     if (name == "ANCHOR_CHANNEL")   { out = RungBlockType::ANCHOR_CHANNEL; return true; }
     if (name == "ANCHOR_POOL")      { out = RungBlockType::ANCHOR_POOL; return true; }
+    if (name == "ANCHOR_RESERVE")   { out = RungBlockType::ANCHOR_RESERVE; return true; }
     if (name == "ANCHOR_SEAL")      { out = RungBlockType::ANCHOR_SEAL; return true; }
     if (name == "ANCHOR_ORACLE")    { out = RungBlockType::ANCHOR_ORACLE; return true; }
-    if (name == "ANCHOR_BOND")      { out = RungBlockType::ANCHOR_BOND; return true; }
-    if (name == "ANCHOR_ESCROW")    { out = RungBlockType::ANCHOR_ESCROW; return true; }
-    // Backward compat: accept old name HASHLOCK as alias for HASH_PREIMAGE
+    // Phase 3 — Recursion
+    if (name == "RECURSE_SAME")     { out = RungBlockType::RECURSE_SAME; return true; }
+    if (name == "RECURSE_MODIFIED") { out = RungBlockType::RECURSE_MODIFIED; return true; }
+    if (name == "RECURSE_UNTIL")    { out = RungBlockType::RECURSE_UNTIL; return true; }
+    if (name == "RECURSE_COUNT")    { out = RungBlockType::RECURSE_COUNT; return true; }
+    if (name == "RECURSE_SPLIT")    { out = RungBlockType::RECURSE_SPLIT; return true; }
+    if (name == "RECURSE_DECAY")    { out = RungBlockType::RECURSE_DECAY; return true; }
+    // Phase 3 — PLC
+    if (name == "HYSTERESIS_FEE")   { out = RungBlockType::HYSTERESIS_FEE; return true; }
+    if (name == "HYSTERESIS_VALUE") { out = RungBlockType::HYSTERESIS_VALUE; return true; }
+    if (name == "TIMER_CONTINUOUS") { out = RungBlockType::TIMER_CONTINUOUS; return true; }
+    if (name == "TIMER_OFF_DELAY")  { out = RungBlockType::TIMER_OFF_DELAY; return true; }
+    if (name == "LATCH_SET")        { out = RungBlockType::LATCH_SET; return true; }
+    if (name == "LATCH_RESET")      { out = RungBlockType::LATCH_RESET; return true; }
+    if (name == "COUNTER_DOWN")     { out = RungBlockType::COUNTER_DOWN; return true; }
+    if (name == "COUNTER_PRESET")   { out = RungBlockType::COUNTER_PRESET; return true; }
+    if (name == "COUNTER_UP")       { out = RungBlockType::COUNTER_UP; return true; }
+    if (name == "COMPARE")          { out = RungBlockType::COMPARE; return true; }
+    if (name == "SEQUENCER")        { out = RungBlockType::SEQUENCER; return true; }
+    if (name == "ONE_SHOT")         { out = RungBlockType::ONE_SHOT; return true; }
+    if (name == "RATE_LIMIT")       { out = RungBlockType::RATE_LIMIT; return true; }
+    // Backward compat aliases
     if (name == "HASHLOCK")         { out = RungBlockType::HASH_PREIMAGE; return true; }
+    if (name == "ANCHOR_BOND")      { out = RungBlockType::ANCHOR_SEAL; return true; }
+    if (name == "ANCHOR_ESCROW")    { out = RungBlockType::ANCHOR_ORACLE; return true; }
+    if (name == "RECURSE_COLLECT")  { out = RungBlockType::RECURSE_COUNT; return true; }
+    if (name == "RECURSE_MERGE")    { out = RungBlockType::RECURSE_SPLIT; return true; }
+    if (name == "RECURSE_SWEEP")    { out = RungBlockType::RECURSE_DECAY; return true; }
     return false;
 }
 
@@ -221,6 +251,10 @@ static RungCoil ParseCoil(const UniValue& obj)
         std::string s = obj["scheme"].get_str();
         if (s == "SCHNORR") coil.scheme = RungScheme::SCHNORR;
         else if (s == "ECDSA") coil.scheme = RungScheme::ECDSA;
+        else if (s == "FALCON512") coil.scheme = RungScheme::FALCON512;
+        else if (s == "FALCON1024") coil.scheme = RungScheme::FALCON1024;
+        else if (s == "DILITHIUM3") coil.scheme = RungScheme::DILITHIUM3;
+        else if (s == "SPHINCS_SHA") coil.scheme = RungScheme::SPHINCS_SHA;
     }
     if (obj.exists("address")) {
         coil.address = ParseHex(obj["address"].get_str());

@@ -14,6 +14,8 @@ add_library(bitcoin_rung STATIC EXCLUDE_FROM_ALL
   evaluator.cpp
   policy.cpp
   rpc.cpp
+  pq_verify.cpp
+  aggregate.cpp
 )
 
 target_include_directories(bitcoin_rung
@@ -29,3 +31,13 @@ target_link_libraries(bitcoin_rung
     bitcoin_util
     univalue
 )
+
+# Optional post-quantum signature support via liboqs
+find_package(OQS QUIET)
+if(OQS_FOUND)
+  message(STATUS "liboqs found — post-quantum signature verification enabled")
+  target_compile_definitions(bitcoin_rung PRIVATE HAVE_LIBOQS)
+  target_link_libraries(bitcoin_rung PRIVATE OQS::oqs)
+else()
+  message(STATUS "liboqs not found — post-quantum signature verification disabled (PQ schemes will return UNSATISFIED)")
+endif()

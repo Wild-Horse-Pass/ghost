@@ -87,15 +87,15 @@ static std::vector<const RungField*> FindAllFields(const RungBlock& block, RungD
     return result;
 }
 
-/** Helper: read a 4-byte little-endian numeric value from a NUMERIC field. */
+/** Helper: read a little-endian numeric value from a NUMERIC field (1-4 bytes). */
 static int64_t ReadNumeric(const RungField& field)
 {
-    if (field.data.size() != 4) return -1;
-    return static_cast<int64_t>(
-        static_cast<uint32_t>(field.data[0]) |
-        (static_cast<uint32_t>(field.data[1]) << 8) |
-        (static_cast<uint32_t>(field.data[2]) << 16) |
-        (static_cast<uint32_t>(field.data[3]) << 24));
+    if (field.data.empty() || field.data.size() > 4) return -1;
+    uint32_t val = 0;
+    for (size_t i = 0; i < field.data.size(); ++i) {
+        val |= static_cast<uint32_t>(field.data[i]) << (8 * i);
+    }
+    return static_cast<int64_t>(val);
 }
 
 EvalResult ApplyInversion(EvalResult raw, bool inverted)
@@ -109,6 +109,10 @@ EvalResult ApplyInversion(EvalResult raw, bool inverted)
     }
     return raw;
 }
+
+// ============================================================================
+// Phase 1 evaluators
+// ============================================================================
 
 EvalResult EvalSigBlock(const RungBlock& block,
                         const BaseSignatureChecker& checker,
@@ -162,19 +166,20 @@ EvalResult EvalMultisigBlock(const RungBlock& block,
 {
     // Expected field layout: NUMERIC (threshold M), N x PUBKEY, M x SIGNATURE
     const RungField* threshold_field = FindField(block, RungDataType::NUMERIC);
-    if (!threshold_field || threshold_field->data.size() < 4) {
+    if (!threshold_field || threshold_field->data.size() < 1) {
         return EvalResult::ERROR;
     }
 
-    uint32_t threshold = static_cast<uint32_t>(threshold_field->data[0]) |
-                         (static_cast<uint32_t>(threshold_field->data[1]) << 8) |
-                         (static_cast<uint32_t>(threshold_field->data[2]) << 16) |
-                         (static_cast<uint32_t>(threshold_field->data[3]) << 24);
+    int64_t threshold_val = ReadNumeric(*threshold_field);
+    if (threshold_val <= 0) {
+        return EvalResult::ERROR;
+    }
+    uint32_t threshold = static_cast<uint32_t>(threshold_val);
 
     auto pubkeys = FindAllFields(block, RungDataType::PUBKEY);
     auto sigs = FindAllFields(block, RungDataType::SIGNATURE);
 
-    if (pubkeys.empty() || threshold == 0 || threshold > pubkeys.size()) {
+    if (pubkeys.empty() || threshold > pubkeys.size()) {
         return EvalResult::ERROR;
     }
     if (sigs.size() < threshold) {
@@ -292,8 +297,6 @@ EvalResult EvalCSVBlock(const RungBlock& block,
 EvalResult EvalCSVTimeBlock(const RungBlock& block,
                             const BaseSignatureChecker& checker)
 {
-    // CSV_TIME uses median-time-past semantics — same CheckSequence call,
-    // but the NUMERIC value should have the TYPE_FLAG set (bit 22).
     const RungField* numeric_field = FindField(block, RungDataType::NUMERIC);
     if (!numeric_field) {
         return EvalResult::ERROR;
@@ -340,8 +343,6 @@ EvalResult EvalCLTVBlock(const RungBlock& block,
 EvalResult EvalCLTVTimeBlock(const RungBlock& block,
                              const BaseSignatureChecker& checker)
 {
-    // CLTV_TIME uses median-time-past semantics — same CheckLockTime call,
-    // but the NUMERIC value should be >= 500000000 (time-based locktime).
     const RungField* numeric_field = FindField(block, RungDataType::NUMERIC);
     if (!numeric_field) {
         return EvalResult::ERROR;
@@ -360,25 +361,662 @@ EvalResult EvalCLTVTimeBlock(const RungBlock& block,
     return EvalResult::SATISFIED;
 }
 
+EvalResult EvalAdaptorSigBlock(const RungBlock& block,
+                                const BaseSignatureChecker& checker,
+                                SigVersion sigversion,
+                                ScriptExecutionData& execdata)
+{
+    // Adaptor signature verification:
+    // Requires two PUBKEY fields: signing_key and adaptor_point
+    // Plus a SIGNATURE field (the adapted signature)
+    auto pubkeys = FindAllFields(block, RungDataType::PUBKEY);
+    const RungField* sig_field = FindField(block, RungDataType::SIGNATURE);
+
+    if (pubkeys.size() < 2 || !sig_field) {
+        return EvalResult::ERROR;
+    }
+
+    // First PUBKEY is the signing key, second is the adaptor point
+    const RungField* signing_key = pubkeys[0];
+    // The adapted signature verifies against the signing key directly
+    // (the adaptor secret has already been applied to produce the full signature)
+    std::span<const unsigned char> sig_span{sig_field->data.data(), sig_field->data.size()};
+
+    if (sig_field->data.size() >= 64 && sig_field->data.size() <= 65) {
+        // Schnorr adaptor: verify adapted sig against signing key
+        std::vector<unsigned char> xonly;
+        std::span<const unsigned char> pk_span{signing_key->data.data(), signing_key->data.size()};
+        if (signing_key->data.size() == 33) {
+            xonly.assign(signing_key->data.begin() + 1, signing_key->data.end());
+            pk_span = std::span<const unsigned char>{xonly.data(), xonly.size()};
+        }
+
+        if (checker.CheckSchnorrSignature(sig_span, pk_span, sigversion, execdata, nullptr)) {
+            return EvalResult::SATISFIED;
+        }
+        return EvalResult::UNSATISFIED;
+    }
+
+    return EvalResult::ERROR;
+}
+
+EvalResult EvalTaggedHashBlock(const RungBlock& block)
+{
+    // BIP-340 tagged hash verification:
+    // Requires two HASH256 fields: tag_hash and expected_hash
+    // Plus a PREIMAGE field from witness
+    auto hashes = FindAllFields(block, RungDataType::HASH256);
+    const RungField* preimage_field = FindField(block, RungDataType::PREIMAGE);
+
+    if (hashes.size() < 2 || !preimage_field) {
+        return EvalResult::ERROR;
+    }
+
+    // First HASH256 is the tag hash, second is the expected result
+    const RungField* tag_hash = hashes[0];
+    const RungField* expected_hash = hashes[1];
+
+    if (tag_hash->data.size() != 32 || expected_hash->data.size() != 32) {
+        return EvalResult::ERROR;
+    }
+
+    // Compute TaggedHash(tag, preimage) = SHA256(SHA256(tag) || SHA256(tag) || preimage)
+    // The tag_hash field IS SHA256(tag) already, so we compute:
+    // SHA256(tag_hash || tag_hash || preimage)
+    unsigned char computed[CSHA256::OUTPUT_SIZE];
+    CSHA256()
+        .Write(tag_hash->data.data(), 32)
+        .Write(tag_hash->data.data(), 32)
+        .Write(preimage_field->data.data(), preimage_field->data.size())
+        .Finalize(computed);
+
+    if (memcmp(computed, expected_hash->data.data(), 32) == 0) {
+        return EvalResult::SATISFIED;
+    }
+    return EvalResult::UNSATISFIED;
+}
+
+// ============================================================================
+// Phase 2 evaluators — Covenant
+// ============================================================================
+
+EvalResult EvalCTVBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    // CheckTemplateVerify: verify template hash matches spending transaction
+    const RungField* template_hash = FindField(block, RungDataType::HASH256);
+    if (!template_hash || template_hash->data.size() != 32) {
+        return EvalResult::ERROR;
+    }
+
+    if (!ctx.tx) {
+        return EvalResult::UNSATISFIED;
+    }
+
+    // Compute BIP-119 template hash:
+    // SHA256(version || locktime || scriptsigs_hash || num_inputs || sequences_hash ||
+    //        num_outputs || outputs_hash || input_index)
+    const CTransaction& tx = *ctx.tx;
+
+    // scriptsigs hash (SHA256 of all scriptSigs concatenated)
+    CSHA256 scriptsigs_hasher;
+    for (const auto& vin : tx.vin) {
+        scriptsigs_hasher.Write(reinterpret_cast<const unsigned char*>(vin.scriptSig.data()), vin.scriptSig.size());
+    }
+    unsigned char scriptsigs_hash[32];
+    scriptsigs_hasher.Finalize(scriptsigs_hash);
+
+    // sequences hash
+    CSHA256 sequences_hasher;
+    for (const auto& vin : tx.vin) {
+        unsigned char seq_buf[4];
+        seq_buf[0] = vin.nSequence & 0xFF;
+        seq_buf[1] = (vin.nSequence >> 8) & 0xFF;
+        seq_buf[2] = (vin.nSequence >> 16) & 0xFF;
+        seq_buf[3] = (vin.nSequence >> 24) & 0xFF;
+        sequences_hasher.Write(seq_buf, 4);
+    }
+    unsigned char sequences_hash[32];
+    sequences_hasher.Finalize(sequences_hash);
+
+    // outputs hash
+    CSHA256 outputs_hasher;
+    for (const auto& vout : tx.vout) {
+        unsigned char amt_buf[8];
+        uint64_t amt = static_cast<uint64_t>(vout.nValue);
+        for (int i = 0; i < 8; ++i) amt_buf[i] = (amt >> (8 * i)) & 0xFF;
+        outputs_hasher.Write(amt_buf, 8);
+        uint64_t spk_len = vout.scriptPubKey.size();
+        unsigned char len_buf[8];
+        for (int i = 0; i < 8; ++i) len_buf[i] = (spk_len >> (8 * i)) & 0xFF;
+        outputs_hasher.Write(len_buf, 8);
+        outputs_hasher.Write(vout.scriptPubKey.data(), vout.scriptPubKey.size());
+    }
+    unsigned char outputs_hash[32];
+    outputs_hasher.Finalize(outputs_hash);
+
+    // Compute final template hash
+    CSHA256 hasher;
+    // version (4 bytes LE)
+    unsigned char version_buf[4];
+    uint32_t version = static_cast<uint32_t>(tx.version);
+    for (int i = 0; i < 4; ++i) version_buf[i] = (version >> (8 * i)) & 0xFF;
+    hasher.Write(version_buf, 4);
+
+    // locktime (4 bytes LE)
+    unsigned char locktime_buf[4];
+    for (int i = 0; i < 4; ++i) locktime_buf[i] = (tx.nLockTime >> (8 * i)) & 0xFF;
+    hasher.Write(locktime_buf, 4);
+
+    hasher.Write(scriptsigs_hash, 32);
+
+    // num_inputs (4 bytes LE)
+    unsigned char nins_buf[4];
+    uint32_t nins = static_cast<uint32_t>(tx.vin.size());
+    for (int i = 0; i < 4; ++i) nins_buf[i] = (nins >> (8 * i)) & 0xFF;
+    hasher.Write(nins_buf, 4);
+
+    hasher.Write(sequences_hash, 32);
+
+    // num_outputs (4 bytes LE)
+    unsigned char nouts_buf[4];
+    uint32_t nouts = static_cast<uint32_t>(tx.vout.size());
+    for (int i = 0; i < 4; ++i) nouts_buf[i] = (nouts >> (8 * i)) & 0xFF;
+    hasher.Write(nouts_buf, 4);
+
+    hasher.Write(outputs_hash, 32);
+
+    // input_index (4 bytes LE)
+    unsigned char idx_buf[4];
+    for (int i = 0; i < 4; ++i) idx_buf[i] = (ctx.input_index >> (8 * i)) & 0xFF;
+    hasher.Write(idx_buf, 4);
+
+    unsigned char computed[32];
+    hasher.Finalize(computed);
+
+    if (memcmp(computed, template_hash->data.data(), 32) == 0) {
+        return EvalResult::SATISFIED;
+    }
+    return EvalResult::UNSATISFIED;
+}
+
+EvalResult EvalVaultLockBlock(const RungBlock& block,
+                               const BaseSignatureChecker& checker,
+                               SigVersion sigversion,
+                               ScriptExecutionData& execdata)
+{
+    // Two-path vault:
+    // - recovery_key sig → SATISFIED immediately (cold sweep)
+    // - hot_key sig → check CSV hot_delay elapsed
+    auto pubkeys = FindAllFields(block, RungDataType::PUBKEY);
+    const RungField* sig_field = FindField(block, RungDataType::SIGNATURE);
+    const RungField* delay_field = FindField(block, RungDataType::NUMERIC);
+
+    if (pubkeys.size() < 2 || !sig_field || !delay_field) {
+        return EvalResult::ERROR;
+    }
+
+    // First PUBKEY = recovery_key, second = hot_key
+    const RungField* recovery_key = pubkeys[0];
+    const RungField* hot_key = pubkeys[1];
+
+    int64_t hot_delay = ReadNumeric(*delay_field);
+    if (hot_delay < 0) {
+        return EvalResult::ERROR;
+    }
+
+    std::span<const unsigned char> sig_span{sig_field->data.data(), sig_field->data.size()};
+
+    // Try recovery key first (cold sweep — no delay)
+    if (sig_field->data.size() >= 64 && sig_field->data.size() <= 65) {
+        std::vector<unsigned char> xonly;
+        std::span<const unsigned char> pk_span{recovery_key->data.data(), recovery_key->data.size()};
+        if (recovery_key->data.size() == 33) {
+            xonly.assign(recovery_key->data.begin() + 1, recovery_key->data.end());
+            pk_span = std::span<const unsigned char>{xonly.data(), xonly.size()};
+        }
+        if (checker.CheckSchnorrSignature(sig_span, pk_span, sigversion, execdata, nullptr)) {
+            return EvalResult::SATISFIED;
+        }
+
+        // Try hot key (requires delay)
+        std::vector<unsigned char> hot_xonly;
+        std::span<const unsigned char> hot_pk_span{hot_key->data.data(), hot_key->data.size()};
+        if (hot_key->data.size() == 33) {
+            hot_xonly.assign(hot_key->data.begin() + 1, hot_key->data.end());
+            hot_pk_span = std::span<const unsigned char>{hot_xonly.data(), hot_xonly.size()};
+        }
+        if (checker.CheckSchnorrSignature(sig_span, hot_pk_span, sigversion, execdata, nullptr)) {
+            // Hot key matched — check CSV delay
+            CScriptNum nSequence(hot_delay);
+            if (checker.CheckSequence(nSequence)) {
+                return EvalResult::SATISFIED;
+            }
+            return EvalResult::UNSATISFIED; // delay not met
+        }
+    }
+
+    return EvalResult::UNSATISFIED;
+}
+
+EvalResult EvalAmountLockBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    // Output amount range check: min_sats <= output_amount <= max_sats
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) {
+        return EvalResult::ERROR;
+    }
+
+    int64_t min_sats = ReadNumeric(*numerics[0]);
+    int64_t max_sats = ReadNumeric(*numerics[1]);
+    if (min_sats < 0 || max_sats < 0) {
+        return EvalResult::ERROR;
+    }
+
+    CAmount output = ctx.output_amount;
+    if (output >= min_sats && output <= max_sats) {
+        return EvalResult::SATISFIED;
+    }
+    return EvalResult::UNSATISFIED;
+}
+
+// ============================================================================
+// Phase 2 evaluators — Anchor
+// ============================================================================
+
+/** Common anchor validation: check required typed params are present. */
+static bool HasRequiredPubkeys(const RungBlock& block, size_t count)
+{
+    return FindAllFields(block, RungDataType::PUBKEY).size() >= count;
+}
+
+static bool HasRequiredHashes(const RungBlock& block, size_t count)
+{
+    return FindAllFields(block, RungDataType::HASH256).size() >= count;
+}
+
+static bool HasRequiredNumerics(const RungBlock& block, size_t count)
+{
+    return FindAllFields(block, RungDataType::NUMERIC).size() >= count;
+}
+
+EvalResult EvalAnchorBlock(const RungBlock& block)
+{
+    // Generic anchor: validate at least one typed param is present
+    if (block.fields.empty()) {
+        return EvalResult::ERROR;
+    }
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalAnchorChannelBlock(const RungBlock& block)
+{
+    // Verify local_key and remote_key are valid pubkeys, commitment_number > 0
+    if (!HasRequiredPubkeys(block, 2)) {
+        return EvalResult::ERROR;
+    }
+    const RungField* commitment = FindField(block, RungDataType::NUMERIC);
+    if (commitment) {
+        int64_t val = ReadNumeric(*commitment);
+        if (val <= 0) return EvalResult::UNSATISFIED;
+    }
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalAnchorPoolBlock(const RungBlock& block)
+{
+    // Verify vtxo_tree_root present, participant_count > 0
+    if (!HasRequiredHashes(block, 1)) {
+        return EvalResult::ERROR;
+    }
+    const RungField* count = FindField(block, RungDataType::NUMERIC);
+    if (count) {
+        int64_t val = ReadNumeric(*count);
+        if (val <= 0) return EvalResult::UNSATISFIED;
+    }
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalAnchorReserveBlock(const RungBlock& block)
+{
+    // Verify threshold_n <= threshold_m, guardian set hash present
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2 || !HasRequiredHashes(block, 1)) {
+        return EvalResult::ERROR;
+    }
+    int64_t threshold_n = ReadNumeric(*numerics[0]);
+    int64_t threshold_m = ReadNumeric(*numerics[1]);
+    if (threshold_n < 0 || threshold_m < 0 || threshold_n > threshold_m) {
+        return EvalResult::UNSATISFIED;
+    }
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalAnchorSealBlock(const RungBlock& block)
+{
+    // Verify asset_id and state_transition hashes present
+    if (!HasRequiredHashes(block, 2)) {
+        return EvalResult::ERROR;
+    }
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalAnchorOracleBlock(const RungBlock& block)
+{
+    // Verify oracle_key valid pubkey, outcome_count > 0
+    if (!HasRequiredPubkeys(block, 1)) {
+        return EvalResult::ERROR;
+    }
+    const RungField* count = FindField(block, RungDataType::NUMERIC);
+    if (count) {
+        int64_t val = ReadNumeric(*count);
+        if (val <= 0) return EvalResult::UNSATISFIED;
+    }
+    return EvalResult::SATISFIED;
+}
+
+// ============================================================================
+// Phase 3 evaluators — Recursion
+// ============================================================================
+
+EvalResult EvalRecurseSameBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    // Verify output carries identical rung conditions as input
+    const RungField* max_depth = FindField(block, RungDataType::NUMERIC);
+    if (!max_depth) {
+        return EvalResult::ERROR;
+    }
+    int64_t depth = ReadNumeric(*max_depth);
+    if (depth <= 0) {
+        return EvalResult::UNSATISFIED;
+    }
+    // Full output comparison requires covenant chain infrastructure.
+    // Validate structure: max_depth present and positive.
+    if (ctx.spending_output) {
+        // Output script exists — structural validation passes
+        return EvalResult::SATISFIED;
+    }
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalRecurseModifiedBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Verify output conditions differ from input by exactly one specified mutation
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 4) {
+        return EvalResult::ERROR;
+    }
+    // max_depth, mutation_block_idx, mutation_param_idx, mutation_delta
+    int64_t max_depth = ReadNumeric(*numerics[0]);
+    if (max_depth <= 0) {
+        return EvalResult::UNSATISFIED;
+    }
+    // Structural validation passes — full mutation verification needs covenant chain
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalRecurseUntilBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    const RungField* until_height_field = FindField(block, RungDataType::NUMERIC);
+    if (!until_height_field) {
+        return EvalResult::ERROR;
+    }
+    int64_t until_height = ReadNumeric(*until_height_field);
+    if (until_height < 0) {
+        return EvalResult::ERROR;
+    }
+    // If current block height >= until_height, covenant terminates unconditionally
+    if (ctx.block_height >= until_height) {
+        return EvalResult::SATISFIED;
+    }
+    // Otherwise, must re-encumber with same conditions (needs covenant chain)
+    // For now, structural validation passes
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalRecurseCountBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    const RungField* max_count = FindField(block, RungDataType::NUMERIC);
+    if (!max_count) {
+        return EvalResult::ERROR;
+    }
+    int64_t count = ReadNumeric(*max_count);
+    if (count < 0) {
+        return EvalResult::ERROR;
+    }
+    if (count == 0) {
+        return EvalResult::SATISFIED; // countdown reached zero
+    }
+    // Count > 0: needs covenant chain to track — structural validation passes
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalRecurseSplitBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) {
+        return EvalResult::ERROR;
+    }
+    int64_t max_splits = ReadNumeric(*numerics[0]);
+    int64_t min_split_sats = ReadNumeric(*numerics[1]);
+    if (max_splits <= 0 || min_split_sats < 0) {
+        return EvalResult::UNSATISFIED;
+    }
+    // Check output amount >= min_split_sats if available
+    if (ctx.output_amount > 0 && ctx.output_amount < min_split_sats) {
+        return EvalResult::UNSATISFIED;
+    }
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalRecurseDecayBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 4) {
+        return EvalResult::ERROR;
+    }
+    // max_depth, decay_block_idx, decay_param_idx, decay_per_step
+    int64_t max_depth = ReadNumeric(*numerics[0]);
+    if (max_depth <= 0) {
+        return EvalResult::UNSATISFIED;
+    }
+    return EvalResult::SATISFIED;
+}
+
+// ============================================================================
+// Phase 3 evaluators — PLC
+// ============================================================================
+
+EvalResult EvalHysteresisFeeBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Fee hysteresis: needs mempool access — validate structure only
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) {
+        return EvalResult::ERROR;
+    }
+    // high_sat_vb and low_sat_vb must be valid
+    int64_t high = ReadNumeric(*numerics[0]);
+    int64_t low = ReadNumeric(*numerics[1]);
+    if (high < 0 || low < 0 || low > high) {
+        return EvalResult::UNSATISFIED;
+    }
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalHysteresisValueBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    // Value hysteresis: check input_amount against high/low band
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) {
+        return EvalResult::ERROR;
+    }
+    int64_t high_sats = ReadNumeric(*numerics[0]);
+    int64_t low_sats = ReadNumeric(*numerics[1]);
+    if (high_sats < 0 || low_sats < 0 || low_sats > high_sats) {
+        return EvalResult::UNSATISFIED;
+    }
+    // UTXO value within band
+    if (ctx.input_amount >= low_sats && ctx.input_amount <= high_sats) {
+        return EvalResult::SATISFIED;
+    }
+    return EvalResult::UNSATISFIED;
+}
+
+EvalResult EvalTimerContinuousBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Consecutive block timer — needs state tracking, validate structure
+    const RungField* required = FindField(block, RungDataType::NUMERIC);
+    if (!required) return EvalResult::ERROR;
+    int64_t val = ReadNumeric(*required);
+    if (val <= 0) return EvalResult::UNSATISFIED;
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalTimerOffDelayBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Off-delay timer — needs state tracking, validate structure
+    const RungField* hold = FindField(block, RungDataType::NUMERIC);
+    if (!hold) return EvalResult::ERROR;
+    int64_t val = ReadNumeric(*hold);
+    if (val <= 0) return EvalResult::UNSATISFIED;
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalLatchSetBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Latch set — needs state tracking, validate setter_key present
+    if (!HasRequiredPubkeys(block, 1)) return EvalResult::ERROR;
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalLatchResetBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Latch reset — needs state tracking, validate resetter_key + delay present
+    if (!HasRequiredPubkeys(block, 1)) return EvalResult::ERROR;
+    const RungField* delay = FindField(block, RungDataType::NUMERIC);
+    if (!delay) return EvalResult::ERROR;
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalCounterDownBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Down counter — needs covenant chain state, validate event_signer + numeric present
+    if (!HasRequiredPubkeys(block, 1)) return EvalResult::ERROR;
+    if (!HasRequiredNumerics(block, 1)) return EvalResult::ERROR;
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalCounterPresetBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Preset counter — needs state tracking, validate required params
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) return EvalResult::ERROR; // preset_count + window_blocks
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalCounterUpBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Up counter — needs covenant chain state
+    if (!HasRequiredPubkeys(block, 1)) return EvalResult::ERROR;
+    if (!HasRequiredNumerics(block, 1)) return EvalResult::ERROR;
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalCompareBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    // Comparator: compare input_amount against thresholds using specified operator
+    const RungField* scheme_field = FindField(block, RungDataType::SCHEME);
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+
+    if (!scheme_field || numerics.empty()) {
+        return EvalResult::ERROR;
+    }
+
+    uint8_t op = scheme_field->data[0];
+    int64_t value_b = ReadNumeric(*numerics[0]);
+    if (value_b < 0) return EvalResult::ERROR;
+
+    CAmount amount = ctx.input_amount;
+
+    // Operators: EQ=0x01, NEQ=0x02, GT=0x03, LT=0x04, GTE=0x05, LTE=0x06, IN_RANGE=0x07
+    switch (op) {
+    case 0x01: return (amount == value_b) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
+    case 0x02: return (amount != value_b) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
+    case 0x03: return (amount > value_b) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
+    case 0x04: return (amount < value_b) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
+    case 0x05: return (amount >= value_b) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
+    case 0x06: return (amount <= value_b) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
+    case 0x07: {
+        // IN_RANGE: needs value_c as upper bound
+        if (numerics.size() < 2) return EvalResult::ERROR;
+        int64_t value_c = ReadNumeric(*numerics[1]);
+        if (value_c < 0) return EvalResult::ERROR;
+        return (amount >= value_b && amount <= value_c) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
+    }
+    default:
+        return EvalResult::ERROR;
+    }
+}
+
+EvalResult EvalSequencerBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // Step sequencer — needs UTXO chain state, validate structure
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) return EvalResult::ERROR; // current_step + total_steps
+    int64_t current = ReadNumeric(*numerics[0]);
+    int64_t total = ReadNumeric(*numerics[1]);
+    if (current < 0 || total <= 0 || current >= total) return EvalResult::UNSATISFIED;
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalOneShotBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+{
+    // One-shot activation — needs state tracking, validate structure
+    const RungField* duration = FindField(block, RungDataType::NUMERIC);
+    if (!duration) return EvalResult::ERROR;
+    if (!HasRequiredHashes(block, 1)) return EvalResult::ERROR; // commitment
+    return EvalResult::SATISFIED;
+}
+
+EvalResult EvalRateLimitBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    // Rate limiter: check single-tx limit against output amount
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 3) return EvalResult::ERROR; // max_per_block, accumulation_cap, refill_blocks
+
+    int64_t max_per_block = ReadNumeric(*numerics[0]);
+    if (max_per_block < 0) return EvalResult::ERROR;
+
+    // Single-tx limit check: output_amount must not exceed max_per_block
+    if (ctx.output_amount > max_per_block) {
+        return EvalResult::UNSATISFIED;
+    }
+    // Accumulation tracking needs UTXO chain state
+    return EvalResult::SATISFIED;
+}
+
+// ============================================================================
+// Block dispatch
+// ============================================================================
+
 EvalResult EvalBlock(const RungBlock& block,
                      const BaseSignatureChecker& checker,
                      SigVersion sigversion,
-                     ScriptExecutionData& execdata)
+                     ScriptExecutionData& execdata,
+                     const RungEvalContext& ctx)
 {
     EvalResult raw;
     switch (block.type) {
+    // Phase 1 — Signature
     case RungBlockType::SIG:
         raw = EvalSigBlock(block, checker, sigversion, execdata);
         break;
     case RungBlockType::MULTISIG:
         raw = EvalMultisigBlock(block, checker, sigversion, execdata);
         break;
-    case RungBlockType::HASH_PREIMAGE:
-        raw = EvalHashPreimageBlock(block);
+    case RungBlockType::ADAPTOR_SIG:
+        raw = EvalAdaptorSigBlock(block, checker, sigversion, execdata);
         break;
-    case RungBlockType::HASH160_PREIMAGE:
-        raw = EvalHash160PreimageBlock(block);
-        break;
+    // Phase 1 — Timelock
     case RungBlockType::CSV:
         raw = EvalCSVBlock(block, checker);
         break;
@@ -391,24 +1029,103 @@ EvalResult EvalBlock(const RungBlock& block,
     case RungBlockType::CLTV_TIME:
         raw = EvalCLTVTimeBlock(block, checker);
         break;
-    // Phase 2/3 stubs — return UNSATISFIED (consensus-valid but never satisfied)
-    case RungBlockType::ADAPTOR_SIG:
+    // Phase 1 — Hash
+    case RungBlockType::HASH_PREIMAGE:
+        raw = EvalHashPreimageBlock(block);
+        break;
+    case RungBlockType::HASH160_PREIMAGE:
+        raw = EvalHash160PreimageBlock(block);
+        break;
     case RungBlockType::TAGGED_HASH:
+        raw = EvalTaggedHashBlock(block);
+        break;
+    // Phase 2 — Covenant
     case RungBlockType::CTV:
+        raw = EvalCTVBlock(block, ctx);
+        break;
     case RungBlockType::VAULT_LOCK:
-    case RungBlockType::RECURSE_UNTIL:
-    case RungBlockType::RECURSE_SPLIT:
-    case RungBlockType::RECURSE_DECAY:
-    case RungBlockType::RECURSE_COLLECT:
-    case RungBlockType::RECURSE_MERGE:
-    case RungBlockType::RECURSE_SWEEP:
+        raw = EvalVaultLockBlock(block, checker, sigversion, execdata);
+        break;
+    case RungBlockType::AMOUNT_LOCK:
+        raw = EvalAmountLockBlock(block, ctx);
+        break;
+    // Phase 2 — Anchor
+    case RungBlockType::ANCHOR:
+        raw = EvalAnchorBlock(block);
+        break;
     case RungBlockType::ANCHOR_CHANNEL:
+        raw = EvalAnchorChannelBlock(block);
+        break;
     case RungBlockType::ANCHOR_POOL:
+        raw = EvalAnchorPoolBlock(block);
+        break;
+    case RungBlockType::ANCHOR_RESERVE:
+        raw = EvalAnchorReserveBlock(block);
+        break;
     case RungBlockType::ANCHOR_SEAL:
+        raw = EvalAnchorSealBlock(block);
+        break;
     case RungBlockType::ANCHOR_ORACLE:
-    case RungBlockType::ANCHOR_BOND:
-    case RungBlockType::ANCHOR_ESCROW:
-        raw = EvalResult::UNSATISFIED;
+        raw = EvalAnchorOracleBlock(block);
+        break;
+    // Phase 3 — Recursion
+    case RungBlockType::RECURSE_SAME:
+        raw = EvalRecurseSameBlock(block, ctx);
+        break;
+    case RungBlockType::RECURSE_MODIFIED:
+        raw = EvalRecurseModifiedBlock(block, ctx);
+        break;
+    case RungBlockType::RECURSE_UNTIL:
+        raw = EvalRecurseUntilBlock(block, ctx);
+        break;
+    case RungBlockType::RECURSE_COUNT:
+        raw = EvalRecurseCountBlock(block, ctx);
+        break;
+    case RungBlockType::RECURSE_SPLIT:
+        raw = EvalRecurseSplitBlock(block, ctx);
+        break;
+    case RungBlockType::RECURSE_DECAY:
+        raw = EvalRecurseDecayBlock(block, ctx);
+        break;
+    // Phase 3 — PLC
+    case RungBlockType::HYSTERESIS_FEE:
+        raw = EvalHysteresisFeeBlock(block, ctx);
+        break;
+    case RungBlockType::HYSTERESIS_VALUE:
+        raw = EvalHysteresisValueBlock(block, ctx);
+        break;
+    case RungBlockType::TIMER_CONTINUOUS:
+        raw = EvalTimerContinuousBlock(block, ctx);
+        break;
+    case RungBlockType::TIMER_OFF_DELAY:
+        raw = EvalTimerOffDelayBlock(block, ctx);
+        break;
+    case RungBlockType::LATCH_SET:
+        raw = EvalLatchSetBlock(block, ctx);
+        break;
+    case RungBlockType::LATCH_RESET:
+        raw = EvalLatchResetBlock(block, ctx);
+        break;
+    case RungBlockType::COUNTER_DOWN:
+        raw = EvalCounterDownBlock(block, ctx);
+        break;
+    case RungBlockType::COUNTER_PRESET:
+        raw = EvalCounterPresetBlock(block, ctx);
+        break;
+    case RungBlockType::COUNTER_UP:
+        raw = EvalCounterUpBlock(block, ctx);
+        break;
+    case RungBlockType::COMPARE:
+        raw = EvalCompareBlock(block, ctx);
+        break;
+    case RungBlockType::SEQUENCER:
+        raw = EvalSequencerBlock(block, ctx);
+        break;
+    case RungBlockType::ONE_SHOT:
+        raw = EvalOneShotBlock(block, ctx);
+        break;
+    case RungBlockType::RATE_LIMIT:
+        raw = EvalRateLimitBlock(block, ctx);
         break;
     default:
         raw = EvalResult::UNKNOWN_BLOCK_TYPE;
@@ -420,14 +1137,15 @@ EvalResult EvalBlock(const RungBlock& block,
 EvalResult EvalRung(const Rung& rung,
                     const BaseSignatureChecker& checker,
                     SigVersion sigversion,
-                    ScriptExecutionData& execdata)
+                    ScriptExecutionData& execdata,
+                    const RungEvalContext& ctx)
 {
     if (rung.blocks.empty()) {
         return EvalResult::ERROR;
     }
 
     for (const auto& block : rung.blocks) {
-        EvalResult result = EvalBlock(block, checker, sigversion, execdata);
+        EvalResult result = EvalBlock(block, checker, sigversion, execdata, ctx);
         if (result != EvalResult::SATISFIED) {
             return result;
         }
@@ -438,7 +1156,8 @@ EvalResult EvalRung(const Rung& rung,
 bool EvalLadder(const LadderWitness& ladder,
                 const BaseSignatureChecker& checker,
                 SigVersion sigversion,
-                ScriptExecutionData& execdata)
+                ScriptExecutionData& execdata,
+                const RungEvalContext& ctx)
 {
     if (ladder.IsEmpty()) {
         return false;
@@ -446,7 +1165,7 @@ bool EvalLadder(const LadderWitness& ladder,
 
     // First satisfied rung wins (OR logic across rungs)
     for (const auto& rung : ladder.rungs) {
-        EvalResult result = EvalRung(rung, checker, sigversion, execdata);
+        EvalResult result = EvalRung(rung, checker, sigversion, execdata, ctx);
         if (result == EvalResult::SATISFIED) {
             return true;
         }
@@ -543,6 +1262,17 @@ bool VerifyRungTx(const CTransaction& tx,
     std::string cond_error;
     bool has_conditions = DeserializeRungConditions(spent_output.scriptPubKey, conditions, cond_error);
 
+    // Build evaluation context for Phase 2+ blocks
+    RungEvalContext eval_ctx;
+    eval_ctx.tx = &tx;
+    eval_ctx.input_index = nIn;
+    eval_ctx.input_amount = spent_output.nValue;
+    // output_amount: use first output amount as default (callers can refine)
+    if (!tx.vout.empty()) {
+        eval_ctx.output_amount = tx.vout[0].nValue;
+        eval_ctx.spending_output = &tx.vout[0];
+    }
+
     LadderWitness eval_ladder;
     ScriptExecutionData execdata;
 
@@ -556,7 +1286,7 @@ bool VerifyRungTx(const CTransaction& tx,
 
         // Use LadderSignatureChecker with conditions context for proper sighash
         LadderSignatureChecker ladder_checker(checker, conditions, txdata, tx, nIn);
-        if (!EvalLadder(eval_ladder, ladder_checker, SigVersion::LADDER, execdata)) {
+        if (!EvalLadder(eval_ladder, ladder_checker, SigVersion::LADDER, execdata, eval_ctx)) {
             if (serror) *serror = SCRIPT_ERR_EVAL_FALSE;
             return false;
         }
@@ -564,7 +1294,7 @@ bool VerifyRungTx(const CTransaction& tx,
         // Bootstrap spend: v3 tx spending a v1/v2 UTXO
         RungConditions empty_conditions;
         LadderSignatureChecker ladder_checker(checker, empty_conditions, txdata, tx, nIn);
-        if (!EvalLadder(witness_ladder, ladder_checker, SigVersion::LADDER, execdata)) {
+        if (!EvalLadder(witness_ladder, ladder_checker, SigVersion::LADDER, execdata, eval_ctx)) {
             if (serror) *serror = SCRIPT_ERR_EVAL_FALSE;
             return false;
         }

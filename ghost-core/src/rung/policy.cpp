@@ -23,7 +23,52 @@ bool IsPhase1BlockType(uint16_t block_type)
     case RungBlockType::HASH160_PREIMAGE:
     case RungBlockType::TAGGED_HASH:
         return true;
-    // Phase 2/3 stubs — consensus-valid but policy-non-standard
+    default:
+        return false;
+    }
+}
+
+bool IsPhase2BlockType(uint16_t block_type)
+{
+    switch (static_cast<RungBlockType>(block_type)) {
+    case RungBlockType::CTV:
+    case RungBlockType::VAULT_LOCK:
+    case RungBlockType::AMOUNT_LOCK:
+    case RungBlockType::ANCHOR:
+    case RungBlockType::ANCHOR_CHANNEL:
+    case RungBlockType::ANCHOR_POOL:
+    case RungBlockType::ANCHOR_RESERVE:
+    case RungBlockType::ANCHOR_SEAL:
+    case RungBlockType::ANCHOR_ORACLE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsPhase3BlockType(uint16_t block_type)
+{
+    switch (static_cast<RungBlockType>(block_type)) {
+    case RungBlockType::RECURSE_SAME:
+    case RungBlockType::RECURSE_MODIFIED:
+    case RungBlockType::RECURSE_UNTIL:
+    case RungBlockType::RECURSE_COUNT:
+    case RungBlockType::RECURSE_SPLIT:
+    case RungBlockType::RECURSE_DECAY:
+    case RungBlockType::HYSTERESIS_FEE:
+    case RungBlockType::HYSTERESIS_VALUE:
+    case RungBlockType::TIMER_CONTINUOUS:
+    case RungBlockType::TIMER_OFF_DELAY:
+    case RungBlockType::LATCH_SET:
+    case RungBlockType::LATCH_RESET:
+    case RungBlockType::COUNTER_DOWN:
+    case RungBlockType::COUNTER_PRESET:
+    case RungBlockType::COUNTER_UP:
+    case RungBlockType::COMPARE:
+    case RungBlockType::SEQUENCER:
+    case RungBlockType::ONE_SHOT:
+    case RungBlockType::RATE_LIMIT:
+        return true;
     default:
         return false;
     }

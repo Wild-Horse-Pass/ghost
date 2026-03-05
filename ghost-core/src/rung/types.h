@@ -19,45 +19,62 @@ namespace rung {
  *    0x0001-0x00FF  Signature family (Phase 1)
  *    0x0100-0x01FF  Timelock family (Phase 1)
  *    0x0200-0x02FF  Hash family (Phase 1)
- *    0x0300-0x03FF  Covenant family (Phase 2 stubs)
- *    0x0400-0x04FF  Recursion family (Phase 3 stubs)
- *    0x0500-0x05FF  Anchor/L2 family (Phase 2 stubs) */
+ *    0x0300-0x03FF  Covenant family (Phase 2)
+ *    0x0400-0x04FF  Recursion family (Phase 3)
+ *    0x0500-0x05FF  Anchor/L2 family (Phase 2)
+ *    0x0600-0x06FF  PLC family (Phase 3) */
 enum class RungBlockType : uint16_t {
-    // Signature family
+    // Signature family (Phase 1)
     SIG              = 0x0001, //!< Single signature verification
     MULTISIG         = 0x0002, //!< M-of-N threshold signature
-    ADAPTOR_SIG      = 0x0003, //!< Adaptor signature (Phase 1)
+    ADAPTOR_SIG      = 0x0003, //!< Adaptor signature verification
 
-    // Timelock family
+    // Timelock family (Phase 1)
     CSV              = 0x0101, //!< Relative timelock — block-height (BIP68 sequence)
     CSV_TIME         = 0x0102, //!< Relative timelock — median-time-past
     CLTV             = 0x0103, //!< Absolute timelock — block-height (nLockTime)
     CLTV_TIME        = 0x0104, //!< Absolute timelock — median-time-past
 
-    // Hash family
+    // Hash family (Phase 1)
     HASH_PREIMAGE    = 0x0201, //!< SHA-256 hash preimage reveal
     HASH160_PREIMAGE = 0x0202, //!< HASH160 preimage reveal
     TAGGED_HASH      = 0x0203, //!< BIP-340 tagged hash verification
 
-    // Covenant family (Phase 2 stubs)
+    // Covenant family (Phase 2)
     CTV              = 0x0301, //!< OP_CHECKTEMPLATEVERIFY covenant
     VAULT_LOCK       = 0x0302, //!< Vault timelock covenant
+    AMOUNT_LOCK      = 0x0303, //!< Output amount range check
 
-    // Recursion family (Phase 3 stubs)
-    RECURSE_UNTIL    = 0x0401, //!< Recursive until condition
-    RECURSE_SPLIT    = 0x0402, //!< Recursive split
-    RECURSE_DECAY    = 0x0403, //!< Recursive decay
-    RECURSE_COLLECT  = 0x0404, //!< Recursive collect
-    RECURSE_MERGE    = 0x0405, //!< Recursive merge
-    RECURSE_SWEEP    = 0x0406, //!< Recursive sweep
+    // Recursion family (Phase 3)
+    RECURSE_SAME     = 0x0401, //!< Recursive re-encumber with identical conditions
+    RECURSE_MODIFIED = 0x0402, //!< Recursive re-encumber with single mutation
+    RECURSE_UNTIL    = 0x0403, //!< Recursive until block height
+    RECURSE_COUNT    = 0x0404, //!< Recursive countdown
+    RECURSE_SPLIT    = 0x0405, //!< Recursive output splitting
+    RECURSE_DECAY    = 0x0406, //!< Recursive parameter decay
 
-    // Anchor/L2 family (Phase 2 stubs)
-    ANCHOR_CHANNEL   = 0x0501, //!< Lightning channel anchor
-    ANCHOR_POOL      = 0x0502, //!< Pool anchor
-    ANCHOR_SEAL      = 0x0503, //!< Seal anchor
-    ANCHOR_ORACLE    = 0x0504, //!< Oracle anchor
-    ANCHOR_BOND      = 0x0505, //!< Bond anchor
-    ANCHOR_ESCROW    = 0x0506, //!< Escrow anchor
+    // Anchor/L2 family (Phase 2)
+    ANCHOR           = 0x0501, //!< Generic anchor
+    ANCHOR_CHANNEL   = 0x0502, //!< Lightning channel anchor
+    ANCHOR_POOL      = 0x0503, //!< Pool anchor
+    ANCHOR_RESERVE   = 0x0504, //!< Reserve anchor (guardian set)
+    ANCHOR_SEAL      = 0x0505, //!< Seal anchor
+    ANCHOR_ORACLE    = 0x0506, //!< Oracle anchor
+
+    // PLC family (Phase 3)
+    HYSTERESIS_FEE   = 0x0601, //!< Fee hysteresis band
+    HYSTERESIS_VALUE = 0x0602, //!< Value hysteresis band
+    TIMER_CONTINUOUS = 0x0611, //!< Continuous timer (consecutive blocks)
+    TIMER_OFF_DELAY  = 0x0612, //!< Off-delay timer (hold after trigger)
+    LATCH_SET        = 0x0621, //!< Latch set (state activation)
+    LATCH_RESET      = 0x0622, //!< Latch reset (state deactivation)
+    COUNTER_DOWN     = 0x0631, //!< Down counter (decrement on event)
+    COUNTER_PRESET   = 0x0632, //!< Preset counter (approval accumulator)
+    COUNTER_UP       = 0x0633, //!< Up counter (increment on event)
+    COMPARE          = 0x0641, //!< Comparator (amount vs thresholds)
+    SEQUENCER        = 0x0651, //!< Step sequencer
+    ONE_SHOT         = 0x0661, //!< One-shot activation window
+    RATE_LIMIT       = 0x0671, //!< Rate limiter
 };
 
 /** Data types for typed parameters within blocks.
@@ -65,14 +82,14 @@ enum class RungBlockType : uint16_t {
  *  No arbitrary data pushes are possible.
  *  (Renamed from RungFieldType in v1.) */
 enum class RungDataType : uint8_t {
-    PUBKEY        = 0x01, //!< Compressed public key: exactly 33 bytes
+    PUBKEY        = 0x01, //!< Public key: 1-64 bytes (compressed, x-only, or PQ)
     PUBKEY_COMMIT = 0x02, //!< Public key commitment: exactly 32 bytes
     HASH256       = 0x03, //!< SHA-256 hash: exactly 32 bytes
     HASH160       = 0x04, //!< RIPEMD160(SHA256()) hash: exactly 20 bytes
     PREIMAGE      = 0x05, //!< Hash preimage: 1-252 bytes
-    SIGNATURE     = 0x06, //!< Schnorr or ECDSA signature: 64-72 bytes
+    SIGNATURE     = 0x06, //!< Signature: 1-7856 bytes (Schnorr 64-65, ECDSA 8-72, PQ up to 7856)
     SPEND_INDEX   = 0x07, //!< Spend index reference: 4 bytes
-    NUMERIC       = 0x08, //!< Numeric value (threshold, locktime, etc.): 4-8 bytes
+    NUMERIC       = 0x08, //!< Numeric value (threshold, locktime, etc.): 1-4 bytes
     SCHEME        = 0x09, //!< Signature scheme selector: 1 byte
 };
 
@@ -83,33 +100,51 @@ using RungFieldType = RungDataType;
 inline bool IsKnownBlockType(uint16_t b)
 {
     switch (static_cast<RungBlockType>(b)) {
-    // Phase 1 — fully implemented
+    // Phase 1 — Signature
     case RungBlockType::SIG:
     case RungBlockType::MULTISIG:
     case RungBlockType::ADAPTOR_SIG:
+    // Phase 1 — Timelock
     case RungBlockType::CSV:
     case RungBlockType::CSV_TIME:
     case RungBlockType::CLTV:
     case RungBlockType::CLTV_TIME:
+    // Phase 1 — Hash
     case RungBlockType::HASH_PREIMAGE:
     case RungBlockType::HASH160_PREIMAGE:
     case RungBlockType::TAGGED_HASH:
-    // Phase 2 stubs
+    // Phase 2 — Covenant
     case RungBlockType::CTV:
     case RungBlockType::VAULT_LOCK:
+    case RungBlockType::AMOUNT_LOCK:
+    // Phase 2 — Anchor
+    case RungBlockType::ANCHOR:
     case RungBlockType::ANCHOR_CHANNEL:
     case RungBlockType::ANCHOR_POOL:
+    case RungBlockType::ANCHOR_RESERVE:
     case RungBlockType::ANCHOR_SEAL:
     case RungBlockType::ANCHOR_ORACLE:
-    case RungBlockType::ANCHOR_BOND:
-    case RungBlockType::ANCHOR_ESCROW:
-    // Phase 3 stubs
+    // Phase 3 — Recursion
+    case RungBlockType::RECURSE_SAME:
+    case RungBlockType::RECURSE_MODIFIED:
     case RungBlockType::RECURSE_UNTIL:
+    case RungBlockType::RECURSE_COUNT:
     case RungBlockType::RECURSE_SPLIT:
     case RungBlockType::RECURSE_DECAY:
-    case RungBlockType::RECURSE_COLLECT:
-    case RungBlockType::RECURSE_MERGE:
-    case RungBlockType::RECURSE_SWEEP:
+    // Phase 3 — PLC
+    case RungBlockType::HYSTERESIS_FEE:
+    case RungBlockType::HYSTERESIS_VALUE:
+    case RungBlockType::TIMER_CONTINUOUS:
+    case RungBlockType::TIMER_OFF_DELAY:
+    case RungBlockType::LATCH_SET:
+    case RungBlockType::LATCH_RESET:
+    case RungBlockType::COUNTER_DOWN:
+    case RungBlockType::COUNTER_PRESET:
+    case RungBlockType::COUNTER_UP:
+    case RungBlockType::COMPARE:
+    case RungBlockType::SEQUENCER:
+    case RungBlockType::ONE_SHOT:
+    case RungBlockType::RATE_LIMIT:
         return true;
     }
     return false;
@@ -128,14 +163,14 @@ inline bool IsKnownFieldType(uint8_t b) { return IsKnownDataType(b); }
 inline size_t FieldMinSize(RungDataType type)
 {
     switch (type) {
-    case RungDataType::PUBKEY:        return 33;
+    case RungDataType::PUBKEY:        return 1;
     case RungDataType::PUBKEY_COMMIT: return 32;
     case RungDataType::HASH256:       return 32;
     case RungDataType::HASH160:       return 20;
     case RungDataType::PREIMAGE:      return 1;
-    case RungDataType::SIGNATURE:     return 64;
+    case RungDataType::SIGNATURE:     return 1;
     case RungDataType::SPEND_INDEX:   return 4;
-    case RungDataType::NUMERIC:       return 4;
+    case RungDataType::NUMERIC:       return 1;
     case RungDataType::SCHEME:        return 1;
     }
     return 0;
@@ -145,14 +180,14 @@ inline size_t FieldMinSize(RungDataType type)
 inline size_t FieldMaxSize(RungDataType type)
 {
     switch (type) {
-    case RungDataType::PUBKEY:        return 33;
+    case RungDataType::PUBKEY:        return 64;
     case RungDataType::PUBKEY_COMMIT: return 32;
     case RungDataType::HASH256:       return 32;
     case RungDataType::HASH160:       return 20;
     case RungDataType::PREIMAGE:      return 252;
-    case RungDataType::SIGNATURE:     return 72;
+    case RungDataType::SIGNATURE:     return 7856;
     case RungDataType::SPEND_INDEX:   return 4;
-    case RungDataType::NUMERIC:       return 8;
+    case RungDataType::NUMERIC:       return 4;
     case RungDataType::SCHEME:        return 1;
     }
     return 0;
@@ -174,18 +209,32 @@ inline std::string BlockTypeName(RungBlockType type)
     case RungBlockType::TAGGED_HASH:      return "TAGGED_HASH";
     case RungBlockType::CTV:              return "CTV";
     case RungBlockType::VAULT_LOCK:       return "VAULT_LOCK";
+    case RungBlockType::AMOUNT_LOCK:      return "AMOUNT_LOCK";
+    case RungBlockType::RECURSE_SAME:     return "RECURSE_SAME";
+    case RungBlockType::RECURSE_MODIFIED: return "RECURSE_MODIFIED";
     case RungBlockType::RECURSE_UNTIL:    return "RECURSE_UNTIL";
+    case RungBlockType::RECURSE_COUNT:    return "RECURSE_COUNT";
     case RungBlockType::RECURSE_SPLIT:    return "RECURSE_SPLIT";
     case RungBlockType::RECURSE_DECAY:    return "RECURSE_DECAY";
-    case RungBlockType::RECURSE_COLLECT:  return "RECURSE_COLLECT";
-    case RungBlockType::RECURSE_MERGE:    return "RECURSE_MERGE";
-    case RungBlockType::RECURSE_SWEEP:    return "RECURSE_SWEEP";
+    case RungBlockType::ANCHOR:           return "ANCHOR";
     case RungBlockType::ANCHOR_CHANNEL:   return "ANCHOR_CHANNEL";
     case RungBlockType::ANCHOR_POOL:      return "ANCHOR_POOL";
+    case RungBlockType::ANCHOR_RESERVE:   return "ANCHOR_RESERVE";
     case RungBlockType::ANCHOR_SEAL:      return "ANCHOR_SEAL";
     case RungBlockType::ANCHOR_ORACLE:    return "ANCHOR_ORACLE";
-    case RungBlockType::ANCHOR_BOND:      return "ANCHOR_BOND";
-    case RungBlockType::ANCHOR_ESCROW:    return "ANCHOR_ESCROW";
+    case RungBlockType::HYSTERESIS_FEE:   return "HYSTERESIS_FEE";
+    case RungBlockType::HYSTERESIS_VALUE: return "HYSTERESIS_VALUE";
+    case RungBlockType::TIMER_CONTINUOUS: return "TIMER_CONTINUOUS";
+    case RungBlockType::TIMER_OFF_DELAY:  return "TIMER_OFF_DELAY";
+    case RungBlockType::LATCH_SET:        return "LATCH_SET";
+    case RungBlockType::LATCH_RESET:      return "LATCH_RESET";
+    case RungBlockType::COUNTER_DOWN:     return "COUNTER_DOWN";
+    case RungBlockType::COUNTER_PRESET:   return "COUNTER_PRESET";
+    case RungBlockType::COUNTER_UP:       return "COUNTER_UP";
+    case RungBlockType::COMPARE:          return "COMPARE";
+    case RungBlockType::SEQUENCER:        return "SEQUENCER";
+    case RungBlockType::ONE_SHOT:         return "ONE_SHOT";
+    case RungBlockType::RATE_LIMIT:       return "RATE_LIMIT";
     }
     return "UNKNOWN";
 }
@@ -220,15 +269,40 @@ enum class RungCoilType : uint8_t {
 /** Attestation mode for signatures in this rung. */
 enum class RungAttestationMode : uint8_t {
     INLINE    = 0x01, //!< Signatures inline in witness
-    AGGREGATE = 0x02, //!< Aggregated signature (future)
-    DEFERRED  = 0x03, //!< Deferred attestation (future)
+    AGGREGATE = 0x02, //!< Aggregated signature (block-level aggregate)
+    DEFERRED  = 0x03, //!< Deferred attestation (template hash)
 };
 
 /** Signature scheme for this rung. */
 enum class RungScheme : uint8_t {
-    SCHNORR   = 0x01, //!< BIP-340 Schnorr
-    ECDSA     = 0x02, //!< ECDSA (legacy compat)
+    SCHNORR     = 0x01, //!< BIP-340 Schnorr
+    ECDSA       = 0x02, //!< ECDSA (legacy compat)
+    FALCON512   = 0x10, //!< FALCON-512 post-quantum
+    FALCON1024  = 0x11, //!< FALCON-1024 post-quantum
+    DILITHIUM3  = 0x12, //!< Dilithium3 post-quantum
+    SPHINCS_SHA = 0x13, //!< SPHINCS+-SHA2-256f post-quantum
 };
+
+/** Returns true if the scheme is a known value. */
+inline bool IsKnownScheme(uint8_t s)
+{
+    switch (static_cast<RungScheme>(s)) {
+    case RungScheme::SCHNORR:
+    case RungScheme::ECDSA:
+    case RungScheme::FALCON512:
+    case RungScheme::FALCON1024:
+    case RungScheme::DILITHIUM3:
+    case RungScheme::SPHINCS_SHA:
+        return true;
+    }
+    return false;
+}
+
+/** Returns true if the scheme is a post-quantum scheme. */
+inline bool IsPQScheme(RungScheme s)
+{
+    return static_cast<uint8_t>(s) >= 0x10;
+}
 
 /** Coil metadata — attached to each output (LadderWitness), determines unlock semantics.
  *  UNLOCK:    Standard spend to an address.

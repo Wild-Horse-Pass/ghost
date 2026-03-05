@@ -10,8 +10,13 @@
 #include <script/interpreter.h>
 #include <script/script_error.h>
 
+#include <consensus/amount.h>
 #include <cstdint>
 #include <string>
+#include <uint256.h>
+
+class CTransaction;
+class CTxOut;
 
 namespace rung {
 
@@ -45,6 +50,18 @@ public:
                                ScriptError* serror = nullptr) const override;
 };
 
+/** Extended evaluation context for Phase 2+ block types.
+ *  Provides transaction and amount data needed by covenant, anchor,
+ *  recursion, and PLC evaluators. */
+struct RungEvalContext {
+    const CTransaction* tx{nullptr};       //!< The spending transaction (for CTV template verification)
+    uint32_t input_index{0};               //!< Index of the input being evaluated
+    CAmount input_amount{0};               //!< Amount of the UTXO being spent
+    CAmount output_amount{0};              //!< Amount of the output being created (for AMOUNT_LOCK)
+    int32_t block_height{0};               //!< Current block height (for RECURSE_UNTIL)
+    const CTxOut* spending_output{nullptr}; //!< Output script being created (for recursion covenant checks)
+};
+
 /** Result of evaluating a single block or rung. */
 enum class EvalResult {
     SATISFIED,           //!< All conditions met
@@ -57,57 +74,72 @@ enum class EvalResult {
  *  SATISFIED↔UNSATISFIED, ERROR unchanged, UNKNOWN_BLOCK_TYPE inverted → SATISFIED. */
 EvalResult ApplyInversion(EvalResult raw, bool inverted);
 
-/** Evaluate a SIG block: expects PUBKEY + SIGNATURE fields. */
-EvalResult EvalSigBlock(const RungBlock& block,
-                        const BaseSignatureChecker& checker,
-                        SigVersion sigversion,
-                        ScriptExecutionData& execdata);
-
-/** Evaluate a MULTISIG block: M-of-N threshold signature verification. */
-EvalResult EvalMultisigBlock(const RungBlock& block,
-                             const BaseSignatureChecker& checker,
-                             SigVersion sigversion,
-                             ScriptExecutionData& execdata);
-
-/** Evaluate a HASH_PREIMAGE block: SHA-256 hash preimage reveal. */
+// Phase 1 evaluators
+EvalResult EvalSigBlock(const RungBlock& block, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata);
+EvalResult EvalMultisigBlock(const RungBlock& block, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata);
 EvalResult EvalHashPreimageBlock(const RungBlock& block);
-
-/** Evaluate a HASH160_PREIMAGE block: HASH160 preimage reveal. */
 EvalResult EvalHash160PreimageBlock(const RungBlock& block);
+EvalResult EvalCSVBlock(const RungBlock& block, const BaseSignatureChecker& checker);
+EvalResult EvalCSVTimeBlock(const RungBlock& block, const BaseSignatureChecker& checker);
+EvalResult EvalCLTVBlock(const RungBlock& block, const BaseSignatureChecker& checker);
+EvalResult EvalCLTVTimeBlock(const RungBlock& block, const BaseSignatureChecker& checker);
+EvalResult EvalAdaptorSigBlock(const RungBlock& block, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata);
+EvalResult EvalTaggedHashBlock(const RungBlock& block);
 
-/** Evaluate a CSV block: relative timelock (block-height). */
-EvalResult EvalCSVBlock(const RungBlock& block,
-                        const BaseSignatureChecker& checker);
+// Phase 2 evaluators
+EvalResult EvalCTVBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalVaultLockBlock(const RungBlock& block, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata);
+EvalResult EvalAmountLockBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalAnchorBlock(const RungBlock& block);
+EvalResult EvalAnchorChannelBlock(const RungBlock& block);
+EvalResult EvalAnchorPoolBlock(const RungBlock& block);
+EvalResult EvalAnchorReserveBlock(const RungBlock& block);
+EvalResult EvalAnchorSealBlock(const RungBlock& block);
+EvalResult EvalAnchorOracleBlock(const RungBlock& block);
 
-/** Evaluate a CSV_TIME block: relative timelock (median-time-past). */
-EvalResult EvalCSVTimeBlock(const RungBlock& block,
-                            const BaseSignatureChecker& checker);
+// Phase 3 — Recursion evaluators
+EvalResult EvalRecurseSameBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalRecurseModifiedBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalRecurseUntilBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalRecurseCountBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalRecurseSplitBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalRecurseDecayBlock(const RungBlock& block, const RungEvalContext& ctx);
 
-/** Evaluate a CLTV block: absolute timelock (block-height). */
-EvalResult EvalCLTVBlock(const RungBlock& block,
-                         const BaseSignatureChecker& checker);
-
-/** Evaluate a CLTV_TIME block: absolute timelock (median-time-past). */
-EvalResult EvalCLTVTimeBlock(const RungBlock& block,
-                             const BaseSignatureChecker& checker);
+// Phase 3 — PLC evaluators
+EvalResult EvalHysteresisFeeBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalHysteresisValueBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalTimerContinuousBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalTimerOffDelayBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalLatchSetBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalLatchResetBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalCounterDownBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalCounterPresetBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalCounterUpBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalCompareBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalSequencerBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalOneShotBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalRateLimitBlock(const RungBlock& block, const RungEvalContext& ctx);
 
 /** Evaluate a single block by dispatching to the appropriate evaluator. */
 EvalResult EvalBlock(const RungBlock& block,
                      const BaseSignatureChecker& checker,
                      SigVersion sigversion,
-                     ScriptExecutionData& execdata);
+                     ScriptExecutionData& execdata,
+                     const RungEvalContext& ctx = {});
 
 /** Evaluate a single rung: all blocks must return SATISFIED (AND logic). */
 EvalResult EvalRung(const Rung& rung,
                     const BaseSignatureChecker& checker,
                     SigVersion sigversion,
-                    ScriptExecutionData& execdata);
+                    ScriptExecutionData& execdata,
+                    const RungEvalContext& ctx = {});
 
 /** Evaluate a complete ladder: first satisfied rung wins (OR logic). */
 bool EvalLadder(const LadderWitness& ladder,
                 const BaseSignatureChecker& checker,
                 SigVersion sigversion,
-                ScriptExecutionData& execdata);
+                ScriptExecutionData& execdata,
+                const RungEvalContext& ctx = {});
 
 /** Top-level verification entry point for v3 RUNG_TX transactions. */
 bool VerifyRungTx(const CTransaction& tx,

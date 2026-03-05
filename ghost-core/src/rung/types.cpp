@@ -22,7 +22,8 @@ bool RungField::IsValid(std::string& reason) const
         return false;
     }
 
-    // PUBKEY must start with 0x02 or 0x03 (compressed SEC format)
+    // PUBKEY: 33-byte keys must start with 0x02 or 0x03 (compressed SEC format).
+    // Other sizes (32 for x-only, or PQ sizes) skip this check.
     if (type == RungDataType::PUBKEY && data.size() == 33) {
         if (data[0] != 0x02 && data[0] != 0x03) {
             reason = "PUBKEY invalid prefix: 0x" + HexStr(std::span<const uint8_t>{data.data(), 1});
@@ -32,8 +33,7 @@ bool RungField::IsValid(std::string& reason) const
 
     // SCHEME must be a known value
     if (type == RungDataType::SCHEME && data.size() == 1) {
-        if (data[0] != static_cast<uint8_t>(RungScheme::SCHNORR) &&
-            data[0] != static_cast<uint8_t>(RungScheme::ECDSA)) {
+        if (!IsKnownScheme(data[0])) {
             reason = "SCHEME unknown value: 0x" + HexStr(std::span<const uint8_t>{data.data(), 1});
             return false;
         }

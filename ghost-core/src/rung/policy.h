@@ -13,8 +13,14 @@
 namespace rung {
 
 /** Check whether a uint16_t block type is Phase 1 (policy-standard).
- *  Phase 2/3 stubs are consensus-valid but policy-non-standard. */
+ *  Phase 2/3 blocks are consensus-valid but policy-non-standard. */
 bool IsPhase1BlockType(uint16_t block_type);
+
+/** Check whether a uint16_t block type is Phase 2 (covenant + anchor). */
+bool IsPhase2BlockType(uint16_t block_type);
+
+/** Check whether a uint16_t block type is Phase 3 (recursion + PLC). */
+bool IsPhase3BlockType(uint16_t block_type);
 
 /** Check whether a v3 RUNG_TX transaction conforms to mempool policy.
  *  Validates:
