@@ -297,8 +297,8 @@ impl SshController {
     const GHOST_CONF_PATH: &'static str = "/home/ghost/.ghost/ghost-core/ghost.conf";
     const GHOST_CONF_BACKUP: &'static str = "/home/ghost/.ghost/ghost-core/ghost.conf.chaos_backup";
 
-    /// Ghost Core service name.
-    pub const GHOST_CORE_SERVICE: &'static str = "ghost-core";
+    /// Ghost Core service name (systemd unit).
+    pub const GHOST_CORE_SERVICE: &'static str = "ghostd";
 
     /// Backup the ghost.conf file.
     pub fn backup_ghost_conf(node: &NodeInfo) -> Result<String, String> {
@@ -381,38 +381,44 @@ impl SshController {
 
     /// Restart the ghost-core daemon.
     /// Uses ghost-cli RPC to stop, then systemctl to start.
+    /// Also restarts ghost-pay since it has Requires=ghostd.service
+    /// (systemd stops ghost-pay when ghostd stops, but doesn't restart it).
     pub fn restart_ghost_core(node: &NodeInfo) -> Result<String, String> {
         println!("  [SSH] Restarting ghost-core on {}", node.name);
-        // Stop the running process via RPC (works regardless of systemd state)
         Self::run(
             node,
             "/opt/ghost/bin/ghost-cli -datadir=/home/ghost/.ghost/ghost-core stop 2>/dev/null; \
              sleep 3; \
-             sudo systemctl reset-failed ghost-core 2>/dev/null; \
-             sudo systemctl start ghost-core",
+             sudo systemctl reset-failed ghostd 2>/dev/null; \
+             sudo systemctl start ghostd; \
+             sleep 2; \
+             sudo systemctl start ghost-pay 2>/dev/null; true",
         )
     }
 
     /// Stop the ghost-core daemon via RPC.
+    /// Note: ghost-pay will also be stopped by systemd (Requires=ghostd.service).
     pub fn stop_ghost_core(node: &NodeInfo) -> Result<String, String> {
         println!("  [SSH] Stopping ghost-core on {}", node.name);
-        // Use ghost-cli RPC to stop the daemon, works regardless of systemd service state
         Self::run(
             node,
             "/opt/ghost/bin/ghost-cli -datadir=/home/ghost/.ghost/ghost-core stop 2>/dev/null; \
              sleep 2; \
-             sudo systemctl stop ghost-core 2>/dev/null; true",
+             sudo systemctl stop ghostd 2>/dev/null; true",
         )
     }
 
     /// Start the ghost-core service.
+    /// Also restarts ghost-pay since it has Requires=ghostd.service
+    /// (systemd stops ghost-pay when ghostd stops, but doesn't restart it).
     pub fn start_ghost_core(node: &NodeInfo) -> Result<String, String> {
         println!("  [SSH] Starting ghost-core on {}", node.name);
-        // Reset any "failed" state before starting
         Self::run(
             node,
-            "sudo systemctl reset-failed ghost-core 2>/dev/null; \
-             sudo systemctl start ghost-core",
+            "sudo systemctl reset-failed ghostd 2>/dev/null; \
+             sudo systemctl start ghostd; \
+             sleep 2; \
+             sudo systemctl start ghost-pay 2>/dev/null; true",
         )
     }
 

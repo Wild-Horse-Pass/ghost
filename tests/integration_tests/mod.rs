@@ -32,6 +32,8 @@
 //! | 29 | l2_nullifier_route | 20 - L2 nullifier route, sender proofs (870-889) |
 //! | 30 | wraith_e2e | 19 - Wraith E2E sessions, Jump Lock lifecycle, affordability (890-908) |
 //! | 31 | wraith_fee_routing | 20 - Wraith fee routing pipeline, epoch tracking, settlement (910-929) |
+//! | 32 | adversarial | 10 - Adversarial attack vectors: JSON bombs, double-spend, replay (930-939) |
+//! | 33 | discovery_security | 5 - Discovery peer upsert, hijack, staleness, subnet diversity (940-944) |
 //!
 //! # Running Tests
 //!
@@ -60,11 +62,13 @@
 //! cargo test --test integration wraith_e2e
 //! ```
 
+pub mod adversarial;
 pub mod block_template;
 pub mod buds_classification;
 pub mod config_validation;
 pub mod consensus;
 pub mod consensus_voting;
+pub mod discovery_security;
 pub mod cryptography;
 pub mod e2e;
 pub mod edge_cases;

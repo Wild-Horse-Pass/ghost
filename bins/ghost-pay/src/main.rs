@@ -1832,6 +1832,12 @@ async fn main() -> Result<()> {
 
     // Give background tasks time to finish in-flight work
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Checkpoint WAL and clean up database files (matches ghost-pool shutdown pattern)
+    if let Err(e) = state.db.shutdown() {
+        warn!("Database shutdown error (non-fatal): {}", e);
+    }
+
     info!("Ghost Pay shutdown complete");
 
     Ok(())

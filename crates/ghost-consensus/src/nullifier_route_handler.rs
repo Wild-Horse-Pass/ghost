@@ -20,6 +20,7 @@ use tracing::{debug, info, warn};
 
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity;
+use ghost_common::metrics::Metrics;
 use ghost_common::types::NodeId;
 use ghost_storage::Database;
 use ghost_zkp::{GhostConsolidateVerifier, GhostNoteSpendPublicInputs, GhostNoteVerifier, GhostUnshieldVerifier};
@@ -191,6 +192,12 @@ pub struct NullifierRouteHandler {
     proposed_heights: RwLock<HashSet<u64>>,
     /// Callback for checkpoint finalization (notifies ghost-pay)
     finalize_fn: RwLock<Option<FinalizeFn>>,
+    /// Prometheus metrics (optional, set after construction)
+    metrics: RwLock<Option<Arc<Metrics>>>,
+    /// Root at last finalized checkpoint — stable reference for checkpoint proposals.
+    /// Unlike current_root() which changes when shields are synced locally,
+    /// this only advances on checkpoint finalization.
+    checkpoint_base_root: RwLock<[u8; 32]>,
 }
 
 impl NullifierRouteHandler {
@@ -201,6 +208,7 @@ impl NullifierRouteHandler {
         db: Arc<Database>,
         config: NullifierRouteConfig,
     ) -> Self {
+        let base_root = epoch_manager.current_root().unwrap_or([0u8; 32]);
         Self {
             our_id,
             epoch_manager,
@@ -221,6 +229,8 @@ impl NullifierRouteHandler {
             sync_requests: RwLock::new(HashMap::new()),
             proposed_heights: RwLock::new(HashSet::new()),
             finalize_fn: RwLock::new(None),
+            metrics: RwLock::new(None),
+            checkpoint_base_root: RwLock::new(base_root),
         }
     }
 
@@ -261,6 +271,16 @@ impl NullifierRouteHandler {
     /// Set the finalization callback (notifies ghost-pay when checkpoints are finalized)
     pub fn set_finalize_fn(&self, f: FinalizeFn) {
         *self.finalize_fn.write() = Some(f);
+    }
+
+    /// Set Prometheus metrics for consensus tracking
+    pub fn set_metrics(&self, m: Arc<Metrics>) {
+        *self.metrics.write() = Some(m);
+    }
+
+    /// Set checkpoint base root (called during startup after loading from DB)
+    pub fn set_checkpoint_base_root(&self, root: [u8; 32]) {
+        *self.checkpoint_base_root.write() = root;
     }
 
     /// Sign a message using our signing function
@@ -685,29 +705,56 @@ impl NullifierRouteHandler {
     /// Implements proposer timeout: if the primary proposer hasn't produced within
     /// PROPOSER_GRACE_SECS, the fallback proposer takes over.
     pub fn propose_checkpoint(&self) -> GhostResult<Option<L2CheckpointBlockMessage>> {
-        let height = self.epoch_manager.current_height() + 1;
+        let base_height = self.epoch_manager.current_height() + 1;
+        let elapsed = self.last_checkpoint_time.read().elapsed();
+        let stuck = elapsed.as_secs() > PROPOSER_GRACE_SECS * 2;
 
-        // Check if we're the designated proposer
-        let is_primary = self.epoch_manager.is_proposer(&self.our_id, height);
-
-        // Check fallback: if primary is late, fallback proposer takes over
-        let is_fallback = if !is_primary {
-            let elapsed = self.last_checkpoint_time.read().elapsed();
-            if elapsed.as_secs() > PROPOSER_GRACE_SECS {
-                self.epoch_manager
-                    .get_fallback_proposer(height)
+        // Determine which height to propose for
+        let (height, is_fallback) = if stuck {
+            // Scan a range of heights to find one we can propose for.
+            // By pigeonhole, within N consecutive heights every node is primary at least once.
+            let node_count = self.epoch_manager.active_node_count().max(1);
+            let mut found = None;
+            for offset in 0..node_count {
+                let h = base_height + offset as u64;
+                if self.epoch_manager.is_proposer(&self.our_id, h) {
+                    found = Some((h, false));
+                    break;
+                }
+                if self
+                    .epoch_manager
+                    .get_fallback_proposer(h)
                     .map(|fb| fb == self.our_id)
                     .unwrap_or(false)
-            } else {
-                false
+                {
+                    found = Some((h, true));
+                    break;
+                }
+            }
+            match found {
+                Some(f) => f,
+                None => return Ok(None),
             }
         } else {
-            false
+            // Normal path: only try current_height + 1
+            let is_primary = self.epoch_manager.is_proposer(&self.our_id, base_height);
+            let is_fb = if !is_primary {
+                if elapsed.as_secs() > PROPOSER_GRACE_SECS {
+                    self.epoch_manager
+                        .get_fallback_proposer(base_height)
+                        .map(|fb| fb == self.our_id)
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !is_primary && !is_fb {
+                return Ok(None);
+            }
+            (base_height, is_fb)
         };
-
-        if !is_primary && !is_fallback {
-            return Ok(None);
-        }
 
         if is_fallback {
             info!(
@@ -732,8 +779,8 @@ impl NullifierRouteHandler {
         let shield_commitments: Vec<ShieldCommitment> =
             self.pending_shields.write().drain(..).collect();
 
-        // Get current root before appending
-        let prev_root = self.epoch_manager.current_root()?;
+        // Use checkpoint base root (stable across shield insertions) instead of current_root()
+        let prev_root = *self.checkpoint_base_root.read();
 
         // Append new commitments to tree
         for tx in &transactions {
@@ -803,6 +850,19 @@ impl NullifierRouteHandler {
         let height = msg.height;
         let checkpoint_hash = msg.checkpoint_hash();
 
+        // Detect height gap — if we're behind, trigger tree sync
+        let our_height = self.epoch_manager.current_height();
+        if msg.height > our_height + 1 {
+            info!(
+                our_height,
+                proposal_height = msg.height,
+                gap = msg.height - our_height,
+                "Behind on checkpoint height, requesting tree sync"
+            );
+            let _ = self.request_tree_sync();
+            return Ok(None); // Don't vote on proposals we can't validate yet
+        }
+
         // Validate proposer is correct for this height (primary or fallback)
         if let Some(expected) = self.epoch_manager.get_proposer(height) {
             if expected != msg.proposer {
@@ -825,29 +885,27 @@ impl NullifierRouteHandler {
             }
         }
 
-        // Apply shield commitments from the proposal before root comparison.
-        // The proposer already applied these locally in sync_commitment();
-        // non-proposer nodes need them to match the prev_commitment_root.
-        for sc in &msg.shield_commitments {
-            let _ = self
-                .epoch_manager
-                .insert_commitment_at(sc.note_index, sc.commitment, sc.block_height);
-        }
-        if !msg.shield_commitments.is_empty() {
-            if let Ok(root) = self.epoch_manager.current_root() {
-                let height_for_root = msg
-                    .shield_commitments
-                    .last()
-                    .map(|sc| sc.block_height)
-                    .unwrap_or(height);
-                let _ = self.epoch_manager.add_valid_root(root, height_for_root);
-            }
+        // Store the proposal FIRST, before any validation.
+        // If we reject but peers reach quorum, finalize_checkpoint needs the proposal data.
+        {
+            let mut votes = self.votes.write();
+            let state = votes
+                .entry(height)
+                .or_insert_with(|| CheckpointVoteState::new(checkpoint_hash));
+            state.proposal = Some(msg.clone());
         }
 
-        // Validate prev_commitment_root matches our current root
-        let our_root = self.epoch_manager.current_root()?;
-        if msg.prev_commitment_root != our_root {
-            warn!(height, "Checkpoint prev_root doesn't match our tree root");
+        // Validate prev_commitment_root matches our checkpoint base root.
+        // checkpoint_base_root only advances on finalization, so it's consistent
+        // across nodes regardless of local shield insertions.
+        let our_base_root = *self.checkpoint_base_root.read();
+        if msg.prev_commitment_root != our_base_root {
+            warn!(
+                height,
+                our_root = %hex::encode(&our_base_root[..8]),
+                proposal_root = %hex::encode(&msg.prev_commitment_root[..8]),
+                "Checkpoint prev_root doesn't match our checkpoint base root"
+            );
             // Still vote but reject
             let mut vote = L2CheckpointVoteMessage {
                 height,
@@ -862,15 +920,6 @@ impl NullifierRouteHandler {
             return Ok(Some(vote));
         }
 
-        // Store the proposal
-        {
-            let mut votes = self.votes.write();
-            let state = votes
-                .entry(height)
-                .or_insert_with(|| CheckpointVoteState::new(checkpoint_hash));
-            state.proposal = Some(msg.clone());
-        }
-
         // Cast our signed vote (approve)
         let mut vote = L2CheckpointVoteMessage {
             height,
@@ -883,6 +932,9 @@ impl NullifierRouteHandler {
         let sign_msg = vote.signing_message();
         vote.signature = self.sign(&sign_msg);
 
+        if let Some(ref m) = *self.metrics.read() {
+            m.consensus_votes_total.inc();
+        }
         debug!(height, "Cast checkpoint vote (approve)");
         Ok(Some(vote))
     }
@@ -998,9 +1050,23 @@ impl NullifierRouteHandler {
         }
         self.proposed_heights.write().remove(&height);
 
-        // Compute and register new valid root
-        let new_root = self.epoch_manager.current_root()?;
-        self.epoch_manager.add_valid_root(new_root, height)?;
+        // Register new valid root from local tree state
+        let local_root = self.epoch_manager.current_root()?;
+        self.epoch_manager.add_valid_root(local_root, height)?;
+
+        // Update checkpoint base root to the PROPOSAL's new_commitment_root.
+        // This ensures all nodes converge on the same base root regardless of
+        // local tree state (e.g., pending shields that haven't been checkpointed yet).
+        // Fall back to local root only if no proposal is available.
+        let canonical_root = proposal
+            .map(|p| p.new_commitment_root)
+            .unwrap_or(local_root);
+        *self.checkpoint_base_root.write() = canonical_root;
+
+        // Also register the canonical root as valid (may differ from local if shields pending)
+        if canonical_root != local_root {
+            self.epoch_manager.add_valid_root(canonical_root, height)?;
+        }
 
         // Persist checkpoint + nullifiers atomically in a single SQLite transaction.
         // If the process crashes mid-write, the entire checkpoint is rolled back.
@@ -1009,7 +1075,7 @@ impl NullifierRouteHandler {
         let record = ghost_storage::L2CheckpointRecord {
             height,
             epoch: self.epoch_manager.current_epoch(),
-            commitment_root: new_root,
+            commitment_root: canonical_root,
             tx_count: tx_count as u32,
             proposer_id: proposal
                 .map(|p| hex::encode(p.proposer))
@@ -1019,8 +1085,19 @@ impl NullifierRouteHandler {
                 .and_then(|p| serde_json::to_vec(p).ok())
                 .unwrap_or_default(),
         };
-        self.db
-            .persist_l2_checkpoint_atomic(&record, &pending_nullifiers)?;
+        // Use upsert fallback for idempotent persistence (checkpoint may already exist from tree sync)
+        if let Err(e) = self
+            .db
+            .persist_l2_checkpoint_atomic(&record, &pending_nullifiers)
+        {
+            warn!(height, error = %e, "Checkpoint atomic persist failed, upserting checkpoint record");
+            self.db.upsert_l2_checkpoint(&record)?;
+        }
+
+        // Clear write-ahead log since nullifiers are now confirmed in l2_nullifiers
+        if let Err(e) = self.db.confirm_pending_nullifiers() {
+            warn!(height, error = %e, "Failed to clear pending_nullifiers write-ahead log (non-fatal, will be cleared on next checkpoint)");
+        }
 
         // Track L2 transfer fees: each NoteSpend transaction pays a flat protocol fee
         if tx_count > 0 {
@@ -1054,9 +1131,19 @@ impl NullifierRouteHandler {
             let nullifiers: Vec<[u8; 32]> = proposal
                 .map(|p| p.transactions.iter().map(|tx| tx.nullifier).collect())
                 .unwrap_or_default();
-            finalize_fn(height, new_root, nullifiers);
+            finalize_fn(height, canonical_root, nullifiers);
         }
 
+        if let Some(ref m) = *self.metrics.read() {
+            m.consensus_rounds_total.inc();
+            let votes = m.consensus_votes_total.get();
+            let rounds = m.consensus_rounds_total.get();
+            if rounds > 0 {
+                // Participation = votes / rounds * 100 (each round we should cast 1 vote)
+                let pct = ((votes * 100) / rounds).min(100);
+                m.consensus_participation_percent.set(pct as i64);
+            }
+        }
         debug!(height, tx_count, "Checkpoint finalized");
         Ok(())
     }
@@ -1203,10 +1290,26 @@ impl NullifierRouteHandler {
 
             // Process epoch transitions
             self.epoch_manager.on_checkpoint_finalized(height)?;
+
+            // Persist synced checkpoint to DB (idempotent via INSERT OR REPLACE)
+            let tx_count = block.transactions.len();
+            let record = ghost_storage::L2CheckpointRecord {
+                height,
+                epoch: block.epoch,
+                commitment_root: root,
+                tx_count: tx_count as u32,
+                proposer_id: hex::encode(block.proposer),
+                active_node_count: block.active_node_count,
+                block_data: serde_json::to_vec(block).unwrap_or_default(),
+            };
+            self.db.upsert_l2_checkpoint(&record)?;
         }
 
-        // Verify our root matches the peer's reported root
+        // Update checkpoint base root to the last replayed checkpoint's root
         let our_root = self.epoch_manager.current_root()?;
+        *self.checkpoint_base_root.write() = our_root;
+
+        // Verify our root matches the peer's reported root
         if our_root != response.commitment_root {
             warn!(
                 our_root = %hex::encode(&our_root[..8]),
@@ -1223,16 +1326,13 @@ impl NullifierRouteHandler {
         Ok(())
     }
 
-    /// Request tree sync from peers (called on startup if current_height == 0)
+    /// Request tree sync from peers (called on startup or when behind)
     pub fn request_tree_sync(&self) -> GhostResult<()> {
         let current_height = self.epoch_manager.current_height();
-        if current_height > 0 {
-            return Ok(()); // Already synced
-        }
 
         let request = L2TreeSyncRequest {
             requesting_node: self.our_id,
-            from_height: 0,
+            from_height: current_height,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         };
 
@@ -1240,7 +1340,7 @@ impl NullifierRouteHandler {
             let payload = serde_json::to_vec(&request)
                 .map_err(|e| GhostError::Serialization(e.to_string()))?;
             broadcast(MessageType::L2TreeSync, payload)?;
-            info!("Requested L2 tree sync from peers");
+            info!(from_height = current_height, "Requested L2 tree sync from peers");
         }
 
         Ok(())

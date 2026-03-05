@@ -38,6 +38,9 @@ pub const MIN_ENVELOPE_SIZE: usize = 107;
 /// Maximum envelope size (1MB)
 pub const MAX_ENVELOPE_SIZE: usize = 1_000_000;
 
+/// Maximum JSON nesting depth (no legitimate message needs more than 16 levels)
+pub const MAX_JSON_DEPTH: usize = 16;
+
 /// Maximum payload sizes by message type
 pub const MAX_SHARE_PROOF_SIZE: usize = 10_000;
 pub const MAX_BLOCK_FOUND_SIZE: usize = 100_000;
@@ -163,6 +166,9 @@ pub enum MessageValidationError {
 
     #[error("Timestamp too far in the past: {0}ms behind")]
     TimestampInPast(u64),
+
+    #[error("JSON nesting depth {0} exceeds maximum {MAX_JSON_DEPTH}")]
+    ExcessiveNesting(usize),
 }
 
 /// Validate raw message bytes before any deserialization
@@ -600,6 +606,54 @@ impl Default for GlobalRateLimiter {
     }
 }
 
+/// Check JSON nesting depth without full deserialization.
+///
+/// Scans raw bytes counting `{` and `[` nesting. Rejects if depth exceeds
+/// `MAX_JSON_DEPTH`. This is O(n) and runs before the expensive serde parse
+/// to prevent stack overflow from maliciously nested payloads.
+fn check_json_depth(data: &[u8]) -> Result<(), MessageValidationError> {
+    // Only check JSON-formatted messages
+    if data.is_empty() || data[0] != b'{' {
+        return Ok(());
+    }
+
+    let mut depth: usize = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for &byte in data {
+        if escape {
+            escape = false;
+            continue;
+        }
+
+        if in_string {
+            match byte {
+                b'\\' => escape = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_JSON_DEPTH {
+                    return Err(MessageValidationError::ExcessiveNesting(depth));
+                }
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 /// Full validation pipeline for incoming messages
 ///
 /// 1. Validate raw bytes (size, version, type)
@@ -609,6 +663,9 @@ impl Default for GlobalRateLimiter {
 pub fn validate_and_verify(data: &[u8]) -> Result<MessageEnvelope, MessageValidationError> {
     // Step 1: Header validation (fast, no alloc)
     validate_envelope_header(data)?;
+
+    // Step 1.5: JSON depth check (O(n), prevents stack overflow from deeply nested payloads)
+    check_json_depth(data)?;
 
     // Step 2: Deserialize
     let envelope = MessageEnvelope::deserialize(data)

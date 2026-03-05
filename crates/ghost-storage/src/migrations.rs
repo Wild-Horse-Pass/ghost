@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 29;
+const SCHEMA_VERSION: u32 = 30;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -85,6 +85,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (27, migrate_v27),
         (28, migrate_v28),
         (29, migrate_v29),
+        (30, migrate_v30),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1724,6 +1725,23 @@ fn migrate_v29(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added source and wraith_fee_sats columns to ghost_locks");
+    Ok(())
+}
+
+/// Migration to v30: Add pending_nullifiers write-ahead table for crash recovery
+fn migrate_v30(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v30: Add pending_nullifiers write-ahead table");
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS pending_nullifiers (
+            nullifier BLOB PRIMARY KEY,
+            epoch INTEGER NOT NULL,
+            spent_at INTEGER NOT NULL
+        );",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added pending_nullifiers write-ahead table for crash recovery");
     Ok(())
 }
 

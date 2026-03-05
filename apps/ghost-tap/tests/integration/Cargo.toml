@@ -4,10 +4,15 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[features]
+live-tests = ["reqwest"]
+
 [dependencies]
 ghost-tap-core.workspace = true
+ghost-gsp-proto.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tokio-test.workspace = true
 serde_json.workspace = true
 secrecy.workspace = true
 secp256k1.workspace = true
+reqwest = { workspace = true, optional = true }

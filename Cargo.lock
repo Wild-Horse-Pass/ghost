@@ -3353,7 +3353,9 @@ dependencies = [
 name = "ghost-tap-integration"
 version = "1.8.0"
 dependencies = [
+ "ghost-gsp-proto",
  "ghost-tap-core",
+ "reqwest 0.12.28",
  "secp256k1 0.29.1",
  "secrecy",
  "serde_json",
