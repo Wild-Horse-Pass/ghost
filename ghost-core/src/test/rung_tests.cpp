@@ -2062,6 +2062,593 @@ BOOST_AUTO_TEST_CASE(merge_block_type_mismatch)
     BOOST_CHECK(!VerifyRungTx(tx, 0, spent_out, 0, checker, txdata, &serror));
 }
 
+// ============================================================================
+// Anchor block negative tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_anchor_empty_rejected)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR;
+    // No fields → ERROR
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_channel_missing_pubkey)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    // Only 1 pubkey (needs 2) → ERROR
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_CHANNEL;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_channel_zero_commitment)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_CHANNEL;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)}); // commitment = 0 → UNSATISFIED
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_channel_no_commitment_ok)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    // 2 pubkeys, no numeric → SATISFIED (commitment is optional)
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_CHANNEL;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_pool_missing_hash)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_POOL;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)}); // count but no hash → ERROR
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_pool_zero_count)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_POOL;
+    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)}); // count = 0 → UNSATISFIED
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_reserve_n_gt_m)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_RESERVE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)}); // n
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)}); // m (n > m → UNSATISFIED)
+    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_reserve_missing_hash)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_RESERVE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});
+    // No hash → ERROR
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_seal_missing_hash)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_SEAL;
+    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    // Only 1 hash (needs 2) → ERROR
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_oracle_missing_pubkey)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_ORACLE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // count but no pubkey → ERROR
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_anchor_oracle_zero_count)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ANCHOR_ORACLE;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)}); // count = 0 → UNSATISFIED
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+// ============================================================================
+// PLC block negative tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_hysteresis_fee_low_gt_high)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::HYSTERESIS_FEE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});  // high = 10
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)}); // low = 100 > high → UNSATISFIED
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_hysteresis_fee_missing_field)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::HYSTERESIS_FEE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)}); // only 1 numeric (needs 2)
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_hysteresis_value_outside_band)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::HYSTERESIS_VALUE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10000)}); // high
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5000)});  // low
+
+    RungEvalContext ctx;
+    ctx.input_amount = 3000; // below low band → UNSATISFIED
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+
+    ctx.input_amount = 15000; // above high band → UNSATISFIED
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+
+    ctx.input_amount = 7500; // within band → SATISFIED
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_timer_continuous_zero)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::TIMER_CONTINUOUS;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)}); // 0 → UNSATISFIED
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_timer_off_delay_zero)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::TIMER_OFF_DELAY;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)}); // 0 → UNSATISFIED
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_timer_off_delay_missing)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::TIMER_OFF_DELAY;
+    // No numeric → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_latch_set_missing_pubkey)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::LATCH_SET;
+    // No pubkey → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_latch_reset_missing_delay)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::LATCH_RESET;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    // No numeric → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_latch_reset_missing_pubkey)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::LATCH_RESET;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});
+    // No pubkey → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_down_missing_pubkey)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_DOWN;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});
+    // No pubkey → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_down_missing_numeric)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_DOWN;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    // No numeric → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_preset_missing_field)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_PRESET;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)}); // only 1 (needs 2)
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_up_missing_pubkey)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_UP;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    // No pubkey → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_one_shot_missing_hash)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ONE_SHOT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    // No hash → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_one_shot_missing_numeric)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ONE_SHOT;
+    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    // No numeric → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_adaptor_sig_missing_second_pubkey)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ADAPTOR_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()}); // only 1 pubkey (needs 2)
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_adaptor_sig_missing_signature)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ADAPTOR_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    // No signature → ERROR
+    BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+// ============================================================================
+// COMPARE edge cases
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_compare_unknown_operator)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COMPARE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0xFF)}); // unknown operator
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1000)});
+
+    RungEvalContext ctx;
+    ctx.input_amount = 5000;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_compare_in_range_missing_upper)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COMPARE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0x07)}); // IN_RANGE
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1000)}); // lower only, no upper → ERROR
+
+    RungEvalContext ctx;
+    ctx.input_amount = 5000;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_compare_missing_operand)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COMPARE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0x01)}); // EQ but no value_b → ERROR
+
+    RungEvalContext ctx;
+    ctx.input_amount = 5000;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+// ============================================================================
+// SEQUENCER edge cases
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_sequencer_at_last_step)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::SEQUENCER;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)}); // current_step = 2
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)}); // total = 3 → current < total → SATISFIED
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sequencer_current_equals_total)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::SEQUENCER;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)}); // current = total → UNSATISFIED
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sequencer_total_zero)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::SEQUENCER;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)}); // total = 0 → UNSATISFIED
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+// ============================================================================
+// RATE_LIMIT edge cases
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_rate_limit_exceeds_max)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::RATE_LIMIT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10000)}); // max_per_block
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(50000)}); // accumulation_cap
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});    // refill_blocks
+
+    RungEvalContext ctx;
+    ctx.output_amount = 15000; // exceeds max_per_block → UNSATISFIED
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_rate_limit_missing_fields)
+{
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::RATE_LIMIT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10000)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(50000)});
+    // Only 2 numerics (needs 3) → ERROR
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+// ============================================================================
+// Deserializer robustness tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(deserialize_truncated_block_type)
+{
+    // 1 rung, 1 block, but only 1 byte of block type (needs 2)
+    std::vector<uint8_t> data = {0x01, 0x01, 0x01};
+    LadderWitness ladder;
+    std::string error;
+    BOOST_CHECK(!DeserializeLadderWitness(data, ladder, error));
+}
+
+BOOST_AUTO_TEST_CASE(deserialize_truncated_field_data)
+{
+    // Build valid header but truncated field data
+    std::vector<uint8_t> data;
+    data.push_back(0x01); // n_rungs = 1
+    data.push_back(0x01); // n_blocks = 1
+    // block type SIG (0x0001)
+    data.push_back(0x01);
+    data.push_back(0x00);
+    data.push_back(0x00); // not inverted
+    data.push_back(0x01); // n_fields = 1
+    data.push_back(0x01); // data type PUBKEY
+    data.push_back(0x21); // data len 33
+    // Only 5 bytes of actual data (needs 33)
+    data.insert(data.end(), 5, 0xAA);
+
+    LadderWitness ladder;
+    std::string error;
+    BOOST_CHECK(!DeserializeLadderWitness(data, ladder, error));
+}
+
+BOOST_AUTO_TEST_CASE(deserialize_max_rungs_exceeded)
+{
+    // n_rungs = 17 (max is 16)
+    std::vector<uint8_t> data = {0x11}; // compact size 17
+    LadderWitness ladder;
+    std::string error;
+    BOOST_CHECK(!DeserializeLadderWitness(data, ladder, error));
+    BOOST_CHECK(error.find("too many rungs") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(deserialize_max_blocks_exceeded)
+{
+    // 1 rung, n_blocks = 9 (max is 8)
+    std::vector<uint8_t> data = {0x01, 0x09};
+    LadderWitness ladder;
+    std::string error;
+    BOOST_CHECK(!DeserializeLadderWitness(data, ladder, error));
+    BOOST_CHECK(error.find("too many blocks") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(deserialize_max_fields_exceeded)
+{
+    std::vector<uint8_t> data;
+    data.push_back(0x01); // n_rungs = 1
+    data.push_back(0x01); // n_blocks = 1
+    data.push_back(0x01); data.push_back(0x00); // SIG block type
+    data.push_back(0x00); // not inverted
+    data.push_back(0x11); // n_fields = 17 (max is 16)
+
+    LadderWitness ladder;
+    std::string error;
+    BOOST_CHECK(!DeserializeLadderWitness(data, ladder, error));
+    BOOST_CHECK(error.find("too many fields") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(deserialize_oversized_witness)
+{
+    // > 10000 bytes
+    std::vector<uint8_t> data(10001, 0x00);
+    data[0] = 0x01; // n_rungs = 1
+
+    LadderWitness ladder;
+    std::string error;
+    BOOST_CHECK(!DeserializeLadderWitness(data, ladder, error));
+    BOOST_CHECK(error.find("exceeds maximum size") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(eval_multisig_below_threshold)
 {
     MockSignatureChecker checker;

@@ -98,6 +98,7 @@ add_executable(fuzz
   rbf.cpp
   rolling_bloom_filter.cpp
   rpc.cpp
+  rung_deserialize.cpp
   script.cpp
   script_assets_test_minimizer.cpp
   script_descriptor_cache.cpp
