@@ -98,6 +98,65 @@ static int64_t ReadNumeric(const RungField& field)
     return static_cast<int64_t>(val);
 }
 
+/** Helper: check if a pubkey field exists and has valid size. */
+static bool HasRequiredPubkeys(const RungBlock& block, size_t count)
+{
+    auto pks = FindAllFields(block, RungDataType::PUBKEY);
+    return pks.size() >= count;
+}
+
+/** Helper: compare two RungBlocks for structural equality (same type, same condition fields).
+ *  Only compares condition data types (PUBKEY, HASH256, HASH160, NUMERIC, SCHEME),
+ *  skips witness types (SIGNATURE, PREIMAGE). */
+static bool BlockConditionsEqual(const RungBlock& a, const RungBlock& b)
+{
+    if (a.type != b.type) return false;
+    if (a.inverted != b.inverted) return false;
+
+    // Collect condition-only fields from each
+    std::vector<const RungField*> a_conds, b_conds;
+    for (const auto& f : a.fields) {
+        if (IsConditionDataType(f.type)) a_conds.push_back(&f);
+    }
+    for (const auto& f : b.fields) {
+        if (IsConditionDataType(f.type)) b_conds.push_back(&f);
+    }
+    if (a_conds.size() != b_conds.size()) return false;
+    for (size_t i = 0; i < a_conds.size(); ++i) {
+        if (a_conds[i]->type != b_conds[i]->type) return false;
+        if (a_conds[i]->data != b_conds[i]->data) return false;
+    }
+    return true;
+}
+
+/** Helper: compare two Rungs for condition equality (all blocks must match). */
+static bool RungConditionsEqual(const Rung& a, const Rung& b)
+{
+    if (a.blocks.size() != b.blocks.size()) return false;
+    for (size_t i = 0; i < a.blocks.size(); ++i) {
+        if (!BlockConditionsEqual(a.blocks[i], b.blocks[i])) return false;
+    }
+    return true;
+}
+
+/** Helper: compare full conditions structures (all rungs). */
+static bool FullConditionsEqual(const RungConditions& a, const RungConditions& b)
+{
+    if (a.rungs.size() != b.rungs.size()) return false;
+    for (size_t i = 0; i < a.rungs.size(); ++i) {
+        if (!RungConditionsEqual(a.rungs[i], b.rungs[i])) return false;
+    }
+    return true;
+}
+
+/** Helper: try to deserialize a CTxOut's scriptPubKey as rung conditions.
+ *  Returns true on success. */
+static bool TryDeserializeOutputConditions(const CTxOut& output, RungConditions& out)
+{
+    std::string error;
+    return DeserializeRungConditions(output.scriptPubKey, out, error);
+}
+
 EvalResult ApplyInversion(EvalResult raw, bool inverted)
 {
     if (!inverted) return raw;
@@ -623,12 +682,6 @@ EvalResult EvalAmountLockBlock(const RungBlock& block, const RungEvalContext& ct
 // Phase 2 evaluators — Anchor
 // ============================================================================
 
-/** Common anchor validation: check required typed params are present. */
-static bool HasRequiredPubkeys(const RungBlock& block, size_t count)
-{
-    return FindAllFields(block, RungDataType::PUBKEY).size() >= count;
-}
-
 static bool HasRequiredHashes(const RungBlock& block, size_t count)
 {
     return FindAllFields(block, RungDataType::HASH256).size() >= count;
@@ -729,16 +782,22 @@ EvalResult EvalRecurseSameBlock(const RungBlock& block, const RungEvalContext& c
     if (depth <= 0) {
         return EvalResult::UNSATISFIED;
     }
-    // Full output comparison requires covenant chain infrastructure.
-    // Validate structure: max_depth present and positive.
-    if (ctx.spending_output) {
-        // Output script exists — structural validation passes
-        return EvalResult::SATISFIED;
+
+    // If we have both input conditions and a spending output, verify the covenant
+    if (ctx.input_conditions && ctx.spending_output) {
+        RungConditions output_conds;
+        if (!TryDeserializeOutputConditions(*ctx.spending_output, output_conds)) {
+            return EvalResult::UNSATISFIED; // output must be a valid rung script
+        }
+        // Output conditions must be identical to input conditions
+        if (!FullConditionsEqual(*ctx.input_conditions, output_conds)) {
+            return EvalResult::UNSATISFIED;
+        }
     }
     return EvalResult::SATISFIED;
 }
 
-EvalResult EvalRecurseModifiedBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+EvalResult EvalRecurseModifiedBlock(const RungBlock& block, const RungEvalContext& ctx)
 {
     // Verify output conditions differ from input by exactly one specified mutation
     auto numerics = FindAllFields(block, RungDataType::NUMERIC);
@@ -747,10 +806,71 @@ EvalResult EvalRecurseModifiedBlock(const RungBlock& block, const RungEvalContex
     }
     // max_depth, mutation_block_idx, mutation_param_idx, mutation_delta
     int64_t max_depth = ReadNumeric(*numerics[0]);
+    int64_t mut_block_idx = ReadNumeric(*numerics[1]);
+    int64_t mut_param_idx = ReadNumeric(*numerics[2]);
+    int64_t mut_delta = ReadNumeric(*numerics[3]);
     if (max_depth <= 0) {
         return EvalResult::UNSATISFIED;
     }
-    // Structural validation passes — full mutation verification needs covenant chain
+
+    if (ctx.input_conditions && ctx.spending_output) {
+        RungConditions output_conds;
+        if (!TryDeserializeOutputConditions(*ctx.spending_output, output_conds)) {
+            return EvalResult::UNSATISFIED;
+        }
+        if (output_conds.rungs.size() != ctx.input_conditions->rungs.size()) {
+            return EvalResult::UNSATISFIED;
+        }
+        // Verify all rungs/blocks match EXCEPT the mutated parameter
+        for (size_t ri = 0; ri < output_conds.rungs.size(); ++ri) {
+            const auto& in_rung = ctx.input_conditions->rungs[ri];
+            const auto& out_rung = output_conds.rungs[ri];
+            if (in_rung.blocks.size() != out_rung.blocks.size()) {
+                return EvalResult::UNSATISFIED;
+            }
+            for (size_t bi = 0; bi < in_rung.blocks.size(); ++bi) {
+                if (static_cast<int64_t>(ri) == 0 && static_cast<int64_t>(bi) == mut_block_idx) {
+                    // This block should differ by exactly mut_delta at param mut_param_idx
+                    const auto& in_blk = in_rung.blocks[bi];
+                    const auto& out_blk = out_rung.blocks[bi];
+                    if (in_blk.type != out_blk.type) return EvalResult::UNSATISFIED;
+                    // Collect condition fields
+                    std::vector<const RungField*> in_conds, out_conds;
+                    for (const auto& f : in_blk.fields) {
+                        if (IsConditionDataType(f.type)) in_conds.push_back(&f);
+                    }
+                    for (const auto& f : out_blk.fields) {
+                        if (IsConditionDataType(f.type)) out_conds.push_back(&f);
+                    }
+                    if (in_conds.size() != out_conds.size()) return EvalResult::UNSATISFIED;
+                    for (size_t pi = 0; pi < in_conds.size(); ++pi) {
+                        if (static_cast<int64_t>(pi) == mut_param_idx) {
+                            // This param should differ by mut_delta
+                            if (in_conds[pi]->type != RungDataType::NUMERIC ||
+                                out_conds[pi]->type != RungDataType::NUMERIC) {
+                                return EvalResult::UNSATISFIED;
+                            }
+                            int64_t in_val = ReadNumeric(*in_conds[pi]);
+                            int64_t out_val = ReadNumeric(*out_conds[pi]);
+                            if (out_val != in_val + mut_delta) {
+                                return EvalResult::UNSATISFIED;
+                            }
+                        } else {
+                            // All other params must be identical
+                            if (in_conds[pi]->type != out_conds[pi]->type ||
+                                in_conds[pi]->data != out_conds[pi]->data) {
+                                return EvalResult::UNSATISFIED;
+                            }
+                        }
+                    }
+                } else {
+                    if (!BlockConditionsEqual(in_rung.blocks[bi], out_rung.blocks[bi])) {
+                        return EvalResult::UNSATISFIED;
+                    }
+                }
+            }
+        }
+    }
     return EvalResult::SATISFIED;
 }
 
@@ -768,12 +888,20 @@ EvalResult EvalRecurseUntilBlock(const RungBlock& block, const RungEvalContext& 
     if (ctx.block_height >= until_height) {
         return EvalResult::SATISFIED;
     }
-    // Otherwise, must re-encumber with same conditions (needs covenant chain)
-    // For now, structural validation passes
+    // Before until_height: must re-encumber output with same conditions
+    if (ctx.input_conditions && ctx.spending_output) {
+        RungConditions output_conds;
+        if (!TryDeserializeOutputConditions(*ctx.spending_output, output_conds)) {
+            return EvalResult::UNSATISFIED;
+        }
+        if (!FullConditionsEqual(*ctx.input_conditions, output_conds)) {
+            return EvalResult::UNSATISFIED;
+        }
+    }
     return EvalResult::SATISFIED;
 }
 
-EvalResult EvalRecurseCountBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+EvalResult EvalRecurseCountBlock(const RungBlock& block, const RungEvalContext& ctx)
 {
     const RungField* max_count = FindField(block, RungDataType::NUMERIC);
     if (!max_count) {
@@ -784,9 +912,37 @@ EvalResult EvalRecurseCountBlock(const RungBlock& block, const RungEvalContext& 
         return EvalResult::ERROR;
     }
     if (count == 0) {
-        return EvalResult::SATISFIED; // countdown reached zero
+        return EvalResult::SATISFIED; // countdown reached zero — covenant terminates
     }
-    // Count > 0: needs covenant chain to track — structural validation passes
+    // Count > 0: output must re-encumber with count-1
+    // Uses RECURSE_MODIFIED semantics on the count field (first NUMERIC in the block)
+    if (ctx.input_conditions && ctx.spending_output) {
+        RungConditions output_conds;
+        if (!TryDeserializeOutputConditions(*ctx.spending_output, output_conds)) {
+            return EvalResult::UNSATISFIED;
+        }
+        // Find the RECURSE_COUNT block in output conditions and verify count decremented
+        bool found_valid = false;
+        for (const auto& rung : output_conds.rungs) {
+            for (const auto& blk : rung.blocks) {
+                if (blk.type == RungBlockType::RECURSE_COUNT) {
+                    const RungField* out_count_field = nullptr;
+                    for (const auto& f : blk.fields) {
+                        if (f.type == RungDataType::NUMERIC) { out_count_field = &f; break; }
+                    }
+                    if (out_count_field) {
+                        int64_t out_count = ReadNumeric(*out_count_field);
+                        if (out_count == count - 1) {
+                            found_valid = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (found_valid) break;
+        }
+        if (!found_valid) return EvalResult::UNSATISFIED;
+    }
     return EvalResult::SATISFIED;
 }
 
@@ -801,23 +957,114 @@ EvalResult EvalRecurseSplitBlock(const RungBlock& block, const RungEvalContext& 
     if (max_splits <= 0 || min_split_sats < 0) {
         return EvalResult::UNSATISFIED;
     }
-    // Check output amount >= min_split_sats if available
-    if (ctx.output_amount > 0 && ctx.output_amount < min_split_sats) {
+
+    // Verify all outputs: each must be >= min_split_sats and re-encumber with max_splits-1
+    if (ctx.tx && ctx.input_conditions) {
+        CAmount total_output = 0;
+        for (const auto& vout : ctx.tx->vout) {
+            if (vout.nValue < min_split_sats) {
+                return EvalResult::UNSATISFIED;
+            }
+            total_output += vout.nValue;
+            // Each output must carry valid rung conditions with decremented max_splits
+            RungConditions out_conds;
+            if (TryDeserializeOutputConditions(vout, out_conds)) {
+                // Check that RECURSE_SPLIT block exists with max_splits-1
+                for (const auto& rung : out_conds.rungs) {
+                    for (const auto& blk : rung.blocks) {
+                        if (blk.type == RungBlockType::RECURSE_SPLIT) {
+                            auto out_nums = FindAllFields(blk, RungDataType::NUMERIC);
+                            if (out_nums.size() >= 1) {
+                                int64_t out_splits = ReadNumeric(*out_nums[0]);
+                                if (out_splits != max_splits - 1) {
+                                    return EvalResult::UNSATISFIED;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Value conservation: total outputs must not exceed input
+        if (total_output > ctx.input_amount) {
+            return EvalResult::UNSATISFIED;
+        }
+    } else if (ctx.output_amount > 0 && ctx.output_amount < min_split_sats) {
         return EvalResult::UNSATISFIED;
     }
     return EvalResult::SATISFIED;
 }
 
-EvalResult EvalRecurseDecayBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+EvalResult EvalRecurseDecayBlock(const RungBlock& block, const RungEvalContext& ctx)
 {
     auto numerics = FindAllFields(block, RungDataType::NUMERIC);
     if (numerics.size() < 4) {
         return EvalResult::ERROR;
     }
-    // max_depth, decay_block_idx, decay_param_idx, decay_per_step
+    // max_depth, decay_block_idx, decay_param_idx, decay_per_step (negative delta)
     int64_t max_depth = ReadNumeric(*numerics[0]);
+    int64_t decay_block_idx = ReadNumeric(*numerics[1]);
+    int64_t decay_param_idx = ReadNumeric(*numerics[2]);
+    int64_t decay_per_step = ReadNumeric(*numerics[3]);
     if (max_depth <= 0) {
         return EvalResult::UNSATISFIED;
+    }
+
+    // Decay is RECURSE_MODIFIED with negative delta (relaxing constraints)
+    if (ctx.input_conditions && ctx.spending_output) {
+        RungConditions output_conds;
+        if (!TryDeserializeOutputConditions(*ctx.spending_output, output_conds)) {
+            return EvalResult::UNSATISFIED;
+        }
+        if (output_conds.rungs.size() != ctx.input_conditions->rungs.size()) {
+            return EvalResult::UNSATISFIED;
+        }
+        // Verify the target parameter decreased by decay_per_step
+        for (size_t ri = 0; ri < output_conds.rungs.size(); ++ri) {
+            const auto& in_rung = ctx.input_conditions->rungs[ri];
+            const auto& out_rung = output_conds.rungs[ri];
+            if (in_rung.blocks.size() != out_rung.blocks.size()) {
+                return EvalResult::UNSATISFIED;
+            }
+            for (size_t bi = 0; bi < in_rung.blocks.size(); ++bi) {
+                if (static_cast<int64_t>(ri) == 0 && static_cast<int64_t>(bi) == decay_block_idx) {
+                    const auto& in_blk = in_rung.blocks[bi];
+                    const auto& out_blk = out_rung.blocks[bi];
+                    if (in_blk.type != out_blk.type) return EvalResult::UNSATISFIED;
+                    std::vector<const RungField*> in_conds, out_conds;
+                    for (const auto& f : in_blk.fields) {
+                        if (IsConditionDataType(f.type)) in_conds.push_back(&f);
+                    }
+                    for (const auto& f : out_blk.fields) {
+                        if (IsConditionDataType(f.type)) out_conds.push_back(&f);
+                    }
+                    if (in_conds.size() != out_conds.size()) return EvalResult::UNSATISFIED;
+                    for (size_t pi = 0; pi < in_conds.size(); ++pi) {
+                        if (static_cast<int64_t>(pi) == decay_param_idx) {
+                            if (in_conds[pi]->type != RungDataType::NUMERIC ||
+                                out_conds[pi]->type != RungDataType::NUMERIC) {
+                                return EvalResult::UNSATISFIED;
+                            }
+                            int64_t in_val = ReadNumeric(*in_conds[pi]);
+                            int64_t out_val = ReadNumeric(*out_conds[pi]);
+                            // Decay: output value should be input - decay_per_step
+                            if (out_val != in_val - decay_per_step) {
+                                return EvalResult::UNSATISFIED;
+                            }
+                        } else {
+                            if (in_conds[pi]->type != out_conds[pi]->type ||
+                                in_conds[pi]->data != out_conds[pi]->data) {
+                                return EvalResult::UNSATISFIED;
+                            }
+                        }
+                    }
+                } else {
+                    if (!BlockConditionsEqual(in_rung.blocks[bi], out_rung.blocks[bi])) {
+                        return EvalResult::UNSATISFIED;
+                    }
+                }
+            }
+        }
     }
     return EvalResult::SATISFIED;
 }
@@ -924,15 +1171,15 @@ EvalResult EvalCounterUpBlock(const RungBlock& block, const RungEvalContext& /*c
 EvalResult EvalCompareBlock(const RungBlock& block, const RungEvalContext& ctx)
 {
     // Comparator: compare input_amount against thresholds using specified operator
-    const RungField* scheme_field = FindField(block, RungDataType::SCHEME);
+    // First NUMERIC is the operator, second is value_b, optional third is value_c
     auto numerics = FindAllFields(block, RungDataType::NUMERIC);
 
-    if (!scheme_field || numerics.empty()) {
+    if (numerics.size() < 2) {
         return EvalResult::ERROR;
     }
 
-    uint8_t op = scheme_field->data[0];
-    int64_t value_b = ReadNumeric(*numerics[0]);
+    uint8_t op = static_cast<uint8_t>(ReadNumeric(*numerics[0]));
+    int64_t value_b = ReadNumeric(*numerics[1]);
     if (value_b < 0) return EvalResult::ERROR;
 
     CAmount amount = ctx.input_amount;
@@ -947,8 +1194,8 @@ EvalResult EvalCompareBlock(const RungBlock& block, const RungEvalContext& ctx)
     case 0x06: return (amount <= value_b) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
     case 0x07: {
         // IN_RANGE: needs value_c as upper bound
-        if (numerics.size() < 2) return EvalResult::ERROR;
-        int64_t value_c = ReadNumeric(*numerics[1]);
+        if (numerics.size() < 3) return EvalResult::ERROR;
+        int64_t value_c = ReadNumeric(*numerics[2]);
         if (value_c < 0) return EvalResult::ERROR;
         return (amount >= value_b && amount <= value_c) ? EvalResult::SATISFIED : EvalResult::UNSATISFIED;
     }
@@ -1271,6 +1518,10 @@ bool VerifyRungTx(const CTransaction& tx,
     if (!tx.vout.empty()) {
         eval_ctx.output_amount = tx.vout[0].nValue;
         eval_ctx.spending_output = &tx.vout[0];
+    }
+    // Provide input conditions for recursion covenant checks
+    if (has_conditions) {
+        eval_ctx.input_conditions = &conditions;
     }
 
     LadderWitness eval_ladder;

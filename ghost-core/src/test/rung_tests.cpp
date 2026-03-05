@@ -1046,8 +1046,8 @@ BOOST_AUTO_TEST_CASE(eval_compare_operators)
     auto make_compare = [](uint8_t op, uint32_t val) {
         RungBlock block;
         block.type = RungBlockType::COMPARE;
-        block.fields.push_back({RungDataType::SCHEME, {op}});
-        block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(val)});
+        block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(op)});  // operator
+        block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(val)}); // value_b
         return block;
     };
 
@@ -1087,7 +1087,7 @@ BOOST_AUTO_TEST_CASE(eval_compare_in_range)
     // IN_RANGE (0x07): amount >= value_b && amount <= value_c
     RungBlock block;
     block.type = RungBlockType::COMPARE;
-    block.fields.push_back({RungDataType::SCHEME, {0x07}});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0x07)});  // IN_RANGE operator
     block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1000)});  // lower bound
     block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10000)}); // upper bound
 

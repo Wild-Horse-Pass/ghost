@@ -60,6 +60,7 @@ struct RungEvalContext {
     CAmount output_amount{0};              //!< Amount of the output being created (for AMOUNT_LOCK)
     int32_t block_height{0};               //!< Current block height (for RECURSE_UNTIL)
     const CTxOut* spending_output{nullptr}; //!< Output script being created (for recursion covenant checks)
+    const RungConditions* input_conditions{nullptr}; //!< Input conditions (for recursion covenant comparison)
 };
 
 /** Result of evaluating a single block or rung. */

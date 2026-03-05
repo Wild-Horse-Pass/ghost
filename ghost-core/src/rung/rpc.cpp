@@ -736,6 +736,28 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
         }
         break;
     }
+    case RungBlockType::ADAPTOR_SIG:
+    case RungBlockType::VAULT_LOCK: {
+        // Same as SIG: take a single privkey and produce a Schnorr signature
+        if (block_spec.exists("privkey")) {
+            std::string wif = block_spec["privkey"].get_str();
+            CKey privkey = DecodeSecret(wif);
+            if (!privkey.IsValid()) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid private key");
+            }
+            uint256 sighash;
+            if (!rung::SignatureHashLadder(txdata, mtx, input_idx, SIGHASH_DEFAULT, conditions, sighash)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to compute sighash");
+            }
+            unsigned char sig_buf[64];
+            uint256 aux_rand = GetRandHash();
+            if (!privkey.SignSchnorr(sighash, sig_buf, nullptr, aux_rand)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Schnorr signing failed");
+            }
+            block.fields.push_back({RungDataType::SIGNATURE, std::vector<uint8_t>(sig_buf, sig_buf + 64)});
+        }
+        break;
+    }
     case RungBlockType::HASH_PREIMAGE:
     case RungBlockType::HASH160_PREIMAGE: {
         std::string preimage_hex = block_spec["preimage"].get_str();
@@ -746,6 +768,18 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
         block.fields.push_back({RungDataType::PREIMAGE, preimage_data});
         break;
     }
+    case RungBlockType::TAGGED_HASH: {
+        // TAGGED_HASH needs a PREIMAGE field in witness (same as HASH_PREIMAGE)
+        if (block_spec.exists("preimage")) {
+            std::string preimage_hex = block_spec["preimage"].get_str();
+            auto preimage_data = ParseHex(preimage_hex);
+            if (preimage_data.empty()) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "TAGGED_HASH requires non-empty preimage hex");
+            }
+            block.fields.push_back({RungDataType::PREIMAGE, preimage_data});
+        }
+        break;
+    }
     case RungBlockType::CSV:
     case RungBlockType::CSV_TIME:
     case RungBlockType::CLTV:
@@ -753,7 +787,7 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
         // No witness fields needed — NUMERIC comes from conditions
         break;
     default:
-        // Phase 2/3 stubs — no witness fields
+        // Phase 2/3/4 blocks — no witness fields needed
         break;
     }
 
