@@ -15,6 +15,7 @@
 #include <script/script.h>
 
 #include <algorithm>
+#include <map>
 
 namespace rung {
 
@@ -213,8 +214,25 @@ EvalResult EvalSigBlock(const RungBlock& block,
                         SigVersion sigversion,
                         ScriptExecutionData& execdata)
 {
+    const RungField* pubkey_commit = FindField(block, RungDataType::PUBKEY_COMMIT);
     const RungField* pubkey_field = FindField(block, RungDataType::PUBKEY);
     const RungField* sig_field = FindField(block, RungDataType::SIGNATURE);
+
+    // PUBKEY_COMMIT: commitment without revealed pubkey is an error
+    if (pubkey_commit && !pubkey_field) {
+        return EvalResult::ERROR;
+    }
+
+    // If PUBKEY_COMMIT present, verify the revealed PUBKEY matches the commitment
+    if (pubkey_commit && pubkey_field) {
+        unsigned char hash[CSHA256::OUTPUT_SIZE];
+        CSHA256().Write(pubkey_field->data.data(), pubkey_field->data.size()).Finalize(hash);
+        if (pubkey_commit->data.size() != 32 ||
+            memcmp(hash, pubkey_commit->data.data(), 32) != 0) {
+            return EvalResult::UNSATISFIED;
+        }
+        // Commitment verified — proceed with pubkey_field for signature check
+    }
 
     if (!pubkey_field || !sig_field) {
         return EvalResult::ERROR;
@@ -880,81 +898,139 @@ EvalResult EvalRecurseSameBlock(const RungBlock& block, const RungEvalContext& c
     return EvalResult::SATISFIED;
 }
 
-EvalResult EvalRecurseModifiedBlock(const RungBlock& block, const RungEvalContext& ctx)
+/** Helper: a single mutation target (rung, block, param, delta). */
+struct MutationSpec {
+    int64_t rung_idx;
+    int64_t block_idx;
+    int64_t param_idx;
+    int64_t delta;
+};
+
+/** Parse mutation specs from NUMERIC fields. Returns max_depth via out-param.
+ *  Supports legacy (4 NUMERICs: rung 0, single mutation) and new format (6+ NUMERICs). */
+static bool ParseMutationSpecs(const std::vector<const RungField*>& numerics,
+                                int64_t& max_depth,
+                                std::vector<MutationSpec>& mutations)
 {
-    // Verify output conditions differ from input by exactly one specified mutation
-    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
-    if (numerics.size() < 4) {
-        return EvalResult::ERROR;
+    if (numerics.size() < 4) return false;
+
+    max_depth = ReadNumeric(*numerics[0]);
+
+    if (numerics.size() == 4 || numerics.size() == 5) {
+        // Legacy format: single mutation at rung 0
+        mutations.push_back({0, ReadNumeric(*numerics[1]),
+                             ReadNumeric(*numerics[2]), ReadNumeric(*numerics[3])});
+        return true;
     }
-    // max_depth, mutation_block_idx, mutation_param_idx, mutation_delta
-    int64_t max_depth = ReadNumeric(*numerics[0]);
-    int64_t mut_block_idx = ReadNumeric(*numerics[1]);
-    int64_t mut_param_idx = ReadNumeric(*numerics[2]);
-    int64_t mut_delta = ReadNumeric(*numerics[3]);
-    if (max_depth <= 0) {
+
+    // New format: numerics[1] = num_mutations, then 4 fields per mutation
+    int64_t num_mutations = ReadNumeric(*numerics[1]);
+    if (num_mutations < 1 || static_cast<size_t>(2 + 4 * num_mutations) > numerics.size()) {
+        return false;
+    }
+    for (int64_t i = 0; i < num_mutations; ++i) {
+        size_t base = 2 + 4 * i;
+        mutations.push_back({ReadNumeric(*numerics[base]),
+                             ReadNumeric(*numerics[base + 1]),
+                             ReadNumeric(*numerics[base + 2]),
+                             ReadNumeric(*numerics[base + 3])});
+    }
+    return true;
+}
+
+/** Verify output conditions match input except for specified mutations (additive delta).
+ *  Used by both RECURSE_MODIFIED and RECURSE_DECAY. For DECAY, caller negates the delta. */
+static EvalResult VerifyMutatedConditions(const RungEvalContext& ctx,
+                                           const std::vector<MutationSpec>& mutations)
+{
+    if (!ctx.input_conditions || !ctx.spending_output) {
+        return EvalResult::SATISFIED; // no conditions to check
+    }
+
+    RungConditions output_conds;
+    if (!TryDeserializeOutputConditions(*ctx.spending_output, output_conds)) {
+        return EvalResult::UNSATISFIED;
+    }
+    if (output_conds.rungs.size() != ctx.input_conditions->rungs.size()) {
         return EvalResult::UNSATISFIED;
     }
 
-    if (ctx.input_conditions && ctx.spending_output) {
-        RungConditions output_conds;
-        if (!TryDeserializeOutputConditions(*ctx.spending_output, output_conds)) {
+    // Build a map: (rung_idx, block_idx) → list of (param_idx, delta)
+    std::map<std::pair<int64_t, int64_t>, std::vector<std::pair<int64_t, int64_t>>> mut_map;
+    for (const auto& m : mutations) {
+        mut_map[{m.rung_idx, m.block_idx}].push_back({m.param_idx, m.delta});
+    }
+
+    for (size_t ri = 0; ri < output_conds.rungs.size(); ++ri) {
+        const auto& in_rung = ctx.input_conditions->rungs[ri];
+        const auto& out_rung = output_conds.rungs[ri];
+        if (in_rung.blocks.size() != out_rung.blocks.size()) {
             return EvalResult::UNSATISFIED;
         }
-        if (output_conds.rungs.size() != ctx.input_conditions->rungs.size()) {
-            return EvalResult::UNSATISFIED;
-        }
-        // Verify all rungs/blocks match EXCEPT the mutated parameter
-        for (size_t ri = 0; ri < output_conds.rungs.size(); ++ri) {
-            const auto& in_rung = ctx.input_conditions->rungs[ri];
-            const auto& out_rung = output_conds.rungs[ri];
-            if (in_rung.blocks.size() != out_rung.blocks.size()) {
-                return EvalResult::UNSATISFIED;
-            }
-            for (size_t bi = 0; bi < in_rung.blocks.size(); ++bi) {
-                if (static_cast<int64_t>(ri) == 0 && static_cast<int64_t>(bi) == mut_block_idx) {
-                    // This block should differ by exactly mut_delta at param mut_param_idx
-                    const auto& in_blk = in_rung.blocks[bi];
-                    const auto& out_blk = out_rung.blocks[bi];
-                    if (in_blk.type != out_blk.type) return EvalResult::UNSATISFIED;
-                    // Collect condition fields
-                    std::vector<const RungField*> in_conds, out_conds;
-                    for (const auto& f : in_blk.fields) {
-                        if (IsConditionDataType(f.type)) in_conds.push_back(&f);
-                    }
-                    for (const auto& f : out_blk.fields) {
-                        if (IsConditionDataType(f.type)) out_conds.push_back(&f);
-                    }
-                    if (in_conds.size() != out_conds.size()) return EvalResult::UNSATISFIED;
-                    for (size_t pi = 0; pi < in_conds.size(); ++pi) {
-                        if (static_cast<int64_t>(pi) == mut_param_idx) {
-                            // This param should differ by mut_delta
-                            if (in_conds[pi]->type != RungDataType::NUMERIC ||
-                                out_conds[pi]->type != RungDataType::NUMERIC) {
-                                return EvalResult::UNSATISFIED;
-                            }
-                            int64_t in_val = ReadNumeric(*in_conds[pi]);
-                            int64_t out_val = ReadNumeric(*out_conds[pi]);
-                            if (out_val != in_val + mut_delta) {
-                                return EvalResult::UNSATISFIED;
-                            }
-                        } else {
-                            // All other params must be identical
-                            if (in_conds[pi]->type != out_conds[pi]->type ||
-                                in_conds[pi]->data != out_conds[pi]->data) {
-                                return EvalResult::UNSATISFIED;
-                            }
+        for (size_t bi = 0; bi < in_rung.blocks.size(); ++bi) {
+            auto it = mut_map.find({static_cast<int64_t>(ri), static_cast<int64_t>(bi)});
+            if (it != mut_map.end()) {
+                // This block has mutation targets
+                const auto& in_blk = in_rung.blocks[bi];
+                const auto& out_blk = out_rung.blocks[bi];
+                if (in_blk.type != out_blk.type) return EvalResult::UNSATISFIED;
+
+                std::vector<const RungField*> in_conds, out_conds;
+                for (const auto& f : in_blk.fields) {
+                    if (IsConditionDataType(f.type)) in_conds.push_back(&f);
+                }
+                for (const auto& f : out_blk.fields) {
+                    if (IsConditionDataType(f.type)) out_conds.push_back(&f);
+                }
+                if (in_conds.size() != out_conds.size()) return EvalResult::UNSATISFIED;
+
+                // Build param_idx → delta map for this block
+                std::map<int64_t, int64_t> param_deltas;
+                for (const auto& [pidx, delta] : it->second) {
+                    param_deltas[pidx] = delta;
+                }
+
+                for (size_t pi = 0; pi < in_conds.size(); ++pi) {
+                    auto pd_it = param_deltas.find(static_cast<int64_t>(pi));
+                    if (pd_it != param_deltas.end()) {
+                        if (in_conds[pi]->type != RungDataType::NUMERIC ||
+                            out_conds[pi]->type != RungDataType::NUMERIC) {
+                            return EvalResult::UNSATISFIED;
+                        }
+                        int64_t in_val = ReadNumeric(*in_conds[pi]);
+                        int64_t out_val = ReadNumeric(*out_conds[pi]);
+                        if (out_val != in_val + pd_it->second) {
+                            return EvalResult::UNSATISFIED;
+                        }
+                    } else {
+                        if (in_conds[pi]->type != out_conds[pi]->type ||
+                            in_conds[pi]->data != out_conds[pi]->data) {
+                            return EvalResult::UNSATISFIED;
                         }
                     }
-                } else {
-                    if (!BlockConditionsEqual(in_rung.blocks[bi], out_rung.blocks[bi])) {
-                        return EvalResult::UNSATISFIED;
-                    }
+                }
+            } else {
+                if (!BlockConditionsEqual(in_rung.blocks[bi], out_rung.blocks[bi])) {
+                    return EvalResult::UNSATISFIED;
                 }
             }
         }
     }
     return EvalResult::SATISFIED;
+}
+
+EvalResult EvalRecurseModifiedBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    int64_t max_depth;
+    std::vector<MutationSpec> mutations;
+    if (!ParseMutationSpecs(numerics, max_depth, mutations)) {
+        return EvalResult::ERROR;
+    }
+    if (max_depth <= 0) {
+        return EvalResult::UNSATISFIED;
+    }
+    return VerifyMutatedConditions(ctx, mutations);
 }
 
 EvalResult EvalRecurseUntilBlock(const RungBlock& block, const RungEvalContext& ctx)
@@ -1086,75 +1162,19 @@ EvalResult EvalRecurseSplitBlock(const RungBlock& block, const RungEvalContext& 
 EvalResult EvalRecurseDecayBlock(const RungBlock& block, const RungEvalContext& ctx)
 {
     auto numerics = FindAllFields(block, RungDataType::NUMERIC);
-    if (numerics.size() < 4) {
+    int64_t max_depth;
+    std::vector<MutationSpec> mutations;
+    if (!ParseMutationSpecs(numerics, max_depth, mutations)) {
         return EvalResult::ERROR;
     }
-    // max_depth, decay_block_idx, decay_param_idx, decay_per_step (negative delta)
-    int64_t max_depth = ReadNumeric(*numerics[0]);
-    int64_t decay_block_idx = ReadNumeric(*numerics[1]);
-    int64_t decay_param_idx = ReadNumeric(*numerics[2]);
-    int64_t decay_per_step = ReadNumeric(*numerics[3]);
     if (max_depth <= 0) {
         return EvalResult::UNSATISFIED;
     }
-
-    // Decay is RECURSE_MODIFIED with negative delta (relaxing constraints)
-    if (ctx.input_conditions && ctx.spending_output) {
-        RungConditions output_conds;
-        if (!TryDeserializeOutputConditions(*ctx.spending_output, output_conds)) {
-            return EvalResult::UNSATISFIED;
-        }
-        if (output_conds.rungs.size() != ctx.input_conditions->rungs.size()) {
-            return EvalResult::UNSATISFIED;
-        }
-        // Verify the target parameter decreased by decay_per_step
-        for (size_t ri = 0; ri < output_conds.rungs.size(); ++ri) {
-            const auto& in_rung = ctx.input_conditions->rungs[ri];
-            const auto& out_rung = output_conds.rungs[ri];
-            if (in_rung.blocks.size() != out_rung.blocks.size()) {
-                return EvalResult::UNSATISFIED;
-            }
-            for (size_t bi = 0; bi < in_rung.blocks.size(); ++bi) {
-                if (static_cast<int64_t>(ri) == 0 && static_cast<int64_t>(bi) == decay_block_idx) {
-                    const auto& in_blk = in_rung.blocks[bi];
-                    const auto& out_blk = out_rung.blocks[bi];
-                    if (in_blk.type != out_blk.type) return EvalResult::UNSATISFIED;
-                    std::vector<const RungField*> in_conds, out_conds;
-                    for (const auto& f : in_blk.fields) {
-                        if (IsConditionDataType(f.type)) in_conds.push_back(&f);
-                    }
-                    for (const auto& f : out_blk.fields) {
-                        if (IsConditionDataType(f.type)) out_conds.push_back(&f);
-                    }
-                    if (in_conds.size() != out_conds.size()) return EvalResult::UNSATISFIED;
-                    for (size_t pi = 0; pi < in_conds.size(); ++pi) {
-                        if (static_cast<int64_t>(pi) == decay_param_idx) {
-                            if (in_conds[pi]->type != RungDataType::NUMERIC ||
-                                out_conds[pi]->type != RungDataType::NUMERIC) {
-                                return EvalResult::UNSATISFIED;
-                            }
-                            int64_t in_val = ReadNumeric(*in_conds[pi]);
-                            int64_t out_val = ReadNumeric(*out_conds[pi]);
-                            // Decay: output value should be input - decay_per_step
-                            if (out_val != in_val - decay_per_step) {
-                                return EvalResult::UNSATISFIED;
-                            }
-                        } else {
-                            if (in_conds[pi]->type != out_conds[pi]->type ||
-                                in_conds[pi]->data != out_conds[pi]->data) {
-                                return EvalResult::UNSATISFIED;
-                            }
-                        }
-                    }
-                } else {
-                    if (!BlockConditionsEqual(in_rung.blocks[bi], out_rung.blocks[bi])) {
-                        return EvalResult::UNSATISFIED;
-                    }
-                }
-            }
-        }
+    // Decay: negate deltas (output = input - decay_per_step)
+    for (auto& m : mutations) {
+        m.delta = -m.delta;
     }
-    return EvalResult::SATISFIED;
+    return VerifyMutatedConditions(ctx, mutations);
 }
 
 // ============================================================================
@@ -1218,18 +1238,33 @@ EvalResult EvalTimerOffDelayBlock(const RungBlock& block, const RungEvalContext&
 
 EvalResult EvalLatchSetBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
 {
-    // Latch set — needs state tracking, validate setter_key present
+    // Latch set — activates when state == 0 (unset).
+    // Field layout: PUBKEY (setter key), NUMERIC (state: 0=unset, 1=set)
+    // Pair with RECURSE_MODIFIED to enforce state 0→1 in the output.
     if (!HasRequiredPubkeys(block, 1)) return EvalResult::ERROR;
-    return EvalResult::SATISFIED;
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.empty()) {
+        // No state field — structural-only mode (backward compat)
+        return EvalResult::SATISFIED;
+    }
+    int64_t state = ReadNumeric(*numerics[0]);
+    if (state == 0) return EvalResult::SATISFIED;   // unset → can set
+    return EvalResult::UNSATISFIED;                  // already set → SET rung inactive
 }
 
 EvalResult EvalLatchResetBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
 {
-    // Latch reset — needs state tracking, validate resetter_key + delay present
+    // Latch reset — activates when state >= 1 (set).
+    // Field layout: PUBKEY (resetter key), NUMERIC (state), NUMERIC (delay blocks)
+    // Pair with RECURSE_MODIFIED to enforce state 1→0 in the output.
     if (!HasRequiredPubkeys(block, 1)) return EvalResult::ERROR;
-    const RungField* delay = FindField(block, RungDataType::NUMERIC);
-    if (!delay) return EvalResult::ERROR;
-    return EvalResult::SATISFIED;
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) return EvalResult::ERROR; // need state + delay
+    int64_t state = ReadNumeric(*numerics[0]);
+    int64_t delay = ReadNumeric(*numerics[1]);
+    if (delay < 0) return EvalResult::ERROR;
+    if (state >= 1) return EvalResult::SATISFIED;    // set → can reset
+    return EvalResult::UNSATISFIED;                   // already unset → RESET rung inactive
 }
 
 EvalResult EvalCounterDownBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
@@ -1327,6 +1362,45 @@ EvalResult EvalRateLimitBlock(const RungBlock& block, const RungEvalContext& ctx
     }
     // Accumulation tracking needs UTXO chain state
     return EvalResult::SATISFIED;
+}
+
+// ============================================================================
+// COSIGN — co-spend contact
+// ============================================================================
+
+EvalResult EvalCosignBlock(const RungBlock& block, const RungEvalContext& ctx)
+{
+    // COSIGN requires a HASH256 field containing SHA256 of the anchor's conditions scriptPubKey.
+    // At spend time, verifies that another input in the same transaction has a spent output
+    // whose scriptPubKey matches this hash.
+    const RungField* hash_field = FindField(block, RungDataType::HASH256);
+    if (!hash_field || hash_field->data.size() != 32) {
+        return EvalResult::ERROR;
+    }
+
+    // Without transaction context or spent outputs, we can only do structural validation
+    if (!ctx.tx || !ctx.spent_outputs) {
+        return EvalResult::SATISFIED;
+    }
+
+    // Check each other input's spent output scriptPubKey
+    for (size_t i = 0; i < ctx.tx->vin.size(); ++i) {
+        if (i == ctx.input_index) continue; // skip self
+
+        if (i >= ctx.spent_outputs->size()) continue;
+
+        const CScript& other_spk = (*ctx.spent_outputs)[i].scriptPubKey;
+
+        // SHA256 of the other input's spent scriptPubKey
+        unsigned char hash[CSHA256::OUTPUT_SIZE];
+        CSHA256().Write(other_spk.data(), other_spk.size()).Finalize(hash);
+
+        if (memcmp(hash, hash_field->data.data(), 32) == 0) {
+            return EvalResult::SATISFIED;
+        }
+    }
+
+    return EvalResult::UNSATISFIED;
 }
 
 // ============================================================================
@@ -1461,6 +1535,9 @@ EvalResult EvalBlock(const RungBlock& block,
         break;
     case RungBlockType::RATE_LIMIT:
         raw = EvalRateLimitBlock(block, ctx);
+        break;
+    case RungBlockType::COSIGN:
+        raw = EvalCosignBlock(block, ctx);
         break;
     default:
         raw = EvalResult::UNKNOWN_BLOCK_TYPE;
@@ -1612,6 +1689,10 @@ bool VerifyRungTx(const CTransaction& tx,
     // Provide input conditions for recursion covenant checks
     if (has_conditions) {
         eval_ctx.input_conditions = &conditions;
+    }
+    // Provide all spent outputs for COSIGN cross-input verification
+    if (txdata.m_spent_outputs_ready) {
+        eval_ctx.spent_outputs = &txdata.m_spent_outputs;
     }
 
     LadderWitness eval_ladder;

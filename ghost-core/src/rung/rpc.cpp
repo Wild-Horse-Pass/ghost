@@ -11,6 +11,7 @@
 #include <rung/types.h>
 
 #include <core_io.h>
+#include <crypto/sha256.h>
 #include <key.h>
 #include <key_io.h>
 #include <random.h>
@@ -169,6 +170,7 @@ static bool ParseBlockType(const std::string& name, RungBlockType& out)
     if (name == "SEQUENCER")        { out = RungBlockType::SEQUENCER; return true; }
     if (name == "ONE_SHOT")         { out = RungBlockType::ONE_SHOT; return true; }
     if (name == "RATE_LIMIT")       { out = RungBlockType::RATE_LIMIT; return true; }
+    if (name == "COSIGN")           { out = RungBlockType::COSIGN; return true; }
     // Backward compat aliases
     if (name == "HASHLOCK")         { out = RungBlockType::HASH_PREIMAGE; return true; }
     if (name == "ANCHOR_BOND")      { out = RungBlockType::ANCHOR_SEAL; return true; }
@@ -721,6 +723,14 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "PQ signing failed");
             }
 
+            // If conditions use PUBKEY_COMMIT, push full pubkey into witness for verification
+            if (block_spec.exists("pq_pubkey")) {
+                auto pubkey_bytes = ParseHex(block_spec["pq_pubkey"].get_str());
+                if (pubkey_bytes.empty()) {
+                    throw JSONRPCError(RPC_INVALID_PARAMETER, "Empty pq_pubkey");
+                }
+                block.fields.push_back({RungDataType::PUBKEY, std::move(pubkey_bytes)});
+            }
             block.fields.push_back({RungDataType::SIGNATURE, std::move(pq_sig)});
             break;
         }
@@ -1167,6 +1177,39 @@ static RPCHelpMan generatepqkeypair()
     };
 }
 
+static RPCHelpMan pqpubkeycommit()
+{
+    return RPCHelpMan{
+        "pqpubkeycommit",
+        "Compute the SHA256 commitment hash of a post-quantum public key.\n"
+        "Use this to create PUBKEY_COMMIT condition fields for compact UTXO storage.\n",
+        {
+            {"pubkey", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "The full PQ public key (hex)"},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {
+            {RPCResult::Type::STR_HEX, "commit", "The 32-byte SHA256 commitment hash"},
+        }},
+        RPCExamples{
+            HelpExampleCli("pqpubkeycommit", "\"<897-byte falcon512 pubkey hex>\"")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+    {
+        auto pubkey = ParseHex(self.Arg<std::string>("pubkey"));
+        if (pubkey.empty()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Empty pubkey");
+        }
+
+        unsigned char hash[CSHA256::OUTPUT_SIZE];
+        CSHA256().Write(pubkey.data(), pubkey.size()).Finalize(hash);
+
+        UniValue result(UniValue::VOBJ);
+        result.pushKV("commit", HexStr(std::span<const unsigned char>(hash, CSHA256::OUTPUT_SIZE)));
+        return result;
+    },
+    };
+}
+
 void RegisterRungRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
@@ -1177,6 +1220,7 @@ void RegisterRungRPCCommands(CRPCTable& t)
         {"rung", &signrungtx},
         {"rung", &computectvhash},
         {"rung", &generatepqkeypair},
+        {"rung", &pqpubkeycommit},
     };
     for (const auto& c : commands) {
         t.appendCommand(c.name, &c);

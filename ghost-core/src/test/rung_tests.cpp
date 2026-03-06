@@ -2344,6 +2344,82 @@ BOOST_AUTO_TEST_CASE(eval_latch_reset_missing_pubkey)
     BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
 }
 
+BOOST_AUTO_TEST_CASE(eval_latch_set_state_unset_satisfied)
+{
+    // LATCH_SET with state=0 → SATISFIED (can set)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::LATCH_SET;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)}); // state=0
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_latch_set_state_already_set_unsatisfied)
+{
+    // LATCH_SET with state=1 → UNSATISFIED (already latched)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::LATCH_SET;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)}); // state=1
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_latch_set_no_state_backward_compat)
+{
+    // LATCH_SET with no NUMERIC → backward compat, always SATISFIED
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::LATCH_SET;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_latch_reset_state_set_satisfied)
+{
+    // LATCH_RESET with state=1 → SATISFIED (can reset)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::LATCH_RESET;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)}); // state=1
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(6)}); // delay=6
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_latch_reset_state_unset_unsatisfied)
+{
+    // LATCH_RESET with state=0 → UNSATISFIED (nothing to reset)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::LATCH_RESET;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)}); // state=0
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(6)}); // delay=6
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
 BOOST_AUTO_TEST_CASE(eval_counter_down_missing_pubkey)
 {
     MockSignatureChecker checker;
@@ -2858,6 +2934,596 @@ BOOST_AUTO_TEST_CASE(pq_keygen_and_sign_verify)
     // Tamper with sig → verification fails
     sig[0] ^= 0xFF;
     BOOST_CHECK(!VerifyPQSignature(RungScheme::FALCON512, sig, msg, pubkey));
+}
+
+// ============================================================================
+// PUBKEY_COMMIT tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_sig_pq_pubkey_commit)
+{
+    // SIG block with PUBKEY_COMMIT + PUBKEY (from witness) + SIGNATURE
+    // Commitment matches → should proceed to PQ verification
+    if (!HasPQSupport()) return;
+
+    std::vector<uint8_t> pubkey, privkey;
+    BOOST_CHECK(GeneratePQKeypair(RungScheme::FALCON512, pubkey, privkey));
+
+    // Compute commitment = SHA256(pubkey)
+    unsigned char commit[CSHA256::OUTPUT_SIZE];
+    CSHA256().Write(pubkey.data(), pubkey.size()).Finalize(commit);
+    std::vector<uint8_t> commit_vec(commit, commit + 32);
+
+    // Build merged block (as evaluator sees it after conditions + witness merge)
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::FALCON512)}});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit_vec});
+    block.fields.push_back({RungDataType::PUBKEY, pubkey}); // from witness
+
+    // Sign a message
+    std::vector<uint8_t> msg(32, 0x42);
+    std::vector<uint8_t> sig;
+    BOOST_CHECK(SignPQ(RungScheme::FALCON512, privkey, msg, sig));
+    block.fields.push_back({RungDataType::SIGNATURE, sig});
+
+    // We need a LadderSignatureChecker that returns the right sighash.
+    // For this unit test we use the MockSignatureChecker — PQ path requires
+    // LadderSignatureChecker. The commitment check itself passes before PQ verify.
+    // Test the commitment logic alone: wrong checker → ERROR (but commitment passed).
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+    // PQ path needs LadderSignatureChecker → gets ERROR (not UNSATISFIED from commit mismatch)
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sig_pq_pubkey_commit_mismatch)
+{
+    // Wrong PUBKEY for the commitment → UNSATISFIED
+    MockSignatureChecker checker;
+
+    std::vector<uint8_t> real_pubkey(897, 0xAA);
+    std::vector<uint8_t> wrong_pubkey(897, 0xBB);
+
+    // Commitment is for real_pubkey
+    unsigned char commit[CSHA256::OUTPUT_SIZE];
+    CSHA256().Write(real_pubkey.data(), real_pubkey.size()).Finalize(commit);
+    std::vector<uint8_t> commit_vec(commit, commit + 32);
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::FALCON512)}});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit_vec});
+    block.fields.push_back({RungDataType::PUBKEY, wrong_pubkey}); // wrong key
+    block.fields.push_back({RungDataType::SIGNATURE, std::vector<uint8_t>(690, 0xCC)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sig_pubkey_commit_no_pubkey_error)
+{
+    // PUBKEY_COMMIT present but no PUBKEY → ERROR
+    MockSignatureChecker checker;
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, std::vector<uint8_t>(32, 0xDD)});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sig_pubkey_commit_schnorr)
+{
+    // PUBKEY_COMMIT with a standard Schnorr key (33 bytes) — commitment check + Schnorr verify
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+
+    auto pubkey = MakePubkey(); // 33-byte compressed key
+    unsigned char commit[CSHA256::OUTPUT_SIZE];
+    CSHA256().Write(pubkey.data(), pubkey.size()).Finalize(commit);
+    std::vector<uint8_t> commit_vec(commit, commit + 32);
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit_vec});
+    block.fields.push_back({RungDataType::PUBKEY, pubkey});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
+}
+
+// ============================================================================
+// Multi-mutation RECURSE_MODIFIED tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_recurse_modified_legacy_compat)
+{
+    // Legacy 4-NUMERIC format: single mutation at rung 0
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    // Build input conditions: rung 0 has one block with two NUMERIC condition fields
+    RungConditions input_conds;
+    {
+        Rung r;
+        RungBlock b;
+        b.type = RungBlockType::COMPARE;
+        b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)}); // param 0
+        b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(200)}); // param 1
+        r.blocks.push_back(std::move(b));
+        input_conds.rungs.push_back(std::move(r));
+    }
+
+    // Build output conditions: param 0 changed by +5
+    RungConditions output_conds;
+    {
+        Rung r;
+        RungBlock b;
+        b.type = RungBlockType::COMPARE;
+        b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(105)}); // 100 + 5
+        b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(200)}); // unchanged
+        r.blocks.push_back(std::move(b));
+        output_conds.rungs.push_back(std::move(r));
+    }
+
+    CTxOut output;
+    output.scriptPubKey = SerializeRungConditions(output_conds);
+
+    RungEvalContext ctx;
+    ctx.input_conditions = &input_conds;
+    ctx.spending_output = &output;
+
+    // RECURSE_MODIFIED block: max_depth=10, block_idx=0, param_idx=0, delta=5
+    RungBlock rm_block;
+    rm_block.type = RungBlockType::RECURSE_MODIFIED;
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});  // max_depth
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});   // block_idx
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});   // param_idx
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});   // delta
+
+    BOOST_CHECK(EvalBlock(rm_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_recurse_modified_cross_rung)
+{
+    // New format: single mutation targeting rung 1
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    // Build input conditions: 2 rungs
+    RungConditions input_conds;
+    {
+        // Rung 0: SIG block
+        Rung r0;
+        RungBlock b0;
+        b0.type = RungBlockType::SIG;
+        b0.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+        r0.blocks.push_back(std::move(b0));
+        input_conds.rungs.push_back(std::move(r0));
+
+        // Rung 1: COMPARE block with NUMERIC
+        Rung r1;
+        RungBlock b1;
+        b1.type = RungBlockType::COMPARE;
+        b1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(50)});
+        r1.blocks.push_back(std::move(b1));
+        input_conds.rungs.push_back(std::move(r1));
+    }
+
+    // Build output conditions: rung 1, param 0 changed by +3
+    RungConditions output_conds;
+    {
+        Rung r0;
+        RungBlock b0;
+        b0.type = RungBlockType::SIG;
+        b0.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+        r0.blocks.push_back(std::move(b0));
+        output_conds.rungs.push_back(std::move(r0));
+
+        Rung r1;
+        RungBlock b1;
+        b1.type = RungBlockType::COMPARE;
+        b1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(53)}); // 50 + 3
+        r1.blocks.push_back(std::move(b1));
+        output_conds.rungs.push_back(std::move(r1));
+    }
+
+    CTxOut output;
+    output.scriptPubKey = SerializeRungConditions(output_conds);
+
+    RungEvalContext ctx;
+    ctx.input_conditions = &input_conds;
+    ctx.spending_output = &output;
+
+    // New format: max_depth=10, num_mutations=1, rung_idx=1, block_idx=0, param_idx=0, delta=3
+    RungBlock rm_block;
+    rm_block.type = RungBlockType::RECURSE_MODIFIED;
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});  // max_depth
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});   // num_mutations
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});   // rung_idx
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});   // block_idx
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});   // param_idx
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});   // delta
+
+    BOOST_CHECK(EvalBlock(rm_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_recurse_modified_multi_mutation)
+{
+    // Two mutations targeting different rungs simultaneously
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    // Build input conditions: 2 rungs, each with a COMPARE block
+    RungConditions input_conds;
+    {
+        Rung r0;
+        RungBlock b0;
+        b0.type = RungBlockType::COMPARE;
+        b0.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)});
+        r0.blocks.push_back(std::move(b0));
+        input_conds.rungs.push_back(std::move(r0));
+
+        Rung r1;
+        RungBlock b1;
+        b1.type = RungBlockType::COMPARE;
+        b1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(200)});
+        r1.blocks.push_back(std::move(b1));
+        input_conds.rungs.push_back(std::move(r1));
+    }
+
+    // Build output conditions: rung 0 param 0 +5, rung 1 param 0 +10
+    RungConditions output_conds;
+    {
+        Rung r0;
+        RungBlock b0;
+        b0.type = RungBlockType::COMPARE;
+        b0.fields.push_back({RungDataType::NUMERIC, MakeNumeric(105)});
+        r0.blocks.push_back(std::move(b0));
+        output_conds.rungs.push_back(std::move(r0));
+
+        Rung r1;
+        RungBlock b1;
+        b1.type = RungBlockType::COMPARE;
+        b1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(210)});
+        r1.blocks.push_back(std::move(b1));
+        output_conds.rungs.push_back(std::move(r1));
+    }
+
+    CTxOut output;
+    output.scriptPubKey = SerializeRungConditions(output_conds);
+
+    RungEvalContext ctx;
+    ctx.input_conditions = &input_conds;
+    ctx.spending_output = &output;
+
+    // New format: 2 mutations
+    RungBlock rm_block;
+    rm_block.type = RungBlockType::RECURSE_MODIFIED;
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});  // max_depth
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});   // num_mutations
+    // Mutation 0: rung 0, block 0, param 0, delta +5
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});
+    // Mutation 1: rung 1, block 0, param 0, delta +10
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});
+
+    BOOST_CHECK(EvalBlock(rm_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+
+    // Wrong delta for mutation 1 → UNSATISFIED
+    RungConditions bad_output_conds;
+    {
+        Rung r0;
+        RungBlock b0;
+        b0.type = RungBlockType::COMPARE;
+        b0.fields.push_back({RungDataType::NUMERIC, MakeNumeric(105)});
+        r0.blocks.push_back(std::move(b0));
+        bad_output_conds.rungs.push_back(std::move(r0));
+
+        Rung r1;
+        RungBlock b1;
+        b1.type = RungBlockType::COMPARE;
+        b1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(215)}); // wrong: expected 210
+        r1.blocks.push_back(std::move(b1));
+        bad_output_conds.rungs.push_back(std::move(r1));
+    }
+
+    CTxOut bad_output;
+    bad_output.scriptPubKey = SerializeRungConditions(bad_output_conds);
+    ctx.spending_output = &bad_output;
+
+    BOOST_CHECK(EvalBlock(rm_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_recurse_modified_no_context_satisfied)
+{
+    // Without input_conditions/spending_output, RECURSE_MODIFIED passes (structural only)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock rm_block;
+    rm_block.type = RungBlockType::RECURSE_MODIFIED;
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    rm_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});
+
+    BOOST_CHECK(EvalBlock(rm_block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_recurse_decay_legacy_compat)
+{
+    // Legacy 4-NUMERIC format for RECURSE_DECAY
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungConditions input_conds;
+    {
+        Rung r;
+        RungBlock b;
+        b.type = RungBlockType::COMPARE;
+        b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)});
+        r.blocks.push_back(std::move(b));
+        input_conds.rungs.push_back(std::move(r));
+    }
+
+    // Decay: output = input - decay_per_step = 100 - 7 = 93
+    RungConditions output_conds;
+    {
+        Rung r;
+        RungBlock b;
+        b.type = RungBlockType::COMPARE;
+        b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(93)});
+        r.blocks.push_back(std::move(b));
+        output_conds.rungs.push_back(std::move(r));
+    }
+
+    CTxOut output;
+    output.scriptPubKey = SerializeRungConditions(output_conds);
+
+    RungEvalContext ctx;
+    ctx.input_conditions = &input_conds;
+    ctx.spending_output = &output;
+
+    RungBlock decay_block;
+    decay_block.type = RungBlockType::RECURSE_DECAY;
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});  // max_depth
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});   // block_idx
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});   // param_idx
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(7)});   // decay_per_step
+
+    BOOST_CHECK(EvalBlock(decay_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_recurse_decay_multi_mutation)
+{
+    // New format RECURSE_DECAY with two decay targets across rungs
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungConditions input_conds;
+    {
+        Rung r0;
+        RungBlock b0;
+        b0.type = RungBlockType::COMPARE;
+        b0.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)});
+        r0.blocks.push_back(std::move(b0));
+        input_conds.rungs.push_back(std::move(r0));
+
+        Rung r1;
+        RungBlock b1;
+        b1.type = RungBlockType::COMPARE;
+        b1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(200)});
+        r1.blocks.push_back(std::move(b1));
+        input_conds.rungs.push_back(std::move(r1));
+    }
+
+    // Decay: rung 0 param 0 by 5 (100→95), rung 1 param 0 by 10 (200→190)
+    RungConditions output_conds;
+    {
+        Rung r0;
+        RungBlock b0;
+        b0.type = RungBlockType::COMPARE;
+        b0.fields.push_back({RungDataType::NUMERIC, MakeNumeric(95)});
+        r0.blocks.push_back(std::move(b0));
+        output_conds.rungs.push_back(std::move(r0));
+
+        Rung r1;
+        RungBlock b1;
+        b1.type = RungBlockType::COMPARE;
+        b1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(190)});
+        r1.blocks.push_back(std::move(b1));
+        output_conds.rungs.push_back(std::move(r1));
+    }
+
+    CTxOut output;
+    output.scriptPubKey = SerializeRungConditions(output_conds);
+
+    RungEvalContext ctx;
+    ctx.input_conditions = &input_conds;
+    ctx.spending_output = &output;
+
+    RungBlock decay_block;
+    decay_block.type = RungBlockType::RECURSE_DECAY;
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});  // max_depth
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});   // num_mutations
+    // Decay 0: rung 0, block 0, param 0, decay 5
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});
+    // Decay 1: rung 1, block 0, param 0, decay 10
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    decay_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});
+
+    BOOST_CHECK(EvalBlock(decay_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+// ============================================================================
+// COSIGN — co-spend contact tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_cosign_matching_input)
+{
+    // COSIGN with a matching spent output in the same tx → SATISFIED
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    // Build the anchor's conditions scriptPubKey
+    RungConditions anchor_conds;
+    Rung anchor_rung;
+    RungBlock sig_block;
+    sig_block.type = RungBlockType::SIG;
+    sig_block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(33, 0x02)});
+    anchor_rung.blocks.push_back(sig_block);
+    anchor_conds.rungs.push_back(anchor_rung);
+    CScript anchor_spk = SerializeRungConditions(anchor_conds);
+
+    // SHA256 of the anchor's scriptPubKey
+    unsigned char anchor_hash[CSHA256::OUTPUT_SIZE];
+    CSHA256().Write(anchor_spk.data(), anchor_spk.size()).Finalize(anchor_hash);
+
+    // Build COSIGN block with the anchor hash
+    RungBlock cosign_block;
+    cosign_block.type = RungBlockType::COSIGN;
+    cosign_block.fields.push_back({RungDataType::HASH256,
+        std::vector<uint8_t>(anchor_hash, anchor_hash + 32)});
+
+    // Build a mock transaction with 2 inputs
+    CMutableTransaction mtx;
+    mtx.version = CTransaction::RUNG_TX_VERSION;
+    CTxIn input0, input1;
+    input0.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 0);
+    input1.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 1);
+    mtx.vin.push_back(input0);
+    mtx.vin.push_back(input1);
+    mtx.vout.push_back(CTxOut(50000, CScript() << OP_RETURN));
+    CTransaction tx(mtx);
+
+    // Spent outputs: input 0 is the anchor, input 1 is the child (being evaluated)
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.push_back(CTxOut(100000, anchor_spk));  // anchor
+    spent_outputs.push_back(CTxOut(50000, CScript() << OP_RETURN));  // child (placeholder)
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    ctx.input_index = 1;  // evaluating input 1 (the child)
+    ctx.spent_outputs = &spent_outputs;
+
+    BOOST_CHECK(EvalBlock(cosign_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_cosign_no_matching_input)
+{
+    // COSIGN with no matching spent output → UNSATISFIED
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    // Use a hash that won't match any spent output
+    std::vector<uint8_t> fake_hash(32, 0xAA);
+
+    RungBlock cosign_block;
+    cosign_block.type = RungBlockType::COSIGN;
+    cosign_block.fields.push_back({RungDataType::HASH256, fake_hash});
+
+    CMutableTransaction mtx;
+    mtx.version = CTransaction::RUNG_TX_VERSION;
+    CTxIn input0, input1;
+    input0.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 0);
+    input1.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 1);
+    mtx.vin.push_back(input0);
+    mtx.vin.push_back(input1);
+    mtx.vout.push_back(CTxOut(50000, CScript() << OP_RETURN));
+    CTransaction tx(mtx);
+
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.push_back(CTxOut(100000, CScript() << OP_1));
+    spent_outputs.push_back(CTxOut(50000, CScript() << OP_RETURN));
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    ctx.input_index = 1;
+    ctx.spent_outputs = &spent_outputs;
+
+    BOOST_CHECK(EvalBlock(cosign_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_cosign_no_hash_error)
+{
+    // COSIGN without HASH256 field → ERROR
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock cosign_block;
+    cosign_block.type = RungBlockType::COSIGN;
+    // No fields
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(cosign_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_cosign_no_context_satisfied)
+{
+    // COSIGN without tx context → SATISFIED (structural only, like RECURSE blocks)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    std::vector<uint8_t> some_hash(32, 0xBB);
+    RungBlock cosign_block;
+    cosign_block.type = RungBlockType::COSIGN;
+    cosign_block.fields.push_back({RungDataType::HASH256, some_hash});
+
+    RungEvalContext ctx;  // no tx, no spent_outputs
+    BOOST_CHECK(EvalBlock(cosign_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_cosign_skips_self)
+{
+    // COSIGN must not match against its own input's spent output
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    // Build a scriptPubKey
+    CScript self_spk = CScript() << OP_1 << OP_DROP;
+
+    // Hash of self_spk
+    unsigned char self_hash[CSHA256::OUTPUT_SIZE];
+    CSHA256().Write(self_spk.data(), self_spk.size()).Finalize(self_hash);
+
+    RungBlock cosign_block;
+    cosign_block.type = RungBlockType::COSIGN;
+    cosign_block.fields.push_back({RungDataType::HASH256,
+        std::vector<uint8_t>(self_hash, self_hash + 32)});
+
+    // Only 1 input — the self input matches the hash, but COSIGN skips self
+    CMutableTransaction mtx;
+    mtx.version = CTransaction::RUNG_TX_VERSION;
+    CTxIn input0;
+    input0.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 0);
+    mtx.vin.push_back(input0);
+    mtx.vout.push_back(CTxOut(50000, CScript() << OP_RETURN));
+    CTransaction tx(mtx);
+
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.push_back(CTxOut(100000, self_spk));
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    ctx.input_index = 0;  // evaluating the only input — matches hash but is self
+    ctx.spent_outputs = &spent_outputs;
+
+    BOOST_CHECK(EvalBlock(cosign_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

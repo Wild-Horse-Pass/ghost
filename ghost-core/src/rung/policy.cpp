@@ -68,6 +68,7 @@ bool IsPhase3BlockType(uint16_t block_type)
     case RungBlockType::SEQUENCER:
     case RungBlockType::ONE_SHOT:
     case RungBlockType::RATE_LIMIT:
+    case RungBlockType::COSIGN:
         return true;
     default:
         return false;

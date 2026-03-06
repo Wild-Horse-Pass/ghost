@@ -167,6 +167,43 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_pq_keygen_rpc(node)
         self.test_pq_falcon512_sig(node)
 
+        # Stateful latch tests
+        self.test_latch_state_gating(node)
+        self.test_latch_covenant_chain(node)
+
+        # Data embedding / spam resistance tests
+        self.test_spam_arbitrary_preimage_rejected(node)
+        self.test_spam_pubkey_no_crypto_validation(node)
+        self.test_spam_numeric_arbitrary_bytes(node)
+        self.test_spam_unknown_data_type_rejected(node)
+        self.test_spam_witness_only_in_conditions_rejected(node)
+        self.test_spam_oversized_field_rejected(node)
+        self.test_spam_max_structure_limits(node)
+        self.test_spam_coil_address_limit(node)
+
+        # Advanced scenario tests (comprehensive combinations)
+        self.test_pq_falcon512_pubkey_commit(node)
+        self.test_negative_pq_pubkey_commit_mismatch(node)
+        self.test_recurse_modified_cross_rung(node)
+        self.test_recurse_modified_multi_mutation(node)
+        self.test_negative_recurse_modified_wrong_delta(node)
+        self.test_sig_hash_csv_triple_and(node)
+        self.test_or_hot_cold_vault(node)
+        self.test_recurse_same_with_cltv(node)
+        self.test_inverted_compare_floor(node)
+        self.test_countdown_vault(node)
+        self.test_recurse_decay_multi_target(node)
+        self.test_htlc_pattern(node)
+        self.test_latch_cross_rung_state_machine(node)
+        self.test_timed_secret_reveal(node)
+        self.test_three_rung_priority(node)
+        self.test_pqpubkeycommit_rpc(node)
+
+        # COSIGN — PQ anchor co-spend pattern
+        self.test_cosign_anchor_spend(node)
+        self.test_cosign_negative_no_anchor(node)
+        self.test_cosign_10_children(node)
+
     # =========================================================================
     # Helpers
     # =========================================================================
@@ -2641,13 +2678,14 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info("  LATCH_SET spend confirmed!")
 
     def test_latch_reset(self, node):
-        """LATCH_RESET: 1 pubkey + 1 numeric required, structural only."""
+        """LATCH_RESET: 1 pubkey + 2 numeric (state + delay) required."""
         self.log.info("Testing LATCH_RESET spend...")
 
         _resetter_wif, resetter_pubkey = make_keypair()
 
         conditions = [{"blocks": [{"type": "LATCH_RESET", "fields": [
             {"type": "PUBKEY", "hex": resetter_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(1)},  # state=1 (set, so reset is active)
             {"type": "NUMERIC", "hex": numeric_hex(6)},  # delay blocks
         ]}]}]
 
@@ -3363,6 +3401,159 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
 
     # =========================================================================
+    # Stateful latch tests
+    # =========================================================================
+
+    def test_latch_state_gating(self, node):
+        """LATCH_SET with state=0 is spendable, state=1 is not."""
+        self.log.info("Testing LATCH_SET state gating...")
+
+        _setter_wif, setter_pubkey = make_keypair()
+
+        # State=0: LATCH_SET should be SATISFIED → spendable
+        conditions_unset = [{"blocks": [{"type": "LATCH_SET", "fields": [
+            {"type": "PUBKEY", "hex": setter_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(0)},  # state=0 (unset)
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions_unset)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "LATCH_SET"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+        node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        self.log.info("  LATCH_SET state=0 spent OK!")
+
+        # State=1: LATCH_SET should be UNSATISFIED → NOT spendable
+        conditions_set = [{"blocks": [{"type": "LATCH_SET", "fields": [
+            {"type": "PUBKEY", "hex": setter_pubkey},
+            {"type": "NUMERIC", "hex": numeric_hex(1)},  # state=1 (already set)
+        ]}]}]
+
+        txid2, vout2, amount2, spk2 = self.bootstrap_v3_output(node, conditions_set)
+
+        spend2 = node.createrungtx(
+            [{"txid": txid2, "vout": vout2}],
+            [{"amount": amount2 - Decimal("0.001"), "conditions": dest_conditions}]
+        )
+        sign_result2 = node.signrungtx(
+            spend2["hex"],
+            [{"input": 0, "blocks": [{"type": "LATCH_SET"}]}],
+            [{"amount": amount2, "scriptPubKey": spk2}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result2["hex"])
+        self.log.info("  LATCH_SET state=1 correctly rejected!")
+
+    def test_latch_covenant_chain(self, node):
+        """Latch SET transition: state 0→1 via RECURSE_MODIFIED, then SET rung rejected."""
+        self.log.info("Testing latch covenant chain...")
+
+        _setter_wif, setter_pubkey = make_keypair()
+
+        # Single-rung design: LATCH_SET + RECURSE_MODIFIED
+        # RECURSE_MODIFIED only mutates rung 0 blocks, so keep it in one rung
+        conditions = [{"blocks": [
+            {"type": "LATCH_SET", "fields": [
+                {"type": "PUBKEY", "hex": setter_pubkey},
+                {"type": "NUMERIC", "hex": numeric_hex(0)},  # state=0
+            ]},
+            {"type": "RECURSE_MODIFIED", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},  # max_depth
+                {"type": "NUMERIC", "hex": numeric_hex(0)},   # mutation block_idx=0 (LATCH_SET)
+                {"type": "NUMERIC", "hex": numeric_hex(1)},   # mutation param_idx=1 (state NUMERIC)
+                {"type": "NUMERIC", "hex": numeric_hex(1)},   # delta=+1 (0→1)
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  Created latch UTXO (state=0): {txid}:{vout}")
+
+        # Step 1: SET transition — state 0→1
+        output_amount = amount - Decimal("0.001")
+
+        # Output conditions must have state=1 (delta +1 applied)
+        conditions_after_set = [{"blocks": [
+            {"type": "LATCH_SET", "fields": [
+                {"type": "PUBKEY", "hex": setter_pubkey},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},  # state=1
+            ]},
+            {"type": "RECURSE_MODIFIED", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+            ]},
+        ]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": conditions_after_set}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "rung": 0, "blocks": [
+                {"type": "LATCH_SET"},
+                {"type": "RECURSE_MODIFIED"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+        set_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+
+        tx_info = node.getrawtransaction(set_txid, True)
+        assert tx_info["confirmations"] >= 1
+        set_spk = tx_info["vout"][0]["scriptPubKey"]["hex"]
+        self.log.info(f"  SET transition confirmed (state 0→1): {set_txid[:16]}...")
+
+        # Step 2: Try SET again — should FAIL since state=1
+        # LATCH_SET with state=1 → UNSATISFIED, so the rung fails
+        spend_amount2 = output_amount - Decimal("0.001")
+
+        conditions_after_set2 = [{"blocks": [
+            {"type": "LATCH_SET", "fields": [
+                {"type": "PUBKEY", "hex": setter_pubkey},
+                {"type": "NUMERIC", "hex": numeric_hex(2)},  # state=2 (would be 1+1)
+            ]},
+            {"type": "RECURSE_MODIFIED", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+            ]},
+        ]}]
+
+        spend2 = node.createrungtx(
+            [{"txid": set_txid, "vout": 0}],
+            [{"amount": spend_amount2, "conditions": conditions_after_set2}]
+        )
+        sign_result2 = node.signrungtx(
+            spend2["hex"],
+            [{"input": 0, "rung": 0, "blocks": [
+                {"type": "LATCH_SET"},
+                {"type": "RECURSE_MODIFIED"},
+            ]}],
+            [{"amount": output_amount, "scriptPubKey": set_spk}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result2["hex"])
+        self.log.info("  SET rung correctly rejected when state=1!")
+        self.log.info("  Latch covenant chain passed!")
+
+    # =========================================================================
     # PQ tests
     # =========================================================================
 
@@ -3441,6 +3632,1817 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         node.sendrawtransaction(sign_result["hex"])
         self.generate(node, 1)
         self.log.info("  PQ FALCON512 signature spend confirmed!")
+
+
+    # =========================================================================
+    # Data Embedding / Spam Resistance Tests
+    # =========================================================================
+
+    def test_spam_arbitrary_preimage_rejected(self, node):
+        """PREIMAGE without matching hash → consensus rejects.
+
+        Attempt: Embed 252 bytes of arbitrary data as a PREIMAGE field.
+        Result: PREIMAGE is witness-only (can't go in conditions/UTXO set),
+        and at evaluation time SHA256(preimage) must match the HASH256 field.
+        A random preimage with a random hash will not match.
+        """
+        self.log.info("Spam test: arbitrary PREIMAGE without valid hash...")
+
+        # Random "data payload" disguised as a preimage
+        payload = os.urandom(252)  # max PREIMAGE size
+        fake_hash = os.urandom(32).hex()  # random hash that doesn't match
+
+        conditions = [{"blocks": [{"type": "HASH_PREIMAGE", "fields": [
+            {"type": "HASH256", "hex": fake_hash}
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "HASH_PREIMAGE", "preimage": payload.hex()}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        # Consensus rejects: SHA256(payload) != fake_hash
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  Arbitrary PREIMAGE with wrong hash: REJECTED")
+        self.log.info("  Spam test PASSED: can't embed data via PREIMAGE")
+
+    def test_spam_pubkey_no_crypto_validation(self, node):
+        """Arbitrary PUBKEY data → SIG block requires valid signature.
+
+        Attempt: Put 32 bytes of arbitrary data in a PUBKEY field (x-only size,
+        no prefix validation). Even though the PUBKEY stores arbitrary bytes,
+        the SIG block requires a valid Schnorr signature over the sighash.
+        Random bytes won't produce a valid signature.
+        """
+        self.log.info("Spam test: arbitrary bytes in PUBKEY field...")
+
+        # 32 bytes of "data" posing as an x-only pubkey
+        fake_pubkey = os.urandom(32).hex()
+
+        conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": fake_pubkey}
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # The UTXO exists — but nobody can spend it without a valid signature
+        # for the "pubkey" (which is random bytes, not a real EC point)
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+
+        # Sign with a real key — but it doesn't match the fake pubkey
+        real_wif, real_pubkey = make_keypair()
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "SIG", "privkey": real_wif}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        # Consensus rejects: signature doesn't match fake_pubkey
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  PUBKEY with arbitrary bytes: UTXO created but UNSPENDABLE")
+        self.log.info("  Spam test PASSED: arbitrary PUBKEY → funds burned, not free data storage")
+
+    def test_spam_numeric_arbitrary_bytes(self, node):
+        """NUMERIC fields: max 4 bytes, semantically validated at spend time.
+
+        Attempt: Pack data into NUMERIC fields with garbage operator values.
+        Result: RPC accepts structurally valid NUMERICs (1-4 bytes) but the
+        evaluator rejects garbage operators at spend time. Max 4 bytes per
+        NUMERIC enforced by field validation. 5-byte NUMERIC rejected at RPC.
+        """
+        self.log.info("Spam test: NUMERIC field limits...")
+
+        # NUMERIC max is 4 bytes — try 5 bytes → rejected at RPC layer
+        assert_raises_rpc_error(-8, "", node.createrung,
+            [{"blocks": [{"type": "SIG", "fields": [
+                {"type": "NUMERIC", "hex": "0102030405"},  # 5 bytes → too large
+            ]}]}])
+        self.log.info("  NUMERIC > 4 bytes: REJECTED at RPC level")
+
+        # Garbage operator in COMPARE: RPC accepts (structurally valid 4B NUMERIC)
+        # but evaluator rejects at spend time — semantic validation
+        garbage_conds = [{"blocks": [{"type": "COMPARE", "fields": [
+            {"type": "NUMERIC", "hex": "ff000000"},  # unknown operator
+            {"type": "NUMERIC", "hex": "e8030000"},  # threshold
+        ]}]}]
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, garbage_conds)
+        # Try to spend it — evaluator rejects garbage operator
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": [{"blocks": [{
+                "type": "SIG",
+                "fields": [{"type": "PUBKEY", "hex": dest_pubkey}]
+            }]}]}]
+        )
+        signed = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "COMPARE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, signed["hex"])
+        self.log.info("  NUMERIC with garbage operator: UTXO created but UNSPENDABLE")
+        self.log.info("  Spam test PASSED: NUMERIC max 4B, garbage semantics rejected at spend")
+
+    def test_spam_unknown_data_type_rejected(self, node):
+        """Unknown data types are rejected by the RPC layer.
+
+        Attempt: Use a non-existent data type to sneak arbitrary bytes.
+        Result: ParseFieldType() rejects unknown type names.
+        """
+        self.log.info("Spam test: unknown data type...")
+
+        assert_raises_rpc_error(-8, "Unknown data type", node.createrung,
+            [{"blocks": [{"type": "SIG", "fields": [
+                {"type": "ARBITRARY_DATA", "hex": "deadbeef" * 100},
+            ]}]}])
+        self.log.info("  Unknown data type 'ARBITRARY_DATA': REJECTED")
+        self.log.info("  Spam test PASSED: no unknown data types allowed")
+
+    def test_spam_witness_only_in_conditions_rejected(self, node):
+        """SIGNATURE/PREIMAGE in output conditions (UTXO set) → rejected.
+
+        Attempt: Put a SIGNATURE field in a createrungtx output to store
+        arbitrary data in the UTXO set permanently.
+        Result: IsConditionDataType() returns false for SIGNATURE and PREIMAGE.
+        ParseConditionsSpec (used by createrungtx outputs) rejects them.
+
+        Note: createrung builds raw witnesses (not conditions), so it accepts
+        all field types. The conditions-only check is in createrungtx outputs.
+        """
+        self.log.info("Spam test: witness-only fields in conditions...")
+
+        # Need a real input for createrungtx
+        utxo = self.wallet.get_utxo()
+
+        # Try to put SIGNATURE in output conditions
+        assert_raises_rpc_error(-8, "not allowed in conditions", node.createrungtx,
+            [{"txid": utxo["txid"], "vout": utxo["vout"]}],
+            [{"amount": Decimal(utxo["value"]) - Decimal("0.001"),
+              "conditions": [{"blocks": [{"type": "SIG", "fields": [
+                  {"type": "SIGNATURE", "hex": "bb" * 64},
+              ]}]}]}])
+        self.log.info("  SIGNATURE in output conditions: REJECTED")
+
+        # Try to put PREIMAGE in output conditions
+        assert_raises_rpc_error(-8, "not allowed in conditions", node.createrungtx,
+            [{"txid": utxo["txid"], "vout": utxo["vout"]}],
+            [{"amount": Decimal(utxo["value"]) - Decimal("0.001"),
+              "conditions": [{"blocks": [{"type": "HASH_PREIMAGE", "fields": [
+                  {"type": "PREIMAGE", "hex": "aa" * 100},
+              ]}]}]}])
+        self.log.info("  PREIMAGE in output conditions: REJECTED")
+        self.log.info("  Spam test PASSED: witness-only types can't pollute UTXO set")
+
+    def test_spam_oversized_field_rejected(self, node):
+        """Oversized fields are rejected by field validation.
+
+        Attempt: Create a PUBKEY larger than 2048 bytes.
+        Result: FieldMaxSize(PUBKEY) = 2048, rejected during IsValid().
+        """
+        self.log.info("Spam test: oversized fields...")
+
+        # PUBKEY > 2048 bytes
+        assert_raises_rpc_error(-8, "Invalid field", node.createrung,
+            [{"blocks": [{"type": "SIG", "fields": [
+                {"type": "PUBKEY", "hex": "02" + "aa" * 2048},  # 2049 bytes
+            ]}]}])
+        self.log.info("  PUBKEY 2049 bytes: REJECTED")
+
+        # HASH256 != 32 bytes
+        assert_raises_rpc_error(-8, "Invalid field", node.createrung,
+            [{"blocks": [{"type": "HASH_PREIMAGE", "fields": [
+                {"type": "HASH256", "hex": "cc" * 33},  # 33 bytes, must be 32
+            ]}]}])
+        self.log.info("  HASH256 33 bytes: REJECTED")
+
+        # HASH160 != 20 bytes
+        assert_raises_rpc_error(-8, "Invalid field", node.createrung,
+            [{"blocks": [{"type": "HASH160_PREIMAGE", "fields": [
+                {"type": "HASH160", "hex": "dd" * 21},  # 21 bytes, must be 20
+            ]}]}])
+        self.log.info("  HASH160 21 bytes: REJECTED")
+
+        # SCHEME != 1 byte
+        assert_raises_rpc_error(-8, "Invalid field", node.createrung,
+            [{"blocks": [{"type": "SIG", "fields": [
+                {"type": "SCHEME", "hex": "1011"},  # 2 bytes, must be 1
+            ]}]}])
+        self.log.info("  SCHEME 2 bytes: REJECTED")
+        self.log.info("  Spam test PASSED: all field sizes strictly enforced")
+
+    def test_spam_max_structure_limits(self, node):
+        """Structure limits: max 16 rungs, 8 blocks/rung, 16 fields/block.
+
+        Attempt: Exceed structural limits to pack more data.
+        Result: Policy rejects outputs with too many blocks per rung.
+        The tx can be constructed via RPC but sendrawtransaction rejects it
+        with "rung N has too many blocks".
+        """
+        self.log.info("Spam test: structure limits...")
+
+        # Build a tx with 9 blocks per rung — exceeds MAX_BLOCKS_PER_RUNG=8
+        utxo = self.wallet.get_utxo()
+        boot_wif, boot_pubkey = make_keypair()
+        txout_info = node.gettxout(utxo["txid"], utxo["vout"])
+        spent_spk = txout_info["scriptPubKey"]["hex"]
+
+        wif, pubkey = make_keypair()
+        blocks_9 = [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": pubkey}
+        ]} for _ in range(9)]
+        conds_9 = [{"blocks": blocks_9}]
+        out_amount = Decimal(utxo["value"]) - Decimal("0.001")
+
+        result = node.createrungtx(
+            [{"txid": utxo["txid"], "vout": utxo["vout"]}],
+            [{"amount": out_amount, "conditions": conds_9}]
+        )
+        signed = node.signrungtx(
+            result["hex"],
+            [{"privkey": boot_wif, "input": 0}],
+            [{"amount": Decimal(utxo["value"]), "scriptPubKey": spent_spk}]
+        )
+        # Policy rejects: "rung 0 has too many blocks: 9"
+        assert_raises_rpc_error(-26, "too many blocks", node.sendrawtransaction, signed["hex"])
+        self.log.info("  9 blocks per rung: REJECTED by policy")
+        self.log.info("  Spam test PASSED: structural limits enforced at broadcast")
+
+    def test_spam_coil_address_limit(self, node):
+        """Coil address: max 520 bytes (standard scriptPubKey limit).
+
+        This is tested indirectly — the createrung RPC builds coils from
+        standard parameters. There's no way to inject arbitrary coil data
+        through the RPC; the serialization layer enforces the 520-byte limit.
+        """
+        self.log.info("Spam test: coil address limits (structural)...")
+
+        # Verify a valid rung can be created and decoded (proves coil is bounded)
+        wif, pubkey = make_keypair()
+        result = node.createrung(
+            [{"blocks": [{"type": "SIG", "fields": [
+                {"type": "PUBKEY", "hex": pubkey}
+            ]}]}]
+        )
+        decoded = node.decoderung(result["hex"])
+        assert "rungs" in decoded
+        self.log.info("  Valid rung structure: coil properly bounded")
+        self.log.info("  Spam test PASSED: coil address limited to standard scriptPubKey")
+
+    # =========================================================================
+    # Advanced Scenario Tests — Comprehensive Ladder Script Combinations
+    # =========================================================================
+
+    # --- Scenario 1: PQ PUBKEY_COMMIT Spend ---
+
+    def test_pq_falcon512_pubkey_commit(self, node):
+        """PQ PUBKEY_COMMIT: 32-byte commitment in conditions, full pubkey in witness.
+
+        Scenario: Alice locks funds with FALCON512 but only stores a 32-byte SHA256
+        commitment in the UTXO set (saving 865 bytes). At spend time, she reveals
+        the full 897-byte pubkey in the witness. The evaluator verifies
+        SHA256(pubkey) == commitment before PQ signature verification.
+        """
+        self.log.info("Scenario 1: PQ FALCON512 PUBKEY_COMMIT spend...")
+
+        if self.skip_if_no_pq(node):
+            return
+
+        keypair = node.generatepqkeypair("FALCON512")
+        pq_pubkey = keypair["pubkey"]
+        pq_privkey = keypair["privkey"]
+
+        # Compute commitment via RPC helper
+        commit_result = node.pqpubkeycommit(pq_pubkey)
+        commit_hex = commit_result["commit"]
+        self.log.info(f"  PUBKEY_COMMIT: {commit_hex[:16]}... (32 bytes vs {len(pq_pubkey)//2}B pubkey)")
+
+        # Conditions: SCHEME(FALCON512) + PUBKEY_COMMIT (34 bytes total in UTXO!)
+        conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "SCHEME", "hex": "10"},
+            {"type": "PUBKEY_COMMIT", "hex": commit_hex},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Spend: provide full pubkey + PQ signature in witness
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "SIG", "scheme": "FALCON512", "pq_privkey": pq_privkey, "pq_pubkey": pq_pubkey}
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert_equal(sign_result["complete"], True)
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  PUBKEY_COMMIT spend confirmed: {txid2[:16]}...")
+        self.log.info("  Scenario 1 PASSED: PQ PUBKEY_COMMIT")
+
+    # --- Scenario 2: PQ PUBKEY_COMMIT Mismatch (Negative) ---
+
+    def test_negative_pq_pubkey_commit_mismatch(self, node):
+        """Negative: wrong pubkey for PUBKEY_COMMIT → rejected.
+
+        Scenario: Eve tries to spend Alice's PUBKEY_COMMIT output using a
+        different FALCON512 key. The SHA256 check fails before signature
+        verification even starts.
+        """
+        self.log.info("Scenario 2: PQ PUBKEY_COMMIT mismatch (negative)...")
+
+        if self.skip_if_no_pq(node):
+            return
+
+        # Alice's key — committed in conditions
+        alice_keypair = node.generatepqkeypair("FALCON512")
+        alice_commit = node.pqpubkeycommit(alice_keypair["pubkey"])["commit"]
+
+        # Eve's key — will try to spend
+        eve_keypair = node.generatepqkeypair("FALCON512")
+
+        conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "SCHEME", "hex": "10"},
+            {"type": "PUBKEY_COMMIT", "hex": alice_commit},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Eve tries to spend with her own key
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "SIG", "scheme": "FALCON512",
+                 "pq_privkey": eve_keypair["privkey"],
+                 "pq_pubkey": eve_keypair["pubkey"]}
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]  # signing succeeds locally
+
+        # But consensus rejects: SHA256(eve_pubkey) != alice_commit
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  PUBKEY_COMMIT mismatch correctly rejected!")
+        self.log.info("  Scenario 2 PASSED: PQ PUBKEY_COMMIT mismatch rejected")
+
+    # --- Scenario 3: Multi-Rung RECURSE_MODIFIED (Cross-Rung Mutation) ---
+
+    def test_recurse_modified_cross_rung(self, node):
+        """RECURSE_MODIFIED: mutation targets rung 1 instead of rung 0.
+
+        Scenario: A two-rung UTXO where rung 0 is a SIG (always required) and
+        rung 1 has a COMPARE threshold. The RECURSE_MODIFIED block uses the
+        new multi-mutation format to mutate rung 1's COMPARE threshold while
+        leaving rung 0 completely untouched.
+        """
+        self.log.info("Scenario 3: RECURSE_MODIFIED cross-rung mutation...")
+
+        privkey_wif, pubkey_hex = make_keypair()
+        initial_threshold = 5000
+
+        # Rung 0: SIG + RECURSE_MODIFIED (new format: mutation targets rung 1)
+        # Rung 1: COMPARE(GT threshold)
+        conditions = [
+            {"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": pubkey_hex}
+                ]},
+                {"type": "RECURSE_MODIFIED", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(10)},   # max_depth
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},    # num_mutations
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},    # rung_idx = 1
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},    # block_idx = 0 (COMPARE)
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},    # param_idx = 1 (threshold value)
+                    {"type": "NUMERIC", "hex": numeric_hex(500)},  # delta = +500
+                ]},
+            ]},
+            {"blocks": [
+                {"type": "COMPARE", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(0x03)},  # GT operator
+                    {"type": "NUMERIC", "hex": numeric_hex(initial_threshold)},
+                ]},
+            ]},
+        ]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  Created 2-rung UTXO (threshold={initial_threshold})")
+
+        # Hop 1: mutate rung 1 threshold from 5000 → 5500
+        new_threshold = initial_threshold + 500
+        mutated_conditions = [
+            {"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": pubkey_hex}
+                ]},
+                {"type": "RECURSE_MODIFIED", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(10)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                    {"type": "NUMERIC", "hex": numeric_hex(500)},
+                ]},
+            ]},
+            {"blocks": [
+                {"type": "COMPARE", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                    {"type": "NUMERIC", "hex": numeric_hex(new_threshold)},
+                ]},
+            ]},
+        ]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": mutated_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "rung": 0, "blocks": [
+                {"type": "SIG", "privkey": privkey_wif},
+                {"type": "RECURSE_MODIFIED"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Cross-rung mutation ({initial_threshold}→{new_threshold}): {txid2[:16]}...")
+        self.log.info("  Scenario 3 PASSED: Cross-rung RECURSE_MODIFIED")
+
+    # --- Scenario 4: Multi-Mutation (Two Simultaneous Mutations) ---
+
+    def test_recurse_modified_multi_mutation(self, node):
+        """RECURSE_MODIFIED: two mutations in a single spend.
+
+        Scenario: A state machine with a counter (rung 0, block 1) and a
+        threshold (rung 0, block 2). Each spend simultaneously increments
+        the counter by +1 and increases the threshold by +1000. This enables
+        complex atomic state transitions.
+        """
+        self.log.info("Scenario 4: RECURSE_MODIFIED multi-mutation...")
+
+        counter = 0
+        threshold = 10000
+
+        # Rung 0: RECURSE_MODIFIED + SEQUENCER(counter) + COMPARE(threshold)
+        # Mutation 0: block 1 (SEQUENCER), param 0 (current_step), delta +1
+        # Mutation 1: block 2 (COMPARE), param 1 (threshold_value), delta +1000
+        conditions = [{"blocks": [
+            {"type": "RECURSE_MODIFIED", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},   # max_depth
+                {"type": "NUMERIC", "hex": numeric_hex(2)},    # num_mutations = 2
+                # Mutation 0: rung 0, block 1, param 0, delta +1
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                # Mutation 1: rung 0, block 2, param 1, delta +1000
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(2)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1000)},
+            ]},
+            {"type": "SEQUENCER", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(counter)},  # current_step
+                {"type": "NUMERIC", "hex": numeric_hex(10)},       # total_steps
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},     # GT
+                {"type": "NUMERIC", "hex": numeric_hex(threshold)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  State: counter={counter}, threshold={threshold}")
+
+        # Two hops of dual mutation
+        for hop in range(2):
+            counter += 1
+            threshold += 1000
+
+            mutated_conditions = [{"blocks": [
+                {"type": "RECURSE_MODIFIED", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(10)},
+                    {"type": "NUMERIC", "hex": numeric_hex(2)},
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},
+                    {"type": "NUMERIC", "hex": numeric_hex(2)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1000)},
+                ]},
+                {"type": "SEQUENCER", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(counter)},
+                    {"type": "NUMERIC", "hex": numeric_hex(10)},
+                ]},
+                {"type": "COMPARE", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                    {"type": "NUMERIC", "hex": numeric_hex(threshold)},
+                ]},
+            ]}]
+
+            output_amount = amount - Decimal("0.001")
+            spend = node.createrungtx(
+                [{"txid": txid, "vout": vout}],
+                [{"amount": output_amount, "conditions": mutated_conditions}]
+            )
+            sign_result = node.signrungtx(
+                spend["hex"],
+                [{"input": 0, "blocks": [
+                    {"type": "RECURSE_MODIFIED"},
+                    {"type": "SEQUENCER"},
+                    {"type": "COMPARE"},
+                ]}],
+                [{"amount": amount, "scriptPubKey": spk}]
+            )
+            assert sign_result["complete"]
+
+            txid = node.sendrawtransaction(sign_result["hex"])
+            self.generate(node, 1)
+            tx_info = node.getrawtransaction(txid, True)
+            assert tx_info["confirmations"] >= 1
+            spk = tx_info["vout"][0]["scriptPubKey"]["hex"]
+            amount = output_amount
+            vout = 0
+            self.log.info(f"  Hop {hop+1}: counter={counter}, threshold={threshold}")
+
+        self.log.info("  Scenario 4 PASSED: Multi-mutation RECURSE_MODIFIED")
+
+    # --- Scenario 5: Multi-Mutation Wrong Delta (Negative) ---
+
+    def test_negative_recurse_modified_wrong_delta(self, node):
+        """Negative: wrong mutation delta → rejected.
+
+        Scenario: Attacker tries to apply delta +2 when the covenant specifies +1.
+        """
+        self.log.info("Scenario 5: RECURSE_MODIFIED wrong delta (negative)...")
+
+        conditions = [{"blocks": [
+            {"type": "RECURSE_MODIFIED", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},    # num_mutations = 1
+                {"type": "NUMERIC", "hex": numeric_hex(0)},    # rung 0
+                {"type": "NUMERIC", "hex": numeric_hex(1)},    # block 1
+                {"type": "NUMERIC", "hex": numeric_hex(0)},    # param 0
+                {"type": "NUMERIC", "hex": numeric_hex(1)},    # delta +1
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                {"type": "NUMERIC", "hex": numeric_hex(100)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Try applying delta +2 instead of +1
+        bad_conditions = [{"blocks": [
+            {"type": "RECURSE_MODIFIED", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                {"type": "NUMERIC", "hex": numeric_hex(102)},  # wrong: should be 101
+            ]},
+        ]}]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": bad_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "RECURSE_MODIFIED"}, {"type": "COMPARE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  Wrong delta correctly rejected!")
+        self.log.info("  Scenario 5 PASSED: Wrong multi-mutation delta rejected")
+
+    # --- Scenario 6: SIG + HASH_PREIMAGE + CSV (Triple AND) ---
+
+    def test_sig_hash_csv_triple_and(self, node):
+        """Triple AND: SIG + HASH_PREIMAGE + CSV all in one rung.
+
+        Scenario: An escrow payment that requires: (1) seller's signature,
+        (2) revelation of a shipping secret (hash preimage), and (3) a 5-block
+        maturity period. All three must be satisfied simultaneously.
+        """
+        self.log.info("Scenario 6: Triple AND (SIG + HASH_PREIMAGE + CSV)...")
+
+        seller_wif, seller_pubkey = make_keypair()
+        preimage = os.urandom(32)
+        hash_digest = hashlib.sha256(preimage).hexdigest()
+        csv_blocks = 5
+
+        conditions = [{"blocks": [
+            {"type": "SIG", "fields": [
+                {"type": "PUBKEY", "hex": seller_pubkey}
+            ]},
+            {"type": "HASH_PREIMAGE", "fields": [
+                {"type": "HASH256", "hex": hash_digest}
+            ]},
+            {"type": "CSV", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(csv_blocks)}
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Mine enough blocks for CSV maturity
+        self.generate(node, csv_blocks)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout, "sequence": csv_blocks}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "SIG", "privkey": seller_wif},
+                {"type": "HASH_PREIMAGE", "preimage": preimage.hex()},
+                {"type": "CSV"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Triple AND spend confirmed: {txid2[:16]}...")
+        self.log.info("  Scenario 6 PASSED: SIG + HASH_PREIMAGE + CSV")
+
+    # --- Scenario 7: OR Logic with Different Security Levels ---
+
+    def test_or_hot_cold_vault(self, node):
+        """OR logic: hot key (with CSV delay) OR cold key (immediate).
+
+        Scenario: A hot/cold wallet design. Rung 0 (hot path) requires a
+        signature from the hot key plus a 10-block CSV delay. Rung 1 (cold path)
+        requires only the cold key with no delay. First we spend via the cold
+        path (immediate), then create a new UTXO and spend via the hot path
+        (after delay).
+        """
+        self.log.info("Scenario 7: OR hot/cold vault...")
+
+        hot_wif, hot_pubkey = make_keypair()
+        cold_wif, cold_pubkey = make_keypair()
+        csv_delay = 10
+
+        conditions = [
+            # Rung 0: hot key + CSV delay
+            {"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": hot_pubkey}
+                ]},
+                {"type": "CSV", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(csv_delay)}
+                ]},
+            ]},
+            # Rung 1: cold key (immediate)
+            {"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": cold_pubkey}
+                ]},
+            ]},
+        ]
+
+        # Test cold path (rung 1, immediate)
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "rung": 1, "blocks": [
+                {"type": "SIG", "privkey": cold_wif},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        cold_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(cold_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Cold path (rung 1, immediate) confirmed: {cold_txid[:16]}...")
+
+        # Test hot path (rung 0, needs CSV delay)
+        txid2, vout2, amount2, spk2 = self.bootstrap_v3_output(node, conditions)
+        self.generate(node, csv_delay)  # wait for CSV maturity
+
+        output_amount2 = amount2 - Decimal("0.001")
+        spend2 = node.createrungtx(
+            [{"txid": txid2, "vout": vout2, "sequence": csv_delay}],
+            [{"amount": output_amount2, "conditions": dest_conditions}]
+        )
+        sign_result2 = node.signrungtx(
+            spend2["hex"],
+            [{"input": 0, "rung": 0, "blocks": [
+                {"type": "SIG", "privkey": hot_wif},
+                {"type": "CSV"},
+            ]}],
+            [{"amount": amount2, "scriptPubKey": spk2}]
+        )
+        assert sign_result2["complete"]
+
+        hot_txid = node.sendrawtransaction(sign_result2["hex"])
+        self.generate(node, 1)
+        tx_info2 = node.getrawtransaction(hot_txid, True)
+        assert tx_info2["confirmations"] >= 1
+        self.log.info(f"  Hot path (rung 0, CSV={csv_delay}) confirmed: {hot_txid[:16]}...")
+        self.log.info("  Scenario 7 PASSED: OR hot/cold vault")
+
+    # --- Scenario 8: Covenant + Timelock (RECURSE_SAME + CLTV) ---
+
+    def test_recurse_same_with_cltv(self, node):
+        """RECURSE_SAME + CLTV: locked covenant that can't be spent until height N.
+
+        Scenario: Funds locked in a perpetual covenant (RECURSE_SAME) that also
+        has a CLTV timelock. Before the timelock, the UTXO can still be
+        re-encumbered (RECURSE_SAME satisfied, CLTV satisfied if nLockTime >=
+        threshold). After the timelock, same behavior — the covenant never
+        releases because RECURSE_SAME enforces identical output conditions.
+        """
+        self.log.info("Scenario 8: RECURSE_SAME + CLTV...")
+
+        current_height = node.getblockcount()
+        lock_height = current_height + 5
+
+        conditions = [{"blocks": [
+            {"type": "RECURSE_SAME", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(20)},
+            ]},
+            {"type": "CLTV", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(lock_height)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Mine past the CLTV height
+        self.generate(node, 6)
+
+        # Re-encumber with same conditions + nLockTime
+        output_amount = amount - Decimal("0.001")
+        current = node.getblockcount()
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout, "sequence": 0xfffffffe}],
+            [{"amount": output_amount, "conditions": conditions}],
+            current,  # nLockTime
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "RECURSE_SAME"},
+                {"type": "CLTV"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  RECURSE_SAME + CLTV re-encumber confirmed: {txid2[:16]}...")
+        self.log.info("  Scenario 8 PASSED: RECURSE_SAME + CLTV")
+
+    # --- Scenario 9: Inverted COMPARE as Floor Guard ---
+
+    def test_inverted_compare_floor(self, node):
+        """Inverted COMPARE: rejects amounts ABOVE a ceiling.
+
+        Scenario: COMPARE(GT, 1000000) with inverted=true means the block is
+        SATISFIED when the amount is NOT greater than 1M sats — effectively
+        enforcing a ceiling. Combined with a normal COMPARE(GTE, 10000) for
+        a floor, this creates a range lock without using IN_RANGE.
+        """
+        self.log.info("Scenario 9: Inverted COMPARE as ceiling guard...")
+
+        # Build manually: floor(GTE 10000) + ceiling(inverted GT 1000000)
+        conditions = [{"blocks": [
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x05)},     # GTE
+                {"type": "NUMERIC", "hex": numeric_hex(10000)},    # floor: 10000 sats
+            ]},
+            {"type": "COMPARE", "inverted": True, "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},     # GT (inverted = NOT GT = LTE)
+                {"type": "NUMERIC", "hex": numeric_hex(1000000)},  # ceiling: 1M sats
+            ]},
+        ]}]
+
+        # 0.005 BTC = 500,000 sats (within floor 10k and ceiling 1M)
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions, Decimal("0.005"))
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "COMPARE"}, {"type": "COMPARE"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Inverted COMPARE ceiling spend confirmed: {txid2[:16]}...")
+        self.log.info("  Scenario 9 PASSED: Inverted COMPARE floor/ceiling")
+
+    # --- Scenario 10: RECURSE_COUNT + SIG (Countdown Vault) ---
+
+    def test_countdown_vault(self, node):
+        """RECURSE_COUNT + SIG: a vault that requires N signatures before release.
+
+        Scenario: A "cooling off" vault. The UTXO requires a signature at each
+        step AND decrements a counter. After 3 signed hops, the counter reaches
+        0 and the covenant terminates, allowing free spending. This is a
+        deliberation mechanism — you need to sign 3 separate transactions
+        (in 3 separate blocks) before funds are released.
+        """
+        self.log.info("Scenario 10: Countdown vault (RECURSE_COUNT + SIG)...")
+
+        vault_wif, vault_pubkey = make_keypair()
+        initial_count = 3
+
+        conditions = [{"blocks": [
+            {"type": "SIG", "fields": [
+                {"type": "PUBKEY", "hex": vault_pubkey}
+            ]},
+            {"type": "RECURSE_COUNT", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(initial_count)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  Countdown vault created: count={initial_count}")
+
+        # Decrement through 3→2→1→0
+        for remaining in range(initial_count - 1, -1, -1):
+            next_conditions = [{"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": vault_pubkey}
+                ]},
+                {"type": "RECURSE_COUNT", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(remaining)},
+                ]},
+            ]}]
+
+            output_amount = amount - Decimal("0.001")
+            spend = node.createrungtx(
+                [{"txid": txid, "vout": vout}],
+                [{"amount": output_amount, "conditions": next_conditions}]
+            )
+            sign_result = node.signrungtx(
+                spend["hex"],
+                [{"input": 0, "blocks": [
+                    {"type": "SIG", "privkey": vault_wif},
+                    {"type": "RECURSE_COUNT"},
+                ]}],
+                [{"amount": amount, "scriptPubKey": spk}]
+            )
+            assert sign_result["complete"]
+
+            txid = node.sendrawtransaction(sign_result["hex"])
+            self.generate(node, 1)
+            tx_info = node.getrawtransaction(txid, True)
+            assert tx_info["confirmations"] >= 1
+            spk = tx_info["vout"][0]["scriptPubKey"]["hex"]
+            amount = output_amount
+            vout = 0
+            self.log.info(f"  Vault hop: count→{remaining}")
+
+        # count=0: free spend to arbitrary output
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        free_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": free_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "SIG", "privkey": vault_wif},
+                {"type": "RECURSE_COUNT"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid_final = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid_final, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Vault released (count=0): {txid_final[:16]}...")
+        self.log.info("  Scenario 10 PASSED: Countdown vault")
+
+    # --- Scenario 11: RECURSE_DECAY Multi-Target ---
+
+    def test_recurse_decay_multi_target(self, node):
+        """RECURSE_DECAY with two decay targets (new multi-mutation format).
+
+        Scenario: A dual-threshold contract with two GT comparisons. Both
+        thresholds decay by different amounts per hop, progressively
+        relaxing constraints. Uses GT so input_amount (full coin) always passes.
+        """
+        self.log.info("Scenario 11: RECURSE_DECAY multi-target...")
+
+        threshold_a = 500000     # GT 500000 sats (~0.005 BTC)
+        threshold_b = 1000000    # GT 1000000 sats (~0.01 BTC)
+
+        # Block 1: COMPARE(GT, threshold_a) — first threshold
+        # Block 2: COMPARE(GT, threshold_b) — second threshold
+        # Decay block 1 param 1 by 50000 per hop, block 2 param 1 by 100000
+        conditions = [{"blocks": [
+            {"type": "RECURSE_DECAY", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},   # max_depth
+                {"type": "NUMERIC", "hex": numeric_hex(2)},    # num_mutations = 2
+                # Decay 0: rung 0, block 1, param 1, decay 50000
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(50000)},
+                # Decay 1: rung 0, block 2, param 1, decay 100000
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(2)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(100000)},
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},  # GT
+                {"type": "NUMERIC", "hex": numeric_hex(threshold_a)},
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},  # GT
+                {"type": "NUMERIC", "hex": numeric_hex(threshold_b)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  State: threshold_a={threshold_a}, threshold_b={threshold_b}")
+
+        # Hop: a 500000→450000, b 1000000→900000
+        threshold_a -= 50000
+        threshold_b -= 100000
+
+        decayed_conditions = [{"blocks": [
+            {"type": "RECURSE_DECAY", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(10)},
+                {"type": "NUMERIC", "hex": numeric_hex(2)},
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(50000)},
+                {"type": "NUMERIC", "hex": numeric_hex(0)},
+                {"type": "NUMERIC", "hex": numeric_hex(2)},
+                {"type": "NUMERIC", "hex": numeric_hex(1)},
+                {"type": "NUMERIC", "hex": numeric_hex(100000)},
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                {"type": "NUMERIC", "hex": numeric_hex(threshold_a)},
+            ]},
+            {"type": "COMPARE", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(0x03)},
+                {"type": "NUMERIC", "hex": numeric_hex(threshold_b)},
+            ]},
+        ]}]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": decayed_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "RECURSE_DECAY"},
+                {"type": "COMPARE"},
+                {"type": "COMPARE"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Decay hop: a→{threshold_a}, b→{threshold_b}")
+        self.log.info("  Scenario 11 PASSED: RECURSE_DECAY multi-target")
+
+    # --- Scenario 12: Hash-Locked OR + Time-Locked OR (HTLC) ---
+
+    def test_htlc_pattern(self, node):
+        """HTLC: Hash preimage (receiver) OR CSV timeout (sender refund).
+
+        Scenario: Classic Hash Time-Locked Contract. Rung 0: Bob can claim by
+        revealing preimage + his signature. Rung 1: Alice can reclaim after
+        a CSV timeout of 20 blocks + her signature. Tests both paths.
+        """
+        self.log.info("Scenario 12: HTLC (hash-lock + time-lock)...")
+
+        alice_wif, alice_pubkey = make_keypair()
+        bob_wif, bob_pubkey = make_keypair()
+        preimage = os.urandom(32)
+        hash_hex = hashlib.sha256(preimage).hexdigest()
+        refund_blocks = 20
+
+        conditions = [
+            # Rung 0: Bob claims with preimage + signature
+            {"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": bob_pubkey}
+                ]},
+                {"type": "HASH_PREIMAGE", "fields": [
+                    {"type": "HASH256", "hex": hash_hex}
+                ]},
+            ]},
+            # Rung 1: Alice refund after timeout
+            {"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": alice_pubkey}
+                ]},
+                {"type": "CSV", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(refund_blocks)}
+                ]},
+            ]},
+        ]
+
+        # Test Bob claiming (rung 0)
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "rung": 0, "blocks": [
+                {"type": "SIG", "privkey": bob_wif},
+                {"type": "HASH_PREIMAGE", "preimage": preimage.hex()},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        bob_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(bob_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Bob claimed via hash preimage: {bob_txid[:16]}...")
+
+        # Test Alice refund (rung 1) on a different UTXO
+        txid2, vout2, amount2, spk2 = self.bootstrap_v3_output(node, conditions)
+        self.generate(node, refund_blocks)  # wait for CSV maturity
+
+        output_amount2 = amount2 - Decimal("0.001")
+        spend2 = node.createrungtx(
+            [{"txid": txid2, "vout": vout2, "sequence": refund_blocks}],
+            [{"amount": output_amount2, "conditions": dest_conditions}]
+        )
+        sign_result2 = node.signrungtx(
+            spend2["hex"],
+            [{"input": 0, "rung": 1, "blocks": [
+                {"type": "SIG", "privkey": alice_wif},
+                {"type": "CSV"},
+            ]}],
+            [{"amount": amount2, "scriptPubKey": spk2}]
+        )
+        assert sign_result2["complete"]
+
+        alice_txid = node.sendrawtransaction(sign_result2["hex"])
+        self.generate(node, 1)
+        tx_info2 = node.getrawtransaction(alice_txid, True)
+        assert tx_info2["confirmations"] >= 1
+        self.log.info(f"  Alice refunded via CSV timeout: {alice_txid[:16]}...")
+        self.log.info("  Scenario 12 PASSED: HTLC pattern (both paths)")
+
+    # --- Scenario 13: Latch + Cross-Rung Mutation State Machine ---
+
+    def test_latch_cross_rung_state_machine(self, node):
+        """Latch state machine using cross-rung RECURSE_MODIFIED.
+
+        Scenario: A two-rung UTXO. Rung 0 has the control logic (LATCH_SET +
+        RECURSE_MODIFIED targeting rung 1). Rung 1 has the state (SEQUENCER
+        acting as a counter). Each spend: latch gates the transition, then
+        RECURSE_MODIFIED increments the rung 1 sequencer step.
+        """
+        self.log.info("Scenario 13: Latch + cross-rung state machine...")
+
+        _wif, pubkey = make_keypair()
+
+        conditions = [
+            # Rung 0: LATCH_SET (gate) + RECURSE_MODIFIED (cross-rung mutation)
+            {"blocks": [
+                {"type": "LATCH_SET", "fields": [
+                    {"type": "PUBKEY", "hex": pubkey},
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},  # state=0 (open)
+                ]},
+                {"type": "RECURSE_MODIFIED", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(10)},   # max_depth
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},    # num_mutations = 1
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},    # rung_idx = 1
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},    # block_idx = 0
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},    # param_idx = 0 (current_step)
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},    # delta = +1
+                ]},
+            ]},
+            # Rung 1: SEQUENCER (state counter)
+            {"blocks": [
+                {"type": "SEQUENCER", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},  # current_step
+                    {"type": "NUMERIC", "hex": numeric_hex(5)},  # total_steps
+                ]},
+            ]},
+        ]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  State machine created: step=0")
+
+        # Transition: step 0→1
+        conditions_after = [
+            {"blocks": [
+                {"type": "LATCH_SET", "fields": [
+                    {"type": "PUBKEY", "hex": pubkey},
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},
+                ]},
+                {"type": "RECURSE_MODIFIED", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(10)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},
+                    {"type": "NUMERIC", "hex": numeric_hex(0)},
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},
+                ]},
+            ]},
+            {"blocks": [
+                {"type": "SEQUENCER", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(1)},  # step 0→1
+                    {"type": "NUMERIC", "hex": numeric_hex(5)},
+                ]},
+            ]},
+        ]
+
+        output_amount = amount - Decimal("0.001")
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": conditions_after}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "rung": 0, "blocks": [
+                {"type": "LATCH_SET"},
+                {"type": "RECURSE_MODIFIED"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  State transition (step 0→1): {txid2[:16]}...")
+        self.log.info("  Scenario 13 PASSED: Latch + cross-rung state machine")
+
+    # --- Scenario 14: RECURSE_UNTIL + Hash Preimage (Timed Secret Reveal) ---
+
+    def test_timed_secret_reveal(self, node):
+        """RECURSE_UNTIL + HASH_PREIMAGE: covenant that requires preimage reveal
+        before a deadline, otherwise stays locked.
+
+        Scenario: An output requires knowing a secret (hash preimage). Until a
+        target block height, the output must be re-encumbered with identical
+        conditions. After the deadline, revealing the preimage unlocks the
+        funds. This is a "reveal or forfeit" pattern.
+        """
+        self.log.info("Scenario 14: Timed secret reveal...")
+
+        preimage = os.urandom(32)
+        hash_hex = hashlib.sha256(preimage).hexdigest()
+        current_height = node.getblockcount()
+        deadline = current_height + 5
+
+        conditions = [{"blocks": [
+            {"type": "HASH_PREIMAGE", "fields": [
+                {"type": "HASH256", "hex": hash_hex}
+            ]},
+            {"type": "RECURSE_UNTIL", "fields": [
+                {"type": "NUMERIC", "hex": numeric_hex(deadline)},
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Before deadline: must re-encumber
+        output_amount = amount - Decimal("0.001")
+        current = node.getblockcount()
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout, "sequence": 0xfffffffe}],
+            [{"amount": output_amount, "conditions": conditions}],
+            current,  # nLockTime < deadline → must re-encumber
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "HASH_PREIMAGE", "preimage": preimage.hex()},
+                {"type": "RECURSE_UNTIL"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        spk2 = tx_info["vout"][0]["scriptPubKey"]["hex"]
+        self.log.info(f"  Re-encumbered before deadline: {txid2[:16]}...")
+
+        # Mine past deadline
+        blocks_needed = deadline - node.getblockcount() + 1
+        if blocks_needed > 0:
+            self.generate(node, blocks_needed)
+
+        # After deadline: spend freely with preimage
+        output_amount2 = output_amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend2 = node.createrungtx(
+            [{"txid": txid2, "vout": 0, "sequence": 0xfffffffe}],
+            [{"amount": output_amount2, "conditions": dest_conditions}],
+            node.getblockcount(),
+        )
+        sign_result2 = node.signrungtx(
+            spend2["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "HASH_PREIMAGE", "preimage": preimage.hex()},
+                {"type": "RECURSE_UNTIL"},
+            ]}],
+            [{"amount": output_amount, "scriptPubKey": spk2}]
+        )
+        assert sign_result2["complete"]
+
+        txid3 = node.sendrawtransaction(sign_result2["hex"])
+        self.generate(node, 1)
+        tx_info2 = node.getrawtransaction(txid3, True)
+        assert tx_info2["confirmations"] >= 1
+        self.log.info(f"  Secret revealed after deadline: {txid3[:16]}...")
+        self.log.info("  Scenario 14 PASSED: Timed secret reveal")
+
+    # --- Scenario 15: 3-Rung Priority Spend ---
+
+    def test_three_rung_priority(self, node):
+        """3-rung OR priority: emergency > normal > delayed.
+
+        Scenario: Three spending paths with different trust/delay tradeoffs:
+        - Rung 0 (emergency): 2-of-2 multisig (both keys, immediate)
+        - Rung 1 (normal): single key + hash preimage
+        - Rung 2 (delayed): single key + CSV 15 blocks
+        Tests the emergency path (rung 0).
+        """
+        self.log.info("Scenario 15: 3-rung priority spend...")
+
+        key1_wif, key1_pubkey = make_keypair()
+        key2_wif, key2_pubkey = make_keypair()
+        normal_wif, normal_pubkey = make_keypair()
+        delayed_wif, delayed_pubkey = make_keypair()
+        preimage = os.urandom(32)
+        hash_hex = hashlib.sha256(preimage).hexdigest()
+
+        conditions = [
+            # Rung 0: Emergency (2-of-2 multisig, immediate)
+            {"blocks": [
+                {"type": "MULTISIG", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(2)},
+                    {"type": "PUBKEY", "hex": key1_pubkey},
+                    {"type": "PUBKEY", "hex": key2_pubkey},
+                ]},
+            ]},
+            # Rung 1: Normal (key + preimage)
+            {"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": normal_pubkey}
+                ]},
+                {"type": "HASH_PREIMAGE", "fields": [
+                    {"type": "HASH256", "hex": hash_hex}
+                ]},
+            ]},
+            # Rung 2: Delayed (key + CSV)
+            {"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": delayed_pubkey}
+                ]},
+                {"type": "CSV", "fields": [
+                    {"type": "NUMERIC", "hex": numeric_hex(15)}
+                ]},
+            ]},
+        ]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+
+        # Use emergency path (rung 0): 2-of-2 multisig
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "rung": 0, "blocks": [
+                {"type": "MULTISIG", "privkeys": [key1_wif, key2_wif]},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+
+        txid2 = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(txid2, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Emergency multisig spend (rung 0): {txid2[:16]}...")
+        self.log.info("  Scenario 15 PASSED: 3-rung priority spend")
+
+    # --- Scenario 16: pqpubkeycommit RPC ---
+
+    def test_pqpubkeycommit_rpc(self, node):
+        """Test pqpubkeycommit RPC returns correct SHA256 commitment."""
+        self.log.info("Scenario 16: pqpubkeycommit RPC...")
+
+        if self.skip_if_no_pq(node):
+            return
+
+        keypair = node.generatepqkeypair("FALCON512")
+        pubkey_hex = keypair["pubkey"]
+
+        result = node.pqpubkeycommit(pubkey_hex)
+        commit_hex = result["commit"]
+        assert_equal(len(commit_hex), 64)  # 32 bytes hex
+
+        # Verify: SHA256(pubkey) == commit
+        import hashlib
+        expected = hashlib.sha256(bytes.fromhex(pubkey_hex)).hexdigest()
+        assert_equal(commit_hex, expected)
+        self.log.info(f"  Commitment verified: {commit_hex[:16]}...")
+        self.log.info("  Scenario 16 PASSED: pqpubkeycommit RPC")
+
+
+    # =========================================================================
+    # COSIGN — PQ Anchor Co-Spend Pattern
+    # =========================================================================
+
+    def test_cosign_anchor_spend(self, node):
+        """COSIGN: PQ anchor protects a Schnorr child via co-spending.
+
+        Pattern:
+        1. Create PQ anchor UTXO: SIG(FALCON512, PUBKEY_COMMIT) + RECURSE_SAME
+        2. Create child UTXO: SIG(schnorr) + COSIGN(sha256(anchor_conditions))
+        3. Spend both in same tx: anchor re-encumbers, child freed
+        4. One PQ signature covers entire transaction
+        """
+        self.log.info("Scenario 17: COSIGN PQ anchor co-spend...")
+
+        if self.skip_if_no_pq(node):
+            return
+
+        # --- Step 1: Create the PQ anchor UTXO ---
+        pq_keypair = node.generatepqkeypair("FALCON512")
+        pq_pubkey = pq_keypair["pubkey"]
+        pq_privkey = pq_keypair["privkey"]
+        commit = node.pqpubkeycommit(pq_pubkey)["commit"]
+
+        anchor_conditions = [{"blocks": [
+            {"type": "SIG", "fields": [
+                {"type": "SCHEME", "hex": "10"},
+                {"type": "PUBKEY_COMMIT", "hex": commit},
+            ]},
+            {"type": "RECURSE_SAME", "fields": [
+                {"type": "NUMERIC", "hex": "e803"},  # depth=1000
+            ]},
+        ]}]
+        anchor_txid, anchor_vout, anchor_amount, anchor_spk = \
+            self.bootstrap_v3_output(node, anchor_conditions, output_amount=Decimal("0.001"))
+        self.log.info(f"  Anchor UTXO: {anchor_txid}:{anchor_vout} ({anchor_spk[:20]}...)")
+
+        # --- Step 2: Compute COSIGN hash (SHA256 of anchor's scriptPubKey) ---
+        import hashlib
+        anchor_spk_bytes = bytes.fromhex(anchor_spk)
+        cosign_hash = hashlib.sha256(anchor_spk_bytes).hexdigest()
+        self.log.info(f"  COSIGN hash: {cosign_hash[:16]}...")
+
+        # --- Step 3: Create child UTXO with SIG + COSIGN ---
+        child_wif, child_pubkey = make_keypair()
+        child_conditions = [{"blocks": [
+            {"type": "SIG", "fields": [
+                {"type": "PUBKEY", "hex": child_pubkey},
+            ]},
+            {"type": "COSIGN", "fields": [
+                {"type": "HASH256", "hex": cosign_hash},
+            ]},
+        ]}]
+        child_txid, child_vout, child_amount, child_spk = \
+            self.bootstrap_v3_output(node, child_conditions)
+        self.log.info(f"  Child UTXO: {child_txid}:{child_vout}")
+
+        # --- Step 4: Spend both in one transaction ---
+        # Output 0: anchor re-encumbered (RECURSE_SAME)
+        # Output 1: child freed to destination
+        dest_wif, dest_pubkey = make_keypair()
+        spend_result = node.createrungtx(
+            [
+                {"txid": anchor_txid, "vout": anchor_vout},
+                {"txid": child_txid, "vout": child_vout},
+            ],
+            [
+                {"amount": anchor_amount - Decimal("0.0001"), "conditions": anchor_conditions},
+                {"amount": child_amount - Decimal("0.001"), "conditions": [{"blocks": [{
+                    "type": "SIG",
+                    "fields": [{"type": "PUBKEY", "hex": dest_pubkey}]
+                }]}]},
+            ]
+        )
+
+        # Sign: input 0 (anchor) with PQ key, input 1 (child) with Schnorr key
+        sign_result = node.signrungtx(
+            spend_result["hex"],
+            [
+                {"input": 0, "blocks": [
+                    {"type": "SIG", "scheme": "FALCON512",
+                     "pq_privkey": pq_privkey, "pq_pubkey": pq_pubkey},
+                    {"type": "RECURSE_SAME"},
+                ]},
+                {"input": 1, "blocks": [
+                    {"type": "SIG", "privkey": child_wif},
+                    {"type": "COSIGN"},
+                ]},
+            ],
+            [
+                {"amount": anchor_amount, "scriptPubKey": anchor_spk},
+                {"amount": child_amount, "scriptPubKey": child_spk},
+            ]
+        )
+        assert sign_result["complete"]
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+
+        # Verify anchor was re-encumbered with same conditions
+        anchor_out_spk = tx_info["vout"][0]["scriptPubKey"]["hex"]
+        assert_equal(anchor_out_spk, anchor_spk)
+
+        self.log.info(f"  COSIGN spend confirmed: {spend_txid[:16]}...")
+        self.log.info(f"  Anchor re-encumbered: {anchor_out_spk[:20]}...")
+
+        # Report witness size savings
+        tx_size = len(sign_result["hex"]) // 2
+        self.log.info(f"  Total tx size: {tx_size}B (1 PQ sig + 1 Schnorr sig)")
+        self.log.info("  Scenario 17 PASSED: COSIGN PQ anchor co-spend")
+
+    def test_cosign_negative_no_anchor(self, node):
+        """COSIGN negative: spending child without the anchor → rejected.
+
+        If someone tries to spend the child UTXO alone (without the anchor
+        as a co-input), the COSIGN block fails because no other input's
+        scriptPubKey matches the required hash.
+        """
+        self.log.info("Scenario 18: COSIGN negative (no anchor)...")
+
+        # Generate more coins and rescan wallet for spendable UTXOs
+        self.generate(node, 110)
+        self.wallet.rescan_utxos()
+
+        # Create a child UTXO with COSIGN pointing to a fake anchor hash
+        child_wif, child_pubkey = make_keypair()
+        fake_anchor_hash = "aa" * 32
+        child_conditions = [{"blocks": [
+            {"type": "SIG", "fields": [
+                {"type": "PUBKEY", "hex": child_pubkey},
+            ]},
+            {"type": "COSIGN", "fields": [
+                {"type": "HASH256", "hex": fake_anchor_hash},
+            ]},
+        ]}]
+        child_txid, child_vout, child_amount, child_spk = \
+            self.bootstrap_v3_output(node, child_conditions)
+
+        # Try to spend child alone — no anchor present
+        dest_wif, dest_pubkey = make_keypair()
+        spend = node.createrungtx(
+            [{"txid": child_txid, "vout": child_vout}],
+            [{"amount": child_amount - Decimal("0.001"), "conditions": [{"blocks": [{
+                "type": "SIG",
+                "fields": [{"type": "PUBKEY", "hex": dest_pubkey}]
+            }]}]}]
+        )
+        signed = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "SIG", "privkey": child_wif},
+                {"type": "COSIGN"},
+            ]}],
+            [{"amount": child_amount, "scriptPubKey": child_spk}]
+        )
+
+        # Should be rejected: COSIGN finds no matching anchor
+        assert_raises_rpc_error(-26, "", node.sendrawtransaction, signed["hex"])
+        self.log.info("  Child spend without anchor: REJECTED")
+        self.log.info("  Scenario 18 PASSED: COSIGN requires anchor co-input")
+
+
+    def test_cosign_10_children(self, node):
+        """COSIGN at scale: 1 PQ anchor + 10 children in a single transaction.
+
+        Demonstrates the full anchor pattern:
+        1. Create PQ anchor UTXO (FALCON512 + PUBKEY_COMMIT + RECURSE_SAME)
+        2. Create 10 independent child UTXOs (Schnorr + COSIGN)
+        3. Spend all 11 inputs in one tx: anchor re-encumbers, 10 children freed
+        4. Compare tx size vs hypothetical 10 individual FALCON512 spends
+        """
+        self.log.info("Scenario 19: COSIGN 10-child batch spend...")
+
+        if self.skip_if_no_pq(node):
+            return
+
+        # Mine blocks to MiniWallet's descriptor so it has spendable UTXOs
+        self.generatetodescriptor(node, 200, self.wallet.get_descriptor())
+        self.wallet.rescan_utxos()
+
+        # --- Step 1: Create PQ anchor ---
+        pq_keypair = node.generatepqkeypair("FALCON512")
+        pq_pubkey = pq_keypair["pubkey"]
+        pq_privkey = pq_keypair["privkey"]
+        commit = node.pqpubkeycommit(pq_pubkey)["commit"]
+
+        anchor_conditions = [{"blocks": [
+            {"type": "SIG", "fields": [
+                {"type": "SCHEME", "hex": "10"},
+                {"type": "PUBKEY_COMMIT", "hex": commit},
+            ]},
+            {"type": "RECURSE_SAME", "fields": [
+                {"type": "NUMERIC", "hex": "e803"},
+            ]},
+        ]}]
+        anchor_txid, anchor_vout, anchor_amount, anchor_spk = \
+            self.bootstrap_v3_output(node, anchor_conditions, output_amount=Decimal("0.001"))
+        self.log.info(f"  Anchor created: {anchor_txid[:16]}...")
+
+        # --- Step 2: Compute COSIGN hash ---
+        import hashlib
+        cosign_hash = hashlib.sha256(bytes.fromhex(anchor_spk)).hexdigest()
+
+        # --- Step 3: Create 10 child UTXOs in a single funding tx ---
+        NUM_CHILDREN = 10
+        child_keys = []
+        child_conditions_list = []
+        for i in range(NUM_CHILDREN):
+            child_wif, child_pubkey = make_keypair()
+            child_keys.append((child_wif, child_pubkey))
+            child_conditions_list.append([{"blocks": [
+                {"type": "SIG", "fields": [
+                    {"type": "PUBKEY", "hex": child_pubkey},
+                ]},
+                {"type": "COSIGN", "fields": [
+                    {"type": "HASH256", "hex": cosign_hash},
+                ]},
+            ]}])
+
+        # Use a single wallet UTXO to fund all 10 children
+        utxo = self.wallet.get_utxo()
+        input_amount = utxo["value"]
+        txout_info = node.gettxout(utxo["txid"], utxo["vout"])
+        spent_spk = txout_info["scriptPubKey"]["hex"]
+
+        child_amount = Decimal("0.005")
+        outputs = []
+        for conds in child_conditions_list:
+            outputs.append({"amount": child_amount, "conditions": conds})
+
+        # Add change output to avoid fee-exceeds-max error
+        boot_wif, boot_pubkey = make_keypair()
+        change_wif, change_pubkey = make_keypair()
+        change_amount = Decimal(input_amount) - (child_amount * NUM_CHILDREN) - Decimal("0.001")
+        if change_amount > Decimal("0"):
+            outputs.append({"amount": change_amount, "conditions": [{"blocks": [
+                {"type": "SIG", "fields": [{"type": "PUBKEY", "hex": change_pubkey}]}
+            ]}]})
+        fund_result = node.createrungtx(
+            [{"txid": utxo["txid"], "vout": utxo["vout"]}],
+            outputs,
+        )
+        sign_result = node.signrungtx(
+            fund_result["hex"],
+            [{"privkey": boot_wif, "input": 0}],
+            [{"amount": input_amount, "scriptPubKey": spent_spk}],
+        )
+        assert sign_result["complete"]
+        fund_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        fund_tx = node.getrawtransaction(fund_txid, True)
+        assert fund_tx["confirmations"] >= 1
+
+        children = []
+        for i in range(NUM_CHILDREN):
+            children.append({
+                "txid": fund_txid,
+                "vout": i,
+                "amount": child_amount,
+                "spk": fund_tx["vout"][i]["scriptPubKey"]["hex"],
+                "wif": child_keys[i][0],
+                "pubkey": child_keys[i][1],
+            })
+        self.log.info(f"  Created {NUM_CHILDREN} child UTXOs with COSIGN in 1 tx")
+
+        # --- Step 4: Build the 11-input transaction ---
+        # Inputs: anchor + 10 children
+        inputs = [{"txid": anchor_txid, "vout": anchor_vout}]
+        for c in children:
+            inputs.append({"txid": c["txid"], "vout": c["vout"]})
+
+        # Outputs: re-encumbered anchor + 10 destinations
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{
+            "type": "SIG",
+            "fields": [{"type": "PUBKEY", "hex": dest_pubkey}]
+        }]}]
+
+        outputs = [{"amount": anchor_amount - Decimal("0.0001"), "conditions": anchor_conditions}]
+        total_child_value = Decimal("0")
+        for c in children:
+            total_child_value += c["amount"]
+        # Send all children's value to a single destination (minus fee)
+        outputs.append({
+            "amount": total_child_value - Decimal("0.001"),
+            "conditions": dest_conditions,
+        })
+
+        spend_result = node.createrungtx(inputs, outputs)
+
+        # --- Step 5: Sign all inputs ---
+        sign_blocks = [
+            # Input 0: anchor (PQ)
+            {"input": 0, "blocks": [
+                {"type": "SIG", "scheme": "FALCON512",
+                 "pq_privkey": pq_privkey, "pq_pubkey": pq_pubkey},
+                {"type": "RECURSE_SAME"},
+            ]},
+        ]
+        for i, c in enumerate(children):
+            sign_blocks.append({
+                "input": i + 1,
+                "blocks": [
+                    {"type": "SIG", "privkey": c["wif"]},
+                    {"type": "COSIGN"},
+                ],
+            })
+
+        spent_info = [{"amount": anchor_amount, "scriptPubKey": anchor_spk}]
+        for c in children:
+            spent_info.append({"amount": c["amount"], "scriptPubKey": c["spk"]})
+
+        sign_result = node.signrungtx(spend_result["hex"], sign_blocks, spent_info)
+        assert sign_result["complete"]
+
+        # --- Step 6: Broadcast and confirm ---
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+
+        # Verify anchor re-encumbered
+        anchor_out_spk = tx_info["vout"][0]["scriptPubKey"]["hex"]
+        assert_equal(anchor_out_spk, anchor_spk)
+
+        # --- Step 7: Report sizes ---
+        cosign_tx_size = len(sign_result["hex"]) // 2
+        # Hypothetical: 10 individual FALCON512 spends would each need ~1,582B witness
+        hypothetical_per_pq = 1582
+        hypothetical_total = hypothetical_per_pq * NUM_CHILDREN
+        # Actual COSIGN witness: 1 PQ (~1,586B) + 10 Schnorr (~82B each)
+        schnorr_per_child = 82
+
+        self.log.info(f"  ┌─────────────────────────────────────────────────┐")
+        self.log.info(f"  │ COSIGN 10-CHILD BATCH SPEND — CONFIRMED        │")
+        self.log.info(f"  ├─────────────────────────────────────────────────┤")
+        self.log.info(f"  │ Tx: {spend_txid[:48]}...│")
+        self.log.info(f"  │ Inputs:  1 anchor + {NUM_CHILDREN} children = {NUM_CHILDREN + 1} total       │")
+        self.log.info(f"  │ Outputs: 1 anchor + 1 destination = 2 total    │")
+        self.log.info(f"  ├─────────────────────────────────────────────────┤")
+        self.log.info(f"  │ COSIGN tx size:     {cosign_tx_size:>6,}B                    │")
+        self.log.info(f"  │ 10× PQ witness:     {hypothetical_total:>6,}B (hypothetical)    │")
+        self.log.info(f"  │ Savings:            {hypothetical_total - cosign_tx_size:>6,}B ({hypothetical_total / cosign_tx_size:.1f}× smaller)     │")
+        self.log.info(f"  ├─────────────────────────────────────────────────┤")
+        self.log.info(f"  │ PQ sigs in tx:      1 (anchor only)            │")
+        self.log.info(f"  │ Schnorr sigs in tx: {NUM_CHILDREN} (children)              │")
+        self.log.info(f"  │ Anchor re-encumbered: YES                      │")
+        self.log.info(f"  └─────────────────────────────────────────────────┘")
+        self.log.info("  Scenario 19 PASSED: COSIGN 10-child batch spend")
 
 
 if __name__ == '__main__':

@@ -67,6 +67,7 @@ struct RungEvalContext {
     int32_t block_height{0};               //!< Current block height (for RECURSE_UNTIL)
     const CTxOut* spending_output{nullptr}; //!< Output script being created (for recursion covenant checks)
     const RungConditions* input_conditions{nullptr}; //!< Input conditions (for recursion covenant comparison)
+    const std::vector<CTxOut>* spent_outputs{nullptr}; //!< All spent outputs in the tx (for COSIGN cross-input checks)
 };
 
 /** Result of evaluating a single block or rung. */
@@ -126,6 +127,7 @@ EvalResult EvalCompareBlock(const RungBlock& block, const RungEvalContext& ctx);
 EvalResult EvalSequencerBlock(const RungBlock& block, const RungEvalContext& ctx);
 EvalResult EvalOneShotBlock(const RungBlock& block, const RungEvalContext& ctx);
 EvalResult EvalRateLimitBlock(const RungBlock& block, const RungEvalContext& ctx);
+EvalResult EvalCosignBlock(const RungBlock& block, const RungEvalContext& ctx);
 
 /** Evaluate a single block by dispatching to the appropriate evaluator. */
 EvalResult EvalBlock(const RungBlock& block,

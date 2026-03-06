@@ -75,6 +75,7 @@ enum class RungBlockType : uint16_t {
     SEQUENCER        = 0x0651, //!< Step sequencer
     ONE_SHOT         = 0x0661, //!< One-shot activation window
     RATE_LIMIT       = 0x0671, //!< Rate limiter
+    COSIGN           = 0x0681, //!< Co-spend contact: requires another input with matching conditions hash
 };
 
 /** Data types for typed parameters within blocks.
@@ -145,6 +146,7 @@ inline bool IsKnownBlockType(uint16_t b)
     case RungBlockType::SEQUENCER:
     case RungBlockType::ONE_SHOT:
     case RungBlockType::RATE_LIMIT:
+    case RungBlockType::COSIGN:
         return true;
     }
     return false;
@@ -235,6 +237,7 @@ inline std::string BlockTypeName(RungBlockType type)
     case RungBlockType::SEQUENCER:        return "SEQUENCER";
     case RungBlockType::ONE_SHOT:         return "ONE_SHOT";
     case RungBlockType::RATE_LIMIT:       return "RATE_LIMIT";
+    case RungBlockType::COSIGN:           return "COSIGN";
     }
     return "UNKNOWN";
 }
