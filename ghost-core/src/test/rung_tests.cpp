@@ -1199,10 +1199,10 @@ BOOST_AUTO_TEST_CASE(eval_plc_structural_validation)
     counter.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});
     BOOST_CHECK(EvalBlock(counter, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
 
-    // ONE_SHOT needs numeric + hash
+    // ONE_SHOT needs numeric + hash; state=0 → can fire
     RungBlock oneshot;
     oneshot.type = RungBlockType::ONE_SHOT;
-    oneshot.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)});
+    oneshot.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
     oneshot.fields.push_back({RungDataType::HASH256, MakeHash256()});
     BOOST_CHECK(EvalBlock(oneshot, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
 }
@@ -1268,10 +1268,13 @@ BOOST_AUTO_TEST_CASE(eval_adaptor_sig_satisfied)
     MockSignatureChecker checker;
     checker.schnorr_result = true;
 
+    // adaptor_point must be 32 bytes (x-only)
+    std::vector<uint8_t> adaptor_point(32, 0xAA);
+
     RungBlock block;
     block.type = RungBlockType::ADAPTOR_SIG;
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});      // signing_key
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});      // adaptor_point
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});      // signing_key (33B)
+    block.fields.push_back({RungDataType::PUBKEY, adaptor_point});     // adaptor_point (32B x-only)
     block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
 
     ScriptExecutionData execdata;
@@ -1283,10 +1286,12 @@ BOOST_AUTO_TEST_CASE(eval_adaptor_sig_unsatisfied)
     MockSignatureChecker checker;
     checker.schnorr_result = false;
 
+    std::vector<uint8_t> adaptor_point(32, 0xAA);
+
     RungBlock block;
     block.type = RungBlockType::ADAPTOR_SIG;
     block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY, adaptor_point});
     block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
 
     ScriptExecutionData execdata;
@@ -3524,6 +3529,318 @@ BOOST_AUTO_TEST_CASE(eval_cosign_skips_self)
     ctx.spent_outputs = &spent_outputs;
 
     BOOST_CHECK(EvalBlock(cosign_block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+// ============================================================================
+// Phase 3 PLC state gating tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(eval_counter_down_count_positive)
+{
+    // COUNTER_DOWN with count=5 → SATISFIED (can decrement)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_DOWN;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_down_count_zero)
+{
+    // COUNTER_DOWN with count=0 → UNSATISFIED (countdown done)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_DOWN;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_preset_below_preset)
+{
+    // COUNTER_PRESET with current=3, preset=10 → SATISFIED
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_PRESET;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});  // current
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // preset
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_preset_at_preset)
+{
+    // COUNTER_PRESET with current=10, preset=10 → UNSATISFIED (done)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_PRESET;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // current
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // preset
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_preset_above_preset)
+{
+    // COUNTER_PRESET with current=15, preset=10 → UNSATISFIED
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_PRESET;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(15)}); // current
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // preset
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_up_below_target)
+{
+    // COUNTER_UP with current=2, target=10 → SATISFIED
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_UP;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});  // current
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // target
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_up_at_target)
+{
+    // COUNTER_UP with current=10, target=10 → UNSATISFIED (done)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_UP;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // current
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // target
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_counter_up_single_numeric_error)
+{
+    // COUNTER_UP with only 1 numeric → ERROR (needs 2)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::COUNTER_UP;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_one_shot_state_zero)
+{
+    // ONE_SHOT with state=0 → SATISFIED (can fire)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ONE_SHOT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_one_shot_state_nonzero)
+{
+    // ONE_SHOT with state=1 → UNSATISFIED (already fired)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ONE_SHOT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});
+    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_timer_continuous_two_field_elapsed)
+{
+    // TIMER_CONTINUOUS with accumulated=10, target=5 → SATISFIED (elapsed)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::TIMER_CONTINUOUS;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // accumulated
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});  // target
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_timer_continuous_two_field_not_elapsed)
+{
+    // TIMER_CONTINUOUS with accumulated=3, target=10 → UNSATISFIED
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::TIMER_CONTINUOUS;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});  // accumulated
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)}); // target
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_timer_continuous_single_field_compat)
+{
+    // TIMER_CONTINUOUS with single numeric > 0 → SATISFIED (backward compat)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::TIMER_CONTINUOUS;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_timer_off_delay_remaining_positive)
+{
+    // TIMER_OFF_DELAY with remaining=5 → SATISFIED (still in hold-off)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::TIMER_OFF_DELAY;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_timer_off_delay_remaining_zero)
+{
+    // TIMER_OFF_DELAY with remaining=0 → UNSATISFIED (delay expired)
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::TIMER_OFF_DELAY;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});
+
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_hysteresis_fee_within_band)
+{
+    // HYSTERESIS_FEE with tx fee rate within band → SATISFIED
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::HYSTERESIS_FEE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)}); // high = 100 sat/vB
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});   // low = 5 sat/vB
+
+    // No tx context → structural-only SATISFIED
+    RungEvalContext ctx;
+    BOOST_CHECK(EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_hysteresis_fee_with_tx_context)
+{
+    // HYSTERESIS_FEE with tx context — fee rate check
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::HYSTERESIS_FEE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100)}); // high = 100 sat/vB
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});   // low = 5 sat/vB
+
+    // Build a minimal tx: 1 input, 1 output
+    CMutableTransaction mtx;
+    mtx.version = CTransaction::RUNG_TX_VERSION;
+    CTxIn input0;
+    input0.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 0);
+    mtx.vin.push_back(input0);
+    mtx.vout.push_back(CTxOut(90000, CScript() << OP_RETURN));
+    CTransaction tx(mtx);
+
+    // Spent output with 100000 sats → fee = 10000 sats
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.push_back(CTxOut(100000, CScript() << OP_1));
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    ctx.spent_outputs = &spent_outputs;
+
+    // fee_rate = 10000 / vsize. vsize is small for this tx, so fee_rate will be high.
+    // With high=100, this should be UNSATISFIED (fee rate exceeds band)
+    EvalResult result = EvalBlock(block, checker, SigVersion::LADDER, execdata, ctx);
+    // The exact result depends on tx weight, but fee is 10000 sats which for a tiny tx
+    // gives a very high fee rate (>100), so it should be UNSATISFIED
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_adaptor_sig_invalid_adaptor_point_size)
+{
+    // ADAPTOR_SIG with adaptor_point not 32 bytes → ERROR
+    MockSignatureChecker checker;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ADAPTOR_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});               // signing key (33 bytes)
+    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(33, 0x02)}); // adaptor point (33 bytes, should be 32)
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(eval_adaptor_sig_valid_adaptor_point)
+{
+    // ADAPTOR_SIG with valid 32-byte adaptor point — should proceed to sig verification
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    ScriptExecutionData execdata;
+
+    RungBlock block;
+    block.type = RungBlockType::ADAPTOR_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});                    // signing key (33 bytes)
+    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(32, 0xAA)});  // adaptor point (32 bytes)
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    // With mock checker returning true for schnorr, should be SATISFIED
+    BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

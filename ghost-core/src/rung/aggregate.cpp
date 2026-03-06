@@ -22,12 +22,11 @@ bool VerifyAggregateSpend(const AggregateProof& proof,
     return true;
 }
 
-bool VerifyDeferredAttestation(const uint256& template_hash)
+bool VerifyDeferredAttestation(const uint256& /*template_hash*/)
 {
-    // Deferred attestation: the template hash references a previously committed state.
-    // Validate that the hash is non-zero (structural validation).
-    // Full implementation requires a committed state lookup table.
-    return !template_hash.IsNull();
+    // Deferred attestation is not yet supported. Fail closed to prevent
+    // any code path from silently accepting unverified attestations.
+    return false;
 }
 
 } // namespace rung

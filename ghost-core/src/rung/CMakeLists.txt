@@ -7,6 +7,7 @@
 # witness byte must conform to a typed field — no arbitrary data possible.
 
 add_library(bitcoin_rung STATIC EXCLUDE_FROM_ALL
+  adaptor.cpp
   types.cpp
   serialize.cpp
   conditions.cpp
@@ -29,6 +30,7 @@ target_link_libraries(bitcoin_rung
     bitcoin_common
     bitcoin_consensus
     bitcoin_util
+    secp256k1
     univalue
 )
 

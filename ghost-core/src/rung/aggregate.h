@@ -32,8 +32,7 @@ bool VerifyAggregateSpend(const AggregateProof& proof,
 
 /** Verify a deferred attestation template hash.
  *  @param template_hash The 32-byte template hash from witness
- *  @return true if the template hash matches a previously committed state
- *  (Currently validates structure only — full implementation deferred) */
+ *  @return false — deferred attestation is not yet supported (fail closed) */
 bool VerifyDeferredAttestation(const uint256& template_hash);
 
 } // namespace rung

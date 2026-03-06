@@ -10,6 +10,7 @@
 
 #include <crypto/sha256.h>
 #include <hash.h>
+#include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <pubkey.h>
 #include <script/script.h>
@@ -535,6 +536,13 @@ EvalResult EvalAdaptorSigBlock(const RungBlock& block,
 
     // First PUBKEY is the signing key, second is the adaptor point
     const RungField* signing_key = pubkeys[0];
+    const RungField* adaptor_point = pubkeys[1];
+
+    // Adaptor point must be 32 bytes (valid x-only point)
+    if (adaptor_point->data.size() != 32) {
+        return EvalResult::ERROR;
+    }
+
     // The adapted signature verifies against the signing key directly
     // (the adaptor secret has already been applied to produce the full signature)
     std::span<const unsigned char> sig_span{sig_field->data.data(), sig_field->data.size()};
@@ -786,11 +794,6 @@ EvalResult EvalAmountLockBlock(const RungBlock& block, const RungEvalContext& ct
 static bool HasRequiredHashes(const RungBlock& block, size_t count)
 {
     return FindAllFields(block, RungDataType::HASH256).size() >= count;
-}
-
-static bool HasRequiredNumerics(const RungBlock& block, size_t count)
-{
-    return FindAllFields(block, RungDataType::NUMERIC).size() >= count;
 }
 
 EvalResult EvalAnchorBlock(const RungBlock& block)
@@ -1181,20 +1184,47 @@ EvalResult EvalRecurseDecayBlock(const RungBlock& block, const RungEvalContext& 
 // Phase 3 evaluators — PLC
 // ============================================================================
 
-EvalResult EvalHysteresisFeeBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
+EvalResult EvalHysteresisFeeBlock(const RungBlock& block, const RungEvalContext& ctx)
 {
-    // Fee hysteresis: needs mempool access — validate structure only
+    // Fee hysteresis: check the spending transaction's fee rate against band.
+    // 2 NUMERICs: high_sat_vb, low_sat_vb.
+    // SATISFIED if low <= fee_rate <= high.
     auto numerics = FindAllFields(block, RungDataType::NUMERIC);
     if (numerics.size() < 2) {
         return EvalResult::ERROR;
     }
-    // high_sat_vb and low_sat_vb must be valid
     int64_t high = ReadNumeric(*numerics[0]);
     int64_t low = ReadNumeric(*numerics[1]);
     if (high < 0 || low < 0 || low > high) {
         return EvalResult::UNSATISFIED;
     }
-    return EvalResult::SATISFIED;
+    // If no tx context (structural-only mode), fall back to satisfied
+    if (!ctx.tx || !ctx.spent_outputs) {
+        return EvalResult::SATISFIED;
+    }
+    // Compute fee = sum(input values) - sum(output values)
+    int64_t total_in = 0;
+    for (const auto& spent : *ctx.spent_outputs) {
+        total_in += spent.nValue;
+    }
+    int64_t total_out = 0;
+    for (const auto& out : ctx.tx->vout) {
+        total_out += out.nValue;
+    }
+    int64_t fee = total_in - total_out;
+    if (fee < 0) {
+        return EvalResult::UNSATISFIED;
+    }
+    // fee_rate = fee / vsize (sat/vB)
+    int64_t vsize = GetVirtualTransactionSize(*ctx.tx);
+    if (vsize <= 0) {
+        return EvalResult::ERROR;
+    }
+    int64_t fee_rate = fee / vsize;
+    if (fee_rate >= low && fee_rate <= high) {
+        return EvalResult::SATISFIED;
+    }
+    return EvalResult::UNSATISFIED;
 }
 
 EvalResult EvalHysteresisValueBlock(const RungBlock& block, const RungEvalContext& ctx)
@@ -1218,22 +1248,36 @@ EvalResult EvalHysteresisValueBlock(const RungBlock& block, const RungEvalContex
 
 EvalResult EvalTimerContinuousBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
 {
-    // Consecutive block timer — needs state tracking, validate structure
-    const RungField* required = FindField(block, RungDataType::NUMERIC);
-    if (!required) return EvalResult::ERROR;
-    int64_t val = ReadNumeric(*required);
-    if (val <= 0) return EvalResult::UNSATISFIED;
-    return EvalResult::SATISFIED;
+    // Continuous timer: 2 NUMERICs (accumulated, target).
+    // SATISFIED if accumulated >= target (timer elapsed).
+    // RECURSE_MODIFIED increments accumulated each covenant spend.
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) {
+        // Single-field backward compat: treat as target, satisfied if > 0
+        if (numerics.empty()) return EvalResult::ERROR;
+        int64_t val = ReadNumeric(*numerics[0]);
+        if (val <= 0) return EvalResult::UNSATISFIED;
+        return EvalResult::SATISFIED;
+    }
+    int64_t accumulated = ReadNumeric(*numerics[0]);
+    int64_t target = ReadNumeric(*numerics[1]);
+    if (accumulated < 0 || target < 0) return EvalResult::ERROR;
+    if (accumulated >= target) return EvalResult::SATISFIED;
+    return EvalResult::UNSATISFIED;
 }
 
 EvalResult EvalTimerOffDelayBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
 {
-    // Off-delay timer — needs state tracking, validate structure
+    // Off-delay timer: NUMERIC (remaining).
+    // SATISFIED if remaining > 0 (still in hold-off period).
+    // UNSATISFIED when remaining == 0 (delay expired).
+    // RECURSE_MODIFIED decrements remaining each covenant spend.
     const RungField* hold = FindField(block, RungDataType::NUMERIC);
     if (!hold) return EvalResult::ERROR;
-    int64_t val = ReadNumeric(*hold);
-    if (val <= 0) return EvalResult::UNSATISFIED;
-    return EvalResult::SATISFIED;
+    int64_t remaining = ReadNumeric(*hold);
+    if (remaining < 0) return EvalResult::ERROR;
+    if (remaining > 0) return EvalResult::SATISFIED;
+    return EvalResult::UNSATISFIED;
 }
 
 EvalResult EvalLatchSetBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
@@ -1269,26 +1313,42 @@ EvalResult EvalLatchResetBlock(const RungBlock& block, const RungEvalContext& /*
 
 EvalResult EvalCounterDownBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
 {
-    // Down counter — needs covenant chain state, validate event_signer + numeric present
+    // Down counter: PUBKEY (event signer) + NUMERIC (count).
+    // SATISFIED if count > 0 (can still decrement). RECURSE_MODIFIED decrements each spend.
     if (!HasRequiredPubkeys(block, 1)) return EvalResult::ERROR;
-    if (!HasRequiredNumerics(block, 1)) return EvalResult::ERROR;
-    return EvalResult::SATISFIED;
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.empty()) return EvalResult::ERROR;
+    int64_t count = ReadNumeric(*numerics[0]);
+    if (count < 0) return EvalResult::ERROR;
+    if (count > 0) return EvalResult::SATISFIED;
+    return EvalResult::UNSATISFIED; // countdown done
 }
 
 EvalResult EvalCounterPresetBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
 {
-    // Preset counter — needs state tracking, validate required params
+    // Preset counter: 2 NUMERICs (current, preset).
+    // SATISFIED if current < preset (accumulating). UNSATISFIED when current >= preset (done).
     auto numerics = FindAllFields(block, RungDataType::NUMERIC);
-    if (numerics.size() < 2) return EvalResult::ERROR; // preset_count + window_blocks
-    return EvalResult::SATISFIED;
+    if (numerics.size() < 2) return EvalResult::ERROR;
+    int64_t current = ReadNumeric(*numerics[0]);
+    int64_t preset = ReadNumeric(*numerics[1]);
+    if (current < 0 || preset < 0) return EvalResult::ERROR;
+    if (current < preset) return EvalResult::SATISFIED;
+    return EvalResult::UNSATISFIED;
 }
 
 EvalResult EvalCounterUpBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
 {
-    // Up counter — needs covenant chain state
+    // Up counter: PUBKEY (event signer) + 2 NUMERICs (current, target).
+    // SATISFIED if current < target (still counting). UNSATISFIED when done.
     if (!HasRequiredPubkeys(block, 1)) return EvalResult::ERROR;
-    if (!HasRequiredNumerics(block, 1)) return EvalResult::ERROR;
-    return EvalResult::SATISFIED;
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() < 2) return EvalResult::ERROR;
+    int64_t current = ReadNumeric(*numerics[0]);
+    int64_t target = ReadNumeric(*numerics[1]);
+    if (current < 0 || target < 0) return EvalResult::ERROR;
+    if (current < target) return EvalResult::SATISFIED;
+    return EvalResult::UNSATISFIED;
 }
 
 EvalResult EvalCompareBlock(const RungBlock& block, const RungEvalContext& ctx)
@@ -1340,11 +1400,14 @@ EvalResult EvalSequencerBlock(const RungBlock& block, const RungEvalContext& /*c
 
 EvalResult EvalOneShotBlock(const RungBlock& block, const RungEvalContext& /*ctx*/)
 {
-    // One-shot activation — needs state tracking, validate structure
-    const RungField* duration = FindField(block, RungDataType::NUMERIC);
-    if (!duration) return EvalResult::ERROR;
-    if (!HasRequiredHashes(block, 1)) return EvalResult::ERROR; // commitment
-    return EvalResult::SATISFIED;
+    // One-shot: NUMERIC (state) + HASH256 (commitment).
+    // SATISFIED if state == 0 (can fire). UNSATISFIED if state != 0 (already fired).
+    const RungField* state_field = FindField(block, RungDataType::NUMERIC);
+    if (!state_field) return EvalResult::ERROR;
+    if (!HasRequiredHashes(block, 1)) return EvalResult::ERROR;
+    int64_t state = ReadNumeric(*state_field);
+    if (state == 0) return EvalResult::SATISFIED;
+    return EvalResult::UNSATISFIED;
 }
 
 EvalResult EvalRateLimitBlock(const RungBlock& block, const RungEvalContext& ctx)

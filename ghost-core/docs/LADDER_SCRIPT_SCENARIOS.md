@@ -505,3 +505,41 @@ Even in the worst case where an attacker burns funds:
    data is 5.3x smaller than individual PQ signatures; at 100 children,
    12.1x smaller. This makes PQ protection practical today without waiting
    for signature aggregation schemes.
+
+---
+
+## Stub Fix Summary
+
+The following evaluator stubs were replaced with proper state-gating logic:
+
+### Phase 3 PLC Blocks — State Gating
+
+| Block | Before | After |
+|-------|--------|-------|
+| COUNTER_DOWN | SATISFIED if fields present | SATISFIED if count > 0; UNSATISFIED at 0 |
+| COUNTER_UP | SATISFIED if fields present | SATISFIED if current < target; UNSATISFIED when done |
+| COUNTER_PRESET | SATISFIED if 2 NUMERICs present | SATISFIED if current < preset; UNSATISFIED at/above preset |
+| ONE_SHOT | SATISFIED if NUMERIC + HASH present | SATISFIED if state == 0 (can fire); UNSATISFIED if already fired |
+| TIMER_CONTINUOUS | SATISFIED if val > 0 | 2-field mode: SATISFIED if accumulated >= target; 1-field backward compat preserved |
+| TIMER_OFF_DELAY | SATISFIED if val > 0 | SATISFIED if remaining > 0 (hold-off); UNSATISFIED when expired |
+
+### HYSTERESIS_FEE — Tx Fee Rate Check
+
+Previously validated structure only ("needs mempool access"). Now computes the
+spending transaction's actual fee rate from `sum(input_values) - sum(output_values)`
+divided by vsize, and checks it falls within the `[low_sat_vb, high_sat_vb]` band.
+Falls back to SATISFIED when no tx context (structural-only mode).
+
+### ADAPTOR_SIG — Real Adaptor Signature Support
+
+- **Evaluator:** Added 32-byte x-only point validation for `adaptor_point` (pubkeys[1])
+- **RPC (signrungtx):** ADAPTOR_SIG separated from VAULT_LOCK; accepts optional
+  `adaptor_secret` parameter for adapted signing
+- **New RPCs:** `extractadaptorsecret` (scalar subtraction) and `verifyadaptorpresig`
+  (pre-signature verification against adaptor point)
+- **New files:** `src/rung/adaptor.cpp` / `adaptor.h` — adaptor sig math
+
+### VerifyDeferredAttestation — Fail Closed
+
+Changed from "return true if non-null hash" to unconditional `return false`.
+Deferred attestation is not yet supported; fail closed prevents silent acceptance.

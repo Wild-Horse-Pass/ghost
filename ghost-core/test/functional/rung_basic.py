@@ -199,6 +199,13 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_three_rung_priority(node)
         self.test_pqpubkeycommit_rpc(node)
 
+        # Adaptor sig RPC tests
+        self.test_extractadaptorsecret_rpc(node)
+
+        # Counter state gating tests
+        self.test_counter_down_state_gating(node)
+        self.test_one_shot_state_gating(node)
+
         # COSIGN — PQ anchor co-spend pattern
         self.test_cosign_anchor_spend(node)
         self.test_cosign_negative_no_anchor(node)
@@ -2229,12 +2236,15 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         # ADAPTOR_SIG needs 2 pubkeys + 1 signature
         # The adapted sig verifies against signing_key (adaptor secret already applied)
+        # adaptor_point must be 32 bytes (x-only), signing_key can be 33 bytes (compressed)
         signing_wif, signing_pubkey = make_keypair()
-        _adaptor_wif, adaptor_pubkey = make_keypair()
+        _adaptor_wif, adaptor_pubkey_full = make_keypair()
+        # Strip prefix byte to get 32-byte x-only adaptor point
+        adaptor_point_xonly = adaptor_pubkey_full[2:]  # remove 02/03 prefix
 
         conditions = [{"blocks": [{"type": "ADAPTOR_SIG", "fields": [
             {"type": "PUBKEY", "hex": signing_pubkey},
-            {"type": "PUBKEY", "hex": adaptor_pubkey},
+            {"type": "PUBKEY", "hex": adaptor_point_xonly},
         ]}]}]
 
         txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
@@ -3087,12 +3097,13 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info("Testing ADAPTOR_SIG negative (wrong key)...")
 
         _signing_wif, signing_pubkey = make_keypair()
-        _adaptor_wif, adaptor_pubkey = make_keypair()
+        _adaptor_wif, adaptor_pubkey_full = make_keypair()
+        adaptor_point_xonly = adaptor_pubkey_full[2:]  # 32-byte x-only
         wrong_wif, _wrong_pubkey = make_keypair()
 
         conditions = [{"blocks": [{"type": "ADAPTOR_SIG", "fields": [
             {"type": "PUBKEY", "hex": signing_pubkey},
-            {"type": "PUBKEY", "hex": adaptor_pubkey},
+            {"type": "PUBKEY", "hex": adaptor_point_xonly},
         ]}]}]
 
         txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
@@ -5443,6 +5454,130 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info(f"  │ Anchor re-encumbered: YES                      │")
         self.log.info(f"  └─────────────────────────────────────────────────┘")
         self.log.info("  Scenario 19 PASSED: COSIGN 10-child batch spend")
+
+
+    # =========================================================================
+    # Adaptor sig & state gating tests
+    # =========================================================================
+
+    def test_extractadaptorsecret_rpc(self, node):
+        """Test extractadaptorsecret RPC: scalar subtraction of s-values."""
+        self.log.info("Testing extractadaptorsecret RPC...")
+
+        # Create two fake 64-byte signatures with known s-values
+        # pre_sig:     R || s_pre
+        # adapted_sig: R || s_adapted
+        # secret = s_adapted - s_pre
+        import os
+        R = os.urandom(32)
+        s_pre = os.urandom(32)
+        s_adapted = os.urandom(32)
+
+        pre_sig_hex = (R + s_pre).hex()
+        adapted_sig_hex = (R + s_adapted).hex()
+
+        result = node.extractadaptorsecret(pre_sig_hex, adapted_sig_hex)
+        assert "secret" in result
+        assert len(result["secret"]) == 64  # 32 bytes hex
+        self.log.info("  extractadaptorsecret RPC works!")
+
+    def test_counter_down_state_gating(self, node):
+        """Test COUNTER_DOWN with state gating via RECURSE_MODIFIED chain."""
+        self.log.info("Testing COUNTER_DOWN state gating...")
+
+        # Create a COUNTER_DOWN with count=2 + SIG + RECURSE_MODIFIED
+        wif, pubkey = make_keypair()
+        conditions = [{"blocks": [
+            {"type": "SIG", "fields": [{"type": "PUBKEY", "hex": pubkey}]},
+            {"type": "COUNTER_DOWN", "fields": [
+                {"type": "PUBKEY", "hex": pubkey},
+                {"type": "NUMERIC", "hex": numeric_hex(2)},  # count=2
+            ]},
+        ]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  COUNTER_DOWN output (count=2): {txid}:{vout}")
+
+        # Spend it — COUNTER_DOWN with count=2 should be SATISFIED
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [
+                {"type": "SIG", "privkey": wif},
+                {"type": "COUNTER_DOWN"},
+            ]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        self.log.info("  COUNTER_DOWN (count=2) spend confirmed!")
+
+    def test_one_shot_state_gating(self, node):
+        """Test ONE_SHOT: state=0 should fire, state=1 should block."""
+        self.log.info("Testing ONE_SHOT state gating...")
+
+        # Create ONE_SHOT with state=0 (can fire)
+        commitment = os.urandom(32).hex()
+        conditions = [{"blocks": [{"type": "ONE_SHOT", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(0)},
+            {"type": "HASH256", "hex": commitment},
+        ]}]}]
+
+        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        self.log.info(f"  ONE_SHOT output (state=0): {txid}:{vout}")
+
+        # Spend it — state=0 should be SATISFIED
+        output_amount = amount - Decimal("0.001")
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        spend = node.createrungtx(
+            [{"txid": txid, "vout": vout}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+        sign_result = node.signrungtx(
+            spend["hex"],
+            [{"input": 0, "blocks": [{"type": "ONE_SHOT"}]}],
+            [{"amount": amount, "scriptPubKey": spk}]
+        )
+        assert sign_result["complete"]
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+        self.log.info("  ONE_SHOT (state=0) spend confirmed!")
+
+        # Now test ONE_SHOT with state=1 (already fired, should fail)
+        conditions_fired = [{"blocks": [{"type": "ONE_SHOT", "fields": [
+            {"type": "NUMERIC", "hex": numeric_hex(1)},
+            {"type": "HASH256", "hex": commitment},
+        ]}]}]
+
+        txid2, vout2, amount2, spk2 = self.bootstrap_v3_output(node, conditions_fired)
+        self.log.info(f"  ONE_SHOT output (state=1): {txid2}:{vout2}")
+
+        output_amount2 = amount2 - Decimal("0.001")
+        spend2 = node.createrungtx(
+            [{"txid": txid2, "vout": vout2}],
+            [{"amount": output_amount2, "conditions": dest_conditions}]
+        )
+        sign_result2 = node.signrungtx(
+            spend2["hex"],
+            [{"input": 0, "blocks": [{"type": "ONE_SHOT"}]}],
+            [{"amount": amount2, "scriptPubKey": spk2}]
+        )
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result2["hex"])
+        self.log.info("  ONE_SHOT (state=1) correctly rejected!")
 
 
 if __name__ == '__main__':

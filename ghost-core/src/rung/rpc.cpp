@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/license/mit/.
 
+#include <rung/adaptor.h>
 #include <rung/conditions.h>
 #include <rung/evaluator.h>
 #include <rung/policy.h>
@@ -24,6 +25,8 @@
 #include <util/strencodings.h>
 
 #include <univalue.h>
+
+#include <cstring>
 
 using rung::RungBlockType;
 using rung::RungDataType;
@@ -817,9 +820,43 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
         }
         break;
     }
-    case RungBlockType::ADAPTOR_SIG:
+    case RungBlockType::ADAPTOR_SIG: {
+        // Adaptor signature: privkey + adaptor_secret → adapted Schnorr sig
+        if (block_spec.exists("privkey")) {
+            std::string wif = block_spec["privkey"].get_str();
+            CKey privkey = DecodeSecret(wif);
+            if (!privkey.IsValid()) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid private key");
+            }
+            uint256 sighash;
+            if (!rung::SignatureHashLadder(txdata, mtx, input_idx, SIGHASH_DEFAULT, conditions, sighash)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to compute sighash");
+            }
+            if (block_spec.exists("adaptor_secret")) {
+                // Adapted signing: tweak the nonce by the adaptor secret
+                auto secret_bytes = ParseHex(block_spec["adaptor_secret"].get_str());
+                if (secret_bytes.size() != 32) {
+                    throw JSONRPCError(RPC_INVALID_PARAMETER, "adaptor_secret must be 32 bytes hex");
+                }
+                std::vector<uint8_t> sig_out(64);
+                if (!rung::CreateAdaptedSignature(privkey, sighash, secret_bytes, sig_out)) {
+                    throw JSONRPCError(RPC_INTERNAL_ERROR, "Adapted Schnorr signing failed");
+                }
+                block.fields.push_back({RungDataType::SIGNATURE, sig_out});
+            } else {
+                // Plain Schnorr (pre-signature without adaptor — useful for testing)
+                unsigned char sig_buf[64];
+                uint256 aux_rand = GetRandHash();
+                if (!privkey.SignSchnorr(sighash, sig_buf, nullptr, aux_rand)) {
+                    throw JSONRPCError(RPC_INTERNAL_ERROR, "Schnorr signing failed");
+                }
+                block.fields.push_back({RungDataType::SIGNATURE, std::vector<uint8_t>(sig_buf, sig_buf + 64)});
+            }
+        }
+        break;
+    }
     case RungBlockType::VAULT_LOCK: {
-        // Same as SIG: take a single privkey and produce a Schnorr signature
+        // Vault lock: plain Schnorr signature from privkey
         if (block_spec.exists("privkey")) {
             std::string wif = block_spec["privkey"].get_str();
             CKey privkey = DecodeSecret(wif);
@@ -1210,6 +1247,96 @@ static RPCHelpMan pqpubkeycommit()
     };
 }
 
+static RPCHelpMan extractadaptorsecret()
+{
+    return RPCHelpMan{
+        "extractadaptorsecret",
+        "Extract the adaptor secret from a pre-signature and adapted signature.\n"
+        "Computes t = s_adapted - s_pre (scalar subtraction mod n).\n",
+        {
+            {"pre_sig", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The 64-byte pre-signature hex"},
+            {"adapted_sig", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The 64-byte adapted signature hex"},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {
+            {RPCResult::Type::STR_HEX, "secret", "The 32-byte adaptor secret"},
+        }},
+        RPCExamples{
+            HelpExampleCli("extractadaptorsecret", "\"<pre_sig_hex>\" \"<adapted_sig_hex>\"")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+    {
+        auto pre_sig = ParseHex(self.Arg<std::string>("pre_sig"));
+        auto adapted_sig = ParseHex(self.Arg<std::string>("adapted_sig"));
+
+        if (pre_sig.size() != 64) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "pre_sig must be 64 bytes");
+        }
+        if (adapted_sig.size() != 64) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "adapted_sig must be 64 bytes");
+        }
+
+        std::vector<uint8_t> secret;
+        if (!rung::ExtractAdaptorSecret(pre_sig, adapted_sig, secret)) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to extract adaptor secret");
+        }
+
+        UniValue result(UniValue::VOBJ);
+        result.pushKV("secret", HexStr(secret));
+        return result;
+    },
+    };
+}
+
+static RPCHelpMan verifyadaptorpresig()
+{
+    return RPCHelpMan{
+        "verifyadaptorpresig",
+        "Verify an adaptor pre-signature.\n"
+        "Checks that s'*G == R + e*P where e = H(R+T||P||m).\n",
+        {
+            {"pubkey", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The 32-byte x-only public key hex"},
+            {"adaptor_point", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The 32-byte x-only adaptor point hex"},
+            {"pre_sig", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The 64-byte pre-signature hex"},
+            {"sighash", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The 32-byte sighash hex"},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {
+            {RPCResult::Type::BOOL, "valid", "Whether the pre-signature is valid"},
+        }},
+        RPCExamples{
+            HelpExampleCli("verifyadaptorpresig", "\"<pubkey>\" \"<adaptor_point>\" \"<pre_sig>\" \"<sighash>\"")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+    {
+        auto pubkey = ParseHex(self.Arg<std::string>("pubkey"));
+        auto adaptor_point = ParseHex(self.Arg<std::string>("adaptor_point"));
+        auto pre_sig = ParseHex(self.Arg<std::string>("pre_sig"));
+        auto sighash_bytes = ParseHex(self.Arg<std::string>("sighash"));
+
+        if (pubkey.size() != 32) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "pubkey must be 32 bytes (x-only)");
+        }
+        if (adaptor_point.size() != 32) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "adaptor_point must be 32 bytes (x-only)");
+        }
+        if (pre_sig.size() != 64) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "pre_sig must be 64 bytes");
+        }
+        if (sighash_bytes.size() != 32) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "sighash must be 32 bytes");
+        }
+
+        uint256 sighash;
+        std::memcpy(sighash.begin(), sighash_bytes.data(), 32);
+
+        bool valid = rung::VerifyAdaptorPreSignature(pubkey, adaptor_point, pre_sig, sighash);
+
+        UniValue result(UniValue::VOBJ);
+        result.pushKV("valid", valid);
+        return result;
+    },
+    };
+}
+
 void RegisterRungRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
@@ -1221,6 +1348,8 @@ void RegisterRungRPCCommands(CRPCTable& t)
         {"rung", &computectvhash},
         {"rung", &generatepqkeypair},
         {"rung", &pqpubkeycommit},
+        {"rung", &extractadaptorsecret},
+        {"rung", &verifyadaptorpresig},
     };
     for (const auto& c : commands) {
         t.appendCommand(c.name, &c);
