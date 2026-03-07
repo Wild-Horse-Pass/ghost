@@ -1734,6 +1734,305 @@ body {
   color: var(--text-dim);
   opacity: 0.6;
 }
+
+/* ─── Palette Tooltips ─── */
+.palette-item {
+  position: relative;
+}
+.palette-tip {
+  display: none;
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: #111;
+  border: 1px solid var(--amber-dim);
+  color: var(--text-primary);
+  font-size: 10px;
+  padding: 5px 9px;
+  white-space: nowrap;
+  z-index: 200;
+  pointer-events: none;
+  line-height: 1.4;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+}
+.palette-tip::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 50%;
+  transform: translateY(-50%) rotate(45deg);
+  width: 6px;
+  height: 6px;
+  background: #111;
+  border-left: 1px solid var(--amber-dim);
+  border-bottom: 1px solid var(--amber-dim);
+}
+.palette-tip .tip-code {
+  color: var(--amber-dim);
+  font-size: 9px;
+  margin-top: 2px;
+}
+.palette-item:hover .palette-tip {
+  display: block;
+}
+
+/* ─── Block Note Label ─── */
+.contact-note {
+  position: absolute;
+  bottom: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 7px;
+  color: var(--cyan);
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0.8;
+}
+.contact-note-input {
+  position: absolute;
+  bottom: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100px;
+  background: var(--bg-primary);
+  border: 1px solid var(--cyan);
+  color: var(--cyan);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  padding: 1px 4px;
+  text-align: center;
+  outline: none;
+  z-index: 20;
+}
+
+/* ─── Block Explorer Modal ─── */
+.block-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: modalFadeIn 0.15s ease-out;
+}
+@keyframes modalFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.block-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  width: 520px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.6), 0 0 1px var(--amber-dim);
+  animation: modalSlideIn 0.15s ease-out;
+}
+@keyframes modalSlideIn {
+  from { transform: translateY(12px) scale(0.98); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+.block-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+}
+.block-modal-type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 1.5px;
+}
+.block-modal-type-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+}
+.block-modal-hex {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: auto;
+  letter-spacing: 1px;
+}
+.block-modal-family {
+  font-size: 9px;
+  color: var(--text-secondary);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  letter-spacing: 1px;
+}
+.block-modal-close {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  cursor: pointer;
+  margin-left: 8px;
+}
+.block-modal-close:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+.block-modal-body {
+  overflow-y: auto;
+  padding: 0;
+}
+.block-modal-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.block-modal-section:last-child {
+  border-bottom: none;
+}
+.block-modal-section-title {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 1.5px;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+.block-modal-note-input {
+  width: 100%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.block-modal-note-input:focus {
+  border-color: var(--cyan);
+}
+.block-modal-note-input::placeholder {
+  color: var(--text-dim);
+}
+.block-modal-field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.block-modal-field-row:last-child {
+  margin-bottom: 0;
+}
+.block-modal-field-label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  min-width: 100px;
+  flex-shrink: 0;
+}
+.block-modal-field-type {
+  font-size: 8px;
+  color: var(--text-dim);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  letter-spacing: 0.5px;
+}
+.block-modal-field-input {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 8px;
+  outline: none;
+  min-width: 0;
+}
+.block-modal-field-input:focus {
+  border-color: var(--amber-dim);
+}
+.block-modal-field-input::placeholder {
+  color: var(--text-dim);
+}
+.block-modal-field-select {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 8px;
+  outline: none;
+  min-width: 0;
+}
+.block-modal-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.block-modal-checkbox-row label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+.block-modal-rules {
+  font-size: 10px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+.block-modal-rules strong {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.block-modal-rules code {
+  color: var(--amber);
+  font-size: 10px;
+  background: var(--bg-primary);
+  padding: 0 3px;
+}
+.block-modal-constraints {
+  display: grid;
+  grid-template-columns: auto auto auto;
+  gap: 3px 12px;
+  font-size: 9px;
+}
+.block-modal-constraints .c-label {
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+}
+.block-modal-constraints .c-type {
+  color: var(--text-secondary);
+}
+.block-modal-constraints .c-size {
+  color: var(--amber-dim);
+  text-align: right;
+}
+.block-modal-expand-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 2px 6px;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+.block-modal-expand-btn:hover {
+  border-color: var(--amber-dim);
+  color: var(--amber);
+}
 </style>
 </head>
 <body>
@@ -1749,7 +2048,7 @@ const BLOCK_FAMILIES = [
   {
     name: 'I/O', color: '#e6a817',
     blocks: [
-      { type: 'OUTPUT_REF', label: 'OUT_REF', fields: [
+      { type: 'OUTPUT_REF', label: 'OUT_REF', desc: 'Reference an output coil from another rung', fields: [
         { name: 'ref_name', dataType: 'TEXT', label: 'Output Name', placeholder: 'MOTOR_RUN' }
       ]},
     ]
@@ -1757,16 +2056,16 @@ const BLOCK_FAMILIES = [
   {
     name: 'SIGNATURE', color: '#e6a817',
     blocks: [
-      { type: 'SIG', label: 'SIG', fields: [
+      { type: 'SIG', label: 'SIG', desc: 'Single signature check — Schnorr, ECDSA, or post-quantum', fields: [
         { name: 'pubkey', dataType: 'PUBKEY', label: 'Public Key', placeholder: '02abcdef...' },
         { name: 'scheme', dataType: 'SCHEME', label: 'Scheme', placeholder: 'SCHNORR', optional: true }
       ]},
-      { type: 'MULTISIG', label: 'MULTISIG', fields: [
+      { type: 'MULTISIG', label: 'MULTISIG', desc: 'M-of-N threshold signature verification', fields: [
         { name: 'threshold', dataType: 'NUMERIC', label: 'Threshold (M)', placeholder: '2' },
         { name: 'pubkeys', dataType: 'PUBKEY', label: 'Public Keys', placeholder: '02ab..., 03cd...', multi: true },
         { name: 'scheme', dataType: 'SCHEME', label: 'Scheme', placeholder: 'SCHNORR', optional: true }
       ]},
-      { type: 'ADAPTOR_SIG', label: 'ADAPTOR_SIG', fields: [
+      { type: 'ADAPTOR_SIG', label: 'ADAPTOR_SIG', desc: 'Adaptor signature for atomic swaps and payment channels', fields: [
         { name: 'signing_key', dataType: 'PUBKEY', label: 'Signing Key', placeholder: '02abcdef...' },
         { name: 'adaptor_point', dataType: 'PUBKEY', label: 'Adaptor Point', placeholder: '32-byte x-only hex' }
       ]},
@@ -1775,16 +2074,16 @@ const BLOCK_FAMILIES = [
   {
     name: 'TIMELOCK', color: '#2d7dd2',
     blocks: [
-      { type: 'CSV', label: 'CSV', fields: [
+      { type: 'CSV', label: 'CSV', desc: 'Relative timelock in blocks (BIP-68)', fields: [
         { name: 'blocks', dataType: 'NUMERIC', label: 'Blocks', placeholder: '144' }
       ]},
-      { type: 'CSV_TIME', label: 'CSV_TIME', fields: [
+      { type: 'CSV_TIME', label: 'CSV_TIME', desc: 'Relative timelock in seconds (BIP-68)', fields: [
         { name: 'seconds', dataType: 'NUMERIC', label: 'Seconds', placeholder: '86400' }
       ]},
-      { type: 'CLTV', label: 'CLTV', fields: [
+      { type: 'CLTV', label: 'CLTV', desc: 'Absolute timelock by block height (BIP-65)', fields: [
         { name: 'height', dataType: 'NUMERIC', label: 'Height', placeholder: '850000' }
       ]},
-      { type: 'CLTV_TIME', label: 'CLTV_TIME', fields: [
+      { type: 'CLTV_TIME', label: 'CLTV_TIME', desc: 'Absolute timelock by median-time-past', fields: [
         { name: 'timestamp', dataType: 'NUMERIC', label: 'Timestamp', placeholder: '1700000000' }
       ]},
     ]
@@ -1792,13 +2091,13 @@ const BLOCK_FAMILIES = [
   {
     name: 'HASH', color: '#39a5b7',
     blocks: [
-      { type: 'HASH_PREIMAGE', label: 'HASH_PRE', fields: [
+      { type: 'HASH_PREIMAGE', label: 'HASH_PRE', desc: 'SHA-256 hash preimage reveal', fields: [
         { name: 'hash', dataType: 'HASH256', label: 'SHA256 Hash', placeholder: '32-byte hex' }
       ]},
-      { type: 'HASH160_PREIMAGE', label: 'HASH160', fields: [
+      { type: 'HASH160_PREIMAGE', label: 'HASH160', desc: 'RIPEMD160(SHA256()) preimage reveal', fields: [
         { name: 'hash', dataType: 'HASH160', label: 'HASH160', placeholder: '20-byte hex' }
       ]},
-      { type: 'TAGGED_HASH', label: 'TAGGED', fields: [
+      { type: 'TAGGED_HASH', label: 'TAGGED', desc: 'BIP-340 tagged hash verification', fields: [
         { name: 'tag', dataType: 'HASH256', label: 'Tag Hash', placeholder: '32-byte hex' },
         { name: 'hash', dataType: 'HASH256', label: 'Expected', placeholder: '32-byte hex' }
       ]},
@@ -1807,13 +2106,13 @@ const BLOCK_FAMILIES = [
   {
     name: 'COVENANT', color: '#2ea043',
     blocks: [
-      { type: 'CTV', label: 'CTV', fields: [
+      { type: 'CTV', label: 'CTV', desc: 'CheckTemplateVerify covenant (BIP-119)', fields: [
         { name: 'template_hash', dataType: 'HASH256', label: 'Template Hash', placeholder: '32-byte hex' }
       ]},
-      { type: 'VAULT_LOCK', label: 'VAULT', fields: [
+      { type: 'VAULT_LOCK', label: 'VAULT', desc: 'Vault with hot/cold key paths and delay', fields: [
         { name: 'pubkey', dataType: 'PUBKEY', label: 'Vault Key', placeholder: '02abcdef...' }
       ]},
-      { type: 'AMOUNT_LOCK', label: 'AMT_LOCK', fields: [
+      { type: 'AMOUNT_LOCK', label: 'AMT_LOCK', desc: 'Output amount range constraint [min, max]', fields: [
         { name: 'min', dataType: 'NUMERIC', label: 'Min (sats)', placeholder: '5000' },
         { name: 'max', dataType: 'NUMERIC', label: 'Max (sats)', placeholder: '100000' }
       ]},
@@ -1822,23 +2121,23 @@ const BLOCK_FAMILIES = [
   {
     name: 'RECURSION', color: '#a855f7',
     blocks: [
-      { type: 'RECURSE_SAME', label: 'REC_SAME', fields: [] },
-      { type: 'RECURSE_MODIFIED', label: 'REC_MOD', fields: [
+      { type: 'RECURSE_SAME', label: 'REC_SAME', desc: 'Re-encumber output with identical conditions', fields: [] },
+      { type: 'RECURSE_MODIFIED', label: 'REC_MOD', desc: 'Re-encumber with a single field mutation', fields: [
         { name: 'rung_idx', dataType: 'NUMERIC', label: 'Rung', placeholder: '0' },
         { name: 'block_idx', dataType: 'NUMERIC', label: 'Block', placeholder: '0' },
         { name: 'param_idx', dataType: 'NUMERIC', label: 'Param', placeholder: '0' },
         { name: 'delta', dataType: 'NUMERIC', label: 'Delta', placeholder: '1' }
       ]},
-      { type: 'RECURSE_UNTIL', label: 'REC_UNTIL', fields: [
+      { type: 'RECURSE_UNTIL', label: 'REC_UNTIL', desc: 'Recursive until target block height reached', fields: [
         { name: 'target_height', dataType: 'NUMERIC', label: 'Target Height', placeholder: '850000' }
       ]},
-      { type: 'RECURSE_COUNT', label: 'REC_COUNT', fields: [
+      { type: 'RECURSE_COUNT', label: 'REC_COUNT', desc: 'Recursive countdown — terminates at zero', fields: [
         { name: 'remaining', dataType: 'NUMERIC', label: 'Remaining', placeholder: '10' }
       ]},
-      { type: 'RECURSE_SPLIT', label: 'REC_SPLIT', fields: [
+      { type: 'RECURSE_SPLIT', label: 'REC_SPLIT', desc: 'Recursive output splitting with min sats', fields: [
         { name: 'split_count', dataType: 'NUMERIC', label: 'Split Count', placeholder: '2' }
       ]},
-      { type: 'RECURSE_DECAY', label: 'REC_DECAY', fields: [
+      { type: 'RECURSE_DECAY', label: 'REC_DECAY', desc: 'Recursive parameter decay per spend', fields: [
         { name: 'max_depth', dataType: 'NUMERIC', label: 'Max Depth', placeholder: '10' }
       ]},
     ]
@@ -1846,23 +2145,23 @@ const BLOCK_FAMILIES = [
   {
     name: 'ANCHOR', color: '#888888',
     blocks: [
-      { type: 'ANCHOR', label: 'ANCHOR', fields: [
+      { type: 'ANCHOR', label: 'ANCHOR', desc: 'Generic protocol anchor tag', fields: [
         { name: 'data', dataType: 'HASH256', label: 'Data', placeholder: '32-byte hex' }
       ]},
-      { type: 'ANCHOR_CHANNEL', label: 'A_CHAN', fields: [
+      { type: 'ANCHOR_CHANNEL', label: 'A_CHAN', desc: 'Lightning channel anchor binding', fields: [
         { name: 'commitment', dataType: 'HASH256', label: 'Commitment', placeholder: '32-byte hex' }
       ]},
-      { type: 'ANCHOR_POOL', label: 'A_POOL', fields: [
+      { type: 'ANCHOR_POOL', label: 'A_POOL', desc: 'Pool / VTXO tree anchor', fields: [
         { name: 'pool_id', dataType: 'HASH256', label: 'Pool ID', placeholder: '32-byte hex' }
       ]},
-      { type: 'ANCHOR_RESERVE', label: 'A_RESV', fields: [
+      { type: 'ANCHOR_RESERVE', label: 'A_RESV', desc: 'N-of-M guardian reserve anchor', fields: [
         { name: 'threshold_n', dataType: 'NUMERIC', label: 'N', placeholder: '3' },
         { name: 'threshold_m', dataType: 'NUMERIC', label: 'M', placeholder: '5' }
       ]},
-      { type: 'ANCHOR_SEAL', label: 'A_SEAL', fields: [
+      { type: 'ANCHOR_SEAL', label: 'A_SEAL', desc: 'Permanent data commitment seal', fields: [
         { name: 'seal', dataType: 'HASH256', label: 'Seal Hash', placeholder: '32-byte hex' }
       ]},
-      { type: 'ANCHOR_ORACLE', label: 'A_ORACLE', fields: [
+      { type: 'ANCHOR_ORACLE', label: 'A_ORACLE', desc: 'Oracle attestation anchor', fields: [
         { name: 'oracle_pk', dataType: 'PUBKEY', label: 'Oracle Key', placeholder: '02abc...' }
       ]},
     ]
@@ -1870,61 +2169,61 @@ const BLOCK_FAMILIES = [
   {
     name: 'PLC', color: '#c43030',
     blocks: [
-      { type: 'HYSTERESIS_FEE', label: 'HYST_FEE', fields: [
+      { type: 'HYSTERESIS_FEE', label: 'HYST_FEE', desc: 'Fee rate band constraint [low, high] sat/vB', fields: [
         { name: 'high_sat_vb', dataType: 'NUMERIC', label: 'High (sat/vB)', placeholder: '100' },
         { name: 'low_sat_vb', dataType: 'NUMERIC', label: 'Low (sat/vB)', placeholder: '5' }
       ]},
-      { type: 'HYSTERESIS_VALUE', label: 'HYST_VAL', fields: [
+      { type: 'HYSTERESIS_VALUE', label: 'HYST_VAL', desc: 'Output value band constraint [low, high] sats', fields: [
         { name: 'high_sats', dataType: 'NUMERIC', label: 'High (sats)', placeholder: '100000' },
         { name: 'low_sats', dataType: 'NUMERIC', label: 'Low (sats)', placeholder: '5000' }
       ]},
-      { type: 'TIMER_CONTINUOUS', label: 'TMR_CONT', fields: [
+      { type: 'TIMER_CONTINUOUS', label: 'TMR_CONT', desc: 'Continuous block timer — elapsed vs target', fields: [
         { name: 'accumulated', dataType: 'NUMERIC', label: 'Accumulated', placeholder: '0' },
         { name: 'target', dataType: 'NUMERIC', label: 'Target', placeholder: '144' }
       ]},
-      { type: 'TIMER_OFF_DELAY', label: 'TMR_OFF', fields: [
+      { type: 'TIMER_OFF_DELAY', label: 'TMR_OFF', desc: 'Off-delay timer — hold after trigger expires', fields: [
         { name: 'remaining', dataType: 'NUMERIC', label: 'Remaining', placeholder: '10' }
       ]},
-      { type: 'LATCH_SET', label: 'LATCH_S', fields: [
+      { type: 'LATCH_SET', label: 'LATCH_S', desc: 'State latch activation (0 → 1)', fields: [
         { name: 'pubkey', dataType: 'PUBKEY', label: 'Setter Key', placeholder: '02abc...' },
         { name: 'state', dataType: 'NUMERIC', label: 'State', placeholder: '0' }
       ]},
-      { type: 'LATCH_RESET', label: 'LATCH_R', fields: [
+      { type: 'LATCH_RESET', label: 'LATCH_R', desc: 'State latch deactivation (1 → 0) with delay', fields: [
         { name: 'pubkey', dataType: 'PUBKEY', label: 'Resetter Key', placeholder: '02abc...' },
         { name: 'state', dataType: 'NUMERIC', label: 'State', placeholder: '1' },
         { name: 'delay', dataType: 'NUMERIC', label: 'Delay', placeholder: '6' }
       ]},
-      { type: 'COUNTER_DOWN', label: 'CTR_DN', fields: [
+      { type: 'COUNTER_DOWN', label: 'CTR_DN', desc: 'Decrementing counter — satisfied while > 0', fields: [
         { name: 'pubkey', dataType: 'PUBKEY', label: 'Event Key', placeholder: '02abc...' },
         { name: 'count', dataType: 'NUMERIC', label: 'Count', placeholder: '5' }
       ]},
-      { type: 'COUNTER_PRESET', label: 'CTR_PRE', fields: [
+      { type: 'COUNTER_PRESET', label: 'CTR_PRE', desc: 'Approval accumulator — satisfied until preset', fields: [
         { name: 'current', dataType: 'NUMERIC', label: 'Current', placeholder: '0' },
         { name: 'preset', dataType: 'NUMERIC', label: 'Preset', placeholder: '10' }
       ]},
-      { type: 'COUNTER_UP', label: 'CTR_UP', fields: [
+      { type: 'COUNTER_UP', label: 'CTR_UP', desc: 'Incrementing counter — satisfied until target', fields: [
         { name: 'pubkey', dataType: 'PUBKEY', label: 'Event Key', placeholder: '02abc...' },
         { name: 'current', dataType: 'NUMERIC', label: 'Current', placeholder: '0' },
         { name: 'target', dataType: 'NUMERIC', label: 'Target', placeholder: '10' }
       ]},
-      { type: 'COMPARE', label: 'COMPARE', fields: [
+      { type: 'COMPARE', label: 'COMPARE', desc: 'Comparator — EQ, GT, LT, GTE, LTE, IN_RANGE', fields: [
         { name: 'operator', dataType: 'NUMERIC', label: 'Op (1-7)', placeholder: '1' },
         { name: 'value_b', dataType: 'NUMERIC', label: 'Value B', placeholder: '5000' }
       ]},
-      { type: 'SEQUENCER', label: 'SEQ', fields: [
+      { type: 'SEQUENCER', label: 'SEQ', desc: 'Step sequencer — current step vs total', fields: [
         { name: 'current', dataType: 'NUMERIC', label: 'Current Step', placeholder: '0' },
         { name: 'total', dataType: 'NUMERIC', label: 'Total Steps', placeholder: '5' }
       ]},
-      { type: 'ONE_SHOT', label: 'ONE_SHOT', fields: [
+      { type: 'ONE_SHOT', label: 'ONE_SHOT', desc: 'Single-use activation — fires once then locks', fields: [
         { name: 'state', dataType: 'NUMERIC', label: 'State', placeholder: '0' },
         { name: 'commitment', dataType: 'HASH256', label: 'Commitment', placeholder: '32-byte hex' }
       ]},
-      { type: 'RATE_LIMIT', label: 'RATE_LIM', fields: [
+      { type: 'RATE_LIMIT', label: 'RATE_LIM', desc: 'Rate limiter — max spend per window', fields: [
         { name: 'max_per_block', dataType: 'NUMERIC', label: 'Max/Block', placeholder: '50000' },
         { name: 'acc_cap', dataType: 'NUMERIC', label: 'Acc. Cap', placeholder: '200000' },
         { name: 'refill_blocks', dataType: 'NUMERIC', label: 'Refill Blocks', placeholder: '144' }
       ]},
-      { type: 'COSIGN', label: 'COSIGN', fields: [
+      { type: 'COSIGN', label: 'COSIGN', desc: 'Co-spend requirement with another input', fields: [
         { name: 'conditions_hash', dataType: 'HASH256', label: 'Conditions Hash', placeholder: '32-byte hex' }
       ]},
     ]
@@ -1944,6 +2243,62 @@ ALL_BLOCK_DEFS['OUTPUT_REF'] = OUTPUT_REF_BLOCK;
 
 function getBlockDef(type) { return ALL_BLOCK_DEFS[type] || { type, label: type, fields: [], familyColor: '#888' }; }
 
+const DATA_TYPE_SIZES = {
+  PUBKEY: { min: 1, max: 2048, note: '32B x-only, 33B compressed, or PQ up to 1793B' },
+  PUBKEY_COMMIT: { min: 32, max: 32, note: 'SHA-256 commitment to a public key' },
+  HASH256: { min: 32, max: 32, note: 'SHA-256 digest' },
+  HASH160: { min: 20, max: 20, note: 'RIPEMD160(SHA256()) digest' },
+  PREIMAGE: { min: 1, max: 252, note: 'Hash preimage (witness only)' },
+  SIGNATURE: { min: 1, max: 5000, note: 'Schnorr 64-65B, ECDSA 8-72B, PQ up to ~3300B' },
+  SPEND_INDEX: { min: 4, max: 4, note: 'uint32 LE index reference' },
+  NUMERIC: { min: 1, max: 4, note: 'Unsigned 32-bit integer, little-endian' },
+  SCHEME: { min: 1, max: 1, note: 'Signature scheme selector byte' },
+  TEXT: { min: 0, max: 255, note: 'Text label (engine-internal only)' },
+};
+
+const BLOCK_RULES = {
+  SIG: 'Verifies a single signature against the public key. Schnorr (64-65B) or ECDSA (8-72B) detected by size. With PUBKEY_COMMIT, the key must hash to the commitment (commit-reveal for PQ migration). With SCHEME field, routes to PQ verification.',
+  MULTISIG: 'M-of-N threshold: first NUMERIC is M, followed by N public keys and signatures. Exactly M valid signatures from distinct keys required.',
+  ADAPTOR_SIG: 'Adaptor signature verification for atomic swaps. Second PUBKEY is the adaptor point T. Signature verified under combined challenge H(R+T || P || m).',
+  CSV: 'Relative timelock in blocks (BIP-68). Satisfied when input sequence meets the required delay. Disable flag bypasses check.',
+  CSV_TIME: 'Relative timelock in seconds (BIP-68 time-based). Same logic as CSV but with time flag.',
+  CLTV: 'Absolute timelock by block height (BIP-65). Satisfied when nLockTime >= specified height.',
+  CLTV_TIME: 'Absolute timelock by median-time-past. Same logic as CLTV but compared against MTP.',
+  HASH_PREIMAGE: 'Satisfied when SHA256(preimage) equals the committed hash.',
+  HASH160_PREIMAGE: 'Satisfied when RIPEMD160(SHA256(preimage)) equals the committed hash.',
+  TAGGED_HASH: 'BIP-340 tagged hash: SHA256(tag || tag || preimage) must equal expected hash.',
+  CTV: 'BIP-119 CheckTemplateVerify. Spending transaction must match the committed template hash exactly.',
+  VAULT_LOCK: 'Two-path vault: recovery key sweeps immediately, hot key requires CSV delay. No SIGNATURE = ERROR.',
+  AMOUNT_LOCK: 'Satisfied when output amount is within [min, max] satoshis inclusive.',
+  RECURSE_SAME: 'Spending output must carry identical conditions. Terminates when max_depth reaches 0.',
+  RECURSE_MODIFIED: 'Like RECURSE_SAME but one field may be mutated by delta. Supports cross-rung and multi-field mutation.',
+  RECURSE_UNTIL: 'Recursive until block_height >= target. Below target, output must re-encumber identically.',
+  RECURSE_COUNT: 'Countdown: output must carry count-1. Terminates (SATISFIED) when count reaches 0.',
+  RECURSE_SPLIT: 'Output splitting with min sats enforcement. max_splits decrements per level.',
+  RECURSE_DECAY: 'Like RECURSE_MODIFIED but negates all deltas — parameter decreases per spend.',
+  ANCHOR: 'Generic anchor tag. Requires at least one field. Structural validation only.',
+  ANCHOR_CHANNEL: 'Lightning channel anchor. Requires 2 pubkeys (local, remote).',
+  ANCHOR_POOL: 'Pool anchor with VTXO tree root hash.',
+  ANCHOR_RESERVE: 'Reserve anchor: N-of-M guardian set. Requires N <= M.',
+  ANCHOR_SEAL: 'Seal anchor: permanently binds UTXO to a data commitment.',
+  ANCHOR_ORACLE: 'Oracle anchor: requires oracle pubkey and quorum count.',
+  HYSTERESIS_FEE: 'Satisfied when tx fee rate falls within [low, high] sat/vB.',
+  HYSTERESIS_VALUE: 'Satisfied when output amount falls within [low, high] sats.',
+  TIMER_CONTINUOUS: 'Satisfied when accumulated >= target blocks.',
+  TIMER_OFF_DELAY: 'Hold after trigger: satisfied while remaining > 0, unsatisfied at 0.',
+  LATCH_SET: 'Satisfied when state is 0 (unset), allowing transition to 1.',
+  LATCH_RESET: 'Satisfied when state >= 1 (set), allowing transition to 0 after delay.',
+  COUNTER_DOWN: 'Satisfied while count > 0. Pair with RECURSE_MODIFIED to decrement.',
+  COUNTER_PRESET: 'Satisfied while current < preset. Unsatisfied when threshold reached.',
+  COUNTER_UP: 'Satisfied while current < target. Pair with RECURSE_MODIFIED to increment.',
+  COMPARE: 'Compares output amount: 1=EQ, 2=NEQ, 3=GT, 4=LT, 5=GTE, 6=LTE, 7=IN_RANGE.',
+  SEQUENCER: 'Step sequencer: satisfied when current_step < total_steps.',
+  ONE_SHOT: 'Single-use: satisfied when state is 0. Once fired (state=1), permanently unsatisfied.',
+  RATE_LIMIT: 'Rate limiter: unsatisfied when output_amount > max_per_block.',
+  COSIGN: 'Satisfied when another input in the same tx has conditions matching the hash.',
+  OUTPUT_REF: 'References a named output coil from another rung.',
+};
+
 let _id = 0;
 function uid() { return ++_id; }
 
@@ -1951,7 +2306,7 @@ function createBlock(type) {
   const def = getBlockDef(type);
   const values = {};
   def.fields.forEach(f => { values[f.name] = ''; });
-  return { id: uid(), type, values, inverted: false };
+  return { id: uid(), type, values, inverted: false, name: '' };
 }
 
 function createRung() {
@@ -2343,6 +2698,12 @@ function PalettePanel({ onDragStart }) {
             >
               <div className="dot" style={{ background: family.color }} />
               {block.label}
+              {block.desc && (
+                <div className="palette-tip">
+                  {block.desc}
+                  <div className="tip-code">0x{getTypeHex(block.type)}</div>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -2351,11 +2712,13 @@ function PalettePanel({ onDragStart }) {
   );
 }
 
-function ContactView({ block, selected, simMode, simResult, scanClass, onClick, onDelete, onDragStart, onDragOver, onDrop, forcedState, onForceToggle, tips }) {
+function ContactView({ block, selected, simMode, simResult, scanClass, onClick, onDelete, onDragStart, onDragOver, onDrop, forcedState, onForceToggle, tips, onNameChange, onExpand }) {
   const def = getBlockDef(block.type);
   const isEnergized = simMode && !scanClass && simResult === 'satisfied';
   const isFault = simMode && !scanClass && simResult === 'error';
   const isForced = forcedState === 'satisfied' || forcedState === 'unsatisfied';
+  const [editingNote, setEditingNote] = useState(false);
+  const noteInputRef = useRef(null);
 
   const summary = useMemo(() => {
     const v = block.values;
@@ -2371,7 +2734,6 @@ function ContactView({ block, selected, simMode, simResult, scanClass, onClick, 
 
   const handleClick = useCallback((e) => {
     if (simMode && !scanClass && e.altKey) {
-      // Alt+click to force-toggle in sim mode
       e.stopPropagation();
       onForceToggle?.(block.id);
     } else {
@@ -2379,15 +2741,33 @@ function ContactView({ block, selected, simMode, simResult, scanClass, onClick, 
     }
   }, [simMode, scanClass, onClick, onForceToggle, block.id]);
 
+  const handleDoubleClick = useCallback((e) => {
+    if (simMode) return;
+    e.stopPropagation();
+    setEditingNote(true);
+    setTimeout(() => noteInputRef.current?.focus(), 0);
+  }, [simMode]);
+
+  const handleNoteBlur = useCallback(() => {
+    setEditingNote(false);
+  }, []);
+
+  const handleNoteKeyDown = useCallback((e) => {
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      setEditingNote(false);
+    }
+  }, []);
+
   return (
     <div
       className={`contact ${isEnergized ? 'energized' : ''} ${isFault ? 'fault' : ''} ${selected ? 'selected' : ''} ${scanClass || ''} ${isForced ? (forcedState === 'satisfied' ? 'forced-on' : 'forced-off') : ''}`}
       onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
       draggable={!simMode}
       onDragStart={simMode ? undefined : (e) => { e.dataTransfer.setData('reorderBlockId', String(block.id)); onDragStart?.(block.id); }}
       onDragOver={simMode ? undefined : (e) => { e.preventDefault(); e.stopPropagation(); onDragOver?.(e, block.id); }}
       onDrop={simMode ? undefined : (e) => { e.preventDefault(); e.stopPropagation(); onDrop?.(e, block.id); }}
-      title={tips ? (simMode ? (scanClass === 'step-next' ? 'Click to pass this block and advance' : 'Alt+click to force ON/OFF/AUTO') : 'Click to select, drag to reorder') : undefined}
+      title={tips ? (simMode ? (scanClass === 'step-next' ? 'Click to pass this block and advance' : 'Alt+click to force ON/OFF/AUTO') : 'Click to select · Double-click to name · Drag to reorder') : undefined}
     >
       {block.inverted && <span className="contact-inverted">NOT</span>}
       {isForced && <span className={`force-badge ${forcedState === 'satisfied' ? 'on' : 'off'}`}>{forcedState === 'satisfied' ? 'FORCE' : 'BLOCK'}</span>}
@@ -2398,13 +2778,168 @@ function ContactView({ block, selected, simMode, simResult, scanClass, onClick, 
       </div>
       <span className="contact-bracket-right" style={{ color: isEnergized && !isForced ? undefined : isForced ? undefined : def.familyColor + '80' }}>├─</span>
       {!simMode && <div className="contact-delete" onClick={(e) => { e.stopPropagation(); onDelete(); }}>✕</div>}
+      {block.name && !editingNote && <span className="contact-note">{block.name}</span>}
+      {editingNote && (
+        <input
+          ref={noteInputRef}
+          className="contact-note-input"
+          value={block.name || ''}
+          placeholder="Name this block..."
+          onChange={(e) => onNameChange?.(block.id, e.target.value)}
+          onBlur={handleNoteBlur}
+          onKeyDown={handleNoteKeyDown}
+          onClick={(e) => e.stopPropagation()}
+        />
+      )}
+    </div>
+  );
+}
+
+function BlockModal({ block, onChange, onClose, rungs }) {
+  if (!block) return null;
+  const def = getBlockDef(block.type);
+  const family = BLOCK_FAMILIES.find(f => f.blocks.some(b => b.type === block.type));
+  const rules = BLOCK_RULES[block.type];
+
+  // Collect outputs for OUTPUT_REF dropdown
+  const allOutputs = useMemo(() => {
+    if (!rungs) return [];
+    return rungs.map((r, i) => {
+      const rungNum = `R${String(i).padStart(3, '0')}`;
+      return { refValue: r.output.name || r.label || rungNum, display: `${rungNum} ${r.output.name || r.label || '(unnamed)'}` };
+    });
+  }, [rungs]);
+
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  return (
+    <div className="block-modal-overlay" onClick={onClose}>
+      <div className="block-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="block-modal-header">
+          <span className="block-modal-type-badge" style={{ color: def.familyColor }}>
+            <span className="block-modal-type-dot" style={{ background: def.familyColor }} />
+            {def.label}
+          </span>
+          {family && <span className="block-modal-family">{family.name}</span>}
+          <span className="block-modal-hex">0x{getTypeHex(block.type)}</span>
+          <button className="block-modal-close" onClick={onClose}>ESC</button>
+        </div>
+        <div className="block-modal-body">
+          {/* Name / Note */}
+          <div className="block-modal-section">
+            <div className="block-modal-section-title">NAME / NOTE</div>
+            <input
+              className="block-modal-note-input"
+              value={block.name || ''}
+              placeholder="Add a label or note for this block..."
+              onChange={(e) => onChange(block.id, '__name', e.target.value)}
+            />
+          </div>
+
+          {/* Configuration */}
+          <div className="block-modal-section">
+            <div className="block-modal-section-title">CONFIGURATION</div>
+            <div className="block-modal-checkbox-row">
+              <input
+                type="checkbox"
+                id="modal-inverted"
+                checked={block.inverted}
+                onChange={(e) => onChange(block.id, '__inverted', e.target.checked)}
+              />
+              <label htmlFor="modal-inverted">INVERTED (NOT) — flips SATISFIED ↔ UNSATISFIED</label>
+            </div>
+            {def.fields.map(field => {
+              if (block.type === 'OUTPUT_REF' && field.name === 'ref_name') {
+                return (
+                  <div key={field.name} className="block-modal-field-row">
+                    <span className="block-modal-field-label">{field.label}</span>
+                    <span className="block-modal-field-type">{field.dataType}</span>
+                    <select
+                      className="block-modal-field-select"
+                      value={block.values[field.name] || ''}
+                      onChange={(e) => onChange(block.id, field.name, e.target.value)}
+                    >
+                      <option value="">— select output —</option>
+                      {allOutputs.map((o, oi) => <option key={oi} value={o.refValue}>{o.display}</option>)}
+                    </select>
+                  </div>
+                );
+              }
+              if (field.dataType === 'SCHEME') {
+                return (
+                  <div key={field.name} className="block-modal-field-row">
+                    <span className="block-modal-field-label">{field.label}</span>
+                    <span className="block-modal-field-type">SCHEME</span>
+                    <select
+                      className="block-modal-field-select"
+                      value={block.values[field.name] || ''}
+                      onChange={(e) => onChange(block.id, field.name, e.target.value)}
+                    >
+                      <option value="">SCHNORR (default)</option>
+                      <option value="FALCON512">FALCON-512 (PQ)</option>
+                      <option value="FALCON1024">FALCON-1024 (PQ)</option>
+                      <option value="DILITHIUM3">DILITHIUM3 (PQ)</option>
+                    </select>
+                  </div>
+                );
+              }
+              return (
+                <div key={field.name} className="block-modal-field-row">
+                  <span className="block-modal-field-label">{field.label}</span>
+                  <span className="block-modal-field-type">{field.dataType}</span>
+                  <input
+                    className="block-modal-field-input"
+                    value={block.values[field.name] || ''}
+                    placeholder={field.placeholder}
+                    onChange={(e) => onChange(block.id, field.name, e.target.value)}
+                  />
+                </div>
+              );
+            })}
+            {def.fields.length === 0 && (
+              <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>No configurable fields — structural block.</div>
+            )}
+          </div>
+
+          {/* Evaluation Rules */}
+          {rules && (
+            <div className="block-modal-section">
+              <div className="block-modal-section-title">EVALUATION RULES</div>
+              <div className="block-modal-rules">{rules}</div>
+            </div>
+          )}
+
+          {/* Data Type Constraints */}
+          {def.fields.length > 0 && (
+            <div className="block-modal-section">
+              <div className="block-modal-section-title">FIELD CONSTRAINTS</div>
+              <div className="block-modal-constraints">
+                {def.fields.filter(f => DATA_TYPE_SIZES[f.dataType]).map(field => {
+                  const s = DATA_TYPE_SIZES[field.dataType];
+                  return (
+                    <React.Fragment key={field.name}>
+                      <span className="c-label">{field.label}</span>
+                      <span className="c-type">{field.dataType}</span>
+                      <span className="c-size">{s.min === s.max ? `${s.min}B` : `${s.min}–${s.max}B`}</span>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
 const MAX_BLOCKS_PER_RUNG = 8;
 
-function RungView({ rung, rungIndex, selectedBlock, selectedCoil, selectedInput, simMode, simState, onSelectBlock, onSelectCoil, onSelectInput, onDeleteBlock, onDeleteRung, onDropBlock, onRungLabelChange, onReorderBlock, txOutputs, txInputs, scanStep, scanResults, scanning, isSpent, spentType, forcedBlocks, onForceBlock, onExecuteRung, onStartScanFrom, isSteppingThrough, stepActiveIdx, stepResults, onStepBlock, tips }) {
+function RungView({ rung, rungIndex, selectedBlock, selectedCoil, selectedInput, simMode, simState, onSelectBlock, onSelectCoil, onSelectInput, onDeleteBlock, onDeleteRung, onDropBlock, onRungLabelChange, onReorderBlock, txOutputs, txInputs, scanStep, scanResults, scanning, isSpent, spentType, forcedBlocks, onForceBlock, onExecuteRung, onStartScanFrom, isSteppingThrough, stepActiveIdx, stepResults, onStepBlock, tips, onNameChange, onExpandBlock }) {
   const [dropSlot, setDropSlot] = useState(null);
 
   const blockResults = useMemo(() => {
@@ -2598,6 +3133,8 @@ function RungView({ rung, rungIndex, selectedBlock, selectedCoil, selectedInput,
                   forcedState={forcedBlocks?.[slot.block.id] || null}
                   onForceToggle={onForceBlock}
                   tips={tips}
+                  onNameChange={onNameChange}
+                  onExpand={() => onExpandBlock?.(slot.block.id)}
                 />
               ) : (
                 <div className={`rung-slot-wire ${slot.isFlowing ? 'energized' : ''}`} />
@@ -2645,7 +3182,7 @@ function RungView({ rung, rungIndex, selectedBlock, selectedCoil, selectedInput,
   );
 }
 
-function LadderView({ rungs, selectedBlock, selectedCoil, selectedInput, mode, simState, onSelectBlock, onSelectCoil, onSelectInput, onDeleteBlock, onDeleteRung, onDropBlock, onAddRung, onAddRungWithBlock, onRungLabelChange, onReorderBlock, txOutputs, txInputs, fullscreen, onToggleFullscreen, scanPhase, scanStep, scanResults, scanSpeed, onScanStart, onScanPause, onScanResume, onScanStepFwd, onScanStepBack, onScanReset, onScanSpeedChange, scanIdx, scanTotal, spentRungs, forcedBlocks, onForceBlock, onExecuteRung, onResetSim, onStartScanFrom, simActiveRungId, simActiveStep, simStepResults, onStepBlock, tips }) {
+function LadderView({ rungs, selectedBlock, selectedCoil, selectedInput, mode, simState, onSelectBlock, onSelectCoil, onSelectInput, onDeleteBlock, onDeleteRung, onDropBlock, onAddRung, onAddRungWithBlock, onRungLabelChange, onReorderBlock, txOutputs, txInputs, fullscreen, onToggleFullscreen, scanPhase, scanStep, scanResults, scanSpeed, onScanStart, onScanPause, onScanResume, onScanStepFwd, onScanStepBack, onScanReset, onScanSpeedChange, scanIdx, scanTotal, spentRungs, forcedBlocks, onForceBlock, onExecuteRung, onResetSim, onStartScanFrom, simActiveRungId, simActiveStep, simStepResults, onStepBlock, tips, onNameChange, onExpandBlock }) {
   const simMode = mode === 'simulate' || mode === 'watch';
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -2818,6 +3355,8 @@ function LadderView({ rungs, selectedBlock, selectedCoil, selectedInput, mode, s
                 stepResults={simStepResults}
                 onStepBlock={onStepBlock}
                 tips={tips}
+                onNameChange={onNameChange}
+                onExpandBlock={onExpandBlock}
               />
             ))
           )}
@@ -2840,7 +3379,7 @@ function LadderView({ rungs, selectedBlock, selectedCoil, selectedInput, mode, s
   );
 }
 
-function PropertiesPanel({ block, onChange, rungs }) {
+function PropertiesPanel({ block, onChange, rungs, onExpand }) {
   if (!block) {
     return (
       <div className="no-selection">
@@ -2875,7 +3414,19 @@ function PropertiesPanel({ block, onChange, rungs }) {
   return (
     <div>
       <div className="prop-section">
-        <div className="prop-section-title">BLOCK — {block.type}</div>
+        <div className="prop-section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>BLOCK — {block.type}</span>
+          <button className="block-modal-expand-btn" onClick={() => onExpand?.(block.id)}>EXPAND ◇</button>
+        </div>
+        <div className="prop-row">
+          <span className="prop-label">Name</span>
+          <input
+            className="prop-input"
+            value={block.name || ''}
+            placeholder="Label this block..."
+            onChange={(e) => onChange(block.id, '__name', e.target.value)}
+          />
+        </div>
         <div className="prop-checkbox-row">
           <input
             type="checkbox"
@@ -4384,6 +4935,7 @@ function App() {
   const [selectedBlockId, setSelectedBlockId] = useState(null);
   const [selectedCoilId, setSelectedCoilId] = useState(null);
   const [selectedInputId, setSelectedInputId] = useState(null);
+  const [expandedBlockId, setExpandedBlockId] = useState(null);
   const [rightTab, setRightTab] = useState('properties');
   const [txInputs, setTxInputs] = useState([{ id: uid(), txid: '', vout: 0, sequence: '' }]);
   const [txOutputs, setTxOutputs] = useState([{ id: uid(), address: '', amount: 0 }]);
@@ -4585,6 +5137,23 @@ function App() {
     return null;
   }, [rungs, selectedBlockId]);
 
+  const expandedBlock = useMemo(() => {
+    if (!expandedBlockId) return null;
+    for (const rung of rungs) {
+      for (const block of rung.blocks) {
+        if (block.id === expandedBlockId) return block;
+      }
+    }
+    return null;
+  }, [rungs, expandedBlockId]);
+
+  const handleNameChange = useCallback((blockId, name) => {
+    setRungs(prev => prev.map(r => ({
+      ...r,
+      blocks: r.blocks.map(b => b.id === blockId ? { ...b, name } : b)
+    })));
+  }, []);
+
   const handleAddRung = useCallback(() => {
     setRungs(prev => prev.length >= 16 ? prev : [...prev, createRung()]);
   }, []);
@@ -4633,6 +5202,7 @@ function App() {
       blocks: r.blocks.map(b => {
         if (b.id !== blockId) return b;
         if (field === '__inverted') return { ...b, inverted: value };
+        if (field === '__name') return { ...b, name: value };
         return { ...b, values: { ...b.values, [field]: value } };
       })
     })));
@@ -5249,6 +5819,8 @@ ${ladderRows.map(r => `
           simStepResults={simStepResults}
           onStepBlock={handleStepBlock}
           tips={showTooltips}
+          onNameChange={handleNameChange}
+          onExpandBlock={(id) => setExpandedBlockId(id)}
         />
 
         <div className="right-panel">
@@ -5277,7 +5849,7 @@ ${ladderRows.map(r => `
                 txOutputs={txOutputs}
               />
             ) : !isSimMode && rightTab === 'properties' && (
-              <PropertiesPanel block={selectedBlock} onChange={handleBlockChange} rungs={rungs} />
+              <PropertiesPanel block={selectedBlock} onChange={handleBlockChange} rungs={rungs} onExpand={(id) => setExpandedBlockId(id)} />
             )}
             {!isSimMode && rightTab === 'tx' && (
               <TxPanel
@@ -5397,6 +5969,14 @@ ${ladderRows.map(r => `
 
       {showExamples && (
         <ExamplesModal onClose={() => setShowExamples(false)} onLoad={handleLoadExample} />
+      )}
+      {expandedBlock && (
+        <BlockModal
+          block={expandedBlock}
+          onChange={handleBlockChange}
+          onClose={() => setExpandedBlockId(null)}
+          rungs={rungs}
+        />
       )}
     </div>
   );
