@@ -205,6 +205,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/l2/fee-distribution-context",
             get(api_l2_fee_distribution_context_handler),
         )
+        .route("/api/v1/l2/tree-state", get(api_l2_tree_state_handler))
         .route("/api/v1/rewards/current", get(api_rewards_current_handler))
         .route("/api/v1/rewards/history", get(api_rewards_history_handler))
         // HIGH-4: /api/v1/logs endpoint REMOVED - exposed journalctl output (security risk)
@@ -320,6 +321,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route(
             "/api/v1/mpc/unshield-params",
             get(api_mpc_unshield_params_handler),
+        )
+        .route(
+            "/api/v1/mpc/params/manifest",
+            get(api_mpc_params_manifest_handler),
         )
         .route("/api/v1/mpc/status", get(api_mpc_status_handler))
         .route(
@@ -2161,6 +2166,61 @@ async fn api_l2_fee_distribution_context_handler(
         "treasury_balance_sats": treasury_balance_sats,
         "threshold_reached_at": threshold_reached_at,
         "ghost_pay_nodes": ghost_pay_nodes,
+    }))
+}
+
+/// L2 commitment tree state for health monitoring.
+/// Exposes live in-memory tree root, checkpoint root, and finalization status.
+async fn api_l2_tree_state_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let tree_state_fn = match &state.l2_tree_state_fn {
+        Some(f) => f.clone(),
+        None => {
+            return Json(serde_json::json!({
+                "error": "L2 tree state not configured"
+            }));
+        }
+    };
+
+    let info = match tree_state_fn() {
+        Ok(info) => info,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "error": format!("Failed to get tree state: {}", e)
+            }));
+        }
+    };
+
+    let db = match state.database.as_ref() {
+        Some(db) => db,
+        None => {
+            return Json(serde_json::json!({
+                "error": "Database not available"
+            }));
+        }
+    };
+
+    let checkpoint = db.get_latest_l2_checkpoint().unwrap_or(None);
+    let (checkpoint_root, checkpoint_tx_count, checkpoint_height) = match &checkpoint {
+        Some(cp) => (hex::encode(cp.commitment_root), cp.tx_count, cp.height),
+        None => ("0".repeat(64), 0, 0),
+    };
+
+    let recent_finalizations = db.count_recent_l2_finalizations(100).unwrap_or(0);
+
+    let tree_root_hex = hex::encode(info.tree_root);
+    let roots_match = tree_root_hex == checkpoint_root;
+
+    Json(serde_json::json!({
+        "epoch": info.epoch,
+        "tree_root": tree_root_hex,
+        "checkpoint_height": checkpoint_height,
+        "checkpoint_root": checkpoint_root,
+        "checkpoint_tx_count": checkpoint_tx_count,
+        "note_count": info.note_count,
+        "recent_finalizations": recent_finalizations,
+        "roots_match": roots_match
     }))
 }
 
@@ -4834,6 +4894,62 @@ async fn api_mpc_unshield_params_handler(
             )
         }
     }
+}
+
+/// MPC params manifest handler - returns SHA-256 hashes of all param files
+///
+/// Clients download this manifest first (small), then verify each param file
+/// against its hash after download. Prevents MITM from serving malicious params.
+async fn api_mpc_params_manifest_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    use sha2::{Digest, Sha256};
+
+    let base_path =
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+            .join(".ghost/mpc_params");
+
+    let files = [
+        ("note_spend_params_current.bin", "note_spend"),
+        ("payout_params_current.bin", "consolidation"),
+        ("unshield_params_current.bin", "unshield"),
+    ];
+
+    let mut manifest = serde_json::Map::new();
+
+    for (filename, key) in &files {
+        let path = base_path.join(filename);
+        match std::fs::read(&path) {
+            Ok(data) => {
+                let hash = hex::encode(Sha256::digest(&data));
+                manifest.insert(
+                    key.to_string(),
+                    serde_json::json!({
+                        "filename": filename,
+                        "sha256": hash,
+                        "size": data.len(),
+                    }),
+                );
+            }
+            Err(_) => {
+                manifest.insert(
+                    key.to_string(),
+                    serde_json::json!({
+                        "filename": filename,
+                        "available": false,
+                    }),
+                );
+            }
+        }
+    }
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&manifest)
+            .unwrap_or_else(|_| "{}".to_string())
+            .into_bytes(),
+    )
 }
 
 /// MPC status handler - returns ceremony status

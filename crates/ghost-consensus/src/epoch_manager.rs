@@ -17,7 +17,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::types::NodeId;
@@ -246,14 +246,31 @@ impl EpochManager {
             *self.commitment_tree.write() = tree;
             info!(notes = notes.len(), "Reconstructed commitment tree");
 
-            // Reconstruct nullifier set
+            // Reconstruct nullifier set from confirmed nullifiers
             let nullifiers = self.db.load_l2_nullifiers_for_epoch(epoch_record.epoch)?;
             let mut set = HashSet::with_capacity(nullifiers.len());
             for n in &nullifiers {
                 set.insert(*n);
             }
+            let confirmed_count = nullifiers.len();
+
+            // Load pending nullifiers from write-ahead log (crash recovery)
+            let pending_count = match self.db.load_pending_nullifiers() {
+                Ok(pending) => {
+                    let count = pending.len();
+                    for (n, _epoch, _height) in &pending {
+                        set.insert(*n);
+                    }
+                    count
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to load pending nullifiers from write-ahead log");
+                    0
+                }
+            };
+
             *self.nullifier_set.write() = set;
-            info!(nullifiers = nullifiers.len(), "Reconstructed nullifier set");
+            info!(confirmed = confirmed_count, pending = pending_count, "Reconstructed nullifier set");
         }
 
         // Load valid roots
@@ -376,11 +393,15 @@ impl EpochManager {
         }
         drop(set);
 
-        // Defer DB persistence — nullifiers are persisted atomically with the checkpoint
-        // to prevent partial state on crash. In-memory set prevents double-spends immediately.
+        // Write-ahead: persist to pending_nullifiers table immediately for crash recovery.
+        // This ensures nullifiers survive crashes between checkpoints.
         self.pending_nullifiers
             .write()
             .push((nullifier, epoch, block_height));
+
+        if let Err(e) = self.db.insert_pending_nullifier(&nullifier, epoch, block_height) {
+            warn!(epoch, height = block_height, error = %e, "Failed to write-ahead nullifier (in-memory protection still active)");
+        }
 
         debug!(epoch, height = block_height, "Recorded nullifier");
         Ok(true)
@@ -393,13 +414,15 @@ impl EpochManager {
     }
 
     /// Flush all pending nullifiers to the database immediately.
-    /// Used during graceful shutdown to prevent data loss.
+    /// Used during graceful shutdown and checkpoint finalization to prevent data loss.
     pub fn flush_pending_nullifiers(&self) -> GhostResult<()> {
         let pending = self.drain_pending_nullifiers();
         for (nullifier, epoch, block_height) in &pending {
             self.db
                 .insert_l2_nullifier(nullifier, *epoch, *block_height)?;
         }
+        // Clear write-ahead log since we've confirmed all nullifiers
+        self.db.confirm_pending_nullifiers()?;
         Ok(())
     }
 

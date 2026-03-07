@@ -34,6 +34,17 @@ use tracing::{debug, warn};
 /// This prevents memory exhaustion attacks from malicious oversized messages
 const MAX_CHALLENGE_DATA_SIZE: usize = 10 * 1024;
 
+/// Maximum verification results per challenger per minute.
+/// Normal operation: 3 peers x 4 capabilities = 12 per cycle (every 5 min).
+/// 20/min is generous but prevents DB flooding from compromised nodes.
+const VERIFICATION_RATE_LIMIT_PER_MIN: u32 = 20;
+
+/// Burst capacity for verification rate limiter
+const VERIFICATION_RATE_LIMIT_BURST: u32 = 20;
+
+/// Refill rate: 20 tokens per 60 seconds ≈ 1 token per 3 seconds
+const VERIFICATION_RATE_REFILL: u32 = 1;
+
 use ghost_common::error::GhostResult;
 use ghost_common::identity::verify_signature;
 use ghost_storage::Database;
@@ -41,6 +52,7 @@ use ghost_storage::Database;
 use crate::mesh::MessageHandler;
 use crate::message::{CapabilityType, MessageEnvelope, MessageType, VerificationResultMessage};
 use crate::peer::PeerManager;
+use crate::vote_handler::RateLimiter;
 
 /// Handler for verification result messages
 pub struct VerificationResultHandler {
@@ -48,12 +60,21 @@ pub struct VerificationResultHandler {
     db: Arc<Database>,
     /// HIGH-VER-4: Peer manager for validating challenger is a known node
     peers: Option<Arc<PeerManager>>,
+    /// Per-challenger rate limiter to prevent DB flooding
+    rate_limiter: RateLimiter,
 }
 
 impl VerificationResultHandler {
     /// Create a new verification result handler
     pub fn new(db: Arc<Database>) -> Self {
-        Self { db, peers: None }
+        Self {
+            db,
+            peers: None,
+            rate_limiter: RateLimiter::new(
+                VERIFICATION_RATE_LIMIT_BURST,
+                VERIFICATION_RATE_REFILL,
+            ),
+        }
     }
 
     /// HIGH-VER-4: Create a verification handler with peer validation
@@ -65,6 +86,10 @@ impl VerificationResultHandler {
         Self {
             db,
             peers: Some(peers),
+            rate_limiter: RateLimiter::new(
+                VERIFICATION_RATE_LIMIT_BURST,
+                VERIFICATION_RATE_REFILL,
+            ),
         }
     }
 
@@ -216,6 +241,16 @@ impl VerificationResultHandler {
                     "HIGH-VER-4: Challenger not in PeerManager but found in DB, accepting"
                 );
             }
+        }
+
+        // Per-challenger rate limit to prevent DB flooding from compromised nodes
+        if !self.rate_limiter.check_and_consume(&msg.challenger_id) {
+            warn!(
+                challenger = %short_challenger,
+                "Rate-limiting verification results from challenger (>{} per minute)",
+                VERIFICATION_RATE_LIMIT_PER_MIN
+            );
+            return Ok(());
         }
 
         // Store the result in the appropriate challenge table

@@ -1268,6 +1268,8 @@ async fn main() -> Result<()> {
     let mut l2_submit_fn_opt: Option<ghost_verification::L2SubmitFn> = None;
     #[allow(unused_assignments, unused_mut)]
     let mut l2_sync_commitment_fn_opt: Option<ghost_verification::L2SyncCommitmentFn> = None;
+    #[allow(unused_assignments, unused_mut)]
+    let mut l2_tree_state_fn_opt: Option<ghost_verification::L2TreeStateFn> = None;
 
     #[cfg(feature = "zk-consensus")]
     {
@@ -1347,6 +1349,7 @@ async fn main() -> Result<()> {
             Arc::clone(&db),
         ));
         nullifier_handler.set_broadcast_fn(l2_broadcast);
+        nullifier_handler.set_metrics(Arc::clone(&metrics));
 
         // Restore pending shields that survived a restart but weren't yet
         // included in a finalized checkpoint (prevents checkpoint divergence).
@@ -1354,6 +1357,10 @@ async fn main() -> Result<()> {
             warn!(error = %e, "Failed to restore pending shields from DB");
         }
 
+        // Set checkpoint base root from latest persisted checkpoint
+        if let Ok(Some(cp)) = db.get_latest_l2_checkpoint() {
+            nullifier_handler.set_checkpoint_base_root(cp.commitment_root);
+        }
         let identity_for_sign = Arc::clone(&identity);
         nullifier_handler.set_sign_fn(std::sync::Arc::new(move |msg: &[u8]| {
             identity_for_sign.sign(msg)
@@ -1379,6 +1386,22 @@ async fn main() -> Result<()> {
                 nh_for_sync.sync_commitment(commitment, note_index, block_height)
             },
         ));
+
+        // Wire L2 tree state callback for health monitoring
+        let em_for_tree_state = Arc::clone(&epoch_manager);
+        let db_for_tree_state = Arc::clone(&db);
+        l2_tree_state_fn_opt = Some(Arc::new(move || {
+            let epoch = em_for_tree_state.current_epoch();
+            let tree_root = em_for_tree_state.current_root()?;
+            let checkpoint_height = em_for_tree_state.current_height();
+            let note_count = db_for_tree_state.count_l2_notes_in_epoch(epoch)?;
+            Ok(ghost_verification::L2TreeStateInfo {
+                epoch,
+                tree_root,
+                checkpoint_height,
+                note_count,
+            })
+        }));
 
         // Wire finalization callback to notify ghost-pay when checkpoints are finalized
         if config.ghost_pay.is_some() {
@@ -2781,6 +2804,11 @@ async fn main() -> Result<()> {
     // Wire L2 commitment sync callback if ZK consensus is enabled
     if let Some(l2_sync_fn) = l2_sync_commitment_fn_opt {
         verification_state = verification_state.with_l2_sync_commitment(l2_sync_fn);
+    }
+
+    // Wire L2 tree state callback if ZK consensus is enabled
+    if let Some(l2_tree_state_fn) = l2_tree_state_fn_opt {
+        verification_state = verification_state.with_l2_tree_state(l2_tree_state_fn);
     }
 
     // Wire GhostGlyph relay callbacks (always enabled — no feature gate)

@@ -6353,10 +6353,90 @@ impl Database {
     }
 
     // =========================================================================
+    // PENDING NULLIFIERS (WRITE-AHEAD LOG)
+    // =========================================================================
+
+    /// Insert a pending nullifier (write-ahead for crash recovery)
+    pub fn insert_pending_nullifier(
+        &self,
+        nullifier: &[u8; 32],
+        epoch: u64,
+        block_height: u64,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO pending_nullifiers (nullifier, epoch, spent_at) VALUES (?1, ?2, ?3)",
+                params![nullifier.as_slice(), epoch as i64, block_height as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Load all pending nullifiers (for crash recovery at startup)
+    pub fn load_pending_nullifiers(&self) -> GhostResult<Vec<([u8; 32], u64, u64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT nullifier, epoch, spent_at FROM pending_nullifiers")
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    let nullifier: Vec<u8> = row.get(0)?;
+                    let epoch: i64 = row.get(1)?;
+                    let spent_at: i64 = row.get(2)?;
+                    Ok((nullifier, epoch as u64, spent_at as u64))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut result = Vec::new();
+            for row in rows {
+                let (nullifier_vec, epoch, spent_at) =
+                    row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let nullifier: [u8; 32] = nullifier_vec.try_into().map_err(|_| {
+                    GhostError::Database(
+                        "Invalid nullifier size in pending_nullifiers".to_string(),
+                    )
+                })?;
+                result.push((nullifier, epoch, spent_at));
+            }
+            Ok(result)
+        })
+    }
+
+    /// Confirm pending nullifiers: move to l2_nullifiers and clear pending table.
+    /// Called during checkpoint finalization.
+    pub fn confirm_pending_nullifiers(&self) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pending_nullifiers",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if count == 0 {
+                return Ok(0);
+            }
+
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO l2_nullifiers (nullifier, epoch, block_height)
+                 SELECT nullifier, epoch, spent_at FROM pending_nullifiers;
+                 DELETE FROM pending_nullifiers;",
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(count as u64)
+        })
+    }
+
+    // =========================================================================
     // PENDING L2 SHIELDS (staging for checkpoint inclusion)
     // =========================================================================
 
     /// Insert a pending shield commitment into the staging table.
+    /// Called by sync_commitment() so shields survive restarts.
     pub fn insert_pending_shield(
         &self,
         note_index: u64,
@@ -6413,6 +6493,7 @@ impl Database {
     }
 
     /// Delete finalized shield commitments from the staging table.
+    /// Called during finalize_checkpoint() after shields are BFT-confirmed.
     pub fn delete_pending_shields(&self, note_indices: &[u64]) -> GhostResult<()> {
         if note_indices.is_empty() {
             return Ok(());
@@ -6496,6 +6577,31 @@ impl Database {
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
+            Ok(())
+        })
+    }
+
+    /// Upsert an L2 checkpoint (idempotent via INSERT OR REPLACE).
+    ///
+    /// Used by tree sync to persist replayed checkpoints without failing on
+    /// duplicate heights (unlike `persist_l2_checkpoint_atomic` which uses INSERT).
+    pub fn upsert_l2_checkpoint(&self, record: &L2CheckpointRecord) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO l2_checkpoints
+                 (height, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    record.height as i64,
+                    record.epoch as i64,
+                    record.commitment_root.as_slice(),
+                    record.tx_count as i64,
+                    record.proposer_id,
+                    record.active_node_count as i64,
+                    record.block_data.as_slice(),
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
         })
     }
@@ -6623,6 +6729,37 @@ impl Database {
                 }
                 None => Ok(None),
             }
+        })
+    }
+
+    /// Count L2 notes in a given epoch
+    pub fn count_l2_notes_in_epoch(&self, epoch: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM l2_notes WHERE epoch = ?1",
+                    params![epoch as i64],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u64)
+        })
+    }
+
+    /// Count recent L2 checkpoints with tx_count > 0 (finalizations)
+    /// Looks back `lookback` checkpoints from the maximum height.
+    pub fn count_recent_l2_finalizations(&self, lookback: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM l2_checkpoints
+                     WHERE tx_count > 0
+                     AND height > (SELECT COALESCE(MAX(height), 0) - ?1 FROM l2_checkpoints)",
+                    params![lookback as i64],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u64)
         })
     }
 

@@ -720,6 +720,20 @@ pub type GlyphClaimRelayFn = Arc<dyn Fn(Vec<u8>) -> GhostResult<()> + Send + Syn
 /// Takes serialized GhostGlyphRegisteredMessage JSON bytes.
 pub type GlyphRegisteredRelayFn = Arc<dyn Fn(Vec<u8>) -> GhostResult<()> + Send + Sync>;
 
+/// Callback for retrieving live L2 tree state from the epoch manager.
+/// Returns (epoch, tree_root, checkpoint_height, note_count).
+pub type L2TreeStateFn =
+    Arc<dyn Fn() -> GhostResult<L2TreeStateInfo> + Send + Sync>;
+
+/// Live L2 tree state info returned by the epoch manager callback.
+#[derive(Debug, Clone)]
+pub struct L2TreeStateInfo {
+    pub epoch: u64,
+    pub tree_root: [u8; 32],
+    pub checkpoint_height: u64,
+    pub note_count: u64,
+}
+
 /// Parse user_identity string to extract payout address and worker name.
 /// Format: <payout_address>.<worker_name>
 /// Returns (payout_address, worker_name) or (user_identity, "default") if no dot found.
@@ -922,6 +936,8 @@ pub struct VerificationState {
     pub glyph_claim_relay_fn: Option<GlyphClaimRelayFn>,
     /// Callback to relay glyph registrations to the mesh
     pub glyph_registered_relay_fn: Option<GlyphRegisteredRelayFn>,
+    /// Callback to get live L2 tree state from epoch manager
+    pub l2_tree_state_fn: Option<L2TreeStateFn>,
 }
 
 /// Archive handler trait
@@ -1047,6 +1063,7 @@ impl VerificationState {
             l2_sync_commitment_fn: None,
             glyph_claim_relay_fn: None,
             glyph_registered_relay_fn: None,
+            l2_tree_state_fn: None,
         }
     }
 
@@ -1071,6 +1088,12 @@ impl VerificationState {
     /// Set the glyph registered relay callback
     pub fn with_glyph_registered_relay(mut self, f: GlyphRegisteredRelayFn) -> Self {
         self.glyph_registered_relay_fn = Some(f);
+        self
+    }
+
+    /// Set the L2 tree state callback
+    pub fn with_l2_tree_state(mut self, f: L2TreeStateFn) -> Self {
+        self.l2_tree_state_fn = Some(f);
         self
     }
 

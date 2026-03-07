@@ -20,6 +20,7 @@ use tracing::{debug, info, warn};
 
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity;
+use ghost_common::metrics::Metrics;
 use ghost_common::types::NodeId;
 use ghost_storage::Database;
 use ghost_zkp::{GhostConsolidateVerifier, GhostNoteSpendPublicInputs, GhostNoteVerifier, GhostUnshieldVerifier};
@@ -191,6 +192,12 @@ pub struct NullifierRouteHandler {
     proposed_heights: RwLock<HashSet<u64>>,
     /// Callback for checkpoint finalization (notifies ghost-pay)
     finalize_fn: RwLock<Option<FinalizeFn>>,
+    /// Prometheus metrics (optional, set after construction)
+    metrics: RwLock<Option<Arc<Metrics>>>,
+    /// Root at last finalized checkpoint — stable reference for checkpoint proposals.
+    /// Unlike current_root() which changes when shields are synced locally,
+    /// this only advances on checkpoint finalization.
+    checkpoint_base_root: RwLock<[u8; 32]>,
 }
 
 impl NullifierRouteHandler {
@@ -201,6 +208,7 @@ impl NullifierRouteHandler {
         db: Arc<Database>,
         config: NullifierRouteConfig,
     ) -> Self {
+        let base_root = epoch_manager.current_root().unwrap_or([0u8; 32]);
         Self {
             our_id,
             epoch_manager,
@@ -221,6 +229,8 @@ impl NullifierRouteHandler {
             sync_requests: RwLock::new(HashMap::new()),
             proposed_heights: RwLock::new(HashSet::new()),
             finalize_fn: RwLock::new(None),
+            metrics: RwLock::new(None),
+            checkpoint_base_root: RwLock::new(base_root),
         }
     }
 
@@ -284,6 +294,16 @@ impl NullifierRouteHandler {
     /// Set the finalization callback (notifies ghost-pay when checkpoints are finalized)
     pub fn set_finalize_fn(&self, f: FinalizeFn) {
         *self.finalize_fn.write() = Some(f);
+    }
+
+    /// Set Prometheus metrics for consensus tracking
+    pub fn set_metrics(&self, m: Arc<Metrics>) {
+        *self.metrics.write() = Some(m);
+    }
+
+    /// Set checkpoint base root (called during startup after loading from DB)
+    pub fn set_checkpoint_base_root(&self, root: [u8; 32]) {
+        *self.checkpoint_base_root.write() = root;
     }
 
     /// Sign a message using our signing function
@@ -715,29 +735,56 @@ impl NullifierRouteHandler {
     /// Implements proposer timeout: if the primary proposer hasn't produced within
     /// PROPOSER_GRACE_SECS, the fallback proposer takes over.
     pub fn propose_checkpoint(&self) -> GhostResult<Option<L2CheckpointBlockMessage>> {
-        let height = self.epoch_manager.current_height() + 1;
+        let base_height = self.epoch_manager.current_height() + 1;
+        let elapsed = self.last_checkpoint_time.read().elapsed();
+        let stuck = elapsed.as_secs() > PROPOSER_GRACE_SECS * 2;
 
-        // Check if we're the designated proposer
-        let is_primary = self.epoch_manager.is_proposer(&self.our_id, height);
-
-        // Check fallback: if primary is late, fallback proposer takes over
-        let is_fallback = if !is_primary {
-            let elapsed = self.last_checkpoint_time.read().elapsed();
-            if elapsed.as_secs() > PROPOSER_GRACE_SECS {
-                self.epoch_manager
-                    .get_fallback_proposer(height)
+        // Determine which height to propose for
+        let (height, is_fallback) = if stuck {
+            // Scan a range of heights to find one we can propose for.
+            // By pigeonhole, within N consecutive heights every node is primary at least once.
+            let node_count = self.epoch_manager.active_node_count().max(1);
+            let mut found = None;
+            for offset in 0..node_count {
+                let h = base_height + offset as u64;
+                if self.epoch_manager.is_proposer(&self.our_id, h) {
+                    found = Some((h, false));
+                    break;
+                }
+                if self
+                    .epoch_manager
+                    .get_fallback_proposer(h)
                     .map(|fb| fb == self.our_id)
                     .unwrap_or(false)
-            } else {
-                false
+                {
+                    found = Some((h, true));
+                    break;
+                }
+            }
+            match found {
+                Some(f) => f,
+                None => return Ok(None),
             }
         } else {
-            false
+            // Normal path: only try current_height + 1
+            let is_primary = self.epoch_manager.is_proposer(&self.our_id, base_height);
+            let is_fb = if !is_primary {
+                if elapsed.as_secs() > PROPOSER_GRACE_SECS {
+                    self.epoch_manager
+                        .get_fallback_proposer(base_height)
+                        .map(|fb| fb == self.our_id)
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !is_primary && !is_fb {
+                return Ok(None);
+            }
+            (base_height, is_fb)
         };
-
-        if !is_primary && !is_fallback {
-            return Ok(None);
-        }
 
         if is_fallback {
             info!(
@@ -747,25 +794,35 @@ impl NullifierRouteHandler {
             );
         }
 
-        // Drain confirmed pool (S-4: clear nullifiers HashSet in sync)
+        // Clone confirmed pool for checkpoint inclusion. We do NOT drain here —
+        // transactions are only removed from confirmed_pool when they are finalized in
+        // finalize_checkpoint(). If this proposal loses to a competing proposal (e.g.,
+        // primary/fallback race, network partition), the transactions remain available
+        // for re-proposal. The confirmed_nullifiers set stays intact for dedup.
         let transactions: Vec<L2Transaction> = {
-            let mut pool = self.confirmed_pool.write();
-            let txs: Vec<L2Transaction> = pool
-                .drain(..)
+            let pool = self.confirmed_pool.read();
+            pool.iter()
                 .take(self.config.max_txs_per_checkpoint)
-                .collect();
-            self.confirmed_nullifiers.write().clear();
-            txs
+                .cloned()
+                .collect()
         };
 
-        // Drain pending shields for checkpoint inclusion (fallback distribution path)
+        // Clone pending shields for checkpoint inclusion. Same clone-not-drain pattern —
+        // shields are only removed from pending_shields when they are finalized in
+        // finalize_checkpoint(). If this proposal loses to a competing proposal,
+        // the shields remain queued for the next checkpoint attempt.
         let shield_commitments: Vec<ShieldCommitment> =
-            self.pending_shields.write().drain(..).collect();
+            self.pending_shields.read().clone();
 
-        // Get current root before appending
-        let prev_root = self.epoch_manager.current_root()?;
+        // Use checkpoint base root (stable across shield insertions) instead of current_root()
+        let prev_root = *self.checkpoint_base_root.read();
 
-        // Append new commitments to tree
+        // Append new commitments to tree (needed to compute new_commitment_root).
+        // These mutations are safe because:
+        // - If this proposal wins: finalize_checkpoint uses proposed_heights guard to skip re-apply
+        // - If this proposal loses: the orphaned commitments exist in the tree but
+        //   checkpoint_base_root is set from the WINNING proposal's new_commitment_root,
+        //   so consensus stays aligned. The orphaned entries become harmless dead leaves.
         for tx in &transactions {
             self.epoch_manager
                 .append_commitment(tx.change_commitment, height)?;
@@ -773,11 +830,11 @@ impl NullifierRouteHandler {
                 .append_commitment(tx.recipient_commitment, height)?;
         }
 
-        // C-2: Mark this height as already having commitments applied by the proposer.
+        // Mark this height as already having commitments applied by the proposer.
         // finalize_checkpoint() will skip re-applying for this height.
         self.proposed_heights.write().insert(height);
 
-        // Compute new root
+        // Compute new root (includes all tree mutations above)
         let new_root = self.epoch_manager.current_root()?;
 
         let mut proposal = L2CheckpointBlockMessage {
@@ -833,6 +890,19 @@ impl NullifierRouteHandler {
         let height = msg.height;
         let checkpoint_hash = msg.checkpoint_hash();
 
+        // Detect height gap — if we're behind, trigger tree sync
+        let our_height = self.epoch_manager.current_height();
+        if msg.height > our_height + 1 {
+            info!(
+                our_height,
+                proposal_height = msg.height,
+                gap = msg.height - our_height,
+                "Behind on checkpoint height, requesting tree sync"
+            );
+            let _ = self.request_tree_sync();
+            return Ok(None); // Don't vote on proposals we can't validate yet
+        }
+
         // Validate proposer is correct for this height (primary or fallback)
         if let Some(expected) = self.epoch_manager.get_proposer(height) {
             if expected != msg.proposer {
@@ -855,29 +925,89 @@ impl NullifierRouteHandler {
             }
         }
 
-        // Apply shield commitments from the proposal before root comparison.
-        // The proposer already applied these locally in sync_commitment();
-        // non-proposer nodes need them to match the prev_commitment_root.
-        for sc in &msg.shield_commitments {
-            let _ = self
-                .epoch_manager
-                .insert_commitment_at(sc.note_index, sc.commitment, sc.block_height);
-        }
-        if !msg.shield_commitments.is_empty() {
-            if let Ok(root) = self.epoch_manager.current_root() {
-                let height_for_root = msg
-                    .shield_commitments
-                    .last()
-                    .map(|sc| sc.block_height)
-                    .unwrap_or(height);
-                let _ = self.epoch_manager.add_valid_root(root, height_for_root);
+        // Determine if this proposal is from the primary proposer for this height.
+        let is_primary_proposal = self
+            .epoch_manager
+            .get_proposer(height)
+            .map(|p| p == msg.proposer)
+            .unwrap_or(false);
+
+        // Store the proposal and manage competing proposals at the same height.
+        //
+        // Key invariant: primary proposer proposals ALWAYS supersede fallback proposals.
+        // When a fallback proposal created the vote state first (due to timing/network
+        // delays), and the primary's proposal arrives later with shield commitments,
+        // we must reset the vote state to use the primary's hash. Without this, shield
+        // commitments from the primary are permanently ignored because votes for its
+        // hash get rejected against the fallback's hash.
+        {
+            let mut votes = self.votes.write();
+            let state = votes
+                .entry(height)
+                .or_insert_with(|| CheckpointVoteState::new(checkpoint_hash));
+
+            if state.checkpoint_hash != checkpoint_hash {
+                if is_primary_proposal && !state.finalized {
+                    // Primary proposal arrived after a fallback (or early vote) set the hash.
+                    // Reset vote state to adopt the primary's hash. Existing votes for the
+                    // old hash are stale and must be discarded — they voted on different content.
+                    info!(
+                        height,
+                        old_hash = %hex::encode(&state.checkpoint_hash[..8]),
+                        new_hash = %hex::encode(&checkpoint_hash[..8]),
+                        stale_votes = state.votes.len(),
+                        "Primary proposal supersedes fallback — resetting vote state"
+                    );
+                    *state = CheckpointVoteState::new(checkpoint_hash);
+                    state.proposal = Some(msg.clone());
+                } else {
+                    // Fallback proposal arrived but a different hash (from primary or earlier
+                    // vote) already owns this slot. Do NOT overwrite the proposal — the stored
+                    // hash's proposal must win to preserve shield commitments. Return without
+                    // voting since this proposal is superseded.
+                    debug!(
+                        height,
+                        "Fallback proposal arrived but different hash already stored, skipping"
+                    );
+                    return Ok(None);
+                }
+            } else {
+                // Hashes match — store or update the proposal.
+                state.proposal = Some(msg.clone());
             }
         }
 
-        // Validate prev_commitment_root matches our current root
-        let our_root = self.epoch_manager.current_root()?;
-        if msg.prev_commitment_root != our_root {
-            warn!(height, "Checkpoint prev_root doesn't match our tree root");
+        // Apply shield commitments from the proposal BEFORE root validation.
+        // Shields are synced to the proposer's tree via ghost-pay but may not have
+        // reached other nodes yet. Applying them here (idempotent via INSERT OR IGNORE)
+        // ensures all validators have the same tree state.
+        // Note: we do NOT update checkpoint_base_root here — that only advances on
+        // finalization. The proposer's prev_commitment_root was set from its own
+        // checkpoint_base_root (pre-shield), so our comparison must use ours unchanged.
+        if !msg.shield_commitments.is_empty() {
+            for sc in &msg.shield_commitments {
+                let _ = self.epoch_manager.insert_commitment_at(
+                    sc.note_index,
+                    sc.commitment,
+                    sc.block_height,
+                );
+            }
+            debug!(
+                height,
+                shields = msg.shield_commitments.len(),
+                "Applied shield commitments from proposal before vote"
+            );
+        }
+
+        // Validate prev_commitment_root matches our checkpoint base root.
+        let our_base_root = *self.checkpoint_base_root.read();
+        if msg.prev_commitment_root != our_base_root {
+            warn!(
+                height,
+                our_root = %hex::encode(&our_base_root[..8]),
+                proposal_root = %hex::encode(&msg.prev_commitment_root[..8]),
+                "Checkpoint prev_root doesn't match our checkpoint base root"
+            );
             // Still vote but reject
             let mut vote = L2CheckpointVoteMessage {
                 height,
@@ -892,15 +1022,6 @@ impl NullifierRouteHandler {
             return Ok(Some(vote));
         }
 
-        // Store the proposal
-        {
-            let mut votes = self.votes.write();
-            let state = votes
-                .entry(height)
-                .or_insert_with(|| CheckpointVoteState::new(checkpoint_hash));
-            state.proposal = Some(msg.clone());
-        }
-
         // Cast our signed vote (approve)
         let mut vote = L2CheckpointVoteMessage {
             height,
@@ -913,6 +1034,9 @@ impl NullifierRouteHandler {
         let sign_msg = vote.signing_message();
         vote.signature = self.sign(&sign_msg);
 
+        if let Some(ref m) = *self.metrics.read() {
+            m.consensus_votes_total.inc();
+        }
         debug!(height, "Cast checkpoint vote (approve)");
         Ok(Some(vote))
     }
@@ -958,6 +1082,17 @@ impl NullifierRouteHandler {
         let height = msg.height;
         let active_count = self.epoch_manager.active_node_count();
 
+        // C-10: Only accept votes from nodes in the active set.
+        // Prevents removed nodes from influencing quorum with stale keys.
+        if self.epoch_manager.our_index(&msg.voter).is_none() {
+            debug!(
+                height,
+                voter = %hex::encode(&msg.voter[..8]),
+                "Ignoring vote from non-active node"
+            );
+            return Ok(false);
+        }
+
         let (finalized, proposal) = {
             let mut votes = self.votes.write();
             let state = votes
@@ -968,9 +1103,21 @@ impl NullifierRouteHandler {
                 return Ok(false); // Already finalized
             }
 
-            // Verify vote is for the same checkpoint
+            // Verify vote is for the same checkpoint.
+            // If hashes differ: when no proposal is stored yet, the hash was set by
+            // whichever vote arrived first (arbitrary). In that case, we cannot know
+            // which hash is correct, so we accept the vote and let proposal arrival
+            // (which resets state for primary proposals) sort it out. When a proposal
+            // IS stored, the hash is authoritative and mismatched votes are rejected.
             if state.checkpoint_hash != msg.checkpoint_hash {
-                warn!(height, "Vote for different checkpoint hash, ignoring");
+                if state.proposal.is_some() {
+                    debug!(height, "Vote for different checkpoint hash (proposal stored), ignoring");
+                    return Ok(false);
+                }
+                // No proposal stored — hash was set by an earlier vote. Don't reject;
+                // this vote will be re-evaluated when the proposal arrives and resets state.
+                // For now, skip counting it (it may be for the correct primary proposal).
+                debug!(height, "Vote for different checkpoint hash (no proposal yet), deferring");
                 return Ok(false);
             }
 
@@ -985,6 +1132,22 @@ impl NullifierRouteHandler {
         };
 
         if finalized {
+            // C-7: Only finalize if we have the proposal data. Without it, we can't
+            // apply commitments or compute the canonical root, which would cause this
+            // node's tree to diverge from nodes that do have the proposal.
+            if proposal.is_none() {
+                warn!(
+                    height,
+                    "Checkpoint reached quorum but proposal data missing — skipping finalization. \
+                     This node will catch up via tree sync."
+                );
+                // Unmark as finalized so tree sync can replay this height
+                let mut votes = self.votes.write();
+                if let Some(state) = votes.get_mut(&height) {
+                    state.finalized = false;
+                }
+                return Ok(false);
+            }
             info!(
                 height,
                 votes = active_count,
@@ -1002,14 +1165,14 @@ impl NullifierRouteHandler {
         height: u64,
         proposal: Option<&L2CheckpointBlockMessage>,
     ) -> GhostResult<()> {
-        // C-2: Only apply commitments if this node didn't already apply them as proposer.
+        // Apply commitments if this node didn't already apply them as proposer.
         // The proposer applies commitments during propose_checkpoint(); non-proposer nodes
-        // apply them here during finalization. Without this guard, the proposer would
-        // double-insert every commitment into the tree.
+        // apply them here during finalization. The proposed_heights guard prevents double-
+        // insertion which would create duplicate tree entries at different indices.
         let already_applied = self.proposed_heights.read().contains(&height);
         if !already_applied {
             if let Some(block) = proposal {
-                // Apply shield commitments (idempotent via INSERT OR IGNORE)
+                // Apply shield commitments (idempotent via INSERT OR IGNORE at specific index)
                 for sc in &block.shield_commitments {
                     let _ = self.epoch_manager.insert_commitment_at(
                         sc.note_index,
@@ -1018,6 +1181,7 @@ impl NullifierRouteHandler {
                     );
                 }
 
+                // Apply transaction commitments (sequential append)
                 for tx in &block.transactions {
                     self.epoch_manager
                         .append_commitment(tx.change_commitment, height)?;
@@ -1028,15 +1192,18 @@ impl NullifierRouteHandler {
         }
         self.proposed_heights.write().remove(&height);
 
-        // Remove finalized shield commitments from pending_shields and staging table
+        // Remove finalized data from in-memory pools.
+        // Since we clone (not drain) in propose_checkpoint(), data remains in the pools
+        // until finalized here. This ensures nothing is lost if a proposal fails quorum.
         if let Some(block) = proposal {
+            // Remove finalized shield commitments from pending_shields and staging table
             if !block.shield_commitments.is_empty() {
                 let finalized_indices: Vec<u64> = block
                     .shield_commitments
                     .iter()
                     .map(|sc| sc.note_index)
                     .collect();
-                let finalized_set: std::collections::HashSet<u64> =
+                let finalized_set: HashSet<u64> =
                     finalized_indices.iter().copied().collect();
                 self.pending_shields
                     .write()
@@ -1049,20 +1216,57 @@ impl NullifierRouteHandler {
                     );
                 }
             }
+
+            // Remove finalized transactions from confirmed_pool
+            if !block.transactions.is_empty() {
+                let finalized_nullifiers: HashSet<[u8; 32]> = block
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.nullifier)
+                    .collect();
+                {
+                    let mut pool = self.confirmed_pool.write();
+                    pool.retain(|tx| !finalized_nullifiers.contains(&tx.nullifier));
+                }
+                {
+                    let mut nullifiers = self.confirmed_nullifiers.write();
+                    for n in &finalized_nullifiers {
+                        nullifiers.remove(n);
+                    }
+                }
+            }
         }
 
-        // Compute and register new valid root
-        let new_root = self.epoch_manager.current_root()?;
-        self.epoch_manager.add_valid_root(new_root, height)?;
+        // Register new valid root from local tree state
+        let local_root = self.epoch_manager.current_root()?;
+        self.epoch_manager.add_valid_root(local_root, height)?;
+
+        // Update checkpoint base root to the PROPOSAL's new_commitment_root.
+        // This ensures all nodes converge on the same base root regardless of
+        // local tree state (e.g., pending shields that haven't been checkpointed yet).
+        // Fall back to local root only if no proposal is available.
+        let canonical_root = proposal
+            .map(|p| p.new_commitment_root)
+            .unwrap_or(local_root);
+        *self.checkpoint_base_root.write() = canonical_root;
+
+        // Also register the canonical root as valid (may differ from local if shields pending)
+        if canonical_root != local_root {
+            self.epoch_manager.add_valid_root(canonical_root, height)?;
+        }
 
         // Persist checkpoint + nullifiers atomically in a single SQLite transaction.
         // If the process crashes mid-write, the entire checkpoint is rolled back.
-        let tx_count = proposal.map(|p| p.transactions.len()).unwrap_or(0);
+        // Count both transactions and shield commitments as finalized activity.
+        // Shields are BFT-finalized tree modifications and should count as finalizations.
+        let tx_count = proposal
+            .map(|p| p.transactions.len() + p.shield_commitments.len())
+            .unwrap_or(0);
         let pending_nullifiers = self.epoch_manager.drain_pending_nullifiers();
         let record = ghost_storage::L2CheckpointRecord {
             height,
             epoch: self.epoch_manager.current_epoch(),
-            commitment_root: new_root,
+            commitment_root: canonical_root,
             tx_count: tx_count as u32,
             proposer_id: proposal
                 .map(|p| hex::encode(p.proposer))
@@ -1072,14 +1276,33 @@ impl NullifierRouteHandler {
                 .and_then(|p| serde_json::to_vec(p).ok())
                 .unwrap_or_default(),
         };
-        self.db
-            .persist_l2_checkpoint_atomic(&record, &pending_nullifiers)?;
+        // Use upsert fallback for idempotent persistence (checkpoint may already exist from tree sync)
+        let atomic_ok = self
+            .db
+            .persist_l2_checkpoint_atomic(&record, &pending_nullifiers)
+            .is_ok();
+        if !atomic_ok {
+            warn!(height, "Checkpoint atomic persist failed, upserting checkpoint record (nullifier WAL preserved)");
+            self.db.upsert_l2_checkpoint(&record)?;
+        }
+
+        // C-9: Only clear the nullifier write-ahead log if the atomic persist succeeded.
+        // The atomic persist moves nullifiers from pending_nullifiers → l2_nullifiers in
+        // one transaction. If it failed, the nullifiers are still ONLY in pending_nullifiers.
+        // Clearing the WAL here would lose them permanently.
+        if atomic_ok {
+            if let Err(e) = self.db.confirm_pending_nullifiers() {
+                warn!(height, error = %e, "Failed to clear pending_nullifiers write-ahead log (non-fatal, will be cleared on next checkpoint)");
+            }
+        }
 
         // Track L2 transfer fees: each NoteSpend transaction pays a flat protocol fee
-        if tx_count > 0 {
+        // (shields don't pay fees, only NoteSpend transfers do)
+        let transfer_count = proposal.map(|p| p.transactions.len()).unwrap_or(0);
+        if transfer_count > 0 {
             if let Err(e) = self.db.increment_epoch_fee(
                 self.epoch_manager.current_epoch(),
-                tx_count as u64,
+                transfer_count as u64,
             ) {
                 warn!(epoch = self.epoch_manager.current_epoch(), error = %e,
                     "Failed to increment epoch fee counter — fees will be under-counted");
@@ -1107,9 +1330,19 @@ impl NullifierRouteHandler {
             let nullifiers: Vec<[u8; 32]> = proposal
                 .map(|p| p.transactions.iter().map(|tx| tx.nullifier).collect())
                 .unwrap_or_default();
-            finalize_fn(height, new_root, nullifiers);
+            finalize_fn(height, canonical_root, nullifiers);
         }
 
+        if let Some(ref m) = *self.metrics.read() {
+            m.consensus_rounds_total.inc();
+            let votes = m.consensus_votes_total.get();
+            let rounds = m.consensus_rounds_total.get();
+            if rounds > 0 {
+                // Participation = votes / rounds * 100 (each round we should cast 1 vote)
+                let pct = ((votes * 100) / rounds).min(100);
+                m.consensus_participation_percent.set(pct as i64);
+            }
+        }
         debug!(height, tx_count, "Checkpoint finalized");
         Ok(())
     }
@@ -1256,10 +1489,26 @@ impl NullifierRouteHandler {
 
             // Process epoch transitions
             self.epoch_manager.on_checkpoint_finalized(height)?;
+
+            // Persist synced checkpoint to DB (idempotent via INSERT OR REPLACE)
+            let tx_count = block.transactions.len();
+            let record = ghost_storage::L2CheckpointRecord {
+                height,
+                epoch: block.epoch,
+                commitment_root: root,
+                tx_count: tx_count as u32,
+                proposer_id: hex::encode(block.proposer),
+                active_node_count: block.active_node_count,
+                block_data: serde_json::to_vec(block).unwrap_or_default(),
+            };
+            self.db.upsert_l2_checkpoint(&record)?;
         }
 
-        // Verify our root matches the peer's reported root
+        // Update checkpoint base root to the last replayed checkpoint's root
         let our_root = self.epoch_manager.current_root()?;
+        *self.checkpoint_base_root.write() = our_root;
+
+        // Verify our root matches the peer's reported root
         if our_root != response.commitment_root {
             warn!(
                 our_root = %hex::encode(&our_root[..8]),
@@ -1276,16 +1525,13 @@ impl NullifierRouteHandler {
         Ok(())
     }
 
-    /// Request tree sync from peers (called on startup if current_height == 0)
+    /// Request tree sync from peers (called on startup or when behind)
     pub fn request_tree_sync(&self) -> GhostResult<()> {
         let current_height = self.epoch_manager.current_height();
-        if current_height > 0 {
-            return Ok(()); // Already synced
-        }
 
         let request = L2TreeSyncRequest {
             requesting_node: self.our_id,
-            from_height: 0,
+            from_height: current_height,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         };
 
@@ -1293,7 +1539,7 @@ impl NullifierRouteHandler {
             let payload = serde_json::to_vec(&request)
                 .map_err(|e| GhostError::Serialization(e.to_string()))?;
             broadcast(MessageType::L2TreeSync, payload)?;
-            info!("Requested L2 tree sync from peers");
+            info!(from_height = current_height, "Requested L2 tree sync from peers");
         }
 
         Ok(())
@@ -1423,7 +1669,10 @@ impl MessageHandler for NullifierRouteHandler {
                 *self.last_checkpoint_time.write() = Instant::now();
 
                 if let Some(vote) = self.handle_checkpoint_proposal(&msg)? {
-                    // Broadcast our vote
+                    // Record our own vote locally (same as propose_and_broadcast does)
+                    self.handle_checkpoint_vote(&vote)?;
+
+                    // Broadcast our vote to peers
                     if let Some(ref broadcast) = *self.broadcast_fn.read() {
                         let payload = serde_json::to_vec(&vote)
                             .map_err(|e| GhostError::Serialization(e.to_string()))?;
@@ -1644,7 +1893,31 @@ mod tests {
         let node_d = [0x04; 32];
         epoch_mgr.update_active_nodes(vec![node_a, node_b, node_c, node_d]);
 
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
         let hash = [0xAA; 32];
+
+        // C-7: Must store a proposal — finalization requires proposal data
+        let proposal = L2CheckpointBlockMessage {
+            height: 1,
+            epoch: 0,
+            prev_commitment_root: root,
+            new_commitment_root: root,
+            transactions: vec![],
+            shield_commitments: vec![],
+            active_node_count: 4,
+            proposer: node_a,
+            proposer_signature: [0u8; 64],
+            timestamp: 0,
+            epoch_transition: None,
+        };
+        {
+            let mut votes = handler.votes.write();
+            let state = votes
+                .entry(1)
+                .or_insert_with(|| CheckpointVoteState::new(hash));
+            state.proposal = Some(proposal);
+        }
 
         // First vote (25% — not enough)
         let vote1 = L2CheckpointVoteMessage {
@@ -2409,5 +2682,389 @@ mod tests {
         assert!(!state.add_vote(vote_dup)); // Duplicate → false
 
         assert_eq!(state.approval_count(), 1); // Only [1;32] approved
+    }
+
+    /// Test: primary proposal supersedes fallback when fallback arrived first.
+    ///
+    /// Simulates the race condition where VM2 (fallback) proposes an empty checkpoint,
+    /// then VM1 (primary) proposes with shield commitments. The primary must win and
+    /// shields must be applied on the validator.
+    #[test]
+    fn test_primary_supersedes_fallback_with_shields() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        let node_a = [0x01; 32]; // us (validator)
+        let node_b = [0x02; 32]; // primary proposer
+        let node_c = [0x03; 32]; // fallback proposer
+        epoch_mgr.update_active_nodes(vec![node_a, node_b, node_c]);
+
+        // Set sign function
+        handler.set_sign_fn(Arc::new(|msg: &[u8]| {
+            let mut sig = [0u8; 64];
+            let len = msg.len().min(64);
+            sig[..len].copy_from_slice(&msg[..len]);
+            sig
+        }));
+
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        // Height 1: primary = node_b (1 % 3 = 1), fallback = node_c ((1+1) % 3 = 2)
+        assert_eq!(epoch_mgr.get_proposer(1), Some(node_b));
+        assert_eq!(epoch_mgr.get_fallback_proposer(1), Some(node_c));
+
+        // Fallback proposal (empty, no shields)
+        let fallback_proposal = L2CheckpointBlockMessage {
+            height: 1,
+            epoch: 0,
+            prev_commitment_root: root,
+            new_commitment_root: root, // No changes
+            transactions: vec![],
+            shield_commitments: vec![],
+            active_node_count: 3,
+            proposer: node_c,
+            proposer_signature: [0u8; 64],
+            timestamp: 0,
+            epoch_transition: None,
+        };
+        let fallback_hash = fallback_proposal.checkpoint_hash();
+
+        // Primary proposal (with a shield commitment)
+        let shield = ShieldCommitment {
+            commitment: [0xAA; 32],
+            note_index: 100,
+            block_height: 12345,
+        };
+        let primary_proposal = L2CheckpointBlockMessage {
+            height: 1,
+            epoch: 0,
+            prev_commitment_root: root,
+            new_commitment_root: [0xBB; 32], // Different root due to shield
+            transactions: vec![],
+            shield_commitments: vec![shield.clone()],
+            active_node_count: 3,
+            proposer: node_b,
+            proposer_signature: [0u8; 64],
+            timestamp: 0,
+            epoch_transition: None,
+        };
+        let primary_hash = primary_proposal.checkpoint_hash();
+
+        // Hashes must be different (primary has shields, fallback doesn't)
+        assert_ne!(fallback_hash, primary_hash);
+
+        // Step 1: Fallback proposal arrives first
+        let vote1 = handler.handle_checkpoint_proposal(&fallback_proposal).unwrap();
+        // We should get a vote (approve, since roots match)
+        assert!(vote1.is_some());
+        let vote1 = vote1.unwrap();
+        assert_eq!(vote1.checkpoint_hash, fallback_hash);
+
+        // Verify vote state has fallback hash
+        {
+            let votes = handler.votes.read();
+            let state = votes.get(&1).unwrap();
+            assert_eq!(state.checkpoint_hash, fallback_hash);
+        }
+
+        // Step 2: Primary proposal arrives (should supersede fallback)
+        let vote2 = handler.handle_checkpoint_proposal(&primary_proposal).unwrap();
+        // We should get a vote for the PRIMARY hash
+        assert!(vote2.is_some());
+        let vote2 = vote2.unwrap();
+        assert_eq!(
+            vote2.checkpoint_hash, primary_hash,
+            "Vote should be for primary proposal, not fallback"
+        );
+
+        // Verify vote state now has primary hash
+        {
+            let votes = handler.votes.read();
+            let state = votes.get(&1).unwrap();
+            assert_eq!(
+                state.checkpoint_hash, primary_hash,
+                "Vote state should have been reset to primary hash"
+            );
+            assert!(
+                state.proposal.is_some(),
+                "Primary proposal should be stored"
+            );
+            assert_eq!(
+                state.proposal.as_ref().unwrap().shield_commitments.len(),
+                1,
+                "Primary proposal's shields should be preserved"
+            );
+        }
+
+        // Step 3: Votes for fallback hash should be rejected
+        let stale_vote = L2CheckpointVoteMessage {
+            height: 1,
+            checkpoint_hash: fallback_hash,
+            voter: node_c,
+            approve: true,
+            signature: [0u8; 64],
+            timestamp: 0,
+        };
+        let result = handler.handle_checkpoint_vote(&stale_vote).unwrap();
+        assert!(!result, "Stale fallback vote should not finalize");
+    }
+
+    /// Test: fallback proposal does NOT overwrite primary when primary hash is stored.
+    ///
+    /// If a vote for the primary hash arrives first (setting the hash), then a fallback
+    /// proposal arrives with a different hash, the fallback must NOT overwrite the stored
+    /// proposal or change the hash.
+    #[test]
+    fn test_fallback_does_not_overwrite_primary_vote() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        let node_a = [0x01; 32]; // us
+        let node_b = [0x02; 32]; // primary proposer
+        let node_c = [0x03; 32]; // fallback proposer
+        epoch_mgr.update_active_nodes(vec![node_a, node_b, node_c]);
+
+        handler.set_sign_fn(Arc::new(|msg: &[u8]| {
+            let mut sig = [0u8; 64];
+            let len = msg.len().min(64);
+            sig[..len].copy_from_slice(&msg[..len]);
+            sig
+        }));
+
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        let primary_hash = [0xAA; 32];
+        let _fallback_hash = [0xBB; 32];
+
+        // Step 1: Vote for primary hash arrives first (from relay)
+        let primary_vote = L2CheckpointVoteMessage {
+            height: 1,
+            checkpoint_hash: primary_hash,
+            voter: node_b,
+            approve: true,
+            signature: [0u8; 64],
+            timestamp: 0,
+        };
+        handler.handle_checkpoint_vote(&primary_vote).unwrap();
+
+        // Step 2: Fallback proposal arrives with different hash
+        let fallback_proposal = L2CheckpointBlockMessage {
+            height: 1,
+            epoch: 0,
+            prev_commitment_root: root,
+            new_commitment_root: root,
+            transactions: vec![],
+            shield_commitments: vec![],
+            active_node_count: 3,
+            proposer: node_c,
+            proposer_signature: [0u8; 64],
+            timestamp: 0,
+            epoch_transition: None,
+        };
+
+        // Fallback is NOT the primary, so it should NOT supersede
+        let vote_result = handler.handle_checkpoint_proposal(&fallback_proposal).unwrap();
+        assert!(
+            vote_result.is_none(),
+            "Fallback proposal with different hash should return no vote"
+        );
+
+        // Vote state should still have primary hash
+        {
+            let votes = handler.votes.read();
+            let state = votes.get(&1).unwrap();
+            assert_eq!(
+                state.checkpoint_hash, primary_hash,
+                "Primary hash should NOT be overwritten by fallback"
+            );
+            assert!(
+                state.proposal.is_none(),
+                "Fallback proposal should NOT have been stored"
+            );
+        }
+    }
+
+    /// Test: pending_shields are retained until finalization (not drained on propose).
+    #[test]
+    fn test_pending_shields_retained_until_finalize() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        epoch_mgr.update_active_nodes(vec![[0x01; 32]]);
+
+        handler.set_sign_fn(Arc::new(|msg: &[u8]| {
+            let mut sig = [0u8; 64];
+            let len = msg.len().min(64);
+            sig[..len].copy_from_slice(&msg[..len]);
+            sig
+        }));
+
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        // Add a pending shield
+        handler.sync_commitment([0xCC; 32], 100, 12345).unwrap();
+        assert_eq!(handler.pending_shields.read().len(), 1);
+
+        // Propose checkpoint (should include the shield)
+        let proposal = handler.propose_checkpoint().unwrap().unwrap();
+        assert_eq!(proposal.shield_commitments.len(), 1);
+
+        // Pending shields should NOT be drained (they're cloned, not drained)
+        assert_eq!(
+            handler.pending_shields.read().len(),
+            1,
+            "Pending shields should be retained until finalization"
+        );
+
+        // Finalize the checkpoint
+        let hash = proposal.checkpoint_hash();
+        {
+            let mut votes = handler.votes.write();
+            let state = votes
+                .entry(1)
+                .or_insert_with(|| CheckpointVoteState::new(hash));
+            state.proposal = Some(proposal.clone());
+        }
+
+        let vote = L2CheckpointVoteMessage {
+            height: 1,
+            checkpoint_hash: hash,
+            voter: [0x01; 32],
+            approve: true,
+            signature: [0u8; 64],
+            timestamp: 0,
+        };
+        handler.handle_checkpoint_vote(&vote).unwrap();
+
+        // NOW pending shields should be drained
+        assert_eq!(
+            handler.pending_shields.read().len(),
+            0,
+            "Pending shields should be drained after finalization"
+        );
+    }
+
+    /// Test: confirmed_pool transactions are retained until finalization.
+    #[test]
+    fn test_confirmed_pool_retained_until_finalize() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        epoch_mgr.update_active_nodes(vec![[0x01; 32]]);
+
+        handler.set_sign_fn(Arc::new(|msg: &[u8]| {
+            let mut sig = [0u8; 64];
+            let len = msg.len().min(64);
+            sig[..len].copy_from_slice(&msg[..len]);
+            sig
+        }));
+
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        // Add transactions to the confirmed pool
+        {
+            let mut pool = handler.confirmed_pool.write();
+            for i in 1u8..=2 {
+                pool.push(L2Transaction {
+                    epoch: 0,
+                    nullifier: [i; 32],
+                    change_commitment: [i * 10; 32],
+                    recipient_commitment: [i * 20; 32],
+                    commitment_root: root,
+                    proof: vec![0u8; 192],
+                    encrypted_change: vec![],
+                    encrypted_recipient: vec![],
+                    timestamp: 0,
+                });
+            }
+            handler.confirmed_nullifiers.write().insert([1; 32]);
+            handler.confirmed_nullifiers.write().insert([2; 32]);
+        }
+        assert_eq!(handler.confirmed_pool_size(), 2);
+
+        // Propose checkpoint (should include both transactions)
+        let proposal = handler.propose_checkpoint().unwrap().unwrap();
+        assert_eq!(proposal.transactions.len(), 2);
+
+        // Confirmed pool should NOT be drained (transactions cloned, not drained)
+        assert_eq!(
+            handler.confirmed_pool_size(),
+            2,
+            "Confirmed pool should be retained until finalization"
+        );
+
+        // Finalize the checkpoint
+        let hash = proposal.checkpoint_hash();
+        {
+            let mut votes = handler.votes.write();
+            let state = votes
+                .entry(1)
+                .or_insert_with(|| CheckpointVoteState::new(hash));
+            state.proposal = Some(proposal.clone());
+        }
+
+        let vote = L2CheckpointVoteMessage {
+            height: 1,
+            checkpoint_hash: hash,
+            voter: [0x01; 32],
+            approve: true,
+            signature: [0u8; 64],
+            timestamp: 0,
+        };
+        handler.handle_checkpoint_vote(&vote).unwrap();
+
+        // NOW confirmed pool should be drained
+        assert_eq!(
+            handler.confirmed_pool_size(),
+            0,
+            "Confirmed pool should be drained after finalization"
+        );
+
+        // Nullifiers dedup set should also be cleared for finalized transactions
+        assert!(
+            handler.confirmed_nullifiers.read().is_empty(),
+            "Confirmed nullifiers should be cleared after finalization"
+        );
+    }
+
+    /// Test: C-7 — quorum without proposal does NOT finalize.
+    #[test]
+    fn test_quorum_without_proposal_skips_finalization() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        let node_a = [0x01; 32];
+        let node_b = [0x02; 32];
+        let node_c = [0x03; 32];
+        epoch_mgr.update_active_nodes(vec![node_a, node_b, node_c]);
+
+        let hash = [0xAA; 32];
+
+        // Submit 3 votes (quorum for 3 nodes at 67%) WITHOUT storing a proposal
+        for voter in &[node_a, node_b, node_c] {
+            let vote = L2CheckpointVoteMessage {
+                height: 1,
+                checkpoint_hash: hash,
+                voter: *voter,
+                approve: true,
+                signature: [0u8; 64],
+                timestamp: 0,
+            };
+            let result = handler.handle_checkpoint_vote(&vote).unwrap();
+            // Should NOT finalize because no proposal is stored
+            assert!(
+                !result,
+                "Should not finalize without proposal data"
+            );
+        }
+
+        // Vote state should have been un-finalized
+        {
+            let votes = handler.votes.read();
+            let state = votes.get(&1).unwrap();
+            assert!(
+                !state.finalized,
+                "State should be un-finalized when proposal is missing"
+            );
+        }
     }
 }
