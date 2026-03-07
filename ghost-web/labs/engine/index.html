@@ -5636,6 +5636,8 @@ function SignetPanel({ rungs, txOutputs, txInputs, locktime, onViewAsLadder }) {
   const [validateResult, setValidateResult] = useState(null);
   const [mempoolInfo, setMempoolInfo] = useState(null);
   const [recentBlocks, setRecentBlocks] = useState(null);
+  const [pasteJson, setPasteJson] = useState('');
+  const [pasteError, setPasteError] = useState(null);
 
   const apiCall = async (endpoint, body, silent) => {
     if (!silent) setError(null);
@@ -5799,6 +5801,41 @@ function SignetPanel({ rungs, txOutputs, txInputs, locktime, onViewAsLadder }) {
           </div>
         </div>
       )}
+
+      {/* VIEW EXISTING TX AS LADDER — works offline, no signet required */}
+      <div style={sty.divider} />
+      <div style={sty.sectionTitle}>VIEW TRANSACTION AS LADDER</div>
+      <div style={sty.section}>
+        <div style={sty.label}>PASTE RUNG TX JSON</div>
+        <div style={{ color: 'var(--text-dim)', fontSize: 10, marginBottom: 6, lineHeight: 1.5 }}>
+          Paste decoded JSON from <code style={{ color: 'var(--amber)', background: 'var(--bg-primary)', padding: '0 3px' }}>decoderung</code>, <code style={{ color: 'var(--amber)', background: 'var(--bg-primary)', padding: '0 3px' }}>createrungtx</code>, or <code style={{ color: 'var(--amber)', background: 'var(--bg-primary)', padding: '0 3px' }}>decoderawtransaction</code> output to visualize it as a ladder diagram. Works offline.
+        </div>
+        <textarea
+          style={{ ...sty.input, height: 100, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 11 }}
+          placeholder={'{\n  "rungs": [{ "blocks": [{ "block_type": "SIG", "params": [...] }], "coil": {...} }]\n}'}
+          value={pasteJson}
+          onChange={e => { setPasteJson(e.target.value); setPasteError(null); }}
+        />
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button style={{ ...sty.btn, ...sty.btnPrimary }} onClick={() => {
+            if (!pasteJson.trim()) { setPasteError('Paste some JSON first.'); return; }
+            try {
+              const parsed = JSON.parse(pasteJson.trim());
+              const result = decodedToBuilderRungs(parsed);
+              if (!result || result.rungs.length === 0) {
+                setPasteError('Could not find rung structure. Expected { rungs: [...] } or { outputs: [{ conditions: [...] }] } format.');
+                return;
+              }
+              setPasteError(null);
+              onViewAsLadder(parsed);
+            } catch (e) {
+              setPasteError('Invalid JSON: ' + e.message);
+            }
+          }}>VIEW AS LADDER</button>
+          <button style={{ ...sty.btn, ...sty.btnDefault }} onClick={() => { setPasteJson(''); setPasteError(null); }}>CLEAR</button>
+          {pasteError && <span style={{ color: 'var(--red-bright)', fontSize: 10, marginLeft: 4 }}>{pasteError}</span>}
+        </div>
+      </div>
 
       {/* WALLET */}
       <div style={sty.divider} />
@@ -6154,12 +6191,11 @@ function App() {
     }
   }, [isSimMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Watch mode — poll signet for real block height, fall back to local ticker
+  // Watch mode — poll signet for real block height, no fallback ticker
   const [watchLive, setWatchLive] = useState(false);
   useEffect(() => {
     if (mode !== 'watch') { setWatchLive(false); return; }
     let cancelled = false;
-    let fallbackInterval = null;
 
     const pollSignet = async () => {
       try {
@@ -6186,25 +6222,10 @@ function App() {
       }
     };
 
-    // Try signet immediately, then poll every 10s
     pollSignet();
     const signetInterval = setInterval(pollSignet, 10000);
 
-    // Local fallback ticker (3s) when signet is offline
-    fallbackInterval = setInterval(() => {
-      setWatchLive(live => {
-        if (!live) {
-          setSimState(prev => ({
-            ...prev,
-            blockHeight: prev.blockHeight + 1,
-            csvBlocks: prev.csvBlocks + 1,
-          }));
-        }
-        return live;
-      });
-    }, 3000);
-
-    return () => { cancelled = true; clearInterval(signetInterval); clearInterval(fallbackInterval); };
+    return () => { cancelled = true; clearInterval(signetInterval); };
   }, [mode]);
 
   // Build the flat scan sequence: input → block0 → block1 → ... → coil, for each rung
@@ -7031,8 +7052,20 @@ ${ladderRows.map(r => `
           </div>
         ) : <>
         {isSimMode ? (
-          <div className="palette" style={{ opacity: 0.3, pointerEvents: 'none' }}>
-            <div style={{ padding: '12px 8px', fontSize: 9, color: 'var(--text-dim)', letterSpacing: 1, textAlign: 'center' }}>PALETTE LOCKED<br/>IN SIMULATOR MODE</div>
+          <div className="palette" style={{ opacity: mode === 'watch' && !watchLive ? 1 : 0.3, pointerEvents: 'none' }}>
+            {mode === 'watch' && !watchLive ? (
+              <div style={{ padding: '12px 8px' }}>
+                <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.5, color: 'var(--amber)', textTransform: 'uppercase', marginBottom: 8, textAlign: 'center' }}>WATCH MODE</div>
+                <div style={{ padding: '8px', background: 'rgba(230, 168, 23, 0.1)', border: '1px solid rgba(230, 168, 23, 0.25)', fontSize: 10, color: 'var(--amber)', lineHeight: 1.6 }}>
+                  Signet proxy is not available. Live block data requires a ghost-core node running the feature/ladder-script branch.
+                </div>
+                <div style={{ marginTop: 10, fontSize: 9, color: 'var(--text-dim)', textAlign: 'center', letterSpacing: 0.5, lineHeight: 1.6 }}>
+                  Waiting for signet connection...
+                </div>
+              </div>
+            ) : (
+              <div style={{ padding: '12px 8px', fontSize: 9, color: 'var(--text-dim)', letterSpacing: 1, textAlign: 'center' }}>PALETTE LOCKED<br/>IN {mode === 'watch' ? 'WATCH' : 'SIMULATOR'} MODE</div>
+            )}
           </div>
         ) : (
           <PalettePanel />
@@ -7200,8 +7233,8 @@ ${ladderRows.map(r => `
         </>}
       </div>
 
-      {/* Register Table — hidden in signet mode for more space */}
-      {mode !== 'signet' && <RegisterTable rungs={rungs} simMode={isSimMode} simState={fullSimState} />}
+      {/* Register Table — hidden in signet and watch modes for more space */}
+      {mode !== 'signet' && mode !== 'watch' && <RegisterTable rungs={rungs} simMode={isSimMode} simState={fullSimState} />}
 
       {/* Status Bar */}
       <div className="status-bar">
