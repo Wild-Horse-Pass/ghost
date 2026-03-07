@@ -55,16 +55,8 @@ async fn core_restore_02_restart_ghost_core() {
     assert!(active, "VM3 ghost-core not active after config restore");
     println!("  VM3 ghost-core active");
 
-    // Restart ghost-pay on all nodes (chaos tests may have killed ghostd,
-    // which takes ghost-pay down since it depends on bitcoind/ghostd RPC)
-    for node in &config.nodes {
-        if let Err(e) = SshController::restart_service(node, "ghost-pay") {
-            println!("  {} ghost-pay restart failed (non-fatal): {}", node.name, e);
-        }
-    }
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
     // Wait for all ghost-pool nodes to be healthy
+    // (ghost-pay auto-restarts with ghostd via BindsTo + Wants relationship)
     for node in &config.nodes {
         let healthy = client
             .wait_for_node_healthy(node.ip, Duration::from_secs(120))
