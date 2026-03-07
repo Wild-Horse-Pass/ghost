@@ -6,7 +6,7 @@
 
 ## Abstract
 
-Ladder Script is a typed, structured transaction format for Bitcoin (transaction version 3) that replaces opcode-based scripting with a declarative block model inspired by industrial Programmable Logic Controllers (PLC). Every byte in a Ladder Script witness is typed. Every condition is a named block with validated fields. Evaluation follows deterministic ladder logic: AND within rungs, OR across rungs, first match wins.
+Ladder Script is a typed, structured transaction format for Bitcoin (transaction version 4) that replaces opcode-based scripting with a declarative block model inspired by industrial Programmable Logic Controllers (PLC). Every byte in a Ladder Script witness is typed. Every condition is a named block with validated fields. Evaluation follows deterministic ladder logic: AND within rungs, OR across rungs, first match wins.
 
 The design eliminates the classes of bugs inherent to stack-based scripting -- type confusion, push-data ambiguity, implicit coercion -- by requiring that all data conform to one of nine declared data types with enforced size constraints. Spending conditions are not computed; they are stated. The result is a transaction format that is auditable by inspection, verifiable in bounded time, and extensible without opcode proliferation.
 
@@ -80,19 +80,19 @@ A Ladder Script output does not contain instructions. It contains conditions. Th
 
 This makes Ladder Script programs amenable to static analysis. The set of conditions required to spend an output can be enumerated by parsing the conditions structure. No execution or simulation is necessary.
 
-### 2.4 Phased Deployment
+### 2.4 Block Type Families
 
-Block types are organized into three deployment phases:
+Block types are organized into seven families:
 
-- **Phase 1** (0x0001--0x02FF): Signature, timelock, and hash blocks. These cover the functionality of existing Bitcoin Script and are mempool-standard.
-- **Phase 2** (0x0300--0x05FF): Covenant, anchor, and L2 integration blocks. These are consensus-valid but mempool-nonstandard, requiring miners to include them directly.
-- **Phase 3** (0x0400--0x06FF): Recursion and PLC blocks. These enable state machines, self-referential covenants, and advanced flow control.
+- **Signature, Timelock, and Hash** (0x0001--0x02FF): Core spending primitives covering the functionality of existing Bitcoin Script.
+- **Covenant and Anchor** (0x0300--0x05FF): Output constraints, L2 integration, and protocol-specific UTXO tagging.
+- **Recursion and PLC** (0x0400--0x06FF): State machines, self-referential covenants, and advanced flow control.
 
-This phasing allows the network to adopt fundamental capabilities first while more complex features are validated in production.
+All block types are activated as a single deployment and are standard upon activation.
 
 ### 2.5 Forward Compatibility
 
-Unknown block types return `UNKNOWN_BLOCK_TYPE` during evaluation, which is treated as unsatisfied (not as an error). This means that a transaction containing a block type from a future phase will fail to spend but will not cause a consensus failure. Nodes running older software can validate the structural integrity of any Ladder Script transaction even if they do not recognize all block types.
+Unknown block types return `UNKNOWN_BLOCK_TYPE` during evaluation, which is treated as unsatisfied (not as an error). This means that a transaction containing an unknown block type will fail to spend but will not cause a consensus failure. Nodes running older software can validate the structural integrity of any Ladder Script transaction even if they do not recognize all block types.
 
 ---
 
@@ -100,11 +100,11 @@ Unknown block types return `UNKNOWN_BLOCK_TYPE` during evaluation, which is trea
 
 ### 3.1 Transaction Format
 
-Ladder Script transactions use **transaction version 3** (`RUNG_TX_VERSION = 3`). This cleanly separates Ladder Script transactions from legacy (version 1) and SegWit/Taproot (version 2) transactions at the protocol level.
+Ladder Script transactions use **transaction version 4** (`RUNG_TX_VERSION = 4`). This cleanly separates Ladder Script transactions from legacy (version 1) and SegWit/Taproot (version 2) transactions at the protocol level.
 
-**Output (locking side):** The scriptPubKey of a version 3 output begins with the prefix byte `0xc1`, followed by the serialized `RungConditions` structure. Conditions contain only the "lock" data types (PUBKEY, PUBKEY_COMMIT, HASH256, HASH160, NUMERIC, SCHEME, SPEND_INDEX). Witness-only types (SIGNATURE, PREIMAGE) are prohibited in conditions.
+**Output (locking side):** The scriptPubKey of a version 4 output begins with the prefix byte `0xc1`, followed by the serialized `RungConditions` structure. Conditions contain only the "lock" data types (PUBKEY, PUBKEY_COMMIT, HASH256, HASH160, NUMERIC, SCHEME, SPEND_INDEX). Witness-only types (SIGNATURE, PREIMAGE) are prohibited in conditions.
 
-**Witness (unlocking side):** The witness for a version 3 input contains a serialized `LadderWitness` structure. This provides the "key" data (signatures, preimages) that satisfies the conditions in the spent output.
+**Witness (unlocking side):** The witness for a version 4 input contains a serialized `LadderWitness` structure. This provides the "key" data (signatures, preimages) that satisfies the conditions in the spent output.
 
 **Evaluation:** The `VerifyRungTx` entry point deserializes both structures, merges them field-by-field, and invokes `EvalLadder` on the merged result. The merge requires structural correspondence: same number of rungs, same number of blocks per rung, and matching block types.
 
@@ -373,7 +373,7 @@ Because every field must conform to a data type that has semantic meaning in the
 
 ### 8.1 vs OP_CTV (BIP-119)
 
-OP_CTV adds a single opcode for template-based covenants. Ladder Script includes CTV functionality as one block type (0x0301) among 40+. The CTV block evaluator computes the identical BIP-119 template hash and verifies it against the committed value. Ladder Script subsumes OP_CTV while providing the additional infrastructure (typed fields, named blocks, phased deployment) that OP_CTV does not address.
+OP_CTV adds a single opcode for template-based covenants. Ladder Script includes CTV functionality as one block type (0x0301) among 40+. The CTV block evaluator computes the identical BIP-119 template hash and verifies it against the committed value. Ladder Script subsumes OP_CTV while providing the additional infrastructure (typed fields, named blocks, structured extensibility) that OP_CTV does not address.
 
 ### 8.2 vs OP_CAT
 
@@ -406,7 +406,7 @@ Ladder Script evaluation contains no loops, no recursion in the evaluator (recur
 
 Three mechanisms ensure that ambiguity defaults to rejection:
 
-1. **Unknown block types** return UNKNOWN_BLOCK_TYPE, which is treated as UNSATISFIED by the rung evaluator. An output containing a block type from a future phase cannot be spent by a node that does not implement that phase.
+1. **Unknown block types** return UNKNOWN_BLOCK_TYPE, which is treated as UNSATISFIED by the rung evaluator. An output containing an unknown block type cannot be spent by a node that does not implement it.
 
 2. **Deferred attestation** (`VerifyDeferredAttestation`) always returns false. This mode is defined for forward compatibility but is not activated.
 
@@ -440,7 +440,7 @@ Ladder Script replaces Bitcoin's untyped, imperative scripting model with a type
 
 The 40 block types across seven families -- signature, timelock, hash, covenant, recursion, anchor, and PLC -- provide a comprehensive vocabulary for transaction authorization. Post-quantum cryptography is supported natively through the SCHEME routing mechanism and PUBKEY_COMMIT compact representations. Spam resistance is structural rather than policy-dependent.
 
-The phased deployment model allows the network to adopt capabilities incrementally: Phase 1 provides full parity with existing Bitcoin Script functionality; Phase 2 adds covenants and layer-2 integration; Phase 3 introduces state machines and advanced control flow. Forward compatibility ensures that transactions using future block types are structurally valid even to nodes that do not yet implement those types.
+All block types activate simultaneously as a single deployment. Forward compatibility ensures that transactions using future block types are structurally valid even to nodes that do not yet implement those types.
 
 The design is implemented in Bitcoin Ghost's fork of Bitcoin Core, with 185 unit tests and 19 functional test scenarios validating the complete evaluation pipeline.
 

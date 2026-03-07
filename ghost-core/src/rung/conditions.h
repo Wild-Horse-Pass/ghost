@@ -18,7 +18,7 @@ namespace rung {
  *  Chosen to not conflict with any existing OP_ prefix. */
 static constexpr uint8_t RUNG_CONDITIONS_PREFIX = 0xc1;
 
-/** Rung conditions = the "locking" side of a v3 output.
+/** Rung conditions = the "locking" side of a v4 output.
  *  Stored in scriptPubKey with the same wire format as a LadderWitness
  *  but containing only condition data types (PUBKEY, PUBKEY_COMMIT, HASH256,
  *  HASH160, NUMERIC, SCHEME, SPEND_INDEX) — never SIGNATURE or PREIMAGE. */
@@ -32,10 +32,10 @@ struct RungConditions {
 /** Quick prefix check: does this scriptPubKey start with the rung conditions prefix? */
 bool IsRungConditionsScript(const CScript& scriptPubKey);
 
-/** Deserialize rung conditions from a v3 output scriptPubKey. */
+/** Deserialize rung conditions from a v4 output scriptPubKey. */
 bool DeserializeRungConditions(const CScript& scriptPubKey, RungConditions& out, std::string& error);
 
-/** Serialize rung conditions to a CScript suitable for v3 output scriptPubKey. */
+/** Serialize rung conditions to a CScript suitable for v4 output scriptPubKey. */
 CScript SerializeRungConditions(const RungConditions& conditions);
 
 /** Check whether a data type is allowed in conditions (locking side).

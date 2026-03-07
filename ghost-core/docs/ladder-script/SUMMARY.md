@@ -1,6 +1,6 @@
 # Ladder Script -- Executive Summary
 
-Ladder Script is a typed, structured transaction format for Bitcoin that replaces opcode-based scripting with a declarative block model. Introduced as transaction version 3, it organizes spending conditions as named function blocks within rungs: all blocks in a rung must be satisfied (AND logic), and the first satisfied rung among alternatives wins (OR logic). Every byte in a Ladder Script witness is typed, every condition is a named block with validated fields, and evaluation is deterministic with bounded execution time. The design draws directly from industrial Programmable Logic Controller ladder diagrams, which solved analogous reliability problems in safety-critical control systems.
+Ladder Script is a typed, structured transaction format for Bitcoin that replaces opcode-based scripting with a declarative block model. Introduced as transaction version 4, it organizes spending conditions as named function blocks within rungs: all blocks in a rung must be satisfied (AND logic), and the first satisfied rung among alternatives wins (OR logic). Every byte in a Ladder Script witness is typed, every condition is a named block with validated fields, and evaluation is deterministic with bounded execution time. The design draws directly from industrial Programmable Logic Controller ladder diagrams, which solved analogous reliability problems in safety-critical control systems.
 
 ## Key Innovations
 
@@ -25,7 +25,7 @@ Ladder Script is a typed, structured transaction format for Bitcoin that replace
 
 ## Transaction Format
 
-A version 3 transaction output contains a `0xc1` prefix followed by serialized rung conditions (the lock). The input witness contains a serialized ladder witness (the key). At verification time, conditions and witness are merged field-by-field -- the conditions provide pubkeys, hashes, and parameters; the witness provides signatures and preimages. The merged structure is evaluated by the three-level dispatch: `EvalLadder` (OR across rungs), `EvalRung` (AND within a rung), `EvalBlock` (type-specific logic). The sighash uses a tagged hash ("LadderSighash") that commits to the conditions hash, binding signatures to the exact conditions they satisfy.
+A version 4 transaction output contains a `0xc1` prefix followed by serialized rung conditions (the lock). The input witness contains a serialized ladder witness (the key). At verification time, conditions and witness are merged field-by-field -- the conditions provide pubkeys, hashes, and parameters; the witness provides signatures and preimages. The merged structure is evaluated by the three-level dispatch: `EvalLadder` (OR across rungs), `EvalRung` (AND within a rung), `EvalBlock` (type-specific logic). The sighash uses a tagged hash ("LadderSighash") that commits to the conditions hash, binding signatures to the exact conditions they satisfy.
 
 ## Post-Quantum Support
 
@@ -33,4 +33,4 @@ Ladder Script supports three post-quantum signature schemes (FALCON-512, FALCON-
 
 ## Implementation Status
 
-Ladder Script is implemented in the `src/rung/` directory of ghost-core (Bitcoin Ghost's fork of Bitcoin Core). The implementation comprises 10 source files: type definitions, serialization, conditions, evaluation (all three phases), sighash computation, PQ verification, adaptor signatures, aggregate proofs, and policy enforcement. The test suite includes 185 unit tests (`src/test/rung_tests.cpp`) and 19 functional test scenarios (`test/functional/rung_basic.py`) covering serialization round-trips, field validation, all Phase 1 evaluators, PQ signature verification, covenant evaluation, and full transaction verification through the node's mempool acceptance path.
+Ladder Script is implemented in the `src/rung/` directory of ghost-core (Bitcoin Ghost's fork of Bitcoin Core). The implementation comprises 10 source files: type definitions, serialization, conditions, evaluation for all block types, sighash computation, PQ verification, adaptor signatures, aggregate proofs, and policy enforcement. The test suite includes 185 unit tests (`src/test/rung_tests.cpp`) and 19 functional test scenarios (`test/functional/rung_basic.py`) covering serialization round-trips, field validation, all block type evaluators, PQ signature verification, covenant evaluation, and full transaction verification through the node's mempool acceptance path.

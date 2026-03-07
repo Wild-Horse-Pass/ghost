@@ -512,7 +512,7 @@ Even in the worst case where an attacker burns funds:
 
 The following evaluator stubs were replaced with proper state-gating logic:
 
-### Phase 3 PLC Blocks — State Gating
+### PLC Blocks — State Gating
 
 | Block | Before | After |
 |-------|--------|-------|

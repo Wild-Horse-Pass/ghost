@@ -85,7 +85,7 @@ An enum (`RungCoilType`, `uint8_t`) that determines the unlock semantics of a ru
 
 ### Condition
 
-A spending requirement embedded in a v3 output's scriptPubKey. Conditions are the
+A spending requirement embedded in a v4 output's scriptPubKey. Conditions are the
 "locking" side of Ladder Script -- they specify what must be satisfied to spend the
 UTXO. Conditions contain only condition data types (PUBKEY, PUBKEY_COMMIT, HASH256,
 HASH160, NUMERIC, SCHEME, SPEND_INDEX) and never contain witness-only types (SIGNATURE,
@@ -194,7 +194,7 @@ Defined in `src/rung/sighash.h`.
 
 ### LadderWitness
 
-The witness data for a v3 (RUNG_TX) input. Contains:
+The witness data for a v4 (RUNG_TX) input. Contains:
 
 - `rungs`: A vector of `Rung` objects, each containing blocks with witness data
   (signatures, preimages)
@@ -223,20 +223,6 @@ The evaluation rule across rungs in a ladder. Rungs are evaluated in order, and 
 first rung that returns SATISFIED causes the entire ladder to pass. If no rung is
 satisfied, the ladder evaluation fails. Implemented as first-match semantics in
 `EvalLadder()`.
-
-### Phase
-
-The deployment phase in which a block type is activated. Three phases are defined:
-
-- **Phase 1:** Core spending primitives -- Signature family (SIG, MULTISIG,
-  ADAPTOR_SIG), Timelock family (CSV, CSV_TIME, CLTV, CLTV_TIME), and Hash family
-  (HASH_PREIMAGE, HASH160_PREIMAGE, TAGGED_HASH). Code ranges 0x0001-0x02FF.
-- **Phase 2:** Covenant and metadata blocks -- Covenant family (CTV, VAULT_LOCK,
-  AMOUNT_LOCK) and Anchor family (ANCHOR through ANCHOR_ORACLE). Code ranges
-  0x0300-0x05FF.
-- **Phase 3:** Advanced programmability -- Recursion family (RECURSE_*) and PLC family
-  (HYSTERESIS_*, TIMER_*, LATCH_*, COUNTER_*, COMPARE, SEQUENCER, ONE_SHOT,
-  RATE_LIMIT, COSIGN). Code ranges 0x0400-0x06FF.
 
 ### PLC
 
@@ -316,19 +302,19 @@ An enum (`uint16_t`) identifying the type of a block. Encoded as 2 bytes (little
 in the wire format. 39 block types are defined across 7 families. The numeric ranges
 partition the type space by family:
 
-| Range | Family | Phase |
-|-------|--------|-------|
-| 0x0001-0x00FF | Signature | 1 |
-| 0x0100-0x01FF | Timelock | 1 |
-| 0x0200-0x02FF | Hash | 1 |
-| 0x0300-0x03FF | Covenant | 2 |
-| 0x0400-0x04FF | Recursion | 3 |
-| 0x0500-0x05FF | Anchor/L2 | 2 |
-| 0x0600-0x06FF | PLC | 3 |
+| Range | Family |
+|-------|--------|
+| 0x0001-0x00FF | Signature |
+| 0x0100-0x01FF | Timelock |
+| 0x0200-0x02FF | Hash |
+| 0x0300-0x03FF | Covenant |
+| 0x0400-0x04FF | Recursion |
+| 0x0500-0x05FF | Anchor/L2 |
+| 0x0600-0x06FF | PLC |
 
 ### RungConditions
 
-The conditions embedded in a v3 output's scriptPubKey. Represented by the
+The conditions embedded in a v4 output's scriptPubKey. Represented by the
 `RungConditions` struct, which mirrors the `LadderWitness` structure but contains only
 condition data types (no SIGNATURE or PREIMAGE). Serialized with the
 `RUNG_CONDITIONS_PREFIX` (0xc1) byte as the first byte of the scriptPubKey.
@@ -372,8 +358,8 @@ Fields are validated against the size constraints of their data type via
 
 ### RUNG_TX
 
-Transaction version 3, which signals that the transaction uses Ladder Script for input
-validation instead of traditional Bitcoin Script. When a node encounters a v3
+Transaction version 4, which signals that the transaction uses Ladder Script for input
+validation instead of traditional Bitcoin Script. When a node encounters a v4
 transaction, inputs are validated through the rung evaluator (`VerifyRungTx()`) rather
 than the script interpreter.
 

@@ -2,7 +2,7 @@
 
 **Version:** 2 (wire format v2)
 **Transaction version:** 3 (`RUNG_TX_VERSION`)
-**Status:** Implemented -- Phase 1 (consensus-standard), Phase 2/3 (consensus-valid, policy-non-standard)
+**Status:** Implemented -- all block types consensus-standard
 
 ---
 
@@ -10,7 +10,7 @@
 
 Ladder Script is a structured, typed transaction verification system for Bitcoin Ghost. It replaces Bitcoin Script's stack-based opcode model with a declarative model of typed function blocks organized into rungs.
 
-A version 3 transaction (`RUNG_TX`) uses Ladder Script for both locking (output conditions) and unlocking (input witness). The system provides:
+A version 4 transaction (`RUNG_TX`) uses Ladder Script for both locking (output conditions) and unlocking (input witness). The system provides:
 
 - **Typed data fields** -- every byte in a Ladder Script witness belongs to a declared data type with enforced size constraints. No arbitrary data pushes are possible.
 - **Function blocks** -- each block evaluates a single spending condition (signature check, timelock, hash preimage, covenant, etc.).
@@ -126,7 +126,7 @@ Trailing bytes after the complete structure are rejected. The maximum total seri
 
 ## 4. Output Format (scriptPubKey)
 
-A v3 output's `scriptPubKey` is constructed as:
+A v4 output's `scriptPubKey` is constructed as:
 
 ```
 [0xc1] [serialized RungConditions]
@@ -166,9 +166,9 @@ Every field in a Ladder Script witness or condition must be one of the following
 
 ## 6. Block Types
 
-Block types are encoded as `uint16_t` little-endian. They are organized into ranges by family and deployment phase.
+Block types are encoded as `uint16_t` little-endian. They are organized into ranges by family.
 
-### 6.1 Phase 1 -- Signature Family (0x0001--0x00FF)
+### 6.1 Signature Family (0x0001--0x00FF)
 
 | Code | Name | Required Fields | Optional Fields |
 |------|------|----------------|-----------------|
@@ -176,7 +176,7 @@ Block types are encoded as `uint16_t` little-endian. They are organized into ran
 | `0x0002` | MULTISIG | NUMERIC (threshold M), N x PUBKEY, M x SIGNATURE | SCHEME |
 | `0x0003` | ADAPTOR_SIG | 2 x PUBKEY (signing_key, adaptor_point), SIGNATURE | -- |
 
-### 6.2 Phase 1 -- Timelock Family (0x0100--0x01FF)
+### 6.2 Timelock Family (0x0100--0x01FF)
 
 | Code | Name | Required Fields | Optional Fields |
 |------|------|----------------|-----------------|
@@ -185,7 +185,7 @@ Block types are encoded as `uint16_t` little-endian. They are organized into ran
 | `0x0103` | CLTV | NUMERIC (locktime value) | -- |
 | `0x0104` | CLTV_TIME | NUMERIC (locktime value) | -- |
 
-### 6.3 Phase 1 -- Hash Family (0x0200--0x02FF)
+### 6.3 Hash Family (0x0200--0x02FF)
 
 | Code | Name | Required Fields | Optional Fields |
 |------|------|----------------|-----------------|
@@ -193,7 +193,7 @@ Block types are encoded as `uint16_t` little-endian. They are organized into ran
 | `0x0202` | HASH160_PREIMAGE | HASH160, PREIMAGE | -- |
 | `0x0203` | TAGGED_HASH | 2 x HASH256 (tag_hash, expected_hash), PREIMAGE | -- |
 
-### 6.4 Phase 2 -- Covenant Family (0x0300--0x03FF)
+### 6.4 Covenant Family (0x0300--0x03FF)
 
 | Code | Name | Required Fields | Optional Fields |
 |------|------|----------------|-----------------|
@@ -201,7 +201,7 @@ Block types are encoded as `uint16_t` little-endian. They are organized into ran
 | `0x0302` | VAULT_LOCK | 2 x PUBKEY (recovery_key, hot_key), SIGNATURE, NUMERIC (hot_delay) | -- |
 | `0x0303` | AMOUNT_LOCK | 2 x NUMERIC (min_sats, max_sats) | -- |
 
-### 6.5 Phase 2 -- Anchor/L2 Family (0x0500--0x05FF)
+### 6.5 Anchor/L2 Family (0x0500--0x05FF)
 
 | Code | Name | Required Fields | Optional Fields |
 |------|------|----------------|-----------------|
@@ -212,7 +212,7 @@ Block types are encoded as `uint16_t` little-endian. They are organized into ran
 | `0x0505` | ANCHOR_SEAL | 2 x HASH256 (asset_id, state_transition) | -- |
 | `0x0506` | ANCHOR_ORACLE | PUBKEY (oracle_key) | NUMERIC (outcome_count) |
 
-### 6.6 Phase 3 -- Recursion Family (0x0400--0x04FF)
+### 6.6 Recursion Family (0x0400--0x04FF)
 
 | Code | Name | Required Fields | Optional Fields |
 |------|------|----------------|-----------------|
@@ -223,7 +223,7 @@ Block types are encoded as `uint16_t` little-endian. They are organized into ran
 | `0x0405` | RECURSE_SPLIT | 2 x NUMERIC (max_splits, min_split_sats) | -- |
 | `0x0406` | RECURSE_DECAY | >= 4 x NUMERIC (same format as RECURSE_MODIFIED) | -- |
 
-### 6.7 Phase 3 -- PLC Family (0x0600--0x06FF)
+### 6.7 PLC Family (0x0600--0x06FF)
 
 | Code | Name | Required Fields | Optional Fields |
 |------|------|----------------|-----------------|
@@ -751,7 +751,7 @@ Uses the same mutation parsing and verification as RECURSE_MODIFIED, but **negat
 
 ### 8.1 LadderSighash
 
-The signature hash for v3 RUNG_TX inputs uses the tagged hash `TaggedHash("LadderSighash")`.
+The signature hash for v4 RUNG_TX inputs uses the tagged hash `TaggedHash("LadderSighash")`.
 
 The tagged hash is computed as `SHA256(SHA256("LadderSighash") || SHA256("LadderSighash") || data)`.
 
@@ -802,7 +802,7 @@ The conditions_hash is `SHA256(serialized_conditions)` where `serialized_conditi
 
 ### 8.6 Precomputed Data
 
-The `PrecomputedTransactionData` structure has a `m_ladder_ready` flag. When a v3 transaction is initialized, the following hashes are precomputed:
+The `PrecomputedTransactionData` structure has a `m_ladder_ready` flag. When a v4 transaction is initialized, the following hashes are precomputed:
 
 - `m_prevouts_single_hash` -- SHA256 of all prevouts
 - `m_spent_amounts_single_hash` -- SHA256 of all spent amounts
@@ -908,7 +908,7 @@ Create a serialized ladder witness from a JSON specification. Returns the serial
 createrungtx [{"txid": "...", "vout": 0}] [{"amount": 0.001, "conditions": [...]}]
 ```
 
-Create an unsigned v3 RUNG_TX transaction with rung condition outputs. Inputs are outpoints to spend. Outputs specify rung conditions (using the same JSON block/field format) and amounts. Returns the raw transaction hex.
+Create an unsigned v4 RUNG_TX transaction with rung condition outputs. Inputs are outpoints to spend. Outputs specify rung conditions (using the same JSON block/field format) and amounts. Returns the raw transaction hex.
 
 ### 14.4 signrungtx
 
@@ -916,7 +916,7 @@ Create an unsigned v3 RUNG_TX transaction with rung condition outputs. Inputs ar
 signrungtx "txhex" [{"privkey": "cVt...", "input": 0}] [{"amount": 0.001, "scriptPubKey": "c1..."}]
 ```
 
-Sign a v3 RUNG_TX transaction's inputs. Takes the raw transaction hex, an array of signing keys mapped to input indices, and an array of spent outputs (for sighash computation). Returns the signed transaction hex.
+Sign a v4 RUNG_TX transaction's inputs. Takes the raw transaction hex, an array of signing keys mapped to input indices, and an array of spent outputs (for sighash computation). Returns the signed transaction hex.
 
 ### 14.5 validateladder
 
@@ -924,7 +924,7 @@ Sign a v3 RUNG_TX transaction's inputs. Takes the raw transaction hex, an array 
 validateladder "txhex"
 ```
 
-Validate a raw v3 RUNG_TX transaction's ladder witnesses. Checks that all input witnesses are valid ladder witnesses with correct structure, known block types, and valid field sizes. Returns validation results per input.
+Validate a raw v4 RUNG_TX transaction's ladder witnesses. Checks that all input witnesses are valid ladder witnesses with correct structure, known block types, and valid field sizes. Returns validation results per input.
 
 ### 14.6 computectvhash
 
@@ -932,7 +932,7 @@ Validate a raw v3 RUNG_TX transaction's ladder witnesses. Checks that all input 
 computectvhash "txhex" input_index
 ```
 
-Compute the BIP-119 CTV template hash for a v3 RUNG_TX transaction at the specified input index. Returns the 32-byte hash as hex.
+Compute the BIP-119 CTV template hash for a v4 RUNG_TX transaction at the specified input index. Returns the 32-byte hash as hex.
 
 ### 14.7 generatepqkeypair
 

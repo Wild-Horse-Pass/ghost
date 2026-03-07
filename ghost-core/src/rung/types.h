@@ -16,36 +16,36 @@ namespace rung {
  *  Encoded as uint16_t in the wire format (little-endian 2 bytes).
  *
  *  Ranges:
- *    0x0001-0x00FF  Signature family (Phase 1)
- *    0x0100-0x01FF  Timelock family (Phase 1)
- *    0x0200-0x02FF  Hash family (Phase 1)
- *    0x0300-0x03FF  Covenant family (Phase 2)
- *    0x0400-0x04FF  Recursion family (Phase 3)
- *    0x0500-0x05FF  Anchor/L2 family (Phase 2)
- *    0x0600-0x06FF  PLC family (Phase 3) */
+ *    0x0001-0x00FF  Signature family
+ *    0x0100-0x01FF  Timelock family
+ *    0x0200-0x02FF  Hash family
+ *    0x0300-0x03FF  Covenant family
+ *    0x0400-0x04FF  Recursion family
+ *    0x0500-0x05FF  Anchor/L2 family
+ *    0x0600-0x06FF  PLC family */
 enum class RungBlockType : uint16_t {
-    // Signature family (Phase 1)
+    // Signature family
     SIG              = 0x0001, //!< Single signature verification
     MULTISIG         = 0x0002, //!< M-of-N threshold signature
     ADAPTOR_SIG      = 0x0003, //!< Adaptor signature verification
 
-    // Timelock family (Phase 1)
+    // Timelock family
     CSV              = 0x0101, //!< Relative timelock — block-height (BIP68 sequence)
     CSV_TIME         = 0x0102, //!< Relative timelock — median-time-past
     CLTV             = 0x0103, //!< Absolute timelock — block-height (nLockTime)
     CLTV_TIME        = 0x0104, //!< Absolute timelock — median-time-past
 
-    // Hash family (Phase 1)
+    // Hash family
     HASH_PREIMAGE    = 0x0201, //!< SHA-256 hash preimage reveal
     HASH160_PREIMAGE = 0x0202, //!< HASH160 preimage reveal
     TAGGED_HASH      = 0x0203, //!< BIP-340 tagged hash verification
 
-    // Covenant family (Phase 2)
+    // Covenant family
     CTV              = 0x0301, //!< OP_CHECKTEMPLATEVERIFY covenant
     VAULT_LOCK       = 0x0302, //!< Vault timelock covenant
     AMOUNT_LOCK      = 0x0303, //!< Output amount range check
 
-    // Recursion family (Phase 3)
+    // Recursion family
     RECURSE_SAME     = 0x0401, //!< Recursive re-encumber with identical conditions
     RECURSE_MODIFIED = 0x0402, //!< Recursive re-encumber with single mutation
     RECURSE_UNTIL    = 0x0403, //!< Recursive until block height
@@ -53,7 +53,7 @@ enum class RungBlockType : uint16_t {
     RECURSE_SPLIT    = 0x0405, //!< Recursive output splitting
     RECURSE_DECAY    = 0x0406, //!< Recursive parameter decay
 
-    // Anchor/L2 family (Phase 2)
+    // Anchor/L2 family
     ANCHOR           = 0x0501, //!< Generic anchor
     ANCHOR_CHANNEL   = 0x0502, //!< Lightning channel anchor
     ANCHOR_POOL      = 0x0503, //!< Pool anchor
@@ -61,7 +61,7 @@ enum class RungBlockType : uint16_t {
     ANCHOR_SEAL      = 0x0505, //!< Seal anchor
     ANCHOR_ORACLE    = 0x0506, //!< Oracle anchor
 
-    // PLC family (Phase 3)
+    // PLC family
     HYSTERESIS_FEE   = 0x0601, //!< Fee hysteresis band
     HYSTERESIS_VALUE = 0x0602, //!< Value hysteresis band
     TIMER_CONTINUOUS = 0x0611, //!< Continuous timer (consecutive blocks)
@@ -101,38 +101,38 @@ using RungFieldType = RungDataType;
 inline bool IsKnownBlockType(uint16_t b)
 {
     switch (static_cast<RungBlockType>(b)) {
-    // Phase 1 — Signature
+    // Signature family
     case RungBlockType::SIG:
     case RungBlockType::MULTISIG:
     case RungBlockType::ADAPTOR_SIG:
-    // Phase 1 — Timelock
+    // Timelock family
     case RungBlockType::CSV:
     case RungBlockType::CSV_TIME:
     case RungBlockType::CLTV:
     case RungBlockType::CLTV_TIME:
-    // Phase 1 — Hash
+    // Hash family
     case RungBlockType::HASH_PREIMAGE:
     case RungBlockType::HASH160_PREIMAGE:
     case RungBlockType::TAGGED_HASH:
-    // Phase 2 — Covenant
+    // Covenant family
     case RungBlockType::CTV:
     case RungBlockType::VAULT_LOCK:
     case RungBlockType::AMOUNT_LOCK:
-    // Phase 2 — Anchor
+    // Anchor family
     case RungBlockType::ANCHOR:
     case RungBlockType::ANCHOR_CHANNEL:
     case RungBlockType::ANCHOR_POOL:
     case RungBlockType::ANCHOR_RESERVE:
     case RungBlockType::ANCHOR_SEAL:
     case RungBlockType::ANCHOR_ORACLE:
-    // Phase 3 — Recursion
+    // Recursion family
     case RungBlockType::RECURSE_SAME:
     case RungBlockType::RECURSE_MODIFIED:
     case RungBlockType::RECURSE_UNTIL:
     case RungBlockType::RECURSE_COUNT:
     case RungBlockType::RECURSE_SPLIT:
     case RungBlockType::RECURSE_DECAY:
-    // Phase 3 — PLC
+    // PLC family
     case RungBlockType::HYSTERESIS_FEE:
     case RungBlockType::HYSTERESIS_VALUE:
     case RungBlockType::TIMER_CONTINUOUS:

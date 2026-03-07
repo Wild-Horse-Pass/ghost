@@ -9,75 +9,9 @@
 
 namespace rung {
 
-bool IsPhase1BlockType(uint16_t block_type)
-{
-    switch (static_cast<RungBlockType>(block_type)) {
-    case RungBlockType::SIG:
-    case RungBlockType::MULTISIG:
-    case RungBlockType::ADAPTOR_SIG:
-    case RungBlockType::CSV:
-    case RungBlockType::CSV_TIME:
-    case RungBlockType::CLTV:
-    case RungBlockType::CLTV_TIME:
-    case RungBlockType::HASH_PREIMAGE:
-    case RungBlockType::HASH160_PREIMAGE:
-    case RungBlockType::TAGGED_HASH:
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool IsPhase2BlockType(uint16_t block_type)
-{
-    switch (static_cast<RungBlockType>(block_type)) {
-    case RungBlockType::CTV:
-    case RungBlockType::VAULT_LOCK:
-    case RungBlockType::AMOUNT_LOCK:
-    case RungBlockType::ANCHOR:
-    case RungBlockType::ANCHOR_CHANNEL:
-    case RungBlockType::ANCHOR_POOL:
-    case RungBlockType::ANCHOR_RESERVE:
-    case RungBlockType::ANCHOR_SEAL:
-    case RungBlockType::ANCHOR_ORACLE:
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool IsPhase3BlockType(uint16_t block_type)
-{
-    switch (static_cast<RungBlockType>(block_type)) {
-    case RungBlockType::RECURSE_SAME:
-    case RungBlockType::RECURSE_MODIFIED:
-    case RungBlockType::RECURSE_UNTIL:
-    case RungBlockType::RECURSE_COUNT:
-    case RungBlockType::RECURSE_SPLIT:
-    case RungBlockType::RECURSE_DECAY:
-    case RungBlockType::HYSTERESIS_FEE:
-    case RungBlockType::HYSTERESIS_VALUE:
-    case RungBlockType::TIMER_CONTINUOUS:
-    case RungBlockType::TIMER_OFF_DELAY:
-    case RungBlockType::LATCH_SET:
-    case RungBlockType::LATCH_RESET:
-    case RungBlockType::COUNTER_DOWN:
-    case RungBlockType::COUNTER_PRESET:
-    case RungBlockType::COUNTER_UP:
-    case RungBlockType::COMPARE:
-    case RungBlockType::SEQUENCER:
-    case RungBlockType::ONE_SHOT:
-    case RungBlockType::RATE_LIMIT:
-    case RungBlockType::COSIGN:
-        return true;
-    default:
-        return false;
-    }
-}
-
 bool IsStandardRungTx(const CTransaction& tx, std::string& reason)
 {
-    // Validate v3 output scriptPubKeys as rung conditions
+    // Validate v4 output scriptPubKeys as rung conditions
     for (size_t i = 0; i < tx.vout.size(); ++i) {
         const auto& scriptPubKey = tx.vout[i].scriptPubKey;
         // Allow OP_RETURN data outputs

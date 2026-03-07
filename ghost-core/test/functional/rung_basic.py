@@ -6,10 +6,10 @@
 """Ladder Script functional tests for all block types (v2 wire format).
 
 Tests:
-- Phase 1 (existing): createrung, decoderung, validateladder, malformed, SIG spend
-- Phase 2: HASH_PREIMAGE, CSV, CLTV, MULTISIG, compound SIG+CSV, OR logic,
+- Signature/Timelock/Hash: createrung, decoderung, validateladder, malformed, SIG spend
+- Covenant/Compound: HASH_PREIMAGE, CSV, CLTV, MULTISIG, compound SIG+CSV, OR logic,
            negative tests, multi-input/output
-- Phase 3: Inversion (inverted CSV, inverted HASH_PREIMAGE)
+- Inversion: Inversion (inverted CSV, inverted HASH_PREIMAGE)
 """
 
 import hashlib
@@ -58,14 +58,14 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.generatetoaddress(node, 200, self.wallet.get_address())
         self.wallet.rescan_utxos()
 
-        # Phase 1 tests (existing)
+        # Signature, Timelock, Hash tests
         self.test_createrung(node)
         self.test_decoderung(node)
         self.test_validateladder(node)
         self.test_decoderung_malformed(node)
         self.test_createrungtx_signrungtx_spend(node)
 
-        # Phase 2 tests
+        # Covenant, Anchor, compound tests
         self.test_hash_preimage_spend(node)
         self.test_csv_spend(node)
         self.test_cltv_spend(node)
@@ -78,7 +78,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_negative_cltv_too_early(node)
         self.test_multi_input_output(node)
 
-        # Phase 3 tests (inversion)
+        # Inversion tests
         self.test_inverted_csv(node)
         self.test_inverted_hash_preimage(node)
 
@@ -91,13 +91,13 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_ctv_template(node)
         self.test_vault_lock(node)
 
-        # Phase 2+ negative tests
+        # Negative tests
         self.test_negative_ctv_wrong_template(node)
         self.test_negative_vault_wrong_key(node)
         self.test_negative_compare_fails(node)
         self.test_negative_tagged_hash_wrong_preimage(node)
 
-        # Additional Phase 1 tests
+        # Additional signature tests
         self.test_hash160_preimage_spend(node)
         self.test_csv_time_spend(node)
         self.test_cltv_time_spend(node)
@@ -215,8 +215,8 @@ class LadderScriptBasicTest(BitcoinTestFramework):
     # Helpers
     # =========================================================================
 
-    def bootstrap_v3_output(self, node, conditions, output_amount=None):
-        """Create and confirm a v3 output with given conditions.
+    def bootstrap_v4_output(self, node, conditions, output_amount=None):
+        """Create and confirm a v4 output with given conditions.
         Returns (txid, vout, amount, scriptPubKey_hex).
         If output_amount is specified and leaves excess, a change output is added."""
         utxo = self.wallet.get_utxo()
@@ -266,7 +266,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         return txid, 0, output_amount, spk
 
     # =========================================================================
-    # Phase 1 tests
+    # Signature, Timelock, Hash tests
     # =========================================================================
 
     def test_createrung(self, node):
@@ -322,7 +322,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info("  Decoded ladder witness matches expected structure")
 
     def test_validateladder(self, node):
-        """Test validateladder RPC on a non-v3 transaction."""
+        """Test validateladder RPC on a non-v4 transaction."""
         self.log.info("Testing validateladder RPC...")
 
         raw_tx = (
@@ -340,9 +340,9 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         result = node.validateladder(raw_tx)
         assert_equal(result["valid"], False)
-        assert "Not a v3" in result["error"]
+        assert "Not a v4" in result["error"]
 
-        self.log.info("  Non-v3 transaction correctly rejected")
+        self.log.info("  Non-v4 transaction correctly rejected")
 
     def test_decoderung_malformed(self, node):
         """Test decoderung RPC rejects malformed input."""
@@ -365,7 +365,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info("  All malformed inputs correctly rejected")
 
     def test_createrungtx_signrungtx_spend(self, node):
-        """Test end-to-end: create v3 output, sign, broadcast, spend again."""
+        """Test end-to-end: create v4 output, sign, broadcast, spend again."""
         self.log.info("Testing createrungtx + signrungtx end-to-end spend...")
 
         privkey_wif, pubkey_hex = make_keypair()
@@ -392,7 +392,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             }]}]
         )
         unsigned_hex = result["hex"]
-        self.log.info(f"  Created unsigned v3 tx: {len(unsigned_hex)//2} bytes")
+        self.log.info(f"  Created unsigned v4 tx: {len(unsigned_hex)//2} bytes")
 
         sign_result = node.signrungtx(
             unsigned_hex,
@@ -401,7 +401,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         )
         signed_hex = sign_result["hex"]
         assert sign_result["complete"], "Transaction should be fully signed"
-        self.log.info(f"  Signed v3 tx: complete={sign_result['complete']}")
+        self.log.info(f"  Signed v4 tx: complete={sign_result['complete']}")
 
         txid1 = node.sendrawtransaction(signed_hex)
         self.log.info(f"  Broadcast bootstrap tx: {txid1}")
@@ -409,7 +409,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         tx_info = node.getrawtransaction(txid1, True)
         assert tx_info["confirmations"] >= 1, "Bootstrap tx should be confirmed"
-        self.log.info("  Bootstrap spend (standard -> v3) confirmed!")
+        self.log.info("  Bootstrap spend (standard -> v4) confirmed!")
 
         # Rung-to-rung spend
         output_amount2 = output_amount - Decimal("0.001")
@@ -440,7 +440,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         tx_info2 = node.getrawtransaction(txid2, True)
         assert tx_info2["confirmations"] >= 1, "Rung-to-rung tx should be confirmed"
-        self.log.info("  Rung-to-rung spend (v3 -> v3) confirmed!")
+        self.log.info("  Rung-to-rung spend (v4 -> v4) confirmed!")
 
         validate1 = node.validateladder(node.getrawtransaction(txid1))
         self.log.info(f"  validateladder tx1: valid={validate1['valid']}")
@@ -451,7 +451,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info("  End-to-end spend test PASSED!")
 
     # =========================================================================
-    # Phase 2 tests
+    # Covenant, Anchor, compound tests
     # =========================================================================
 
     def test_hash_preimage_spend(self, node):
@@ -462,12 +462,12 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         preimage = os.urandom(32)
         hash_digest = hashlib.sha256(preimage).digest()
 
-        # Create v3 output with HASH_PREIMAGE condition
+        # Create v4 output with HASH_PREIMAGE condition
         conditions = [{"blocks": [{"type": "HASH_PREIMAGE", "fields": [
             {"type": "HASH256", "hex": hash_digest.hex()}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  HASH_PREIMAGE output: {txid}:{vout}")
 
         # Spend the HASH_PREIMAGE output
@@ -505,7 +505,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(csv_blocks)}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  CSV output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -559,7 +559,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(target_height)}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  CLTV output: {txid}:{vout} (target_height={target_height})")
 
         output_amount = amount - Decimal("0.001")
@@ -624,7 +624,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY", "hex": pubkeys[2]},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  MULTISIG output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -664,7 +664,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "CSV", "fields": [{"type": "NUMERIC", "hex": numeric_hex(csv_blocks)}]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  SIG+CSV output: {txid}:{vout}")
 
         # Mine for CSV maturity
@@ -716,7 +716,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]}]},
         ]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  OR output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -756,7 +756,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY", "hex": correct_pubkey}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -789,7 +789,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": hash_digest.hex()}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -818,7 +818,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(csv_blocks)}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -849,7 +849,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(target_height)}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -879,12 +879,12 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY", "hex": pubkey_hex}
         ]}]}]
 
-        # Create 3 v3 outputs
+        # Create 3 v4 outputs
         utxos = []
         for i in range(3):
-            txid, vout, amount, spk = self.bootstrap_v3_output(node, sig_conditions)
+            txid, vout, amount, spk = self.bootstrap_v4_output(node, sig_conditions)
             utxos.append({"txid": txid, "vout": vout, "amount": amount, "spk": spk})
-            self.log.info(f"  Created v3 output {i}: {txid}:{vout}")
+            self.log.info(f"  Created v4 output {i}: {txid}:{vout}")
 
         total_input = sum(u["amount"] for u in utxos)
         fee = Decimal("0.001")
@@ -923,7 +923,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
 
     # =========================================================================
-    # Phase 3 tests (inversion)
+    # Inversion tests
     # =========================================================================
 
     def test_inverted_csv(self, node):
@@ -932,13 +932,13 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         csv_blocks = 10
 
-        # Create v3 output with inverted CSV condition
+        # Create v4 output with inverted CSV condition
         # Inverted CSV means: spendable when CSV is NOT satisfied (i.e., before maturity)
         conditions = [{"blocks": [{"type": "CSV", "inverted": True, "fields": [
             {"type": "NUMERIC", "hex": numeric_hex(csv_blocks)}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Inverted CSV output: {txid}:{vout}")
 
         # Spend immediately (before maturity) — should succeed with inverted CSV
@@ -972,13 +972,13 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         preimage = os.urandom(32)
         hash_digest = hashlib.sha256(preimage).digest()
 
-        # Create v3 output with inverted HASH_PREIMAGE condition
+        # Create v4 output with inverted HASH_PREIMAGE condition
         # Inverted means: spendable when hash check FAILS (no valid preimage)
         conditions = [{"blocks": [{"type": "HASH_PREIMAGE", "inverted": True, "fields": [
             {"type": "HASH256", "hex": hash_digest.hex()}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Inverted HASH_PREIMAGE output: {txid}:{vout}")
 
         # Spend with a WRONG preimage — inverted means this SATISFIES the condition
@@ -1028,7 +1028,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": expected.hex()},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  TAGGED_HASH output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -1142,7 +1142,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(max_sats)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Try to spend with output below min (100 sats)
         output_amount = Decimal("0.000001")  # 100 sats — below 500000 min
@@ -1178,7 +1178,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(1)},  # commitment_number
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ANCHOR_CHANNEL output: {txid}:{vout}")
 
         # Decode and verify the output structure
@@ -1223,7 +1223,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(threshold)},    # value_b
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  COMPARE(GT) output: {txid}:{vout} (amount={amount})")
 
         # Spend — should succeed since input amount >> threshold
@@ -1382,7 +1382,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(hot_delay)},  # hot_delay
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  VAULT_LOCK output: {txid}:{vout}")
 
         # Cold sweep: spend immediately with recovery key
@@ -1421,7 +1421,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": wrong_hash}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
@@ -1456,7 +1456,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(10)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -1564,7 +1564,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": expected_hash.hex()},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -1599,7 +1599,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(5)},  # max_depth
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  RECURSE_SAME output: {txid}:{vout}")
 
         # Spend into output with IDENTICAL conditions (same RECURSE_SAME block)
@@ -1637,7 +1637,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(5)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Try to spend into output with DIFFERENT conditions
         different_conditions = [{"blocks": [{"type": "RECURSE_SAME", "fields": [
@@ -1668,7 +1668,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(10)},  # max_depth
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Hop 0 (bootstrap): {txid}:{vout}")
 
         # Chain 3 spends, each re-encumbering with identical conditions
@@ -1707,7 +1707,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(until_height)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  RECURSE_UNTIL output: {txid}:{vout} (until_height={until_height})")
 
         # Spend BEFORE until_height — must re-encumber with identical conditions
@@ -1746,7 +1746,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(until_height)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  RECURSE_UNTIL output: {txid}:{vout} (until_height={until_height})")
 
         # Mine past the until_height
@@ -1795,7 +1795,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(until_height)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Try to spend into DIFFERENT conditions before until_height
         current = node.getblockcount()
@@ -1830,7 +1830,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(initial_count)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Count {initial_count} (bootstrap): {txid}:{vout}")
 
         # Decrement: count=2 → output count=1 → output count=0
@@ -1908,7 +1908,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  RECURSE_MODIFIED output: {txid}:{vout} (threshold={initial_threshold})")
 
         # Hop 1: mutate threshold from 10000 to 11000
@@ -1955,7 +1955,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(min_split_sats)},  # min_split_sats
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  RECURSE_SPLIT output: {txid}:{vout} ({amount} BTC)")
 
         # Split into two outputs, each carrying RECURSE_SPLIT with max_splits-1
@@ -1998,7 +1998,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH160", "hex": h160.hex()},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  HASH160_PREIMAGE output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2037,7 +2037,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(csv_sequence)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  CSV_TIME output: {txid}:{vout} (sequence=0x{csv_sequence:08x})")
 
         output_amount = amount - Decimal("0.001")
@@ -2083,7 +2083,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(target_time)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  CLTV_TIME output: {txid}:{vout} (target_time={target_time})")
 
         output_amount = amount - Decimal("0.001")
@@ -2126,7 +2126,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         ]}]}]
 
         # Use 10 BTC output to stay within uint32 NUMERIC range
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions, output_amount=Decimal("10.0"))
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions, output_amount=Decimal("10.0"))
         self.log.info(f"  HYSTERESIS_VALUE output: {txid}:{vout} ({amount} BTC)")
 
         output_amount = amount - Decimal("0.001")
@@ -2167,7 +2167,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         ]}]}]
 
         # Use 10 BTC output to stay within uint32 NUMERIC range
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions, output_amount=Decimal("10.0"))
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions, output_amount=Decimal("10.0"))
         self.log.info(f"  RATE_LIMIT output: {txid}:{vout} ({amount} BTC)")
 
         # Spend within limit (output_amount is the first output's value, checked by RATE_LIMIT)
@@ -2203,7 +2203,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(3)},  # total_steps
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  SEQUENCER output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2247,7 +2247,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY", "hex": adaptor_point_xonly},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ADAPTOR_SIG output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2282,7 +2282,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": os.urandom(32).hex()},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ANCHOR output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2321,7 +2321,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(42)},  # commitment_number
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ANCHOR_CHANNEL output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2356,7 +2356,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(42)},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ANCHOR_POOL output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2392,7 +2392,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": os.urandom(32).hex()},  # guardian set hash
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ANCHOR_RESERVE output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2427,7 +2427,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": os.urandom(32).hex()},  # state_transition
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ANCHOR_SEAL output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2464,7 +2464,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(10)},  # outcome_count
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ANCHOR_ORACLE output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2511,7 +2511,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  RECURSE_DECAY output: {txid}:{vout} (threshold={initial_threshold})")
 
         # Hop 1: decay threshold from 5000 to 4500
@@ -2557,11 +2557,11 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(10)},   # low_sat_vb
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  HYSTERESIS_FEE output: {txid}:{vout}")
 
         # Fee must produce a rate within 10-100 sat/vB.
-        # A 1-in/1-out v3 tx is ~150 vbytes, so target ~50 sat/vB = 7500 sats fee.
+        # A 1-in/1-out v4 tx is ~150 vbytes, so target ~50 sat/vB = 7500 sats fee.
         output_amount = amount - Decimal("0.000075")
         dest_wif, dest_pubkey = make_keypair()
         dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
@@ -2593,7 +2593,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(144)},  # block count
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  TIMER_CONTINUOUS output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2627,7 +2627,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(72)},  # hold blocks
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  TIMER_OFF_DELAY output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2663,7 +2663,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY", "hex": setter_pubkey},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  LATCH_SET output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2701,7 +2701,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(6)},  # delay blocks
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  LATCH_RESET output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2738,7 +2738,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(10)},  # initial count
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  COUNTER_DOWN output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2773,7 +2773,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(100)},  # window_blocks
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  COUNTER_PRESET output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2811,7 +2811,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(10)},  # target
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  COUNTER_UP output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2846,7 +2846,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": os.urandom(32).hex()},  # commitment
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ONE_SHOT output: {txid}:{vout}")
 
         output_amount = amount - Decimal("0.001")
@@ -2897,7 +2897,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Multi-rung output: {txid}:{vout}")
 
         # Spend via rung 1 (HASH_PREIMAGE fallback) — target rung 1
@@ -2938,7 +2938,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         conditions = [{"blocks": blocks}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Max blocks output: {txid}:{vout} (8 blocks)")
 
         output_amount = amount - Decimal("0.001")
@@ -2974,7 +2974,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(10)},  # max_depth
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Covenant chain start: {txid}:{vout}")
 
         for hop in range(5):
@@ -3071,7 +3071,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         conditions = [{"blocks": [{"type": "SIG", "fields": [
             {"type": "PUBKEY", "hex": pubkey_hex}
         ]}]}]
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         dest_wif, dest_pubkey = make_keypair()
         dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
@@ -3109,7 +3109,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY", "hex": adaptor_point_xonly},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3139,7 +3139,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": os.urandom(32).hex()},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3168,7 +3168,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(100)},  # low_sat_vb > high
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3201,7 +3201,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(0)},  # commitment_number = 0
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3230,7 +3230,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(0)},  # participant_count = 0
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3261,7 +3261,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(0)},  # outcome_count = 0
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3289,7 +3289,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(0)},  # 0 is invalid
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3317,7 +3317,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(5)},  # only preset_count, missing window_blocks
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3345,7 +3345,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(144)},  # duration only, no commitment hash
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3383,7 +3383,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Apply wrong delta: subtract 300 instead of 500
         wrong_threshold = initial_threshold - 300
@@ -3430,7 +3430,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(0)},  # state=0 (unset)
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions_unset)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions_unset)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3458,7 +3458,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": numeric_hex(1)},  # state=1 (already set)
         ]}]}]
 
-        txid2, vout2, amount2, spk2 = self.bootstrap_v3_output(node, conditions_set)
+        txid2, vout2, amount2, spk2 = self.bootstrap_v4_output(node, conditions_set)
 
         spend2 = node.createrungtx(
             [{"txid": txid2, "vout": vout2}],
@@ -3493,7 +3493,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Created latch UTXO (state=0): {txid}:{vout}")
 
         # Step 1: SET transition — state 0→1
@@ -3619,7 +3619,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY", "hex": pq_pubkey},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Spend using PQ signature
         output_amount = amount - Decimal("0.001")
@@ -3670,7 +3670,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": fake_hash}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3711,7 +3711,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY", "hex": fake_pubkey}
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # The UTXO exists — but nobody can spend it without a valid signature
         # for the "pubkey" (which is random bytes, not a real EC point)
@@ -3763,7 +3763,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "NUMERIC", "hex": "ff000000"},  # unknown operator
             {"type": "NUMERIC", "hex": "e8030000"},  # threshold
         ]}]}]
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, garbage_conds)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, garbage_conds)
         # Try to spend it — evaluator rejects garbage operator
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -3962,7 +3962,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY_COMMIT", "hex": commit_hex},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Spend: provide full pubkey + PQ signature in witness
         output_amount = amount - Decimal("0.001")
@@ -4017,7 +4017,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "PUBKEY_COMMIT", "hex": alice_commit},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Eve tries to spend with her own key
         output_amount = amount - Decimal("0.001")
@@ -4085,7 +4085,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Created 2-rung UTXO (threshold={initial_threshold})")
 
         # Hop 1: mutate rung 1 threshold from 5000 → 5500
@@ -4177,7 +4177,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  State: counter={counter}, threshold={threshold}")
 
         # Two hops of dual mutation
@@ -4259,7 +4259,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Try applying delta +2 instead of +1
         bad_conditions = [{"blocks": [
@@ -4321,7 +4321,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Mine enough blocks for CSV maturity
         self.generate(node, csv_blocks)
@@ -4390,7 +4390,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         ]
 
         # Test cold path (rung 1, immediate)
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -4418,7 +4418,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info(f"  Cold path (rung 1, immediate) confirmed: {cold_txid[:16]}...")
 
         # Test hot path (rung 0, needs CSV delay)
-        txid2, vout2, amount2, spk2 = self.bootstrap_v3_output(node, conditions)
+        txid2, vout2, amount2, spk2 = self.bootstrap_v4_output(node, conditions)
         self.generate(node, csv_delay)  # wait for CSV maturity
 
         output_amount2 = amount2 - Decimal("0.001")
@@ -4468,7 +4468,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Mine past the CLTV height
         self.generate(node, 6)
@@ -4523,7 +4523,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         ]}]
 
         # 0.005 BTC = 500,000 sats (within floor 10k and ceiling 1M)
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions, Decimal("0.005"))
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions, Decimal("0.005"))
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -4574,7 +4574,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  Countdown vault created: count={initial_count}")
 
         # Decrement through 3→2→1→0
@@ -4682,7 +4682,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  State: threshold_a={threshold_a}, threshold_b={threshold_b}")
 
         # Hop: a 500000→450000, b 1000000→900000
@@ -4774,7 +4774,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         ]
 
         # Test Bob claiming (rung 0)
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         output_amount = amount - Decimal("0.001")
         dest_wif, dest_pubkey = make_keypair()
@@ -4803,7 +4803,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info(f"  Bob claimed via hash preimage: {bob_txid[:16]}...")
 
         # Test Alice refund (rung 1) on a different UTXO
-        txid2, vout2, amount2, spk2 = self.bootstrap_v3_output(node, conditions)
+        txid2, vout2, amount2, spk2 = self.bootstrap_v4_output(node, conditions)
         self.generate(node, refund_blocks)  # wait for CSV maturity
 
         output_amount2 = amount2 - Decimal("0.001")
@@ -4867,7 +4867,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  State machine created: step=0")
 
         # Transition: step 0→1
@@ -4943,7 +4943,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Before deadline: must re-encumber
         output_amount = amount - Decimal("0.001")
@@ -5053,7 +5053,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
 
         # Use emergency path (rung 0): 2-of-2 multisig
         output_amount = amount - Decimal("0.001")
@@ -5140,7 +5140,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
         anchor_txid, anchor_vout, anchor_amount, anchor_spk = \
-            self.bootstrap_v3_output(node, anchor_conditions, output_amount=Decimal("0.001"))
+            self.bootstrap_v4_output(node, anchor_conditions, output_amount=Decimal("0.001"))
         self.log.info(f"  Anchor UTXO: {anchor_txid}:{anchor_vout} ({anchor_spk[:20]}...)")
 
         # --- Step 2: Compute COSIGN hash (SHA256 of anchor's scriptPubKey) ---
@@ -5160,7 +5160,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
         child_txid, child_vout, child_amount, child_spk = \
-            self.bootstrap_v3_output(node, child_conditions)
+            self.bootstrap_v4_output(node, child_conditions)
         self.log.info(f"  Child UTXO: {child_txid}:{child_vout}")
 
         # --- Step 4: Spend both in one transaction ---
@@ -5244,7 +5244,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
         child_txid, child_vout, child_amount, child_spk = \
-            self.bootstrap_v3_output(node, child_conditions)
+            self.bootstrap_v4_output(node, child_conditions)
 
         # Try to spend child alone — no anchor present
         dest_wif, dest_pubkey = make_keypair()
@@ -5304,7 +5304,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
         anchor_txid, anchor_vout, anchor_amount, anchor_spk = \
-            self.bootstrap_v3_output(node, anchor_conditions, output_amount=Decimal("0.001"))
+            self.bootstrap_v4_output(node, anchor_conditions, output_amount=Decimal("0.001"))
         self.log.info(f"  Anchor created: {anchor_txid[:16]}...")
 
         # --- Step 2: Compute COSIGN hash ---
@@ -5498,7 +5498,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             ]},
         ]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  COUNTER_DOWN output (count=2): {txid}:{vout}")
 
         # Spend it — COUNTER_DOWN with count=2 should be SATISFIED
@@ -5536,7 +5536,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": commitment},
         ]}]}]
 
-        txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
+        txid, vout, amount, spk = self.bootstrap_v4_output(node, conditions)
         self.log.info(f"  ONE_SHOT output (state=0): {txid}:{vout}")
 
         # Spend it — state=0 should be SATISFIED
@@ -5566,7 +5566,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
             {"type": "HASH256", "hex": commitment},
         ]}]}]
 
-        txid2, vout2, amount2, spk2 = self.bootstrap_v3_output(node, conditions_fired)
+        txid2, vout2, amount2, spk2 = self.bootstrap_v4_output(node, conditions_fired)
         self.log.info(f"  ONE_SHOT output (state=1): {txid2}:{vout2}")
 
         output_amount2 = amount2 - Decimal("0.001")

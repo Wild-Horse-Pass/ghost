@@ -10,7 +10,7 @@ Created: 2026-03-06
 
 ## Abstract
 
-Ladder Script introduces transaction version 3 (`RUNG_TX`) with typed, structured spending conditions that replace opcode-based Script for participating outputs. Conditions are organized as named function blocks within rungs, evaluated with AND-within-rung, OR-across-rungs, first-match semantics. Every byte in a Ladder Script witness belongs to a declared data type; no arbitrary data pushes are possible. The system supports three deployment phases: Phase 1 (signatures, timelocks, hashes), Phase 2 (covenants, anchors), and Phase 3 (recursion, programmable logic controllers).
+Ladder Script introduces transaction version 4 (`RUNG_TX`) with typed, structured spending conditions that replace opcode-based Script for participating outputs. Conditions are organized as named function blocks within rungs, evaluated with AND-within-rung, OR-across-rungs, first-match semantics. Every byte in a Ladder Script witness belongs to a declared data type; no arbitrary data pushes are possible. The system covers signatures, timelocks, hashes, covenants, anchors, recursion, and programmable logic controllers, all activated as a single deployment.
 
 ## Motivation
 
@@ -32,7 +32,7 @@ Ladder Script addresses these limitations by replacing opcode sequences with a t
 
 ### Transaction Format
 
-A Ladder Script transaction is identified by `nVersion = 3` (constant `CTransaction::RUNG_TX_VERSION`). When a node encounters a version 3 transaction spending an output whose `scriptPubKey` begins with the byte `0xc1`, it invokes the ladder evaluator instead of the Script interpreter.
+A Ladder Script transaction is identified by `nVersion = 4` (constant `CTransaction::RUNG_TX_VERSION`). When a node encounters a version 4 transaction spending an output whose `scriptPubKey` begins with the byte `0xc1`, it invokes the ladder evaluator instead of the Script interpreter.
 
 **Output (locking side):**
 
@@ -46,11 +46,11 @@ The prefix byte `0xc1` was chosen to avoid collision with all existing `OP_` pre
 
 **Input (unlocking side):**
 
-The first element of the segregated witness stack for each v3 input is a serialized `LadderWitness`. This structure contains the same rung/block layout as the conditions but additionally includes SIGNATURE and PREIMAGE fields that satisfy the locking conditions.
+The first element of the segregated witness stack for each v4 input is a serialized `LadderWitness`. This structure contains the same rung/block layout as the conditions but additionally includes SIGNATURE and PREIMAGE fields that satisfy the locking conditions.
 
 **Evaluation entry point:**
 
-The function `VerifyRungTx` is called for each input of a v3 transaction. It deserializes both the conditions (from the spent output's `scriptPubKey`) and the witness (from the spending input), then evaluates the ladder.
+The function `VerifyRungTx` is called for each input of a v4 transaction. It deserializes both the conditions (from the spent output's `scriptPubKey`) and the witness (from the spending input), then evaluates the ladder.
 
 ### Wire Format (v2)
 
@@ -112,9 +112,9 @@ Data type validity is checked by `IsKnownDataType()`. Unknown data type codes ca
 
 ### Block Types
 
-Block types are organized into numbered families corresponding to deployment phases. Each block type evaluates a single spending condition. The block type is encoded as a `uint16_t` (little-endian) on the wire.
+Block types are organized into numbered families. Each block type evaluates a single spending condition. The block type is encoded as a `uint16_t` (little-endian) on the wire.
 
-#### Phase 1 -- Signature, Timelock, and Hash (0x0001-0x02FF)
+#### Signature, Timelock, and Hash (0x0001-0x02FF)
 
 These block types cover the fundamental spending conditions equivalent to existing Script capabilities.
 
@@ -143,7 +143,7 @@ These block types cover the fundamental spending conditions equivalent to existi
 | `0x0202` | HASH160_PREIMAGE | HASH160 + PREIMAGE | HASH160 preimage reveal. SATISFIED when RIPEMD160(SHA256(preimage)) equals the committed hash. |
 | `0x0203` | TAGGED_HASH | HASH256(tag) + HASH256(expected) + PREIMAGE | BIP-340 tagged hash verification. SATISFIED when TaggedHash(tag, preimage) equals the expected hash. |
 
-#### Phase 2 -- Covenant and Anchor (0x0300-0x05FF)
+#### Covenant and Anchor (0x0300-0x05FF)
 
 These block types constrain the spending transaction's outputs or anchor the UTXO to a protocol role.
 
@@ -166,7 +166,7 @@ These block types constrain the spending transaction's outputs or anchor the UTX
 | `0x0505` | ANCHOR_SEAL | HASH256(seal_hash) | Seal anchor. Permanently binds a UTXO to a data commitment. |
 | `0x0506` | ANCHOR_ORACLE | PUBKEY(oracle) + NUMERIC(quorum) | Oracle anchor. Requires an oracle public key and a non-zero quorum count. |
 
-#### Phase 3 -- Recursion and Programmable Logic Controllers (0x0400-0x06FF)
+#### Recursion and Programmable Logic Controllers (0x0400-0x06FF)
 
 These block types enable stateful, self-referencing, and rate-governed spending conditions.
 
@@ -302,7 +302,7 @@ The following limits are enforced at the policy (mempool) layer. Consensus enfor
 | MAX_LADDER_WITNESS_SIZE | 10,000 bytes | Maximum total serialized witness size. Accommodates PQ signatures (Dilithium3 at 3,293 bytes) with headroom for multi-block rungs. |
 
 Policy additionally restricts:
-- Only Phase 1 block types are standard. Phase 2 and Phase 3 block types are consensus-valid but policy-non-standard, requiring miner cooperation to confirm.
+- All block types are standard upon activation.
 - All data types must be known (`IsKnownDataType` returns true).
 - All field sizes must conform to type constraints (`FieldMinSize` through `FieldMaxSize`).
 - Conditions scripts must not contain SIGNATURE or PREIMAGE fields.
@@ -313,10 +313,10 @@ The following RPCs are provided for wallet and application integration:
 
 - `createrung` -- Create a rung conditions structure from a JSON description of blocks and fields.
 - `decoderung` -- Decode a hex-encoded rung conditions structure to human-readable JSON.
-- `validateladder` -- Validate a raw v3 RUNG_TX transaction's ladder witnesses against its spent outputs.
-- `createrungtx` -- Create an unsigned v3 RUNG_TX transaction with rung condition outputs.
-- `signrungtx` -- Sign a v3 RUNG_TX transaction's inputs given private keys and spent output information.
-- `computectvhash` -- Compute the BIP-119 CTV template hash for a v3 RUNG_TX transaction at a given input index.
+- `validateladder` -- Validate a raw v4 RUNG_TX transaction's ladder witnesses against its spent outputs.
+- `createrungtx` -- Create an unsigned v4 RUNG_TX transaction with rung condition outputs.
+- `signrungtx` -- Sign a v4 RUNG_TX transaction's inputs given private keys and spent output information.
+- `computectvhash` -- Compute the BIP-119 CTV template hash for a v4 RUNG_TX transaction at a given input index.
 - `pqkeygen` -- Generate a post-quantum keypair for a specified scheme.
 - `pqpubkeycommit` -- Compute the SHA-256 PUBKEY_COMMIT for a given public key.
 - `extractadaptorsecret` -- Extract the adaptor secret from a pre-signature and adapted signature pair.
@@ -345,7 +345,7 @@ The following RPCs are provided for wallet and application integration:
 
 ## Backward Compatibility
 
-**Non-upgraded nodes.** Transaction version 3 is currently non-standard in Bitcoin Core. No existing software creates v3 transactions. Non-upgraded nodes treat v3 transactions as anyone-can-spend, which is the standard soft fork upgrade path established by BIP-141 (Segregated Witness) and BIP-341 (Taproot).
+**Non-upgraded nodes.** Transaction version 4 is currently non-standard in Bitcoin Core. No existing software creates v4 transactions. Non-upgraded nodes treat v4 transactions as anyone-can-spend, which is the standard soft fork upgrade path established by BIP-141 (Segregated Witness) and BIP-341 (Taproot).
 
 **Existing transactions.** Ladder Script does not modify the validation rules for transaction versions 1 or 2. All existing UTXOs, scripts, and spending paths remain valid and unchanged.
 
@@ -356,12 +356,7 @@ The following RPCs are provided for wallet and application integration:
 
 Wallets cannot spend ladder-locked outputs without implementing the ladder evaluator and sighash computation.
 
-**Phase-based deployment.** The three-phase activation schedule allows incremental rollout:
-- Phase 1 activates the core framework plus signature, timelock, and hash blocks. This covers all functionality equivalent to existing Script capabilities.
-- Phase 2 adds covenant and anchor blocks, enabling constrained spending and protocol-specific UTXO tagging.
-- Phase 3 adds recursion and PLC blocks, enabling stateful and self-referencing conditions.
-
-Each phase can be activated independently via BIP-9 versionbits signaling with its own activation threshold and timeout. Phase 2 blocks are consensus-valid but policy-non-standard until Phase 2 activation. Phase 3 blocks follow the same pattern.
+**Unified deployment.** All block types activate simultaneously as a single BIP-9 deployment. Upon activation, all block types (signature, timelock, hash, covenant, anchor, recursion, and PLC) are standard and consensus-enforced.
 
 ## Reference Implementation
 
@@ -372,9 +367,9 @@ The reference implementation is located in the `src/rung/` directory of ghost-co
 | `types.h` / `types.cpp` | Core type definitions: `RungBlockType`, `RungDataType`, `RungCoilType`, `RungAttestationMode`, `RungScheme`, and all struct definitions. |
 | `conditions.h` / `conditions.cpp` | Conditions (locking side): `RungConditions`, serialization to/from `CScript` with `0xc1` prefix, condition data type validation. |
 | `serialize.h` / `serialize.cpp` | Wire format v2 serialization/deserialization with full validation. Policy limit constants. |
-| `evaluator.h` / `evaluator.cpp` | Block evaluators for all 39 block types across three phases. Rung AND logic, ladder OR logic, inversion. `VerifyRungTx` entry point. `LadderSignatureChecker` for Schnorr/PQ signature verification. |
+| `evaluator.h` / `evaluator.cpp` | Block evaluators for all 39 block types. Rung AND logic, ladder OR logic, inversion. `VerifyRungTx` entry point. `LadderSignatureChecker` for Schnorr/PQ signature verification. |
 | `sighash.h` / `sighash.cpp` | `SignatureHashLadder` tagged hash computation. |
-| `policy.h` / `policy.cpp` | Mempool policy enforcement: `IsStandardRungTx`, `IsStandardRungOutput`, phase classification. |
+| `policy.h` / `policy.cpp` | Mempool policy enforcement: `IsStandardRungTx`, `IsStandardRungOutput`. |
 | `aggregate.h` / `aggregate.cpp` | Block-level signature aggregation and deferred attestation. |
 | `adaptor.h` / `adaptor.cpp` | Adaptor signature creation, verification, and secret extraction. |
 | `pq_verify.h` / `pq_verify.cpp` | Post-quantum signature verification via liboqs (FALCON-512/1024, Dilithium3). |
@@ -388,7 +383,7 @@ The implementation includes comprehensive test coverage across two layers:
 - Field validation for all 9 data types with boundary conditions
 - Serialization round-trips for all 39 block types
 - Deserialization rejection of malformed inputs (empty, truncated, trailing bytes, oversized, unknown types)
-- Block evaluation for all Phase 1, 2, and 3 block types
+- Block evaluation for all block types
 - Inversion logic including ERROR non-inversion
 - Rung AND logic and ladder OR logic
 - Policy enforcement (standard/non-standard classification)
@@ -419,7 +414,7 @@ The implementation includes comprehensive test coverage across two layers:
 - Deeply nested covenant chains
 
 Additional functional tests:
-- `test/functional/rung_p2p.py`: P2P relay of v3 transactions between nodes.
+- `test/functional/rung_p2p.py`: P2P relay of v4 transactions between nodes.
 - `test/functional/rung_pq_block.py`: Post-quantum block-level tests.
 
 **Fuzz testing** (`src/test/fuzz/rung_deserialize.cpp`): Continuous fuzz testing of the deserialization path.

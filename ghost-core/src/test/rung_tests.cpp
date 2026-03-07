@@ -866,7 +866,7 @@ BOOST_AUTO_TEST_CASE(inversion_error_never_flips)
 }
 
 // ============================================================================
-// Phase 2 evaluator tests
+// Covenant and Anchor evaluator tests
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(eval_ctv_missing_hash)
@@ -990,7 +990,7 @@ BOOST_AUTO_TEST_CASE(eval_anchor_types_structural)
 }
 
 // ============================================================================
-// Phase 3 evaluator tests — Recursion
+// Recursion evaluator tests
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(eval_recurse_same_structural)
@@ -1042,7 +1042,7 @@ BOOST_AUTO_TEST_CASE(eval_recurse_split_min_sats)
 }
 
 // ============================================================================
-// Phase 3 evaluator tests — PLC
+// PLC evaluator tests
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(eval_compare_operators)
@@ -1636,7 +1636,7 @@ BOOST_AUTO_TEST_CASE(policy_all_phases_standard)
     LadderWitness ladder;
     Rung rung;
     RungBlock block;
-    block.type = RungBlockType::CTV; // Phase 2 — should be standard
+    block.type = RungBlockType::CTV; // should be standard
     block.fields.push_back({RungDataType::HASH256, std::vector<uint8_t>(32, 0xaa)});
     rung.blocks.push_back(block);
     ladder.rungs.push_back(rung);
@@ -3522,7 +3522,7 @@ BOOST_AUTO_TEST_CASE(eval_cosign_skips_self)
 }
 
 // ============================================================================
-// Phase 3 PLC state gating tests
+// PLC state gating tests
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(eval_counter_down_count_positive)

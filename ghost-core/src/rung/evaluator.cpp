@@ -207,7 +207,7 @@ static EvalResult EvalPQSig(RungScheme scheme,
 }
 
 // ============================================================================
-// Phase 1 evaluators
+// Signature, Timelock, Hash evaluators
 // ============================================================================
 
 EvalResult EvalSigBlock(const RungBlock& block,
@@ -602,7 +602,7 @@ EvalResult EvalTaggedHashBlock(const RungBlock& block)
 }
 
 // ============================================================================
-// Phase 2 evaluators — Covenant
+// Covenant evaluators
 // ============================================================================
 
 uint256 ComputeCTVHash(const CTransaction& tx, uint32_t input_index)
@@ -788,7 +788,7 @@ EvalResult EvalAmountLockBlock(const RungBlock& block, const RungEvalContext& ct
 }
 
 // ============================================================================
-// Phase 2 evaluators — Anchor
+// Anchor evaluators
 // ============================================================================
 
 static bool HasRequiredHashes(const RungBlock& block, size_t count)
@@ -872,7 +872,7 @@ EvalResult EvalAnchorOracleBlock(const RungBlock& block)
 }
 
 // ============================================================================
-// Phase 3 evaluators — Recursion
+// Recursion evaluators
 // ============================================================================
 
 EvalResult EvalRecurseSameBlock(const RungBlock& block, const RungEvalContext& ctx)
@@ -1181,7 +1181,7 @@ EvalResult EvalRecurseDecayBlock(const RungBlock& block, const RungEvalContext& 
 }
 
 // ============================================================================
-// Phase 3 evaluators — PLC
+// PLC evaluators
 // ============================================================================
 
 EvalResult EvalHysteresisFeeBlock(const RungBlock& block, const RungEvalContext& ctx)
@@ -1478,7 +1478,7 @@ EvalResult EvalBlock(const RungBlock& block,
 {
     EvalResult raw;
     switch (block.type) {
-    // Phase 1 — Signature
+    // Signature family
     case RungBlockType::SIG:
         raw = EvalSigBlock(block, checker, sigversion, execdata);
         break;
@@ -1488,7 +1488,7 @@ EvalResult EvalBlock(const RungBlock& block,
     case RungBlockType::ADAPTOR_SIG:
         raw = EvalAdaptorSigBlock(block, checker, sigversion, execdata);
         break;
-    // Phase 1 — Timelock
+    // Timelock family
     case RungBlockType::CSV:
         raw = EvalCSVBlock(block, checker);
         break;
@@ -1501,7 +1501,7 @@ EvalResult EvalBlock(const RungBlock& block,
     case RungBlockType::CLTV_TIME:
         raw = EvalCLTVTimeBlock(block, checker);
         break;
-    // Phase 1 — Hash
+    // Hash family
     case RungBlockType::HASH_PREIMAGE:
         raw = EvalHashPreimageBlock(block);
         break;
@@ -1511,7 +1511,7 @@ EvalResult EvalBlock(const RungBlock& block,
     case RungBlockType::TAGGED_HASH:
         raw = EvalTaggedHashBlock(block);
         break;
-    // Phase 2 — Covenant
+    // Covenant family
     case RungBlockType::CTV:
         raw = EvalCTVBlock(block, ctx);
         break;
@@ -1521,7 +1521,7 @@ EvalResult EvalBlock(const RungBlock& block,
     case RungBlockType::AMOUNT_LOCK:
         raw = EvalAmountLockBlock(block, ctx);
         break;
-    // Phase 2 — Anchor
+    // Anchor family
     case RungBlockType::ANCHOR:
         raw = EvalAnchorBlock(block);
         break;
@@ -1540,7 +1540,7 @@ EvalResult EvalBlock(const RungBlock& block,
     case RungBlockType::ANCHOR_ORACLE:
         raw = EvalAnchorOracleBlock(block);
         break;
-    // Phase 3 — Recursion
+    // Recursion family
     case RungBlockType::RECURSE_SAME:
         raw = EvalRecurseSameBlock(block, ctx);
         break;
@@ -1559,7 +1559,7 @@ EvalResult EvalBlock(const RungBlock& block,
     case RungBlockType::RECURSE_DECAY:
         raw = EvalRecurseDecayBlock(block, ctx);
         break;
-    // Phase 3 — PLC
+    // PLC family
     case RungBlockType::HYSTERESIS_FEE:
         raw = EvalHysteresisFeeBlock(block, ctx);
         break;
@@ -1738,7 +1738,7 @@ bool VerifyRungTx(const CTransaction& tx,
     std::string cond_error;
     bool has_conditions = DeserializeRungConditions(spent_output.scriptPubKey, conditions, cond_error);
 
-    // Build evaluation context for Phase 2+ blocks
+    // Build evaluation context for Extended blocks
     RungEvalContext eval_ctx;
     eval_ctx.tx = &tx;
     eval_ctx.input_index = nIn;
@@ -1776,7 +1776,7 @@ bool VerifyRungTx(const CTransaction& tx,
             return false;
         }
     } else {
-        // Bootstrap spend: v3 tx spending a v1/v2 UTXO
+        // Bootstrap spend: v4 tx spending a v1/v2 UTXO
         RungConditions empty_conditions;
         LadderSignatureChecker ladder_checker(checker, empty_conditions, txdata, tx, nIn);
         if (!EvalLadder(witness_ladder, ladder_checker, SigVersion::LADDER, execdata, eval_ctx)) {
