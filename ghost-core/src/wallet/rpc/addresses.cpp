@@ -352,6 +352,7 @@ public:
     UniValue operator()(const PayToAnchor& id) const { return UniValue(UniValue::VOBJ); }
     UniValue operator()(const WitnessUnknown& id) const { return UniValue(UniValue::VOBJ); }
     UniValue operator()(const SilentPaymentDestination& sp) const { return UniValue(UniValue::VOBJ); }
+    UniValue operator()(const LadderDestination& ld) const { return UniValue(UniValue::VOBJ); }
 };
 
 static UniValue DescribeWalletAddress(const CWallet& wallet, const CTxDestination& dest)

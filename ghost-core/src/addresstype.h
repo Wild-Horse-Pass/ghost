@@ -190,6 +190,28 @@ public:
 };
 
 /**
+ * Ladder Script destination (rung1... address)
+ *
+ * Contains the serialized rung conditions (the scriptPubKey minus the 0xc1 prefix).
+ * Encoded as Bech32m with "rung" HRP: rung1<conditions bytes>
+ */
+struct LadderDestination
+{
+private:
+    std::vector<unsigned char> m_conditions;
+
+public:
+    LadderDestination() = default;
+    explicit LadderDestination(const std::vector<unsigned char>& conditions) : m_conditions(conditions) {}
+    explicit LadderDestination(std::vector<unsigned char>&& conditions) : m_conditions(std::move(conditions)) {}
+
+    const std::vector<unsigned char>& GetConditions() const LIFETIMEBOUND { return m_conditions; }
+
+    friend bool operator==(const LadderDestination& a, const LadderDestination& b) { return a.m_conditions == b.m_conditions; }
+    friend bool operator<(const LadderDestination& a, const LadderDestination& b) { return a.m_conditions < b.m_conditions; }
+};
+
+/**
  * A txout script categorized into standard templates.
  *  * CNoDestination: Optionally a script, no corresponding address.
  *  * PubKeyDestination: TxoutType::PUBKEY (P2PK), no corresponding address
@@ -203,7 +225,7 @@ public:
  *  * SilentPaymentDestination: Ghost ID for Silent Payments (ghost1... address)
  *  A CTxDestination is the internal data type encoded in a bitcoin address
  */
-using CTxDestination = std::variant<CNoDestination, PubKeyDestination, PKHash, ScriptHash, WitnessV0ScriptHash, WitnessV0KeyHash, WitnessV1Taproot, PayToAnchor, WitnessUnknown, SilentPaymentDestination>;
+using CTxDestination = std::variant<CNoDestination, PubKeyDestination, PKHash, ScriptHash, WitnessV0ScriptHash, WitnessV0KeyHash, WitnessV1Taproot, PayToAnchor, WitnessUnknown, SilentPaymentDestination, LadderDestination>;
 
 /** Check whether a CTxDestination corresponds to one with an address. */
 bool IsValidDestination(const CTxDestination& dest);

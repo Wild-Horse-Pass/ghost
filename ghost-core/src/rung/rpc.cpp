@@ -1332,6 +1332,68 @@ static RPCHelpMan verifyadaptorpresig()
     };
 }
 
+static RPCHelpMan encodeladderaddress()
+{
+    return RPCHelpMan{
+        "encodeladderaddress",
+        "Encode a rung conditions hex string as a rung1... Bech32m address.\n",
+        {
+            {"conditions_hex", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "The serialized rung conditions (hex). This is the scriptPubKey minus the 0xc1 prefix."},
+        },
+        RPCResult{RPCResult::Type::STR, "", "The Bech32m rung address (rung1...)"},
+        RPCExamples{
+            HelpExampleCli("encodeladderaddress", "\"0102...\"")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        {
+            auto conditions = ParseHex(request.params[0].get_str());
+            if (conditions.empty()) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "Empty conditions");
+            }
+            LadderDestination dest(conditions);
+            std::string address = EncodeDestination(dest);
+            if (address.empty()) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encode address");
+            }
+            return address;
+        },
+    };
+}
+
+static RPCHelpMan decodeladderaddress()
+{
+    return RPCHelpMan{
+        "decodeladderaddress",
+        "Decode a rung1... Bech32m address to its conditions hex and scriptPubKey.\n",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The rung1... address"},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {
+            {RPCResult::Type::STR_HEX, "conditions", "The serialized rung conditions (minus 0xc1 prefix)"},
+            {RPCResult::Type::STR_HEX, "scriptPubKey", "The full scriptPubKey (0xc1 + conditions)"},
+        }},
+        RPCExamples{
+            HelpExampleCli("decodeladderaddress", "\"rung1q...\"")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        {
+            std::string error_msg;
+            CTxDestination dest = DecodeDestination(request.params[0].get_str(), error_msg);
+            if (!std::holds_alternative<LadderDestination>(dest)) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid rung address: " + error_msg);
+            }
+            const auto& ld = std::get<LadderDestination>(dest);
+            CScript spk = GetScriptForDestination(dest);
+
+            UniValue result(UniValue::VOBJ);
+            result.pushKV("conditions", HexStr(ld.GetConditions()));
+            result.pushKV("scriptPubKey", HexStr(spk));
+            return result;
+        },
+    };
+}
+
 void RegisterRungRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
@@ -1345,6 +1407,8 @@ void RegisterRungRPCCommands(CRPCTable& t)
         {"rung", &pqpubkeycommit},
         {"rung", &extractadaptorsecret},
         {"rung", &verifyadaptorpresig},
+        {"rung", &encodeladderaddress},
+        {"rung", &decodeladderaddress},
     };
     for (const auto& c : commands) {
         t.appendCommand(c.name, &c);
