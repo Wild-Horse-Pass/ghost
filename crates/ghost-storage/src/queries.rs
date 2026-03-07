@@ -6432,6 +6432,90 @@ impl Database {
     }
 
     // =========================================================================
+    // PENDING L2 SHIELDS (staging for checkpoint inclusion)
+    // =========================================================================
+
+    /// Insert a pending shield commitment into the staging table.
+    /// Called by sync_commitment() so shields survive restarts.
+    pub fn insert_pending_shield(
+        &self,
+        note_index: u64,
+        commitment: &[u8; 32],
+        block_height: u64,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO pending_l2_shields (note_index, commitment, block_height)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    note_index as i64,
+                    commitment.as_slice(),
+                    block_height as i64
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Load all pending shield commitments (for restart recovery).
+    pub fn load_pending_shields(&self) -> GhostResult<Vec<(u64, [u8; 32], u64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT note_index, commitment, block_height FROM pending_l2_shields
+                     ORDER BY note_index ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    let idx: i64 = row.get(0)?;
+                    let commitment: Vec<u8> = row.get(1)?;
+                    let height: i64 = row.get(2)?;
+                    Ok((idx, commitment, height))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut result = Vec::new();
+            for row in rows {
+                let (idx, commitment_vec, height) =
+                    row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let commitment: [u8; 32] = commitment_vec.try_into().map_err(|_| {
+                    GhostError::Database(
+                        "Invalid commitment size in pending_l2_shields".to_string(),
+                    )
+                })?;
+                result.push((idx as u64, commitment, height as u64));
+            }
+            Ok(result)
+        })
+    }
+
+    /// Delete finalized shield commitments from the staging table.
+    /// Called during finalize_checkpoint() after shields are BFT-confirmed.
+    pub fn delete_pending_shields(&self, note_indices: &[u64]) -> GhostResult<()> {
+        if note_indices.is_empty() {
+            return Ok(());
+        }
+        self.with_connection(|conn| {
+            let placeholders: Vec<String> =
+                note_indices.iter().map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "DELETE FROM pending_l2_shields WHERE note_index IN ({})",
+                placeholders.join(",")
+            );
+            let params: Vec<Box<dyn rusqlite::types::ToSql>> = note_indices
+                .iter()
+                .map(|idx| Box::new(*idx as i64) as Box<dyn rusqlite::types::ToSql>)
+                .collect();
+            conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    // =========================================================================
     // L2 CHECKPOINTS
     // =========================================================================
 

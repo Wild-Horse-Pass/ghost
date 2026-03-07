@@ -1351,6 +1351,12 @@ async fn main() -> Result<()> {
         nullifier_handler.set_broadcast_fn(l2_broadcast);
         nullifier_handler.set_metrics(Arc::clone(&metrics));
 
+        // Restore pending shields that survived a restart but weren't yet
+        // included in a finalized checkpoint (prevents checkpoint divergence).
+        if let Err(e) = nullifier_handler.restore_pending_shields() {
+            warn!(error = %e, "Failed to restore pending shields from DB");
+        }
+
         // Set checkpoint base root from latest persisted checkpoint
         if let Ok(Some(cp)) = db.get_latest_l2_checkpoint() {
             nullifier_handler.set_checkpoint_base_root(cp.commitment_root);

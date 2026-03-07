@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use ghost_consensus::epoch_manager::{EpochManager, EpochManagerConfig};
 use ghost_consensus::message::{
-    L2CheckpointVoteMessage, L2ConfidentialTransferMessage, L2Transaction,
-    L2TransferBroadcastMessage, MessageType,
+    L2CheckpointBlockMessage, L2CheckpointVoteMessage, L2ConfidentialTransferMessage,
+    L2Transaction, L2TransferBroadcastMessage, MessageType,
 };
 use ghost_consensus::nullifier_route_handler::NullifierRouteHandler;
 use ghost_storage::Database;
@@ -77,6 +77,26 @@ fn make_test_tx(nullifier: [u8; 32], root: [u8; 32]) -> L2Transaction {
         encrypted_recipient: vec![],
         timestamp: 0,
     }
+}
+
+/// Create a dummy checkpoint proposal at the given height with a specific proposer.
+/// Returns the proposal and its checkpoint hash.
+fn make_dummy_proposal(height: u64, proposer: [u8; 32]) -> (L2CheckpointBlockMessage, [u8; 32]) {
+    let proposal = L2CheckpointBlockMessage {
+        height,
+        epoch: 0,
+        prev_commitment_root: [0u8; 32],
+        new_commitment_root: [0u8; 32],
+        transactions: vec![],
+        shield_commitments: vec![],
+        active_node_count: 0,
+        proposer,
+        proposer_signature: [0u8; 64],
+        timestamp: 0,
+        epoch_transition: None,
+    };
+    let hash = proposal.checkpoint_hash();
+    (proposal, hash)
 }
 
 // =============================================================================
@@ -295,7 +315,10 @@ fn test_877_checkpoint_bft_quorum_3_nodes() {
 
     let nodes = setup_multi_node(&[node_a, node_b, node_c]);
 
-    let checkpoint_hash = [0xBB; 32];
+    // Store a proposal so C-7 guard allows finalization
+    let proposer = nodes[0].1.get_proposer(1).unwrap();
+    let (proposal, checkpoint_hash) = make_dummy_proposal(1, proposer);
+    nodes[0].2.handle_checkpoint_proposal(&proposal).unwrap();
 
     // With 3 nodes at 67% threshold: ceil(3 * 67 / 100) = 3 — all must vote
     // Vote from node A
@@ -341,7 +364,10 @@ fn test_878_checkpoint_bft_quorum_4_nodes() {
     let nodes_ids = [[0x01; 32], [0x02; 32], [0x03; 32], [0x04; 32]];
     let nodes = setup_multi_node(&nodes_ids);
 
-    let checkpoint_hash = [0xCC; 32];
+    // Store a proposal so C-7 guard allows finalization
+    let proposer = nodes[0].1.get_proposer(1).unwrap();
+    let (proposal, checkpoint_hash) = make_dummy_proposal(1, proposer);
+    nodes[0].2.handle_checkpoint_proposal(&proposal).unwrap();
 
     // 2 votes: 50% < 67%
     for voter in &nodes_ids[..2] {
@@ -521,8 +547,12 @@ fn test_883_checkpoint_includes_confirmed_txs() {
     assert_eq!(block.height, 1); // height 0 + 1
     assert_eq!(block.proposer, node_a);
 
-    // Pool should be drained after proposal
-    assert_eq!(nodes[0].2.confirmed_pool_size(), 0);
+    // Pool is retained until finalization (clone-not-drain pattern)
+    assert_eq!(
+        nodes[0].2.confirmed_pool_size(),
+        3,
+        "Pool should be retained until checkpoint finalization"
+    );
 }
 
 /// Test 884: Checkpoint proposal validates correctly on other nodes
@@ -562,9 +592,12 @@ fn test_885_checkpoint_finalization_persists() {
     let root = nodes[0].1.current_root().unwrap();
     nodes[0].1.add_valid_root(root, 0).unwrap();
 
-    // Propose an empty checkpoint
+    // Propose an empty checkpoint and use the full propose_and_broadcast flow
     let proposal = nodes[0].2.propose_checkpoint().unwrap().unwrap();
     let checkpoint_hash = proposal.checkpoint_hash();
+
+    // Store proposal in vote state (mirrors propose_and_broadcast flow)
+    nodes[0].2.handle_checkpoint_proposal(&proposal).unwrap();
 
     // Self-vote (single node = 100%)
     let vote = L2CheckpointVoteMessage {
@@ -715,26 +748,24 @@ fn test_889_vote_state_pruning() {
     let node_a = [0x01; 32];
     let nodes = setup_multi_node(&[node_a]);
 
-    // Submit votes for many heights
+    // Submit proposals + votes for many heights (single node = immediate quorum)
     for h in 1..=200u64 {
+        let (proposal, hash) = make_dummy_proposal(h, node_a);
+        nodes[0].2.handle_checkpoint_proposal(&proposal).unwrap();
+
         let vote = L2CheckpointVoteMessage {
             height: h,
-            checkpoint_hash: [h as u8; 32],
+            checkpoint_hash: hash,
             voter: node_a,
             approve: true,
             signature: [0u8; 64],
             timestamp: 0,
         };
-        // Each vote from a single node in a 1-node network reaches quorum
         nodes[0].2.handle_checkpoint_vote(&vote).unwrap();
     }
 
-    // After finalization at height 200, old vote states should be pruned
-    // The handler prunes states older than current_height - 100
-    // Since single-node network means each vote immediately finalizes,
-    // and finalize calls prune_vote_states with the finalized height,
-    // heights 1-100 should be pruned after height 200 is finalized.
-    // We just verify the system doesn't crash with 200 votes.
+    // After finalization at height 200, old vote states should be pruned.
+    // We verify the system doesn't crash with 200 consecutive checkpoints.
 }
 
 // =============================================================================
@@ -931,19 +962,16 @@ fn test_894_finalize_fn_called_on_checkpoint() {
         .unwrap()
         .expect("Should produce proposal");
     assert!(!proposal.transactions.is_empty(), "Proposal should have transactions");
-    let checkpoint_hash = proposal.checkpoint_hash();
 
-    // Proposer self-vote
-    let mut votes = vec![L2CheckpointVoteMessage {
-        height: 1,
-        checkpoint_hash,
-        voter: proposer_id,
-        approve: true,
-        signature: [0u8; 64],
-        timestamp: 0,
-    }];
+    // Proposer stores its own proposal (mirrors propose_and_broadcast flow)
+    let proposer_vote = nodes[proposer_idx]
+        .2
+        .handle_checkpoint_proposal(&proposal)
+        .unwrap()
+        .unwrap();
+    let mut votes = vec![proposer_vote];
 
-    // Non-proposer validates and votes (this stores the proposal in vote state)
+    // Non-proposer validates and votes
     for (i, (_, _, handler)) in nodes.iter().enumerate() {
         if i == proposer_idx {
             continue;
@@ -1048,17 +1076,13 @@ fn test_895_external_submit_through_finalization() {
         .propose_checkpoint()
         .unwrap()
         .expect("Should produce proposal");
-    let checkpoint_hash = proposal.checkpoint_hash();
-
-    // Step 4: Collect votes
-    let mut votes = vec![L2CheckpointVoteMessage {
-        height: 1,
-        checkpoint_hash,
-        voter: proposer_id,
-        approve: true,
-        signature: [0u8; 64],
-        timestamp: 0,
-    }];
+    // Step 4: Proposer stores its own proposal and collects votes
+    let proposer_vote = nodes[proposer_idx]
+        .2
+        .handle_checkpoint_proposal(&proposal)
+        .unwrap()
+        .unwrap();
+    let mut votes = vec![proposer_vote];
 
     for (i, (_, _, handler)) in nodes.iter().enumerate() {
         if i == proposer_idx {
@@ -1244,23 +1268,20 @@ fn test_890_full_flow_transfer_to_finalization() {
     assert_eq!(proposal.height, 1);
     assert_eq!(proposal.transactions.len(), 1);
     assert_eq!(proposal.proposer, proposer_id);
-    let checkpoint_hash = proposal.checkpoint_hash();
 
-    // Proposer's pool should be drained
-    assert_eq!(nodes[proposer_idx].2.confirmed_pool_size(), 0);
+    // Pool is retained until finalization (clone-not-drain)
+    assert_eq!(nodes[proposer_idx].2.confirmed_pool_size(), 1);
 
-    // ── Step 6: Non-proposers validate and vote ────────────────────────────
+    // ── Step 6: All nodes validate proposal and vote ────────────────────────
     let mut votes: Vec<L2CheckpointVoteMessage> = Vec::new();
 
-    // Proposer self-vote
-    votes.push(L2CheckpointVoteMessage {
-        height: 1,
-        checkpoint_hash,
-        voter: proposer_id,
-        approve: true,
-        signature: [0u8; 64],
-        timestamp: 0,
-    });
+    // Proposer stores its own proposal (mirrors propose_and_broadcast)
+    let proposer_vote = nodes[proposer_idx]
+        .2
+        .handle_checkpoint_proposal(&proposal)
+        .expect("Proposer should accept own proposal")
+        .expect("Should produce vote");
+    votes.push(proposer_vote);
 
     // Other nodes validate the proposal and produce approval votes
     for (i, (_, _, handler)) in nodes.iter().enumerate() {
