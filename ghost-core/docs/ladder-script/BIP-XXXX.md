@@ -250,9 +250,9 @@ Ladder evaluation follows a strict three-level logic:
 - SATISFIED becomes UNSATISFIED
 - UNSATISFIED becomes SATISFIED
 - ERROR remains ERROR (never inverted)
-- UNKNOWN_BLOCK_TYPE becomes SATISFIED when inverted
+- UNKNOWN_BLOCK_TYPE becomes ERROR (unconditionally unusable)
 
-**Unknown block types:** An unrecognized `block_type` value returns UNKNOWN_BLOCK_TYPE, which is treated as UNSATISFIED in normal evaluation and SATISFIED when inverted. This enables forward-compatible soft forks: a new block type can be deployed as "must fail unless the new rule is active," and upgraded nodes evaluate the actual condition.
+**Unknown block types:** An unrecognized `block_type` value returns UNKNOWN_BLOCK_TYPE. When not inverted, it propagates as a non-SATISFIED result, causing the rung to fail and evaluation to fall through to subsequent rungs. When inverted, it becomes ERROR (consensus failure). This prevents an attacker from using an inverted unknown block type to bypass spending conditions. New block types are deployed via soft fork activation — all block types activate simultaneously.
 
 ### Sighash
 
@@ -299,7 +299,7 @@ The following limits are enforced at the policy (mempool) layer. Consensus enfor
 | MAX_RUNGS | 16 | Maximum rungs per ladder witness. Prevents combinatorial explosion in evaluation. |
 | MAX_BLOCKS_PER_RUNG | 8 | Maximum blocks per rung. Limits AND-condition depth. |
 | MAX_FIELDS_PER_BLOCK | 16 | Maximum typed fields per block. Sufficient for 16-of-16 multisig. |
-| MAX_LADDER_WITNESS_SIZE | 10,000 bytes | Maximum total serialized witness size. Accommodates PQ signatures (Dilithium3 at 3,293 bytes) with headroom for multi-block rungs. |
+| MAX_LADDER_WITNESS_SIZE | 10,000 bytes | Maximum total serialized witness size. Accommodates Dilithium3 signatures (3,293 bytes) with headroom for multi-block rungs. |
 
 Policy additionally restricts:
 - All block types are standard upon activation.
@@ -307,10 +307,24 @@ Policy additionally restricts:
 - All field sizes must conform to type constraints (`FieldMinSize` through `FieldMaxSize`).
 - Conditions scripts must not contain SIGNATURE or PREIMAGE fields.
 
+### Address Format
+
+Ladder Script outputs use the `rung1` human-readable prefix with Bech32m encoding (BIP-350). The address encodes the raw conditions bytes (the `scriptPubKey` payload after the `0xc1` prefix).
+
+**Encoding:** Convert conditions bytes to 5-bit groups using Bech32 base conversion, then encode with `bech32::Encode(bech32::Encoding::BECH32M, "rung", data)`.
+
+**Decoding:** Detect the `rung1` prefix, decode with Bech32m, convert from 5-bit groups to 8-bit bytes. The result is a `LadderDestination` in the `CTxDestination` variant type.
+
+**Character limit:** 500 characters (`CharLimit::RUNG_ADDRESS`), accommodating variable-length conditions from simple single-block to complex multi-rung PQ conditions.
+
+**Script detection:** The `Solver` identifies rung conditions by the `0xc1` prefix, returning `TxoutType::RUNG_CONDITIONS`.
+
 ### RPC Interface
 
 The following RPCs are provided for wallet and application integration:
 
+- `encodeladderaddress` -- Encode serialized rung conditions as a `rung1`-prefixed Bech32m address.
+- `decodeladderaddress` -- Decode a `rung1`-prefixed Bech32m address back to raw conditions hex.
 - `createrung` -- Create a rung conditions structure from a JSON description of blocks and fields.
 - `decoderung` -- Decode a hex-encoded rung conditions structure to human-readable JSON.
 - `validateladder` -- Validate a raw v4 RUNG_TX transaction's ladder witnesses against its spent outputs.
@@ -331,9 +345,9 @@ The following RPCs are provided for wallet and application integration:
 
 **Inversion.** The `inverted` flag on blocks provides NOT logic without a separate opcode. Combined with AND/OR rung semantics, this yields full boolean expressiveness. The rule that ERROR is never inverted prevents masking of consensus failures.
 
-**Forward compatibility via unknown types.** Unknown block types return UNSATISFIED rather than ERROR. This means a rung containing a future block type simply fails to match, and evaluation falls through to subsequent rungs. Combined with inversion (where an unknown inverted block becomes SATISFIED), this enables soft fork deployment of new block types without breaking existing transaction validation.
+**Strict unknown type handling.** Unknown block types return UNSATISFIED (rung fails, falls through to next rung) when not inverted, and ERROR when inverted. This prevents the inverted-unknown footgun where an attacker could bypass conditions using unknown block types in negated position. New block types activate simultaneously via soft fork — there is no need for forward-compatible unknown type evaluation.
 
-**Post-quantum signature support.** The PUBKEY maximum of 2,048 bytes and SIGNATURE maximum of 50,000 bytes were chosen to accommodate all NIST post-quantum finalist schemes. The PUBKEY_COMMIT mechanism enables a commit-reveal migration path: users can lock funds to a 32-byte hash of their PQ public key today, revealing the full key only at spend time.
+**Post-quantum signature support.** The PUBKEY maximum of 2,048 bytes and SIGNATURE maximum of 5,000 bytes were chosen to accommodate all NIST post-quantum finalist schemes. The PUBKEY_COMMIT mechanism enables a commit-reveal migration path: users can lock funds to a 32-byte hash of their PQ public key today, revealing the full key only at spend time.
 
 **Coil separation.** Separating input conditions (rungs) from output semantics (coil) provides a clean interface between "who can spend" and "where it can go." This makes covenant logic (UNLOCK_TO, COVENANT coil types) orthogonal to signature and timelock logic.
 
@@ -341,7 +355,7 @@ The following RPCs are provided for wallet and application integration:
 
 **Conditions hash in sighash.** Including the SHA-256 hash of the serialized locking conditions in the sighash computation prevents signature reuse across different ladder outputs that happen to use the same key. This is analogous to BIP-341's tapleaf hash commitment.
 
-**Policy vs. consensus limits.** MAX_RUNGS, MAX_BLOCKS_PER_RUNG, and MAX_FIELDS_PER_BLOCK are enforced at both policy and consensus layers. The MAX_LADDER_WITNESS_SIZE limit at 100,000 bytes is necessary to accommodate post-quantum signatures while preventing witness bloat attacks.
+**Policy vs. consensus limits.** MAX_RUNGS, MAX_BLOCKS_PER_RUNG, and MAX_FIELDS_PER_BLOCK are enforced at both policy and consensus layers. The MAX_LADDER_WITNESS_SIZE limit at 10,000 bytes accommodates post-quantum signatures (Dilithium3 at 3,293 bytes) with headroom for multi-block rungs while preventing witness bloat attacks.
 
 ## Backward Compatibility
 

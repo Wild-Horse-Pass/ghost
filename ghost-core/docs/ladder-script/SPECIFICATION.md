@@ -1,7 +1,7 @@
 # Ladder Script -- Technical Specification
 
 **Version:** 2 (wire format v2)
-**Transaction version:** 3 (`RUNG_TX_VERSION`)
+**Transaction version:** 4 (`RUNG_TX_VERSION`)
 **Status:** Implemented -- all block types consensus-standard
 
 ---
@@ -120,7 +120,7 @@ All multi-byte integers are little-endian. Variable-length counts use Bitcoin's 
         [data: bytes]
 ```
 
-Trailing bytes after the complete structure are rejected. The maximum total serialized size is 100,000 bytes (`MAX_LADDER_WITNESS_SIZE`).
+Trailing bytes after the complete structure are rejected. The maximum total serialized size is 10,000 bytes (`MAX_LADDER_WITNESS_SIZE`).
 
 ---
 
@@ -151,7 +151,7 @@ Every field in a Ladder Script witness or condition must be one of the following
 | `0x03` | HASH256 | 32 | 32 | Yes | Yes | SHA-256 hash digest |
 | `0x04` | HASH160 | 20 | 20 | Yes | Yes | RIPEMD160(SHA256()) hash digest |
 | `0x05` | PREIMAGE | 1 | 252 | No | Yes | Hash preimage (witness-only) |
-| `0x06` | SIGNATURE | 1 | 50,000 | No | Yes | Signature bytes (witness-only) |
+| `0x06` | SIGNATURE | 1 | 5,000 | No | Yes | Signature bytes (witness-only) |
 | `0x07` | SPEND_INDEX | 4 | 4 | Yes | Yes | Spend index reference (uint32 LE) |
 | `0x08` | NUMERIC | 1 | 4 | Yes | Yes | Numeric value, unsigned LE (threshold, locktime, count, etc.) |
 | `0x09` | SCHEME | 1 | 1 | Yes | Yes | Signature scheme selector byte |
@@ -858,11 +858,11 @@ Post-quantum schemes (codes >= `0x10`) are identified by `IsPQScheme()`. PQ supp
 | Maximum rungs per ladder | 16 (`MAX_RUNGS`) | Policy and deserialization |
 | Maximum blocks per rung | 8 (`MAX_BLOCKS_PER_RUNG`) | Policy and deserialization |
 | Maximum fields per block | 16 (`MAX_FIELDS_PER_BLOCK`) | Deserialization |
-| Maximum ladder witness size | 100,000 bytes (`MAX_LADDER_WITNESS_SIZE`) | Deserialization |
+| Maximum ladder witness size | 10,000 bytes (`MAX_LADDER_WITNESS_SIZE`) | Deserialization |
 | Maximum coil address size | 520 bytes | Deserialization |
 | Maximum coil condition rungs | 16 (`MAX_RUNGS`) | Deserialization |
 | Maximum PREIMAGE size | 252 bytes | Data type constraint |
-| Maximum SIGNATURE size | 50,000 bytes | Data type constraint |
+| Maximum SIGNATURE size | 5,000 bytes | Data type constraint |
 | Maximum PUBKEY size | 2,048 bytes | Data type constraint |
 
 ---
@@ -876,17 +876,73 @@ Any block can be inverted by setting its `inverted` flag to `0x01`. Inversion is
 | SATISFIED | UNSATISFIED |
 | UNSATISFIED | SATISFIED |
 | ERROR | ERROR (unchanged) |
-| UNKNOWN_BLOCK_TYPE | SATISFIED |
+| UNKNOWN_BLOCK_TYPE | ERROR |
 
-The UNKNOWN_BLOCK_TYPE -> SATISFIED rule for inverted blocks supports forward compatibility: an unknown block type that is inverted is treated as satisfied, allowing older nodes to accept transactions using newer block types in negated position.
+Unknown block types are unconditionally unusable. Whether inverted or not, an unknown block type causes the rung to fail. When not inverted, UNKNOWN_BLOCK_TYPE propagates as a non-SATISFIED result (the rung fails and evaluation falls through to subsequent rungs). When inverted, it becomes ERROR (consensus failure). This prevents an attacker from using an inverted unknown block type to bypass spending conditions.
 
 ---
 
-## 14. RPC Interface
+## 14. Address Format
+
+Ladder Script outputs use the `rung1` human-readable prefix with Bech32m encoding (BIP-350).
+
+### 14.1 Encoding
+
+Given a conditions byte vector (the serialized `RungConditions` without the `0xc1` prefix):
+
+1. Convert the conditions bytes to 5-bit groups using the Bech32 base conversion.
+2. Encode with `bech32::Encode(bech32::Encoding::BECH32M, "rung", data)`.
+
+The resulting address has the format `rung1<bech32m-data>`.
+
+### 14.2 Decoding
+
+1. Detect the `rung1` prefix (case-insensitive).
+2. Decode with `bech32::Decode("rung1...", CharLimit::RUNG_ADDRESS)` where `RUNG_ADDRESS = 500`.
+3. Verify the encoding is BECH32M.
+4. Convert from 5-bit groups back to 8-bit bytes.
+5. The resulting bytes are the raw conditions, producing a `LadderDestination`.
+
+### 14.3 Character Limit
+
+The `RUNG_ADDRESS` character limit of 500 accommodates the variable-length nature of serialized rung conditions. Simple conditions (e.g., a single SIG block) produce short addresses; complex multi-rung conditions with PQ keys produce longer addresses.
+
+### 14.4 Script Detection
+
+The `Solver` identifies rung conditions outputs by their `0xc1` prefix byte. The `TxoutType::RUNG_CONDITIONS` enum value is returned, and the conditions bytes (after the prefix) are provided as the solution vector.
+
+### 14.5 CTxDestination
+
+The `LadderDestination` type is a variant of `CTxDestination`. It stores the raw conditions bytes and supports:
+
+- **GetScriptForDestination**: Reconstructs the `0xc1`-prefixed `scriptPubKey`.
+- **IsValidDestination**: Returns true.
+- **EncodeDestination**: Produces a `rung1`-prefixed Bech32m address.
+- **DecodeDestination**: Parses `rung1` addresses back to `LadderDestination`.
+
+---
+
+## 15. RPC Interface
 
 All Ladder Script RPCs are registered under the `"rung"` category.
 
-### 14.1 decoderung
+### 15.1 encodeladderaddress
+
+```
+encodeladderaddress "conditions_hex"
+```
+
+Encode serialized rung conditions as a `rung1`-prefixed Bech32m address. The conditions hex is the raw conditions bytes (without the `0xc1` prefix). Returns the encoded address string.
+
+### 15.2 decodeladderaddress
+
+```
+decodeladderaddress "rung1..."
+```
+
+Decode a `rung1`-prefixed Bech32m address back to its raw conditions hex. Returns the conditions bytes as hex.
+
+### 15.3 decoderung
 
 ```
 decoderung "hex"
@@ -894,7 +950,7 @@ decoderung "hex"
 
 Decode a serialized ladder witness from hex and return its typed structure as JSON. Includes rung/block/field breakdown with type names, hex data, sizes, coil metadata, and coil conditions.
 
-### 14.2 createrung
+### 15.4 createrung
 
 ```
 createrung [{"blocks": [{"type": "SIG", "inverted": false, "fields": [{"type": "PUBKEY", "hex": "03..."}]}]}]
@@ -902,7 +958,7 @@ createrung [{"blocks": [{"type": "SIG", "inverted": false, "fields": [{"type": "
 
 Create a serialized ladder witness from a JSON specification. Returns the serialized ladder witness as hex. Accepts an array of rungs, each containing an array of blocks with typed fields.
 
-### 14.3 createrungtx
+### 15.5 createrungtx
 
 ```
 createrungtx [{"txid": "...", "vout": 0}] [{"amount": 0.001, "conditions": [...]}]
@@ -910,7 +966,7 @@ createrungtx [{"txid": "...", "vout": 0}] [{"amount": 0.001, "conditions": [...]
 
 Create an unsigned v4 RUNG_TX transaction with rung condition outputs. Inputs are outpoints to spend. Outputs specify rung conditions (using the same JSON block/field format) and amounts. Returns the raw transaction hex.
 
-### 14.4 signrungtx
+### 15.6 signrungtx
 
 ```
 signrungtx "txhex" [{"privkey": "cVt...", "input": 0}] [{"amount": 0.001, "scriptPubKey": "c1..."}]
@@ -918,7 +974,7 @@ signrungtx "txhex" [{"privkey": "cVt...", "input": 0}] [{"amount": 0.001, "scrip
 
 Sign a v4 RUNG_TX transaction's inputs. Takes the raw transaction hex, an array of signing keys mapped to input indices, and an array of spent outputs (for sighash computation). Returns the signed transaction hex.
 
-### 14.5 validateladder
+### 15.7 validateladder
 
 ```
 validateladder "txhex"
@@ -926,7 +982,7 @@ validateladder "txhex"
 
 Validate a raw v4 RUNG_TX transaction's ladder witnesses. Checks that all input witnesses are valid ladder witnesses with correct structure, known block types, and valid field sizes. Returns validation results per input.
 
-### 14.6 computectvhash
+### 15.8 computectvhash
 
 ```
 computectvhash "txhex" input_index
@@ -934,7 +990,7 @@ computectvhash "txhex" input_index
 
 Compute the BIP-119 CTV template hash for a v4 RUNG_TX transaction at the specified input index. Returns the 32-byte hash as hex.
 
-### 14.7 generatepqkeypair
+### 15.9 generatepqkeypair
 
 ```
 generatepqkeypair "scheme"
@@ -942,7 +998,7 @@ generatepqkeypair "scheme"
 
 Generate a post-quantum keypair for the specified scheme (FALCON512, FALCON1024, DILITHIUM3). Requires liboqs support. Returns the public key and private key as hex.
 
-### 14.8 pqpubkeycommit
+### 15.10 pqpubkeycommit
 
 ```
 pqpubkeycommit "pubkey_hex"
@@ -950,7 +1006,7 @@ pqpubkeycommit "pubkey_hex"
 
 Compute the SHA256 commitment hash of a post-quantum public key. Use this to create PUBKEY_COMMIT condition fields for compact UTXO storage. Returns the 32-byte commitment as hex.
 
-### 14.9 extractadaptorsecret
+### 15.11 extractadaptorsecret
 
 ```
 extractadaptorsecret "pre_sig_hex" "adapted_sig_hex"
@@ -958,7 +1014,7 @@ extractadaptorsecret "pre_sig_hex" "adapted_sig_hex"
 
 Extract the adaptor secret from a pre-signature and adapted signature. Computes `t = s_adapted - s_pre (mod n)`. Both signatures must be 64 bytes. Returns the 32-byte secret as hex.
 
-### 14.10 verifyadaptorpresig
+### 15.12 verifyadaptorpresig
 
 ```
 verifyadaptorpresig "pubkey" "adaptor_point" "pre_sig" "sighash"

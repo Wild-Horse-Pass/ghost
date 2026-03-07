@@ -359,7 +359,7 @@ Policy enforcement (`IsStandardRungTx`) imposes the following limits:
 | Rungs per input | 16 |
 | Blocks per rung | 8 |
 | Fields per block | 16 |
-| Total witness size | 100,000 bytes |
+| Total witness size | 10,000 bytes |
 
 These limits are sufficient for any practical spending condition while preventing pathological witness sizes.
 

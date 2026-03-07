@@ -130,9 +130,9 @@ opcode prefix, witness version, or Taproot annex byte.
 | Max rungs per ladder | 16 | Policy |
 | Max blocks per rung | 8 | Policy |
 | Max fields per block | 16 | Deserialization |
-| Max ladder witness size | 100,000 bytes | Deserialization |
+| Max ladder witness size | 10,000 bytes | Deserialization |
 | Max PUBKEY size | 2,048 bytes | Field validation |
-| Max SIGNATURE size | 50,000 bytes | Field validation |
+| Max SIGNATURE size | 5,000 bytes | Field validation |
 | Max PREIMAGE size | 252 bytes | Field validation |
 | HASH256 size | Exactly 32 bytes | Field validation |
 | HASH160 size | Exactly 20 bytes | Field validation |
