@@ -293,103 +293,123 @@ impl SshController {
 
     // --- Ghost Core (C++ daemon) management ---
 
-    /// Ghost Core config file path.
-    const GHOST_CONF_PATH: &'static str = "/home/ghost/.ghost/ghost-core/ghost.conf";
-    const GHOST_CONF_BACKUP: &'static str = "/home/ghost/.ghost/ghost-core/ghost.conf.chaos_backup";
+    /// Ghost Core systemd service name.
+    pub const GHOST_CORE_SERVICE: &'static str = "ghostd";
 
-    /// Ghost Core service name.
-    pub const GHOST_CORE_SERVICE: &'static str = "ghost-core";
+    /// Systemd drop-in directory for ghostd overrides.
+    const GHOSTD_DROPIN_DIR: &'static str = "/etc/systemd/system/ghostd.service.d";
 
-    /// Backup the ghost.conf file.
+    /// Backup the ghostd drop-in config (reaper.conf) before chaos mutations.
     pub fn backup_ghost_conf(node: &NodeInfo) -> Result<String, String> {
-        println!("  [SSH] Backing up ghost.conf on {}", node.name);
+        println!("  [SSH] Backing up ghostd drop-in config on {}", node.name);
         Self::run(
             node,
             &format!(
-                "test ! -f {} && cp {} {}",
-                Self::GHOST_CONF_BACKUP,
-                Self::GHOST_CONF_PATH,
-                Self::GHOST_CONF_BACKUP
+                "sudo mkdir -p {} && \
+                 if [ -f {}/reaper.conf ]; then \
+                   sudo cp {}/reaper.conf {}/reaper.conf.chaos_backup; \
+                 else \
+                   sudo rm -f {}/reaper.conf.chaos_backup; \
+                 fi",
+                Self::GHOSTD_DROPIN_DIR,
+                Self::GHOSTD_DROPIN_DIR,
+                Self::GHOSTD_DROPIN_DIR,
+                Self::GHOSTD_DROPIN_DIR,
+                Self::GHOSTD_DROPIN_DIR,
             ),
         )
     }
 
-    /// Restore ghost.conf from backup. Removes backup after restore.
+    /// Restore ghostd drop-in config from backup, removing chaos overrides.
     pub fn restore_ghost_conf(node: &NodeInfo) -> Result<String, String> {
-        println!("  [SSH] Restoring ghost.conf on {}", node.name);
+        println!("  [SSH] Restoring ghostd drop-in config on {}", node.name);
         Self::run(
             node,
             &format!(
-                "cp {} {} && rm -f {}",
-                Self::GHOST_CONF_BACKUP,
-                Self::GHOST_CONF_PATH,
-                Self::GHOST_CONF_BACKUP
+                "if [ -f {dir}/reaper.conf.chaos_backup ]; then \
+                   sudo cp {dir}/reaper.conf.chaos_backup {dir}/reaper.conf && \
+                   sudo rm -f {dir}/reaper.conf.chaos_backup; \
+                 else \
+                   sudo rm -f {dir}/reaper.conf; \
+                 fi && \
+                 sudo systemctl daemon-reload",
+                dir = Self::GHOSTD_DROPIN_DIR
             ),
         )
     }
 
-    /// Check if a ghost.conf backup exists.
+    /// Check if a ghostd config backup exists.
     pub fn has_ghost_conf_backup(node: &NodeInfo) -> Result<bool, String> {
         let output = Self::run(
             node,
-            &format!("test -f {} && echo yes || echo no", Self::GHOST_CONF_BACKUP),
+            &format!(
+                "test -f {}/reaper.conf.chaos_backup && echo yes || echo no",
+                Self::GHOSTD_DROPIN_DIR
+            ),
         )?;
         Ok(output.trim() == "yes")
     }
 
-    /// Add a flag to ghost.conf under the [signet] section.
-    /// Bitcoin Core config format: key=value (no spaces).
+    /// Add a flag to ghostd via systemd drop-in override.
+    ///
+    /// Reads the effective ExecStart (from reaper.conf or main unit), appends
+    /// the flag, and writes an updated reaper.conf. Requires daemon-reload + restart.
     pub fn add_ghost_conf_flag(
         node: &NodeInfo,
         key: &str,
-        value: &str,
+        _value: &str,
     ) -> Result<String, String> {
         println!(
-            "  [SSH] Adding ghost.conf flag {}={} on {}",
-            key, value, node.name
+            "  [SSH] Adding ghostd flag -{} on {}",
+            key, node.name
         );
-        // Add the flag under the [signet] section (after the signetchallenge line)
+        // Read the effective ExecStart command, append the flag, update reaper.conf
         Self::run(
             node,
             &format!(
-                r#"grep -q '^{}=' {} || sed -i '/^signetchallenge=51$/a {}={}' {}"#,
-                key,
-                Self::GHOST_CONF_PATH,
-                key,
-                value,
-                Self::GHOST_CONF_PATH
+                r#"sudo mkdir -p {dir} && \
+                   EXEC=$(systemctl cat ghostd 2>/dev/null | grep '^ExecStart=/opt' | tail -1) && \
+                   if echo "$EXEC" | grep -q '\-{key}'; then echo 'flag already present'; exit 0; fi && \
+                   printf '[Service]\nExecStart=\n%s   -{key}\n' "$EXEC" | sudo tee {dir}/reaper.conf > /dev/null && \
+                   sudo systemctl daemon-reload"#,
+                dir = Self::GHOSTD_DROPIN_DIR,
+                key = key,
             ),
         )
     }
 
-    /// Remove a flag from ghost.conf.
+    /// Remove a flag from ghostd by regenerating the drop-in without it.
     #[allow(dead_code)]
     pub fn remove_ghost_conf_flag(node: &NodeInfo, key: &str) -> Result<String, String> {
         println!(
-            "  [SSH] Removing ghost.conf flag {} on {}",
+            "  [SSH] Removing ghostd flag -{} on {}",
             key, node.name
         );
         Self::run(
             node,
             &format!(
-                r#"sed -i '/^{}=/d' {}"#,
-                key,
-                Self::GHOST_CONF_PATH
+                r#"EXEC=$(systemctl cat ghostd 2>/dev/null | grep '^ExecStart=/opt' | tail -1 | sed 's/  *-{key}//' ) && \
+                   printf '[Service]\nExecStart=\n%s\n' "$EXEC" | sudo tee {dir}/reaper.conf > /dev/null && \
+                   sudo systemctl daemon-reload"#,
+                key = key,
+                dir = Self::GHOSTD_DROPIN_DIR,
             ),
         )
     }
 
-    /// Restart the ghost-core daemon.
+    /// Restart the ghost-core daemon (ghostd.service).
     /// Uses ghost-cli RPC to stop, then systemctl to start.
     pub fn restart_ghost_core(node: &NodeInfo) -> Result<String, String> {
         println!("  [SSH] Restarting ghost-core on {}", node.name);
         // Stop the running process via RPC (works regardless of systemd state)
         Self::run(
             node,
-            "/opt/ghost/bin/ghost-cli -datadir=/home/ghost/.ghost/ghost-core stop 2>/dev/null; \
+            "/opt/ghost/bin/ghost-cli -signet -datadir=/var/lib/bitcoin \
+             -rpcport=38332 -rpcuser=ghostrpc -rpcpassword=ghost_signet_rpc_2024 \
+             stop 2>/dev/null; \
              sleep 3; \
-             sudo systemctl reset-failed ghost-core 2>/dev/null; \
-             sudo systemctl start ghost-core",
+             sudo systemctl reset-failed ghostd 2>/dev/null; \
+             sudo systemctl start ghostd",
         )
     }
 
@@ -399,9 +419,11 @@ impl SshController {
         // Use ghost-cli RPC to stop the daemon, works regardless of systemd service state
         Self::run(
             node,
-            "/opt/ghost/bin/ghost-cli -datadir=/home/ghost/.ghost/ghost-core stop 2>/dev/null; \
+            "/opt/ghost/bin/ghost-cli -signet -datadir=/var/lib/bitcoin \
+             -rpcport=38332 -rpcuser=ghostrpc -rpcpassword=ghost_signet_rpc_2024 \
+             stop 2>/dev/null; \
              sleep 2; \
-             sudo systemctl stop ghost-core 2>/dev/null; true",
+             sudo systemctl stop ghostd 2>/dev/null; true",
         )
     }
 
@@ -411,8 +433,8 @@ impl SshController {
         // Reset any "failed" state before starting
         Self::run(
             node,
-            "sudo systemctl reset-failed ghost-core 2>/dev/null; \
-             sudo systemctl start ghost-core",
+            "sudo systemctl reset-failed ghostd 2>/dev/null; \
+             sudo systemctl start ghostd",
         )
     }
 
