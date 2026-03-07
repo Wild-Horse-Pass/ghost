@@ -233,6 +233,29 @@ impl NullifierRouteHandler {
         Self::new(our_id, epoch_manager, db, NullifierRouteConfig::default())
     }
 
+    /// Restore pending shields from DB after restart.
+    /// Must be called after construction to recover shields that were synced
+    /// but not yet included in a finalized checkpoint.
+    pub fn restore_pending_shields(&self) -> GhostResult<()> {
+        let shields = self.db.load_pending_shields()?;
+        if shields.is_empty() {
+            return Ok(());
+        }
+        let mut pending = self.pending_shields.write();
+        for (note_index, commitment, block_height) in &shields {
+            pending.push(ShieldCommitment {
+                commitment: *commitment,
+                note_index: *note_index,
+                block_height: *block_height,
+            });
+        }
+        info!(
+            count = shields.len(),
+            "Restored pending shields from DB after restart"
+        );
+        Ok(())
+    }
+
     /// Set the verifier (after MPC params are loaded)
     pub fn set_verifier(&self, verifier: Arc<GhostNoteVerifier>) {
         *self.verifier.write() = Some(verifier);
@@ -407,6 +430,13 @@ impl NullifierRouteHandler {
             .insert_commitment_at(note_index, commitment, block_height)?;
         let root = self.epoch_manager.current_root()?;
         self.epoch_manager.add_valid_root(root, block_height)?;
+
+        // Persist to staging table so pending shields survive restarts.
+        // Without this, a restart would rebuild the tree (including this shield)
+        // but pending_shields would be empty, causing the proposer to create
+        // checkpoints with phantom data that other nodes can't reproduce.
+        self.db
+            .insert_pending_shield(note_index, &commitment, block_height)?;
 
         // Queue for checkpoint inclusion and transfer prerequisites
         self.pending_shields.write().push(ShieldCommitment {
@@ -997,6 +1027,29 @@ impl NullifierRouteHandler {
             }
         }
         self.proposed_heights.write().remove(&height);
+
+        // Remove finalized shield commitments from pending_shields and staging table
+        if let Some(block) = proposal {
+            if !block.shield_commitments.is_empty() {
+                let finalized_indices: Vec<u64> = block
+                    .shield_commitments
+                    .iter()
+                    .map(|sc| sc.note_index)
+                    .collect();
+                let finalized_set: std::collections::HashSet<u64> =
+                    finalized_indices.iter().copied().collect();
+                self.pending_shields
+                    .write()
+                    .retain(|sc| !finalized_set.contains(&sc.note_index));
+                if let Err(e) = self.db.delete_pending_shields(&finalized_indices) {
+                    warn!(
+                        height,
+                        error = %e,
+                        "Failed to delete finalized shields from staging table (non-fatal)"
+                    );
+                }
+            }
+        }
 
         // Compute and register new valid root
         let new_root = self.epoch_manager.current_root()?;

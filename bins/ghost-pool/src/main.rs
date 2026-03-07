@@ -1347,6 +1347,13 @@ async fn main() -> Result<()> {
             Arc::clone(&db),
         ));
         nullifier_handler.set_broadcast_fn(l2_broadcast);
+
+        // Restore pending shields that survived a restart but weren't yet
+        // included in a finalized checkpoint (prevents checkpoint divergence).
+        if let Err(e) = nullifier_handler.restore_pending_shields() {
+            warn!(error = %e, "Failed to restore pending shields from DB");
+        }
+
         let identity_for_sign = Arc::clone(&identity);
         nullifier_handler.set_sign_fn(std::sync::Arc::new(move |msg: &[u8]| {
             identity_for_sign.sign(msg)
