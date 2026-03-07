@@ -62,3 +62,8 @@ TODO_VERIFY_NODE_PAYOUTS.md
 
 # Ops docs (contain IPs, deployment procedures)
 docs/ops/
+docs/MAINNET_CHECKLIST.md
+docs/RECOVERY_RUNBOOK.md
+
+# Soak test logs (ephemeral run data)
+soak-logs/
