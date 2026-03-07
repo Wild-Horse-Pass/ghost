@@ -1024,6 +1024,121 @@ Verify an adaptor pre-signature. Checks that `s'*G == R + e*P` where `e = H(R+T 
 
 ---
 
+## 16. COSIGN Mempool Interaction
+
+The COSIGN block type (0x0681) requires that another input in the same transaction spends a UTXO whose `scriptPubKey` hashes to the committed `conditions_hash`. This creates a dependency between UTXOs at the mempool level.
+
+### 16.1 Griefing Vector
+
+An attacker who observes a pending child transaction (which requires co-spending an anchor) could attempt to independently spend the anchor UTXO, orphaning the child transaction. This is a mempool-level nuisance, not a consensus vulnerability — no funds can be stolen.
+
+### 16.2 Mitigations
+
+The attack is bounded by the anchor's own spending conditions:
+
+1. **RECURSE_SAME protection.** Anchors typically use RECURSE_SAME, which requires the spending transaction to re-encumber an output with identical conditions. The attacker must create a valid re-encumbrance output, costing them a UTXO and fees. The anchor is not consumed — it is re-created.
+
+2. **Signature requirement.** If the anchor's conditions include a SIG block (which they should for any production use), the attacker cannot spend the anchor without the private key. The griefing vector only exists for anchors with conditions that any party can satisfy.
+
+3. **Fee economics.** The attacker pays transaction fees for each griefing attempt. The defender simply includes the new anchor UTXO in their next transaction. The cost asymmetry favours the defender.
+
+4. **RBF interaction.** If the child transaction uses RBF (BIP-125), the defender can replace the griefing transaction with a higher-fee transaction that includes the intended co-spend, provided the defender can satisfy the anchor's conditions.
+
+This is analogous to the anchor output griefing vector in Lightning Network commitment transactions (see BOLT-3), where the same economic mitigations apply.
+
+---
+
+## 17. Recursive Covenant Termination
+
+Every RECURSE_* block type has a provably reachable terminal state. No combination of recursion blocks can create a UTXO that requires an unbounded number of intermediate transactions.
+
+### 17.1 Termination Proof by Block Type
+
+| Block Type | Termination Parameter | Terminal Condition | Proof |
+|------------|----------------------|-------------------|-------|
+| RECURSE_SAME (0x0401) | `max_depth` (NUMERIC) | `max_depth == 0` → UNSATISFIED | `max_depth` is a finite unsigned integer. Each spend requires `max_depth > 0`. The output must carry identical conditions, so `max_depth` is preserved. However, when `max_depth` reaches 0, the block returns UNSATISFIED, terminating the covenant. Maximum chain length = initial `max_depth` value. |
+| RECURSE_MODIFIED (0x0402) | `max_depth` (NUMERIC[0]) | `max_depth == 0` → UNSATISFIED | Same as RECURSE_SAME. The `max_depth` parameter is checked before mutation verification. |
+| RECURSE_UNTIL (0x0403) | `until_height` (NUMERIC) | `block_height >= until_height` → SATISFIED | Block height is monotonically increasing. The terminal condition is guaranteed to be reached at a deterministic future block height. Maximum chain length = `until_height - current_height` blocks. |
+| RECURSE_COUNT (0x0404) | `count` (NUMERIC) | `count == 0` → SATISFIED | Each spend requires the output to carry `count - 1`. Since `count` is an unsigned integer decremented by 1 per spend, termination occurs in exactly `count` spends. |
+| RECURSE_SPLIT (0x0405) | `max_splits` (NUMERIC) | `max_splits == 0` → UNSATISFIED | Each split output must carry `max_splits - 1`. Termination is reached in at most `max_splits` levels of splitting. Total outputs bounded by `2^max_splits` (binary split) or fewer. |
+| RECURSE_DECAY (0x0406) | `max_depth` (NUMERIC[0]) | `max_depth == 0` → UNSATISFIED | Same as RECURSE_MODIFIED. The decay delta is applied per spend, but `max_depth` controls termination independently of the decayed parameter. |
+
+### 17.2 Worst Case Analysis
+
+The maximum covenant chain length is bounded by the initial value of the termination parameter, which is a `uint32_t` (maximum 4,294,967,295). In practice, policy enforcement limits the NUMERIC field to 4 bytes, so the theoretical maximum is ~4 billion intermediate transactions. This is infeasible to execute (it would take centuries at maximum throughput) and each intermediate transaction pays fees, making long chains economically prohibitive.
+
+### 17.3 Composition
+
+When multiple RECURSE_* blocks appear in the same rung (AND logic), the covenant terminates when *any* recursion block reaches its terminal state (since the rung requires all blocks to be SATISFIED). This means the shortest termination parameter dominates.
+
+When RECURSE_* blocks appear in different rungs (OR logic), the covenant terminates when the first rung's recursion blocks all reach their terminal states. Alternative rungs may provide early exit paths (e.g., a SIG-only rung alongside a recursive rung).
+
+---
+
+## 18. Post-Quantum Library Dependency
+
+### 18.1 liboqs Usage
+
+Post-quantum signature verification uses the Open Quantum Safe (OQS) project's liboqs library. The dependency is:
+
+- **Optional.** Nodes compile and run without liboqs. The `HAVE_LIBOQS` preprocessor flag controls availability. Without it, `HasPQSupport()` returns false and all PQ verification returns false (fail-closed).
+- **Verification-only.** liboqs is used exclusively for signature verification (`OQS_SIG_verify`), not for key generation or signing in consensus-critical paths. Key generation and signing RPCs are wallet-side utilities.
+- **Deterministic.** Given identical inputs (public key, message, signature), any correct implementation of FALCON or Dilithium produces the same verification result. This is a property of the underlying mathematical verification equations, not of any particular library.
+
+### 18.2 Consensus Split Risk
+
+A consensus split from a liboqs bug would require the bug to cause *different* verification results on different nodes — i.e., one node accepts a signature that another rejects. This is the same risk class as libsecp256k1 for ECDSA/Schnorr verification. Mitigations:
+
+1. **Pinned version.** The build system pins a specific liboqs release. Nodes running the same ghost-core version use the same liboqs version.
+2. **Algorithm stability.** FALCON and Dilithium are NIST-standardised algorithms (FIPS 204, FIPS 206). The verification equations are fixed by the standard.
+3. **Fail-closed default.** Nodes without liboqs reject all PQ signatures. This means PQ transactions require explicit opt-in by node operators who install liboqs, reducing the surface area for version mismatches.
+4. **Activation gating.** PQ signature block types activate with all other block types. Before activation, PQ transactions are non-standard and cannot enter the mempool. After activation, all nodes on the network must support PQ verification to validate blocks.
+
+### 18.3 Future Path
+
+If liboqs proves insufficient for consensus-critical use, the PQ verification functions can be replaced with in-tree implementations of the NIST-standardised algorithms without changing the wire format, block types, or evaluation semantics. The interface is a single function: `VerifyPQSignature(scheme, signature, message, pubkey) → bool`.
+
+---
+
+## 19. 0xc1 Prefix Collision Analysis
+
+The `0xc1` byte identifies a Ladder Script conditions output as the first byte of `scriptPubKey`. This section demonstrates that `0xc1` cannot collide with any existing or planned scriptPubKey format.
+
+### 19.1 Existing scriptPubKey First Bytes
+
+| scriptPubKey Type | First Byte | Hex |
+|-------------------|------------|-----|
+| P2PKH | `OP_DUP` | `0x76` |
+| P2SH | `OP_HASH160` | `0xa9` |
+| P2WPKH (witness v0) | `OP_0` | `0x00` |
+| P2WSH (witness v0) | `OP_0` | `0x00` |
+| P2TR (witness v1) | `OP_1` | `0x51` |
+| OP_RETURN (null data) | `OP_RETURN` | `0x6a` |
+| Bare multisig | `OP_1`..`OP_16` | `0x51`..`0x60` |
+| Bare pubkey | Data push (33 or 65 bytes) | `0x21` or `0x41` |
+
+### 19.2 Witness Version Range
+
+BIP-141 defines witness programs as: `OP_n` (1 byte) followed by a data push of 2-40 bytes. The witness version opcodes are `OP_0` (`0x00`) through `OP_16` (`0x60`). Future witness versions occupy `0x51`-`0x60`. The byte `0xc1` is outside this range.
+
+### 19.3 Opcode Identity
+
+`0xc1` is the opcode `OP_NOP2`, which was repurposed as `OP_CHECKLOCKTIMEVERIFY` (BIP-65). However:
+
+- `OP_CHECKLOCKTIMEVERIFY` never appears as the *first byte* of a standard scriptPubKey. It is used within scripts (e.g., `<height> OP_CLTV OP_DROP ...`) but the first byte of such scripts would be a data push opcode for the height value.
+- No wallet software generates scriptPubKeys beginning with `0xc1`.
+- The Bitcoin Core `Solver()` function does not recognise any standard output type beginning with `0xc1`.
+
+### 19.4 Data Push Range
+
+Bitcoin Script data push opcodes occupy `0x01`-`0x4e` (direct pushes and `OP_PUSHDATA1/2/4`). `0xc1` is outside this range and cannot be interpreted as a data push prefix.
+
+### 19.5 Conclusion
+
+The byte `0xc1` does not collide with any existing standard scriptPubKey first byte, any witness version opcode, or any data push prefix. It is safe to use as the Ladder Script conditions identifier. The choice of a repurposed NOP opcode is intentional — non-upgraded nodes that encounter a bare `0xc1` scriptPubKey treat it as a non-standard output type, which is the correct behaviour for soft fork compatibility.
+
+---
+
 ## Appendix A: Block Type Code Reference
 
 ```

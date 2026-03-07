@@ -42,7 +42,7 @@ The `scriptPubKey` of a ladder-locked output is:
 0xc1 || SerializedRungConditions
 ```
 
-The prefix byte `0xc1` was chosen to avoid collision with all existing `OP_` prefixes and witness version programs. The payload is a serialized `RungConditions` structure containing only condition data types (PUBKEY, PUBKEY_COMMIT, HASH256, HASH160, NUMERIC, SCHEME, SPEND_INDEX). The witness-only types SIGNATURE and PREIMAGE are forbidden in conditions.
+The prefix byte `0xc1` was chosen after rigorous collision analysis (see Security Considerations). It does not collide with any existing standard scriptPubKey first byte (P2PKH `0x76`, P2SH `0xa9`, witness v0 `0x00`, witness v1 `0x51`, OP_RETURN `0x6a`), any witness version opcode (`0x00`-`0x60`), or any data push prefix (`0x01`-`0x4e`). While `0xc1` is the opcode for `OP_CHECKLOCKTIMEVERIFY` (BIP-65), CLTV never appears as the first byte of a standard scriptPubKey. The payload is a serialized `RungConditions` structure containing only condition data types (PUBKEY, PUBKEY_COMMIT, HASH256, HASH160, NUMERIC, SCHEME, SPEND_INDEX). The witness-only types SIGNATURE and PREIMAGE are forbidden in conditions.
 
 **Input (unlocking side):**
 
@@ -432,6 +432,59 @@ Additional functional tests:
 - `test/functional/rung_pq_block.py`: Post-quantum block-level tests.
 
 **Fuzz testing** (`src/test/fuzz/rung_deserialize.cpp`): Continuous fuzz testing of the deserialization path.
+
+## Security Considerations
+
+### COSIGN Mempool Griefing
+
+The COSIGN block type (0x0681) creates a transaction-level dependency: a child UTXO can only be spent in a transaction that also spends a specific anchor UTXO (identified by the SHA-256 hash of its scriptPubKey). An attacker who observes a pending child spend could attempt to independently spend the anchor, orphaning the child transaction.
+
+This is a mempool-level nuisance, not a consensus vulnerability. No funds can be stolen. The attack is bounded by the anchor's own spending conditions:
+
+- **Signature protection.** Production anchors should include a SIG block, preventing unauthorized spending entirely.
+- **RECURSE_SAME re-encumbrance.** Anchors using RECURSE_SAME require the spending transaction to create a new output with identical conditions. The attacker creates a new anchor at their own expense; the defender uses the new anchor in their next transaction.
+- **Fee asymmetry.** The attacker pays fees per griefing attempt. The defender's cost is updating a single outpoint reference.
+
+This is analogous to the anchor output griefing vector in Lightning Network commitment transactions (BOLT-3).
+
+### Recursive Covenant Termination
+
+Every RECURSE_* block type has a provably reachable terminal state:
+
+| Block Type | Termination | Proof |
+|------------|-------------|-------|
+| RECURSE_SAME | `max_depth == 0` → UNSATISFIED | Finite unsigned integer, checked before evaluation |
+| RECURSE_MODIFIED | `max_depth == 0` → UNSATISFIED | Same as RECURSE_SAME |
+| RECURSE_UNTIL | `block_height >= target` → SATISFIED | Block height is monotonically increasing |
+| RECURSE_COUNT | `count == 0` → SATISFIED | Decremented by 1 per spend, unsigned integer |
+| RECURSE_SPLIT | `max_splits == 0` → UNSATISFIED | Decremented by 1 per split level |
+| RECURSE_DECAY | `max_depth == 0` → UNSATISFIED | Same as RECURSE_MODIFIED |
+
+The maximum chain length is bounded by the initial value of the termination parameter (`uint32_t`, max ~4 billion). This is infeasible to execute and each intermediate transaction pays fees, making long chains economically prohibitive.
+
+When multiple RECURSE_* blocks appear in the same rung (AND), the shortest termination parameter dominates. Alternative rungs (OR) may provide early exit paths.
+
+### Post-Quantum Library Dependency
+
+Post-quantum signature verification uses the Open Quantum Safe project's liboqs library. The dependency is structured to minimise consensus risk:
+
+- **Optional.** Nodes compile and run without liboqs (`HAVE_LIBOQS` flag). Without it, all PQ verification returns false (fail-closed).
+- **Verification-only.** liboqs is used exclusively for `OQS_SIG_verify`, not for key generation or signing in consensus paths.
+- **Deterministic.** FALCON and Dilithium verification is a mathematical equation: given identical inputs, any correct implementation produces the same result. A consensus split would require a liboqs bug that causes different results on different nodes — the same risk class as libsecp256k1 for ECDSA/Schnorr.
+- **Pinned version.** The build system pins a specific liboqs release. Nodes running the same software version use the same library version.
+- **Algorithm stability.** FALCON and Dilithium are NIST-standardised (FIPS 204, FIPS 206). The verification equations are fixed by the standard.
+
+If liboqs proves insufficient for consensus use, the PQ verification functions can be replaced with in-tree implementations without changing the wire format or evaluation semantics.
+
+### 0xc1 Prefix Collision Analysis
+
+The `0xc1` byte identifies Ladder Script conditions as the first byte of scriptPubKey. Collision analysis:
+
+- **Standard output types.** P2PKH starts with `0x76` (OP_DUP), P2SH with `0xa9` (OP_HASH160), witness v0 with `0x00` (OP_0), witness v1 with `0x51` (OP_1), OP_RETURN with `0x6a`. None use `0xc1`.
+- **Witness version range.** BIP-141 witness versions use `OP_0` (`0x00`) through `OP_16` (`0x60`). `0xc1` is outside this range.
+- **Data push range.** Script data push opcodes occupy `0x01`-`0x4e`. `0xc1` is outside this range.
+- **Opcode identity.** `0xc1` is `OP_NOP2` / `OP_CHECKLOCKTIMEVERIFY` (BIP-65). CLTV is used *within* scripts but never as the first byte of a scriptPubKey. No wallet generates scriptPubKeys beginning with `0xc1`.
+- **Soft fork compatibility.** Non-upgraded nodes encountering a `0xc1` scriptPubKey treat it as a non-standard output type, which is the correct behaviour for soft fork deployment.
 
 ## Copyright
 
