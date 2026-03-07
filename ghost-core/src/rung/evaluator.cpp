@@ -172,7 +172,7 @@ EvalResult ApplyInversion(EvalResult raw, bool inverted)
     case EvalResult::SATISFIED:        return EvalResult::UNSATISFIED;
     case EvalResult::UNSATISFIED:      return EvalResult::SATISFIED;
     case EvalResult::ERROR:            return EvalResult::ERROR; // errors never flip
-    case EvalResult::UNKNOWN_BLOCK_TYPE: return EvalResult::SATISFIED; // unknown inverted → satisfied
+    case EvalResult::UNKNOWN_BLOCK_TYPE: return EvalResult::ERROR; // unknown blocks are unconditionally unusable
     }
     return raw;
 }

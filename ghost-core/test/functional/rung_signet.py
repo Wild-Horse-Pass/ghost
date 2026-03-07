@@ -1318,7 +1318,7 @@ def test_pq_keygen_all_schemes():
     """PQ keygen: generate keypairs for all 4 schemes."""
     if not _has_pq():
         raise Exception("SKIP: liboqs not available")
-    for scheme in ["FALCON512", "FALCON1024", "DILITHIUM3", "SPHINCS_SHA"]:
+    for scheme in ["FALCON512", "FALCON1024", "DILITHIUM3"]:
         result = node.generatepqkeypair(scheme)
         assert result["scheme"] == scheme
         assert len(result["pubkey"]) > 0

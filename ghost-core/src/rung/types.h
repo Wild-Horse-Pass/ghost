@@ -88,7 +88,7 @@ enum class RungDataType : uint8_t {
     HASH256       = 0x03, //!< SHA-256 hash: exactly 32 bytes
     HASH160       = 0x04, //!< RIPEMD160(SHA256()) hash: exactly 20 bytes
     PREIMAGE      = 0x05, //!< Hash preimage: 1-252 bytes
-    SIGNATURE     = 0x06, //!< Signature: 1-50000 bytes (Schnorr 64-65, ECDSA 8-72, PQ up to 49216)
+    SIGNATURE     = 0x06, //!< Signature: 1-5000 bytes (Schnorr 64-65, ECDSA 8-72, PQ up to ~3300)
     SPEND_INDEX   = 0x07, //!< Spend index reference: 4 bytes
     NUMERIC       = 0x08, //!< Numeric value (threshold, locktime, etc.): 1-4 bytes
     SCHEME        = 0x09, //!< Signature scheme selector: 1 byte
@@ -187,7 +187,7 @@ inline size_t FieldMaxSize(RungDataType type)
     case RungDataType::HASH256:       return 32;
     case RungDataType::HASH160:       return 20;
     case RungDataType::PREIMAGE:      return 252;
-    case RungDataType::SIGNATURE:     return 50000;
+    case RungDataType::SIGNATURE:     return 5000;
     case RungDataType::SPEND_INDEX:   return 4;
     case RungDataType::NUMERIC:       return 4;
     case RungDataType::SCHEME:        return 1;
@@ -283,7 +283,6 @@ enum class RungScheme : uint8_t {
     FALCON512   = 0x10, //!< FALCON-512 post-quantum
     FALCON1024  = 0x11, //!< FALCON-1024 post-quantum
     DILITHIUM3  = 0x12, //!< Dilithium3 post-quantum
-    SPHINCS_SHA = 0x13, //!< SPHINCS+-SHA2-256f post-quantum
 };
 
 /** Returns true if the scheme is a known value. */
@@ -295,7 +294,6 @@ inline bool IsKnownScheme(uint8_t s)
     case RungScheme::FALCON512:
     case RungScheme::FALCON1024:
     case RungScheme::DILITHIUM3:
-    case RungScheme::SPHINCS_SHA:
         return true;
     }
     return false;

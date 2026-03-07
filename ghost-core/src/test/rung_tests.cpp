@@ -136,16 +136,12 @@ BOOST_AUTO_TEST_CASE(field_validation_signature_various_sizes)
     RungField sig1{RungDataType::SIGNATURE, std::vector<uint8_t>(1, 0xBB)};
     BOOST_CHECK(sig1.IsValid(reason));
 
-    // 49216 bytes: valid (SPHINCS+ sig size)
-    RungField sig_sphincs{RungDataType::SIGNATURE, std::vector<uint8_t>(49216, 0xBB)};
-    BOOST_CHECK(sig_sphincs.IsValid(reason));
-
-    // 50000 bytes: valid (max size)
-    RungField sig_max{RungDataType::SIGNATURE, std::vector<uint8_t>(50000, 0xBB)};
+    // 5000 bytes: valid (max size)
+    RungField sig_max{RungDataType::SIGNATURE, std::vector<uint8_t>(5000, 0xBB)};
     BOOST_CHECK(sig_max.IsValid(reason));
 
-    // 50001 bytes: too large
-    RungField sig_over{RungDataType::SIGNATURE, std::vector<uint8_t>(50001, 0xBB)};
+    // 5001 bytes: too large
+    RungField sig_over{RungDataType::SIGNATURE, std::vector<uint8_t>(5001, 0xBB)};
     BOOST_CHECK(!sig_over.IsValid(reason));
     BOOST_CHECK(reason.find("too large") != std::string::npos);
 
@@ -232,8 +228,6 @@ BOOST_AUTO_TEST_CASE(field_validation_new_types)
     BOOST_CHECK(scheme_falcon1024.IsValid(reason));
     RungField scheme_dilithium{RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::DILITHIUM3)}};
     BOOST_CHECK(scheme_dilithium.IsValid(reason));
-    RungField scheme_sphincs{RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::SPHINCS_SHA)}};
-    BOOST_CHECK(scheme_sphincs.IsValid(reason));
     // Unknown scheme rejected
     RungField scheme_bad{RungDataType::SCHEME, {0xFF}};
     BOOST_CHECK(!scheme_bad.IsValid(reason));
@@ -272,7 +266,7 @@ BOOST_AUTO_TEST_CASE(known_type_checks)
     BOOST_CHECK(IsKnownScheme(0x01)); // SCHNORR
     BOOST_CHECK(IsKnownScheme(0x02)); // ECDSA
     BOOST_CHECK(IsKnownScheme(0x10)); // FALCON512
-    BOOST_CHECK(IsKnownScheme(0x13)); // SPHINCS_SHA
+    BOOST_CHECK(!IsKnownScheme(0x13)); // SPHINCS_SHA removed
     BOOST_CHECK(!IsKnownScheme(0x00));
     BOOST_CHECK(!IsKnownScheme(0x03));
     BOOST_CHECK(!IsKnownScheme(0x14));
@@ -281,7 +275,7 @@ BOOST_AUTO_TEST_CASE(known_type_checks)
     BOOST_CHECK(!IsPQScheme(RungScheme::SCHNORR));
     BOOST_CHECK(!IsPQScheme(RungScheme::ECDSA));
     BOOST_CHECK(IsPQScheme(RungScheme::FALCON512));
-    BOOST_CHECK(IsPQScheme(RungScheme::SPHINCS_SHA));
+    BOOST_CHECK(IsPQScheme(RungScheme::DILITHIUM3));
 }
 
 // ============================================================================
@@ -747,8 +741,8 @@ BOOST_AUTO_TEST_CASE(inversion_apply_basic)
     BOOST_CHECK(ApplyInversion(EvalResult::UNSATISFIED, true) == EvalResult::SATISFIED);
     // ERROR never flips
     BOOST_CHECK(ApplyInversion(EvalResult::ERROR, true) == EvalResult::ERROR);
-    // UNKNOWN inverted → SATISFIED
-    BOOST_CHECK(ApplyInversion(EvalResult::UNKNOWN_BLOCK_TYPE, true) == EvalResult::SATISFIED);
+    // UNKNOWN inverted → ERROR (unconditionally unusable, prevents inverted-unknown footgun)
+    BOOST_CHECK(ApplyInversion(EvalResult::UNKNOWN_BLOCK_TYPE, true) == EvalResult::ERROR);
 }
 
 BOOST_AUTO_TEST_CASE(inversion_sig_normal_satisfied_inverted_unsatisfied)
@@ -1355,7 +1349,7 @@ BOOST_AUTO_TEST_CASE(eval_pq_scheme_validation)
     BOOST_CHECK(falcon.IsValid(reason));
 
     RungField sphincs{RungDataType::SCHEME, {0x13}};
-    BOOST_CHECK(sphincs.IsValid(reason));
+    BOOST_CHECK(!sphincs.IsValid(reason)); // SPHINCS_SHA removed
 }
 
 // ============================================================================
@@ -2903,17 +2897,13 @@ BOOST_AUTO_TEST_CASE(field_size_pq_pubkey)
 
 BOOST_AUTO_TEST_CASE(field_size_pq_signature)
 {
-    // SIGNATURE with 49216 bytes (SPHINCS+ sig size) should validate OK
-    RungField field{RungDataType::SIGNATURE, std::vector<uint8_t>(49216, 0xBB)};
+    // SIGNATURE with 5000 bytes (max) should validate OK
     std::string reason;
-    BOOST_CHECK(field.IsValid(reason));
-
-    // SIGNATURE with 50000 bytes (max) should validate OK
-    RungField field2{RungDataType::SIGNATURE, std::vector<uint8_t>(50000, 0xBB)};
+    RungField field2{RungDataType::SIGNATURE, std::vector<uint8_t>(5000, 0xBB)};
     BOOST_CHECK(field2.IsValid(reason));
 
-    // SIGNATURE with 50001 bytes should fail
-    RungField field3{RungDataType::SIGNATURE, std::vector<uint8_t>(50001, 0xBB)};
+    // SIGNATURE with 5001 bytes should fail
+    RungField field3{RungDataType::SIGNATURE, std::vector<uint8_t>(5001, 0xBB)};
     BOOST_CHECK(!field3.IsValid(reason));
 }
 

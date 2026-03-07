@@ -75,11 +75,11 @@ enum class EvalResult {
     SATISFIED,           //!< All conditions met
     UNSATISFIED,         //!< Conditions not met (valid but fails)
     ERROR,               //!< Malformed block (consensus failure)
-    UNKNOWN_BLOCK_TYPE,  //!< Unknown block type (treated as unsatisfied for forward compat)
+    UNKNOWN_BLOCK_TYPE,  //!< Unknown block type (always ERROR — prevents inverted-unknown footgun)
 };
 
 /** Apply inversion to an eval result.
- *  SATISFIED↔UNSATISFIED, ERROR unchanged, UNKNOWN_BLOCK_TYPE inverted → SATISFIED. */
+ *  SATISFIED↔UNSATISFIED, ERROR unchanged, UNKNOWN_BLOCK_TYPE → ERROR (unconditionally unusable). */
 EvalResult ApplyInversion(EvalResult raw, bool inverted);
 
 // Phase 1 evaluators
@@ -153,7 +153,7 @@ bool EvalLadder(const LadderWitness& ladder,
 /** Compute the BIP-119 CTV template hash for a transaction at a given input index. */
 uint256 ComputeCTVHash(const CTransaction& tx, uint32_t input_index);
 
-/** Top-level verification entry point for v3 RUNG_TX transactions. */
+/** Top-level verification entry point for v4 RUNG_TX transactions. */
 bool VerifyRungTx(const CTransaction& tx,
                   unsigned int nIn,
                   const CTxOut& spent_output,

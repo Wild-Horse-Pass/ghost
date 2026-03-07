@@ -21,8 +21,10 @@ static constexpr size_t MAX_RUNGS = 16;
 static constexpr size_t MAX_BLOCKS_PER_RUNG = 8;
 /** Maximum number of fields per block. */
 static constexpr size_t MAX_FIELDS_PER_BLOCK = 16;
-/** Maximum total ladder witness size in bytes (must accommodate PQ signatures). */
-static constexpr size_t MAX_LADDER_WITNESS_SIZE = 100000;
+/** Maximum total ladder witness size in bytes.
+ *  Largest PQ sig is DILITHIUM3 at ~3.3KB; FALCON1024 at ~1.3KB.
+ *  10KB per input is generous headroom for multi-block rungs. */
+static constexpr size_t MAX_LADDER_WITNESS_SIZE = 10000;
 
 /** Deserialize a LadderWitness from raw witness bytes.
  *  Performs full type and size validation during deserialization.

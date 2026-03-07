@@ -88,7 +88,6 @@ static UniValue CoilToJSON(const RungCoil& coil)
     case RungScheme::FALCON512:   obj.pushKV("scheme", "FALCON512"); break;
     case RungScheme::FALCON1024:  obj.pushKV("scheme", "FALCON1024"); break;
     case RungScheme::DILITHIUM3:  obj.pushKV("scheme", "DILITHIUM3"); break;
-    case RungScheme::SPHINCS_SHA: obj.pushKV("scheme", "SPHINCS_SHA"); break;
     default: obj.pushKV("scheme", "UNKNOWN"); break;
     }
     if (!coil.address.empty()) {
@@ -260,7 +259,6 @@ static RungCoil ParseCoil(const UniValue& obj)
         else if (s == "FALCON512") coil.scheme = RungScheme::FALCON512;
         else if (s == "FALCON1024") coil.scheme = RungScheme::FALCON1024;
         else if (s == "DILITHIUM3") coil.scheme = RungScheme::DILITHIUM3;
-        else if (s == "SPHINCS_SHA") coil.scheme = RungScheme::SPHINCS_SHA;
     }
     if (obj.exists("address")) {
         coil.address = ParseHex(obj["address"].get_str());
@@ -442,7 +440,7 @@ static RPCHelpMan validateladder()
 {
     return RPCHelpMan{
         "validateladder",
-        "Validate a raw v3 RUNG_TX transaction's ladder witnesses.\n"
+        "Validate a raw v4 RUNG_TX transaction's ladder witnesses.\n"
         "Checks that all input witnesses are valid ladder witnesses\n"
         "and pass policy rules.\n",
         {
@@ -482,7 +480,7 @@ static RPCHelpMan validateladder()
 
     if (tx.version != CTransaction::RUNG_TX_VERSION) {
         result.pushKV("valid", false);
-        result.pushKV("error", "Not a v3 RUNG_TX (version=" + std::to_string(tx.version) + ")");
+        result.pushKV("error", "Not a v4 RUNG_TX (version=" + std::to_string(tx.version) + ")");
         result.pushKV("inputs", UniValue(UniValue::VARR));
         return result;
     }
@@ -558,7 +556,7 @@ static RPCHelpMan createrungtx()
 {
     return RPCHelpMan{
         "createrungtx",
-        "Create an unsigned v3 RUNG_TX transaction with rung condition outputs.\n"
+        "Create an unsigned v4 RUNG_TX transaction with rung condition outputs.\n"
         "Inputs are outpoints to spend. Outputs specify rung conditions and amounts.\n",
         {
             {"inputs", RPCArg::Type::ARR, RPCArg::Optional::NO, "Transaction inputs",
@@ -703,7 +701,6 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
             if (scheme_str == "FALCON512") scheme = RungScheme::FALCON512;
             else if (scheme_str == "FALCON1024") scheme = RungScheme::FALCON1024;
             else if (scheme_str == "DILITHIUM3") scheme = RungScheme::DILITHIUM3;
-            else if (scheme_str == "SPHINCS_SHA") scheme = RungScheme::SPHINCS_SHA;
             else throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown PQ scheme: " + scheme_str);
 
             if (!rung::HasPQSupport()) {
@@ -766,7 +763,6 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
             if (scheme_str == "FALCON512") scheme = RungScheme::FALCON512;
             else if (scheme_str == "FALCON1024") scheme = RungScheme::FALCON1024;
             else if (scheme_str == "DILITHIUM3") scheme = RungScheme::DILITHIUM3;
-            else if (scheme_str == "SPHINCS_SHA") scheme = RungScheme::SPHINCS_SHA;
             else throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown PQ scheme: " + scheme_str);
 
             if (!rung::HasPQSupport()) {
@@ -916,7 +912,7 @@ static RPCHelpMan signrungtx()
 {
     return RPCHelpMan{
         "signrungtx",
-        "Sign a v3 RUNG_TX transaction's inputs.\n"
+        "Sign a v4 RUNG_TX transaction's inputs.\n"
         "Supports two formats:\n"
         "  Legacy: [{\"privkey\":\"cVt...\",\"input\":0}] — single SIG block\n"
         "  Full:   [{\"input\":0,\"blocks\":[{\"type\":\"SIG\",\"privkey\":\"cVt...\"},...]}] — any block types\n",
@@ -974,7 +970,7 @@ static RPCHelpMan signrungtx()
     }
 
     if (mtx.version != CTransaction::RUNG_TX_VERSION) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "Transaction is not v3 RUNG_TX");
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Transaction is not v4 RUNG_TX");
     }
 
     const UniValue& signers_arr = request.params[1].get_array();
@@ -1124,7 +1120,7 @@ static RPCHelpMan computectvhash()
 {
     return RPCHelpMan{
         "computectvhash",
-        "Compute the BIP-119 CTV template hash for a v3 RUNG_TX transaction.\n"
+        "Compute the BIP-119 CTV template hash for a v4 RUNG_TX transaction.\n"
         "The hash commits to the transaction's version, locktime, inputs, outputs, and input index.\n"
         "Use this to create CTV conditions that constrain how an output can be spent.\n",
         {
@@ -1176,7 +1172,7 @@ static RPCHelpMan generatepqkeypair()
         "Requires liboqs support.\n",
         {
             {"scheme", RPCArg::Type::STR, RPCArg::Optional::NO,
-             "PQ scheme: FALCON512, FALCON1024, DILITHIUM3, SPHINCS_SHA"},
+             "PQ scheme: FALCON512, FALCON1024, DILITHIUM3"},
         },
         RPCResult{RPCResult::Type::OBJ, "", "", {
             {RPCResult::Type::STR, "scheme", "The scheme used"},
@@ -1193,7 +1189,6 @@ static RPCHelpMan generatepqkeypair()
         if (scheme_str == "FALCON512") scheme = RungScheme::FALCON512;
         else if (scheme_str == "FALCON1024") scheme = RungScheme::FALCON1024;
         else if (scheme_str == "DILITHIUM3") scheme = RungScheme::DILITHIUM3;
-        else if (scheme_str == "SPHINCS_SHA") scheme = RungScheme::SPHINCS_SHA;
         else throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown PQ scheme: " + scheme_str);
 
         if (!rung::HasPQSupport()) {

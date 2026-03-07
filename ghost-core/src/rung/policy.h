@@ -22,7 +22,7 @@ bool IsPhase2BlockType(uint16_t block_type);
 /** Check whether a uint16_t block type is Phase 3 (recursion + PLC). */
 bool IsPhase3BlockType(uint16_t block_type);
 
-/** Check whether a v3 RUNG_TX transaction conforms to mempool policy.
+/** Check whether a v4 RUNG_TX transaction conforms to mempool policy.
  *  Validates:
  *    - Max 16 rungs per input witness
  *    - Max 8 blocks per rung

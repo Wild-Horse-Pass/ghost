@@ -55,7 +55,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         self.log.info("Mining initial blocks for maturity...")
         self.generate(node, 101)
-        self.generatetoaddress(node, 101, self.wallet.get_address())
+        self.generatetoaddress(node, 200, self.wallet.get_address())
         self.wallet.rescan_utxos()
 
         # Phase 1 tests (existing)
@@ -2549,7 +2549,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info("  RECURSE_DECAY passed!")
 
     def test_hysteresis_fee(self, node):
-        """HYSTERESIS_FEE: 2 numerics (high >= low), structural only."""
+        """HYSTERESIS_FEE: 2 numerics (high >= low), checks fee rate in band."""
         self.log.info("Testing HYSTERESIS_FEE spend...")
 
         conditions = [{"blocks": [{"type": "HYSTERESIS_FEE", "fields": [
@@ -2560,7 +2560,9 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
         self.log.info(f"  HYSTERESIS_FEE output: {txid}:{vout}")
 
-        output_amount = amount - Decimal("0.001")
+        # Fee must produce a rate within 10-100 sat/vB.
+        # A 1-in/1-out v3 tx is ~150 vbytes, so target ~50 sat/vB = 7500 sats fee.
+        output_amount = amount - Decimal("0.000075")
         dest_wif, dest_pubkey = make_keypair()
         dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
             {"type": "PUBKEY", "hex": dest_pubkey}
@@ -2805,7 +2807,8 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         conditions = [{"blocks": [{"type": "COUNTER_UP", "fields": [
             {"type": "PUBKEY", "hex": event_pubkey},
-            {"type": "NUMERIC", "hex": numeric_hex(0)},  # initial count
+            {"type": "NUMERIC", "hex": numeric_hex(0)},   # current count
+            {"type": "NUMERIC", "hex": numeric_hex(10)},  # target
         ]}]}]
 
         txid, vout, amount, spk = self.bootstrap_v3_output(node, conditions)
@@ -2839,7 +2842,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.log.info("Testing ONE_SHOT spend...")
 
         conditions = [{"blocks": [{"type": "ONE_SHOT", "fields": [
-            {"type": "NUMERIC", "hex": numeric_hex(144)},  # duration blocks
+            {"type": "NUMERIC", "hex": numeric_hex(0)},  # state: 0=unfired
             {"type": "HASH256", "hex": os.urandom(32).hex()},  # commitment
         ]}]}]
 
@@ -3586,7 +3589,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         if self.skip_if_no_pq(node):
             return
 
-        for scheme in ["FALCON512", "FALCON1024", "DILITHIUM3", "SPHINCS_SHA"]:
+        for scheme in ["FALCON512", "FALCON1024", "DILITHIUM3"]:
             result = node.generatepqkeypair(scheme)
             assert_equal(result["scheme"], scheme)
             assert len(result["pubkey"]) > 0, f"Empty pubkey for {scheme}"
