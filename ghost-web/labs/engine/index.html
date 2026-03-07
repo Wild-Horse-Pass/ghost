@@ -5474,6 +5474,140 @@ function ExamplesModal({ onClose, onLoad }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// DECODED JSON → BUILDER RUNG CONVERTER
+// ═══════════════════════════════════════════════════════════════
+
+// Convert decoded rung JSON (from decoderung RPC, createrungtx format, or raw tx)
+// into the builder's internal rung format for visualization.
+function decodedToBuilderRungs(data) {
+  if (!data || typeof data !== 'object') return null;
+
+  const parseHexNumeric = (hex) => {
+    if (!hex) return '0';
+    const bytes = hex.match(/.{2}/g) || [];
+    let val = 0;
+    bytes.forEach((b, i) => { val |= parseInt(b, 16) << (i * 8); });
+    return String(val);
+  };
+  const SCHEME_REV = { '01': 'SCHNORR', '02': 'ECDSA', '10': 'FALCON512', '11': 'FALCON1024', '12': 'DILITHIUM3', '13': 'SPHINCS_SHA' };
+
+  const convertBlock = (bd) => {
+    const typeName = bd.block_type || bd.type || bd.block || 'SIG';
+    const block = createBlock(typeName);
+    block.inverted = !!bd.inverted;
+
+    const params = bd.params || bd.fields || [];
+    const def = getBlockDef(typeName);
+
+    if (Array.isArray(params) && params.length > 0) {
+      let pi = 0;
+      for (const field of def.fields) {
+        if (pi >= params.length) break;
+        if (field.multi) {
+          // Collect consecutive params matching this field's dataType
+          const vals = [];
+          while (pi < params.length) {
+            const p = params[pi];
+            const pType = (p.type || p.data_type || '').toUpperCase();
+            if (pType && pType !== field.dataType && vals.length > 0) break;
+            vals.push(p.hex || p.data || String(p.value || ''));
+            pi++;
+          }
+          block.values[field.name] = vals.join(', ');
+        } else {
+          const p = params[pi];
+          const hex = p.hex || p.data || '';
+          if (field.dataType === 'NUMERIC') {
+            block.values[field.name] = hex ? parseHexNumeric(hex) : String(p.value != null ? p.value : '');
+          } else if (field.dataType === 'SCHEME') {
+            block.values[field.name] = SCHEME_REV[hex] || hex || String(p.value || '');
+          } else {
+            block.values[field.name] = hex || String(p.value || '');
+          }
+          pi++;
+        }
+      }
+    } else if (typeof params === 'object' && !Array.isArray(params)) {
+      // Named params: { key: "02abc...", scheme: "SCHNORR", blocks: 144 }
+      for (const field of def.fields) {
+        const val = params[field.name] ?? params[field.label?.toLowerCase()] ?? '';
+        if (val !== '') block.values[field.name] = String(val);
+      }
+    }
+    return block;
+  };
+
+  const convertRung = (rd) => {
+    const rung = createRung();
+    const blocksData = rd.blocks || rd.contacts || [];
+    rung.blocks = blocksData.map(convertBlock);
+    const coil = rd.coil || {};
+    rung.output.wireType = coil.coil_type || coil.type || 'UNLOCK';
+    rung.output.attestation = coil.attestation || 'INLINE';
+    rung.output.scheme = coil.scheme || 'SCHNORR';
+    rung.label = rd.label || '';
+    return rung;
+  };
+
+  // Format 1: decoderung output — { rungs: [...] } or { n_rungs, rungs: [...] }
+  if (data.rungs && Array.isArray(data.rungs)) {
+    return { rungs: data.rungs.map(convertRung), txInputs: [], txOutputs: [] };
+  }
+  // Format 2: bare array of rungs
+  if (Array.isArray(data) && data.length > 0 && (data[0].blocks || data[0].contacts)) {
+    return { rungs: data.map(convertRung), txInputs: [], txOutputs: [] };
+  }
+  // Format 3: createrungtx / wire format — { inputs, outputs[].conditions[].blocks[] }
+  if (data.outputs && Array.isArray(data.outputs)) {
+    const txInputs = (data.inputs || []).map(i => ({ id: uid(), txid: i.txid || '', vout: i.vout || 0, sequence: i.sequence !== undefined ? String(i.sequence) : '' }));
+    const txOutputs = [];
+    const rungs = [];
+    data.outputs.forEach((out) => {
+      const txOut = { id: uid(), address: out.address || '', amount: Math.round((out.value || out.amount || 0) * (out.value ? 1e8 : 1)) };
+      txOutputs.push(txOut);
+      // Each output may have rungs or conditions
+      const rungsData = out.rungs || [];
+      const conditionsData = out.conditions || [];
+      const entries = rungsData.length > 0 ? rungsData : conditionsData;
+      entries.forEach((entry) => {
+        const rung = convertRung(entry);
+        rung.output.txOutputId = txOut.id;
+        if (out.coil) {
+          rung.output.wireType = out.coil.type || out.coil.coil_type || rung.output.wireType;
+          rung.output.attestation = out.coil.attestation || rung.output.attestation;
+          rung.output.scheme = out.coil.scheme || rung.output.scheme;
+        }
+        rung.txInputIds = txInputs.map(i => i.id);
+        rungs.push(rung);
+      });
+    });
+    return { rungs, txInputs, txOutputs };
+  }
+  // Format 4: raw tx with version 3 — { version: 3, vin, vout[].rung_conditions }
+  if (data.version === 3 && data.vout) {
+    const txInputs = (data.vin || []).map(v => ({ id: uid(), txid: v.txid || '', vout: v.vout || 0, sequence: v.sequence !== undefined ? String(v.sequence) : '' }));
+    const txOutputs = [];
+    const rungs = [];
+    data.vout.forEach((vout) => {
+      const txOut = { id: uid(), address: vout.scriptPubKey?.address || '', amount: Math.round((vout.value || 0) * 1e8) };
+      txOutputs.push(txOut);
+      const rc = vout.rung_conditions || vout.ladder || vout.rungs;
+      if (rc) {
+        const rungsData = Array.isArray(rc) ? rc : (rc.rungs || [rc]);
+        rungsData.forEach((rd) => {
+          const rung = convertRung(rd);
+          rung.output.txOutputId = txOut.id;
+          rung.txInputIds = txInputs.map(i => i.id);
+          rungs.push(rung);
+        });
+      }
+    });
+    return rungs.length > 0 ? { rungs, txInputs, txOutputs } : null;
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SIGNET PANEL
 // ═══════════════════════════════════════════════════════════════
 
@@ -5481,7 +5615,7 @@ const SIGNET_API = (location.hostname === 'localhost' || location.hostname === '
   ? 'http://localhost:8801'
   : 'https://bitcoinghost.org';
 
-function SignetPanel({ rungs, txOutputs, txInputs, locktime }) {
+function SignetPanel({ rungs, txOutputs, txInputs, locktime, onViewAsLadder }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState('');
   const [error, setError] = useState(null);
@@ -5814,7 +5948,12 @@ function SignetPanel({ rungs, txOutputs, txInputs, locktime }) {
             <button style={{ ...sty.btn, ...sty.btnPrimary, opacity: online ? 1 : 0.3 }} onClick={handleDecode} disabled={!online || loading === '/api/ladder/decode'}>{loading === '/api/ladder/decode' ? 'DECODING...' : 'DECODE LADDER'}</button>
             <button style={{ ...sty.btn, ...sty.btnDefault, opacity: online ? 1 : 0.3 }} onClick={handleDecodeTx} disabled={!online || loading === '/api/ladder/decode-tx'}>{loading === '/api/ladder/decode-tx' ? 'DECODING...' : 'DECODE RAW TX'}</button>
           </div>
-          {decodeResult && <div style={{ ...sty.result, maxHeight: 220 }}><pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{JSON.stringify(decodeResult, null, 2)}</pre></div>}
+          {decodeResult && (<div style={{ ...sty.result, maxHeight: 260 }}>
+            {decodedToBuilderRungs(decodeResult) && (
+              <button style={{ ...sty.btn, ...sty.btnPrimary, marginBottom: 8, display: 'block' }} onClick={() => onViewAsLadder(decodeResult)}>VIEW AS LADDER</button>
+            )}
+            <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{JSON.stringify(decodeResult, null, 2)}</pre>
+          </div>)}
         </div>
         <div style={sty.section}>
           <div style={sty.label}>VALIDATE LADDER</div>
@@ -5847,6 +5986,9 @@ function SignetPanel({ rungs, txOutputs, txInputs, locktime }) {
             </div>
             {lookupResult.vin && (<div style={{ marginBottom: 6 }}><div style={{ color: 'var(--text-dim)', fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>INPUTS ({lookupResult.vin.length})</div>{lookupResult.vin.map((vin, i) => <div key={i} style={{ fontSize: 10, color: 'var(--text-secondary)', padding: '2px 0' }}>{vin.coinbase ? 'coinbase' : `${(vin.txid || '').substring(0, 16)}...:${vin.vout}`}</div>)}</div>)}
             {lookupResult.vout && (<div><div style={{ color: 'var(--text-dim)', fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>OUTPUTS ({lookupResult.vout.length})</div>{lookupResult.vout.map((vout, i) => <div key={i} style={{ fontSize: 10, color: 'var(--text-secondary)', padding: '2px 0', display: 'flex', justifyContent: 'space-between' }}><span>#{vout.n} {vout.scriptPubKey?.type || ''}</span><span style={{ color: 'var(--amber)' }}>{formatSats(vout.value)}</span></div>)}</div>)}
+            {decodedToBuilderRungs(lookupResult) && (
+              <button style={{ ...sty.btn, ...sty.btnPrimary, marginTop: 8, display: 'block' }} onClick={() => onViewAsLadder(lookupResult)}>VIEW AS LADDER</button>
+            )}
             <details style={{ marginTop: 8 }}><summary style={{ cursor: 'pointer', color: 'var(--text-dim)', fontSize: 10 }}>RAW JSON</summary><pre style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0', fontSize: 10 }}>{JSON.stringify(lookupResult, null, 2)}</pre></details>
           </div>
         )}
@@ -6012,17 +6154,57 @@ function App() {
     }
   }, [isSimMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Watch mode ticker
+  // Watch mode — poll signet for real block height, fall back to local ticker
+  const [watchLive, setWatchLive] = useState(false);
   useEffect(() => {
-    if (mode !== 'watch') return;
-    const interval = setInterval(() => {
-      setSimState(prev => ({
-        ...prev,
-        blockHeight: prev.blockHeight + 1,
-        csvBlocks: prev.csvBlocks + 1,
-      }));
+    if (mode !== 'watch') { setWatchLive(false); return; }
+    let cancelled = false;
+    let fallbackInterval = null;
+
+    const pollSignet = async () => {
+      try {
+        const r = await fetch(SIGNET_API + '/api/ladder/status');
+        if (cancelled) return;
+        if (r.ok) {
+          const data = await r.json();
+          if (data.blocks) {
+            setWatchLive(true);
+            setSimState(prev => {
+              const heightDelta = data.blocks - (prev.blockHeight || 0);
+              return {
+                ...prev,
+                blockHeight: data.blocks,
+                csvBlocks: prev.csvBlocks + Math.max(0, heightDelta),
+              };
+            });
+          }
+        } else {
+          setWatchLive(false);
+        }
+      } catch {
+        if (!cancelled) setWatchLive(false);
+      }
+    };
+
+    // Try signet immediately, then poll every 10s
+    pollSignet();
+    const signetInterval = setInterval(pollSignet, 10000);
+
+    // Local fallback ticker (3s) when signet is offline
+    fallbackInterval = setInterval(() => {
+      setWatchLive(live => {
+        if (!live) {
+          setSimState(prev => ({
+            ...prev,
+            blockHeight: prev.blockHeight + 1,
+            csvBlocks: prev.csvBlocks + 1,
+          }));
+        }
+        return live;
+      });
     }, 3000);
-    return () => clearInterval(interval);
+
+    return () => { cancelled = true; clearInterval(signetInterval); clearInterval(fallbackInterval); };
   }, [mode]);
 
   // Build the flat scan sequence: input → block0 → block1 → ... → coil, for each rung
@@ -6801,6 +6983,26 @@ ${ladderRows.map(r => `
     }
   }, [importBlocksFromFields]);
 
+  // VIEW AS LADDER — convert decoded JSON to builder rungs and switch to build mode
+  const handleViewAsLadder = useCallback((decodedJson) => {
+    try {
+      const result = decodedToBuilderRungs(decodedJson);
+      if (!result || result.rungs.length === 0) {
+        alert('Could not parse rung structure from this JSON. Try decoding with DECODE LADDER for ladder witness hex.');
+        return;
+      }
+      setRungs(result.rungs);
+      if (result.txInputs.length > 0) setTxInputs(result.txInputs);
+      if (result.txOutputs.length > 0) setTxOutputs(result.txOutputs);
+      setSelectedBlockId(null);
+      setSelectedCoilId(null);
+      setSelectedInputId(null);
+      setMode('build');
+    } catch (e) {
+      alert('Failed to convert: ' + e.message);
+    }
+  }, []);
+
   return (
     <div className={`app ${ladderFullscreen ? 'fullscreen' : ''}`}>
       {/* Header */}
@@ -6825,7 +7027,7 @@ ${ladderRows.map(r => `
       <div className="main-content">
         {mode === 'signet' ? (
           <div style={{ gridColumn: '1 / -1', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
-            <SignetPanel rungs={rungs} txOutputs={txOutputs} txInputs={txInputs} locktime={locktime} />
+            <SignetPanel rungs={rungs} txOutputs={txOutputs} txInputs={txInputs} locktime={locktime} onViewAsLadder={handleViewAsLadder} />
           </div>
         ) : <>
         {isSimMode ? (
@@ -6998,8 +7200,8 @@ ${ladderRows.map(r => `
         </>}
       </div>
 
-      {/* Register Table */}
-      <RegisterTable rungs={rungs} simMode={isSimMode} simState={fullSimState} />
+      {/* Register Table — hidden in signet mode for more space */}
+      {mode !== 'signet' && <RegisterTable rungs={rungs} simMode={isSimMode} simState={fullSimState} />}
 
       {/* Status Bar */}
       <div className="status-bar">
@@ -7016,7 +7218,8 @@ ${ladderRows.map(r => `
         )}
         {mode === 'watch' && (
           <div className="status-item">
-            HEIGHT: {simState.blockHeight}
+            <div className={`status-dot ${watchLive ? 'green' : 'amber'}`} />
+            {watchLive ? 'SIGNET LIVE' : 'LOCAL'} HEIGHT: {simState.blockHeight}
           </div>
         )}
         {(() => {
