@@ -187,9 +187,10 @@ pub struct NullifierRouteHandler {
     global_msg_rate: RwLock<(Instant, u32)>,
     /// Last tree sync request per peer (for rate limiting)
     sync_requests: RwLock<HashMap<NodeId, Instant>>,
-    /// C-2: Heights for which we (as proposer) already applied commitments during propose_checkpoint.
-    /// Prevents double-applying commitments when finalize_checkpoint runs on the proposer node.
-    proposed_heights: RwLock<HashSet<u64>>,
+    /// Cached proposal for the current height. Reused on repeated proposal cycles to ensure
+    /// hash stability — without this, any tree mutation between cycles would change the hash
+    /// and reset peer vote state, preventing BFT quorum.
+    cached_proposal: RwLock<Option<L2CheckpointBlockMessage>>,
     /// Callback for checkpoint finalization (notifies ghost-pay)
     finalize_fn: RwLock<Option<FinalizeFn>>,
     /// Prometheus metrics (optional, set after construction)
@@ -227,7 +228,7 @@ impl NullifierRouteHandler {
             peer_msg_rates: RwLock::new(HashMap::new()),
             global_msg_rate: RwLock::new((Instant::now(), 0)),
             sync_requests: RwLock::new(HashMap::new()),
-            proposed_heights: RwLock::new(HashSet::new()),
+            cached_proposal: RwLock::new(None),
             finalize_fn: RwLock::new(None),
             metrics: RwLock::new(None),
             checkpoint_base_root: RwLock::new(base_root),
@@ -735,7 +736,16 @@ impl NullifierRouteHandler {
     /// Implements proposer timeout: if the primary proposer hasn't produced within
     /// PROPOSER_GRACE_SECS, the fallback proposer takes over.
     pub fn propose_checkpoint(&self) -> GhostResult<Option<L2CheckpointBlockMessage>> {
+        // Return cached proposal if we already proposed for the current height.
+        // This guarantees hash stability across repeated 10s cycles — any tree mutations
+        // (shield syncs, etc.) between cycles won't change the proposal hash.
         let base_height = self.epoch_manager.current_height() + 1;
+        if let Some(ref cached) = *self.cached_proposal.read() {
+            if cached.height == base_height {
+                return Ok(Some(cached.clone()));
+            }
+        }
+
         let elapsed = self.last_checkpoint_time.read().elapsed();
         let stuck = elapsed.as_secs() > PROPOSER_GRACE_SECS * 2;
 
@@ -817,25 +827,22 @@ impl NullifierRouteHandler {
         // Use checkpoint base root (stable across shield insertions) instead of current_root()
         let prev_root = *self.checkpoint_base_root.read();
 
-        // Append new commitments to tree (needed to compute new_commitment_root).
-        // These mutations are safe because:
-        // - If this proposal wins: finalize_checkpoint uses proposed_heights guard to skip re-apply
-        // - If this proposal loses: the orphaned commitments exist in the tree but
-        //   checkpoint_base_root is set from the WINNING proposal's new_commitment_root,
-        //   so consensus stays aligned. The orphaned entries become harmless dead leaves.
-        for tx in &transactions {
-            self.epoch_manager
-                .append_commitment(tx.change_commitment, height)?;
-            self.epoch_manager
-                .append_commitment(tx.recipient_commitment, height)?;
-        }
-
-        // Mark this height as already having commitments applied by the proposer.
-        // finalize_checkpoint() will skip re-applying for this height.
-        self.proposed_heights.write().insert(height);
-
-        // Compute new root (includes all tree mutations above)
-        let new_root = self.epoch_manager.current_root()?;
+        // Compute hypothetical new root on a scratch tree WITHOUT mutating the real tree.
+        // This prevents tree divergence if the proposal loses BFT consensus — the real
+        // tree only gets mutated in finalize_checkpoint() after consensus is reached.
+        let new_root = {
+            let mut scratch = self.epoch_manager.clone_tree();
+            for sc in &shield_commitments {
+                scratch.insert(sc.note_index, sc.commitment);
+            }
+            for tx in &transactions {
+                let idx = scratch.next_index();
+                scratch.insert(idx, tx.change_commitment);
+                let idx2 = scratch.next_index();
+                scratch.insert(idx2, tx.recipient_commitment);
+            }
+            scratch.root().map_err(|e| GhostError::Internal(format!("scratch root: {}", e)))?
+        };
 
         let mut proposal = L2CheckpointBlockMessage {
             height,
@@ -861,6 +868,9 @@ impl NullifierRouteHandler {
             fallback = is_fallback,
             "Proposed checkpoint block"
         );
+
+        // Cache proposal so repeated cycles reuse it with identical hash
+        *self.cached_proposal.write() = Some(proposal.clone());
 
         Ok(Some(proposal))
     }
@@ -1165,32 +1175,31 @@ impl NullifierRouteHandler {
         height: u64,
         proposal: Option<&L2CheckpointBlockMessage>,
     ) -> GhostResult<()> {
-        // Apply commitments if this node didn't already apply them as proposer.
-        // The proposer applies commitments during propose_checkpoint(); non-proposer nodes
-        // apply them here during finalization. The proposed_heights guard prevents double-
-        // insertion which would create duplicate tree entries at different indices.
-        let already_applied = self.proposed_heights.read().contains(&height);
-        if !already_applied {
-            if let Some(block) = proposal {
-                // Apply shield commitments (idempotent via INSERT OR IGNORE at specific index)
-                for sc in &block.shield_commitments {
-                    let _ = self.epoch_manager.insert_commitment_at(
-                        sc.note_index,
-                        sc.commitment,
-                        sc.block_height,
-                    );
-                }
+        // ALL nodes (including the proposer) apply commitments from the winning proposal.
+        // The proposer no longer mutates the real tree during propose_checkpoint() — it
+        // uses a scratch tree for root computation. This eliminates tree divergence when
+        // a proposal loses consensus.
+        if let Some(block) = proposal {
+            // Apply shield commitments (idempotent via INSERT OR IGNORE at specific index)
+            for sc in &block.shield_commitments {
+                let _ = self.epoch_manager.insert_commitment_at(
+                    sc.note_index,
+                    sc.commitment,
+                    sc.block_height,
+                );
+            }
 
-                // Apply transaction commitments (sequential append)
-                for tx in &block.transactions {
-                    self.epoch_manager
-                        .append_commitment(tx.change_commitment, height)?;
-                    self.epoch_manager
-                        .append_commitment(tx.recipient_commitment, height)?;
-                }
+            // Apply transaction commitments (sequential append)
+            for tx in &block.transactions {
+                self.epoch_manager
+                    .append_commitment(tx.change_commitment, height)?;
+                self.epoch_manager
+                    .append_commitment(tx.recipient_commitment, height)?;
             }
         }
-        self.proposed_heights.write().remove(&height);
+
+        // Clear cached proposal — height has advanced, next cycle builds a fresh proposal
+        *self.cached_proposal.write() = None;
 
         // Remove finalized data from in-memory pools.
         // Since we clone (not drain) in propose_checkpoint(), data remains in the pools
@@ -1352,8 +1361,6 @@ impl NullifierRouteHandler {
         let cutoff = current_height.saturating_sub(100);
         let mut votes = self.votes.write();
         votes.retain(|h, _| *h > cutoff);
-        // S-5: Prune proposed_heights to prevent unbounded growth
-        self.proposed_heights.write().retain(|h| *h > cutoff);
     }
 
     // =========================================================================
@@ -2494,7 +2501,7 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_checkpoint_prevents_double_apply() {
+    fn test_propose_uses_scratch_tree_no_mutation() {
         let (_db, epoch_mgr, handler) = setup();
 
         // We're the only active node (proposer)
@@ -2524,19 +2531,24 @@ mod tests {
             });
         }
 
-        // Propose checkpoint — this applies commitments to the tree as proposer
+        let note_count_before = epoch_mgr.note_count();
+        assert_eq!(note_count_before, 0);
+
+        // Propose checkpoint — scratch tree computes root, real tree is NOT mutated
         let proposal = handler.propose_checkpoint().unwrap().unwrap();
         let note_count_after_propose = epoch_mgr.note_count();
-        assert_eq!(note_count_after_propose, 2); // 1 change + 1 recipient
+        assert_eq!(
+            note_count_after_propose, 0,
+            "Scratch tree: propose_checkpoint must NOT mutate the real tree"
+        );
 
-        // Verify the height is in proposed_heights (C-2 guard)
-        assert!(handler.proposed_heights.read().contains(&proposal.height));
+        // The proposal should have a non-zero new_commitment_root (computed on scratch tree)
+        assert_ne!(
+            proposal.new_commitment_root, [0u8; 32],
+            "Scratch tree should compute a valid root"
+        );
 
-        // Now simulate checkpoint finalization on the SAME proposer node.
-        // Without C-2 fix, this would double-apply commitments (adding 2 more notes).
-        // With C-2 fix, finalize_checkpoint skips re-applying for this height.
-
-        // First, set up the vote state with the proposal stored
+        // Now finalize — ALL nodes (including proposer) apply commitments here
         {
             let mut votes = handler.votes.write();
             let state = votes
@@ -2545,25 +2557,15 @@ mod tests {
             state.proposal = Some(proposal.clone());
         }
 
-        // Call finalize directly (simulating quorum reached)
         handler
             .finalize_checkpoint(proposal.height, Some(&proposal))
             .unwrap();
 
-        // Tree should still have exactly 2 notes, NOT 4 (no double-apply)
+        // Tree should have exactly 2 notes after finalization
         let note_count_after_finalize = epoch_mgr.note_count();
         assert_eq!(
             note_count_after_finalize, 2,
-            "C-2: Proposer should NOT double-apply commitments on finalization"
-        );
-
-        // proposed_heights should be cleaned up
-        assert!(
-            !handler
-                .proposed_heights
-                .read()
-                .contains(&proposal.height),
-            "C-2: Height should be removed from proposed_heights after finalization"
+            "Finalize must apply commitments to the real tree"
         );
     }
 
@@ -2640,29 +2642,29 @@ mod tests {
         );
     }
 
-    /// S-5: proposed_heights are pruned along with vote states
+    /// S-5: vote states are pruned (proposed_heights removed — scratch tree design)
     #[test]
-    fn test_proposed_heights_pruned() {
+    fn test_vote_states_pruned() {
         let (_db, _epoch_mgr, handler) = setup();
 
-        // Add 200 heights to proposed_heights
+        // Add 200 vote states
         {
-            let mut heights = handler.proposed_heights.write();
-            for h in 1..=200 {
-                heights.insert(h);
+            let mut votes = handler.votes.write();
+            for h in 1..=200u64 {
+                votes.insert(h, CheckpointVoteState::new([0; 32]));
             }
         }
-        assert_eq!(handler.proposed_heights.read().len(), 200);
+        assert_eq!(handler.votes.read().len(), 200);
 
         // Prune at current_height=200, cutoff=100
         handler.prune_vote_states(200);
 
         // Only heights > 100 should remain
-        let heights = handler.proposed_heights.read();
-        assert_eq!(heights.len(), 100, "S-5: Should have pruned heights <= 100");
-        assert!(!heights.contains(&100), "S-5: Height 100 should be pruned");
-        assert!(heights.contains(&101), "S-5: Height 101 should remain");
-        assert!(heights.contains(&200), "S-5: Height 200 should remain");
+        let votes = handler.votes.read();
+        assert_eq!(votes.len(), 100, "S-5: Should have pruned vote states <= 100");
+        assert!(!votes.contains_key(&100), "S-5: Height 100 should be pruned");
+        assert!(votes.contains_key(&101), "S-5: Height 101 should remain");
+        assert!(votes.contains_key(&200), "S-5: Height 200 should remain");
     }
 
     /// S-6: VerifiedVote newtype ensures type-safe vote construction

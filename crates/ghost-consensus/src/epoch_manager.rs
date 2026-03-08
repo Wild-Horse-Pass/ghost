@@ -201,6 +201,12 @@ impl EpochManager {
         self.commitment_tree.read().note_count()
     }
 
+    /// Clone the commitment tree for scratch computation (e.g., hypothetical root calculation).
+    /// The clone is independent — mutations to it do not affect the real tree.
+    pub fn clone_tree(&self) -> CommitmentTree {
+        self.commitment_tree.read().clone()
+    }
+
     /// Get the number of nullifiers in the current epoch
     pub fn nullifier_count(&self) -> usize {
         self.nullifier_set.read().len()
