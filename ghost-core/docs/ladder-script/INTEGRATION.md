@@ -86,7 +86,7 @@ For non-LADDER sig versions, the checker falls through to the wrapped `BaseSigna
 A v4 rung conditions output has the following `scriptPubKey` format:
 
 ```
-[0xc1] [serialized conditions using ladder wire format v2]
+[0xc1] [serialized conditions using ladder wire format v3]
 ```
 
 The `0xc1` prefix byte is defined as `RUNG_CONDITIONS_PREFIX`. The function `IsRungConditionsScript()` performs a quick check: `scriptPubKey.size() >= 2 && scriptPubKey[0] == 0xc1`.

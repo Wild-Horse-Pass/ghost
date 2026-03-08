@@ -780,6 +780,23 @@ const BLOCK_DEFS = {
   SEQUENCER:         { category: 'plc',      phase: 3, label: 'SEQUENCER',         fields: [{name:'current_step', type:'NUMERIC', placeholder:'current step'}, {name:'total_steps', type:'NUMERIC', placeholder:'total steps'}] },
   ONE_SHOT:          { category: 'plc',      phase: 3, label: 'ONE_SHOT',          fields: [{name:'duration_blocks', type:'NUMERIC', placeholder:'activation window (blocks)'}, {name:'commitment', type:'HASH256', placeholder:'activation commitment'}] },
   RATE_LIMIT:        { category: 'plc',      phase: 3, label: 'RATE_LIMIT',        fields: [{name:'max_per_block', type:'NUMERIC', placeholder:'max sats per block'}, {name:'accumulation_cap', type:'NUMERIC', placeholder:'accumulation cap'}, {name:'refill_blocks', type:'NUMERIC', placeholder:'refill period (blocks)'}] },
+  COSIGN:            { category: 'plc',      phase: 3, label: 'COSIGN',            fields: [{name:'conditions_hash', type:'HASH256', placeholder:'SHA256 of co-input scriptPubKey'}] },
+
+  // ── COMPOUND (0x07xx) — Phase 1 ──
+  TIMELOCKED_SIG:    { category: 'compound', phase: 1, label: 'TIMELOCKED_SIG',    fields: [{name:'pubkey', type:'PUBKEY', placeholder:'02... signing key'}, {name:'csv_delay', type:'NUMERIC', placeholder:'144'}] },
+  HTLC:              { category: 'compound', phase: 1, label: 'HTLC',              fields: [{name:'sender_key', type:'PUBKEY', placeholder:'02... sender key'}, {name:'receiver_key', type:'PUBKEY', placeholder:'02... receiver key'}, {name:'hash_lock', type:'HASH256', placeholder:'SHA256 hash lock'}, {name:'csv_delay', type:'NUMERIC', placeholder:'144'}] },
+  HASH_SIG:          { category: 'compound', phase: 1, label: 'HASH_SIG',          fields: [{name:'pubkey', type:'PUBKEY', placeholder:'02... signing key'}, {name:'hash_lock', type:'HASH256', placeholder:'SHA256 hash lock'}] },
+  PTLC:              { category: 'compound', phase: 1, label: 'PTLC',              fields: [{name:'signing_key', type:'PUBKEY', placeholder:'02... signing key'}, {name:'adaptor_point', type:'PUBKEY', placeholder:'32-byte adaptor point'}, {name:'csv_delay', type:'NUMERIC', placeholder:'144'}] },
+  CLTV_SIG:          { category: 'compound', phase: 1, label: 'CLTV_SIG',          fields: [{name:'pubkey', type:'PUBKEY', placeholder:'02... signing key'}, {name:'cltv_height', type:'NUMERIC', placeholder:'850000'}] },
+  TIMELOCKED_MULTISIG: { category: 'compound', phase: 1, label: 'TIMELOCKED_MULTISIG', fields: [{name:'threshold', type:'NUMERIC', placeholder:'2'}, {name:'pubkeys', type:'PUBKEY_LIST', placeholder:'02..., 03...'}, {name:'csv_delay', type:'NUMERIC', placeholder:'144'}] },
+
+  // ── GOVERNANCE (0x08xx) — Phase 2 ──
+  EPOCH_GATE:        { category: 'govern',   phase: 2, label: 'EPOCH_GATE',        fields: [{name:'epoch_size', type:'NUMERIC', placeholder:'144'}, {name:'window_size', type:'NUMERIC', placeholder:'72'}] },
+  WEIGHT_LIMIT:      { category: 'govern',   phase: 2, label: 'WEIGHT_LIMIT',      fields: [{name:'max_weight', type:'NUMERIC', placeholder:'4000'}] },
+  INPUT_COUNT:       { category: 'govern',   phase: 2, label: 'INPUT_COUNT',       fields: [{name:'min_inputs', type:'NUMERIC', placeholder:'1'}, {name:'max_inputs', type:'NUMERIC', placeholder:'5'}] },
+  OUTPUT_COUNT:      { category: 'govern',   phase: 2, label: 'OUTPUT_COUNT',      fields: [{name:'min_outputs', type:'NUMERIC', placeholder:'1'}, {name:'max_outputs', type:'NUMERIC', placeholder:'3'}] },
+  RELATIVE_VALUE:    { category: 'govern',   phase: 2, label: 'RELATIVE_VALUE',    fields: [{name:'numerator', type:'NUMERIC', placeholder:'9'}, {name:'denominator', type:'NUMERIC', placeholder:'10'}] },
+  ACCUMULATOR:       { category: 'govern',   phase: 2, label: 'ACCUMULATOR',       fields: [{name:'root', type:'HASH256', placeholder:'Merkle root hash'}] },
 };
 
 const CATEGORIES = [
@@ -790,6 +807,8 @@ const CATEGORIES = [
   { id: 'anchor',   name: 'ANCHOR L2', color: '#AA44FF' },
   { id: 'recurse',  name: 'RECURSE',   color: '#FF44AA' },
   { id: 'plc',      name: 'PLC',       color: '#44DDFF' },
+  { id: 'compound', name: 'COMPOUND',  color: '#FFD700' },
+  { id: 'govern',   name: 'GOVERNANCE', color: '#22CC88' },
 ];
 
 const COIL_DEFS = {

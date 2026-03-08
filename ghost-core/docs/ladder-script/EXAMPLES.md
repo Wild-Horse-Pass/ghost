@@ -881,18 +881,18 @@ on a separate state rung, with each UTXO spend representing one scan cycle.
 
 ## Appendix: NUMERIC Field Encoding
 
-All NUMERIC values in the wire format are 4-byte little-endian unsigned integers.
+NUMERIC values are encoded on the wire as `CompactSize(value)` (varint). After deserialization, they are stored in memory as 4-byte little-endian unsigned integers for evaluator compatibility.
 
-| Decimal | Hex (LE) | Field |
-|---------|----------|-------|
-| 2 | `02000000` | MULTISIG threshold |
-| 3 | `03000000` | RECURSE_COUNT remaining |
-| 5 | `05000000` | HYSTERESIS_FEE low bound |
-| 50 | `32000000` | HYSTERESIS_FEE high bound |
-| 144 | `90000000` | CSV 144 blocks |
-| 1000 | `e8030000` | RECURSE_SAME depth |
-| 10,000 | `10270000` | AMOUNT_LOCK min |
-| 50,000 | `50c30000` | AMOUNT_LOCK min (DCA) |
-| 52,560 | `50cd0000` | CSV ~1 year in blocks |
-| 100,000 | `a0860100` | AMOUNT_LOCK max (DCA) |
-| 500,000 | `20a10700` | AMOUNT_LOCK max |
+| Decimal | Wire (varint) | Memory (4B LE) | Field |
+|---------|--------------|----------------|-------|
+| 2 | `02` | `02000000` | MULTISIG threshold |
+| 3 | `03` | `03000000` | RECURSE_COUNT remaining |
+| 5 | `05` | `05000000` | HYSTERESIS_FEE low bound |
+| 50 | `32` | `32000000` | HYSTERESIS_FEE high bound |
+| 144 | `9000` (fd prefix not needed; `90` < 253) | `90000000` | CSV 144 blocks |
+| 1000 | `fde803` | `e8030000` | RECURSE_SAME depth |
+| 10,000 | `fd1027` | `10270000` | AMOUNT_LOCK min |
+| 50,000 | `fd50c3` | `50c30000` | AMOUNT_LOCK min (DCA) |
+| 52,560 | `fd50cd` | `50cd0000` | CSV ~1 year in blocks |
+| 100,000 | `fea0860100` | `a0860100` | AMOUNT_LOCK max (DCA) |
+| 500,000 | `fe20a10700` | `20a10700` | AMOUNT_LOCK max |

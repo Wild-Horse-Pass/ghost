@@ -1,6 +1,6 @@
 # Ladder Script -- Technical Specification
 
-**Version:** 2 (wire format v2)
+**Version:** 3 (wire format v3)
 **Transaction version:** 4 (`RUNG_TX_VERSION`)
 **Status:** Implemented -- all block types consensus-standard
 
@@ -84,22 +84,18 @@ struct RungCoil {
 
 ---
 
-## 3. Wire Format (v2)
+## 3. Wire Format (v3)
 
-All multi-byte integers are little-endian. Variable-length counts use Bitcoin's `CompactSize` (varint) encoding.
+All multi-byte integers are little-endian. Variable-length counts use Bitcoin's `CompactSize` (varint) encoding. The wire format is context-aware: `SerializationContext::CONDITIONS` (for scriptPubKey) and `SerializationContext::WITNESS` (for spending witness) use different implicit field layouts for the same block type.
+
+### 3.1 Ladder Structure
 
 ```
-[n_rungs: varint]                          // Number of rungs (>= 1, <= 16)
+[n_rungs: varint]                          // Number of rungs (>= 1, <= 16; 0 = template mode)
   FOR EACH rung:
     [n_blocks: varint]                     // Number of blocks (>= 1, <= 8)
     FOR EACH block:
-      [block_type: uint16_t LE]            // RungBlockType enum value
-      [inverted: uint8_t]                  // 0x00 = normal, 0x01 = inverted
-      [n_fields: varint]                   // Number of fields (<= 16)
-      FOR EACH field:
-        [data_type: uint8_t]               // RungDataType enum value
-        [data_len: varint]                 // Length of data payload
-        [data: bytes]                      // Raw data payload
+      (see Block Encoding below)
 
 [coil_type: uint8_t]                       // RungCoilType
 [attestation: uint8_t]                     // RungAttestationMode
@@ -111,16 +107,95 @@ All multi-byte integers are little-endian. Variable-length counts use Bitcoin's 
   FOR EACH coil condition rung:
     [n_blocks: varint]
     FOR EACH block:
-      [block_type: uint16_t LE]
-      [inverted: uint8_t]
-      [n_fields: varint]
-      FOR EACH field:
-        [data_type: uint8_t]
-        [data_len: varint]
-        [data: bytes]
+      (same block encoding)
 ```
 
 Trailing bytes after the complete structure are rejected. The maximum total serialized size is 10,000 bytes (`MAX_LADDER_WITNESS_SIZE`).
+
+### 3.2 Block Encoding: Micro-Headers
+
+Each block begins with a single header byte:
+
+| Byte Value | Meaning |
+|------------|---------|
+| `0x00`--`0x7F` | Micro-header: index into 128-slot lookup table (block type, inverted=false) |
+| `0x80` | Escape to full header: followed by `[block_type: uint16_t LE]` + `[n_fields: varint]` (inverted=false) |
+| `0x81` | Escape to full header with inverted=true: followed by `[block_type: uint16_t LE]` + `[n_fields: varint]` |
+
+All 51 current block types fit in micro-header slots 0x00--0x32. Inverted blocks that have a micro-header slot use `0x81` escape + type instead of slot + inversion byte.
+
+When a block uses a micro-header AND has an implicit field table for the current serialization context, field count and per-field type bytes are omitted entirely (see Section 3.4).
+
+### 3.3 Field Encoding
+
+Each field is encoded differently depending on whether the block uses implicit or explicit fields.
+
+**Explicit fields** (when no implicit table matches, or escape header):
+
+```
+[data_type: uint8_t]                       // RungDataType enum value
+[data_len: varint]                         // Length of data payload (or value for NUMERIC)
+[data: bytes]                              // Raw data payload
+```
+
+**Implicit fields** (when micro-header + implicit table matches):
+
+```
+[data_len: varint]                         // Length of data payload (or value for NUMERIC)
+[data: bytes]                              // Raw data payload
+```
+
+Per-type field data encoding:
+
+| Data Type | Encoding |
+|-----------|----------|
+| NUMERIC (0x08) | `CompactSize(value)` -- varint encodes the value directly, not a length prefix. Deserialized to 4-byte LE in memory. |
+| PUBKEY_COMMIT (0x02) | `CompactSize(32)` + 32 bytes |
+| HASH256 (0x03) | `CompactSize(32)` + 32 bytes |
+| HASH160 (0x04) | `CompactSize(20)` + 20 bytes |
+| SCHEME (0x09) | `CompactSize(1)` + 1 byte |
+| PUBKEY (0x01) | `CompactSize(len)` + len bytes (1--2048) |
+| SIGNATURE (0x06) | `CompactSize(len)` + len bytes (1--50000) |
+| PREIMAGE (0x05) | `CompactSize(len)` + len bytes (1--252) |
+| SPEND_INDEX (0x07) | `CompactSize(4)` + 4 bytes |
+
+### 3.4 Implicit Field Layouts
+
+For common block types, the field count and per-field type bytes are implicit. The serializer checks `MatchesImplicitLayout()` -- if the block's fields match the expected layout for the current context, implicit encoding is used.
+
+Example layouts:
+
+```
+SIG CONDITIONS:      [PUBKEY_COMMIT(32), SCHEME(1)]
+SIG WITNESS:         [PUBKEY(var), SIGNATURE(var)]
+HTLC CONDITIONS:     [PUBKEY_COMMIT(32), PUBKEY_COMMIT(32), HASH256(32), NUMERIC(varint)]
+HTLC WITNESS:        [PUBKEY(var), SIGNATURE(var), PREIMAGE(var), NUMERIC(varint)]
+CLTV_SIG CONDITIONS: [PUBKEY_COMMIT(32), SCHEME(1), NUMERIC(varint)]
+CLTV_SIG WITNESS:    [PUBKEY(var), SIGNATURE(var), NUMERIC(varint)]
+```
+
+Blocks with variable field counts (e.g. MULTISIG with N pubkeys) use escape headers with explicit field encoding.
+
+### 3.5 Template Inheritance
+
+When `n_rungs = 0` in a conditions output, the output inherits conditions from another input via template reference:
+
+```
+[n_rungs: varint = 0]                      // Signals template mode
+[input_index: varint]                      // Which input's conditions to inherit
+[n_diffs: varint]                          // Number of field-level diffs
+FOR EACH diff:
+  [rung_index: varint]
+  [block_index: varint]
+  [field_index: varint]
+  [data_type: uint8_t]                     // Replacement field type
+  [field_data]                             // Replacement field data (type-dependent encoding)
+```
+
+Template resolution rules:
+- Source must not itself be a template reference (no chaining)
+- Diff type must match the field being replaced
+- Resolution produces fully expanded conditions for sighash computation
 
 ---
 
@@ -153,7 +228,7 @@ Every field in a Ladder Script witness or condition must be one of the following
 | `0x05` | PREIMAGE | 1 | 252 | No | Yes | Hash preimage (witness-only) |
 | `0x06` | SIGNATURE | 1 | 5,000 | No | Yes | Signature bytes (witness-only) |
 | `0x07` | SPEND_INDEX | 4 | 4 | Yes | Yes | Spend index reference (uint32 LE) |
-| `0x08` | NUMERIC | 1 | 4 | Yes | Yes | Numeric value, unsigned LE (threshold, locktime, count, etc.) |
+| `0x08` | NUMERIC | 1 | 4 | Yes | Yes | Numeric value. Wire: varint `CompactSize(value)`. Memory: 4-byte unsigned LE. |
 | `0x09` | SCHEME | 1 | 1 | Yes | Yes | Signature scheme selector byte |
 
 **Validation rules:**
@@ -242,6 +317,28 @@ Block types are encoded as `uint16_t` little-endian. They are organized into ran
 | `0x0671` | RATE_LIMIT | 3 x NUMERIC (max_per_block, accumulation_cap, refill_blocks) | -- |
 | `0x0681` | COSIGN | HASH256 (conditions_hash) | -- |
 
+### 6.8 Compound Family (0x0700--0x07FF)
+
+| Code | Name | Required Fields | Optional Fields |
+|------|------|----------------|-----------------|
+| `0x0701` | TIMELOCKED_SIG | PUBKEY, SIGNATURE, NUMERIC (CSV delay) | PUBKEY_COMMIT, SCHEME |
+| `0x0702` | HTLC | 2 x PUBKEY, HASH256 (hash_lock), NUMERIC (CSV delay), SIGNATURE, PREIMAGE | PUBKEY_COMMIT |
+| `0x0703` | HASH_SIG | PUBKEY, HASH256 (hash_lock), SIGNATURE, PREIMAGE | PUBKEY_COMMIT, SCHEME |
+| `0x0704` | PTLC | 2 x PUBKEY (signing_key, adaptor_point), SIGNATURE, NUMERIC (CSV delay) | PUBKEY_COMMIT |
+| `0x0705` | CLTV_SIG | PUBKEY, SIGNATURE, NUMERIC (CLTV height) | PUBKEY_COMMIT, SCHEME |
+| `0x0706` | TIMELOCKED_MULTISIG | NUMERIC (threshold M), N x PUBKEY, M x SIGNATURE, NUMERIC (CSV delay) | SCHEME |
+
+### 6.9 Governance Family (0x0800--0x08FF)
+
+| Code | Name | Required Fields | Optional Fields |
+|------|------|----------------|-----------------|
+| `0x0801` | EPOCH_GATE | 2 x NUMERIC (epoch_size, window_size) | -- |
+| `0x0802` | WEIGHT_LIMIT | NUMERIC (max_weight) | -- |
+| `0x0803` | INPUT_COUNT | 2 x NUMERIC (min_inputs, max_inputs) | -- |
+| `0x0804` | OUTPUT_COUNT | 2 x NUMERIC (min_outputs, max_outputs) | -- |
+| `0x0805` | RELATIVE_VALUE | 2 x NUMERIC (numerator, denominator) | -- |
+| `0x0806` | ACCUMULATOR | >= 3 x HASH256 (root, proof siblings, leaf) | -- |
+
 ---
 
 ## 7. Evaluation Semantics
@@ -296,15 +393,15 @@ Block types are encoded as `uint16_t` little-endian. They are organized into ran
 
 ### 7.4 ADAPTOR_SIG (0x0003)
 
-**Required fields:** 2 x PUBKEY (signing_key at index 0, adaptor_point at index 1), SIGNATURE
+**Condition fields:** 2 x PUBKEY_COMMIT (signing_key at index 0, adaptor_point at index 1)
+**Witness fields:** PUBKEY (signing_key), SIGNATURE (adapted)
 
 **Evaluation:**
 
-1. If fewer than 2 PUBKEYs or no SIGNATURE, return ERROR.
-2. The adaptor_point must be exactly 32 bytes (x-only). If not, return ERROR.
+1. Resolve PUBKEY_COMMITs: the witness PUBKEY must match the signing_key commitment. The adaptor_point is committed in conditions but not revealed in the witness (the adaptor secret is applied off-chain).
+2. If no resolved PUBKEY or no SIGNATURE, return ERROR.
 3. The adapted signature (64--65 bytes) is verified against the signing_key using `CheckSchnorrSignature()`.
-4. The adapted signature is a valid BIP-340 signature; the adaptor secret has already been incorporated.
-5. Return SATISFIED on successful verification, UNSATISFIED otherwise.
+4. Return SATISFIED on successful verification, UNSATISFIED otherwise.
 
 ### 7.5 CSV (0x0101)
 
@@ -396,15 +493,17 @@ Identical logic to CLTV. The distinction is semantic: the NUMERIC value should e
 
 ### 7.13 VAULT_LOCK (0x0302)
 
-**Required fields:** 2 x PUBKEY (recovery_key at index 0, hot_key at index 1), SIGNATURE, NUMERIC (hot_delay)
+**Condition fields:** 2 x PUBKEY_COMMIT (recovery_key at index 0, hot_key at index 1), NUMERIC (hot_delay)
+**Witness fields:** PUBKEY (the key being used), SIGNATURE
 
 **Evaluation (two-path):**
 
-1. If fewer than 2 PUBKEYs, no SIGNATURE, or no NUMERIC, return ERROR.
+1. If fewer than 2 PUBKEY_COMMITs, no witness PUBKEY, no SIGNATURE, or no NUMERIC, return ERROR.
 2. Read the hot_delay value. If negative, return ERROR.
-3. **Recovery path:** Verify the signature against recovery_key (Schnorr). If valid, return SATISFIED immediately (cold sweep, no delay).
-4. **Hot path:** Verify the signature against hot_key (Schnorr). If valid, call `CheckSequence(hot_delay)`. If the delay is met, return SATISFIED. If the delay is not met, return UNSATISFIED.
-5. If neither key matches, return UNSATISFIED.
+3. Compute `SHA256(witness_PUBKEY)` and match against PUBKEY_COMMITs to determine which key is being used. If no match, return ERROR.
+4. Verify the signature against the witness PUBKEY (Schnorr). If invalid, return UNSATISFIED.
+5. **Recovery path:** If the matched PUBKEY_COMMIT is at index 0 (recovery_key), return SATISFIED immediately (cold sweep, no delay).
+6. **Hot path:** If the matched PUBKEY_COMMIT is at index 1 (hot_key), call `CheckSequence(hot_delay)`. If the delay is met, return SATISFIED. If not, return UNSATISFIED.
 
 ### 7.14 AMOUNT_LOCK (0x0303)
 
@@ -744,6 +843,158 @@ Uses the same mutation parsing and verification as RECURSE_MODIFIED, but **negat
    - Compute `SHA256(spent_outputs[i].scriptPubKey)`.
    - If it matches the conditions_hash, return SATISFIED.
 4. If no match found, return UNSATISFIED.
+
+### 7.41 TIMELOCKED_SIG (0x0701)
+
+**Required fields:** PUBKEY, SIGNATURE, NUMERIC (CSV delay)
+**Optional fields:** PUBKEY_COMMIT, SCHEME
+
+**Evaluation:**
+
+1. Resolve PUBKEY_COMMIT if present (SHA256(PUBKEY) must match).
+2. Verify signature (PQ if SCHEME indicates, otherwise Schnorr/ECDSA by size).
+3. If CSV disable flag is set, return SATISFIED.
+4. Verify `CheckSequence(csv_delay)`. If failed, return UNSATISFIED.
+5. Return SATISFIED.
+
+### 7.42 HTLC (0x0702)
+
+**Required fields:** 2 x PUBKEY, HASH256 (hash_lock), NUMERIC (CSV delay), SIGNATURE, PREIMAGE
+**Optional fields:** PUBKEY_COMMIT
+
+**Evaluation:**
+
+1. Verify `SHA256(PREIMAGE) == HASH256`. If mismatch, return UNSATISFIED.
+2. Verify CSV timelock via `CheckSequence()`. If not met, return UNSATISFIED.
+3. Resolve PUBKEY_COMMIT, verify signature against matched pubkey.
+4. If signature invalid, return UNSATISFIED.
+5. Return SATISFIED.
+
+### 7.43 HASH_SIG (0x0703)
+
+**Required fields:** PUBKEY, HASH256, SIGNATURE, PREIMAGE
+**Optional fields:** PUBKEY_COMMIT, SCHEME
+
+**Evaluation:**
+
+1. Verify `SHA256(PREIMAGE) == HASH256`. If mismatch, return UNSATISFIED.
+2. Resolve PUBKEY_COMMIT, verify signature (PQ if SCHEME indicates).
+3. If signature invalid, return UNSATISFIED.
+4. Return SATISFIED.
+
+### 7.44 PTLC (0x0704)
+
+**Required fields:** 2 x PUBKEY (signing_key, adaptor_point), SIGNATURE, NUMERIC (CSV delay)
+**Optional fields:** PUBKEY_COMMIT
+
+**Evaluation:**
+
+1. Resolve signing key from PUBKEY_COMMIT.
+2. Verify adapted Schnorr signature against signing key (adaptor point committed but not needed on-chain).
+3. If signature invalid, return UNSATISFIED.
+4. Verify CSV timelock. If not met, return UNSATISFIED.
+5. Return SATISFIED.
+
+Note: Schnorr only. No ECDSA or PQ support.
+
+### 7.45 CLTV_SIG (0x0705)
+
+**Required fields:** PUBKEY, SIGNATURE, NUMERIC (CLTV height)
+**Optional fields:** PUBKEY_COMMIT, SCHEME
+
+**Evaluation:**
+
+1. Resolve PUBKEY_COMMIT, verify signature (PQ if SCHEME indicates).
+2. If signature invalid, return UNSATISFIED.
+3. Verify `CheckLockTime(cltv_height)`. If not met, return UNSATISFIED.
+4. Return SATISFIED.
+
+### 7.46 TIMELOCKED_MULTISIG (0x0706)
+
+**Required fields:** NUMERIC (threshold M), N x PUBKEY, M x SIGNATURE, NUMERIC (CSV delay)
+**Optional fields:** SCHEME
+
+**Evaluation:**
+
+1. Read threshold M from first NUMERIC.
+2. Resolve PUBKEY_COMMITs (need >= M matching PUBKEYs).
+3. Verify M-of-N signatures (each sig must match a distinct pubkey). PQ if SCHEME indicates.
+4. If fewer than M valid sigs, return UNSATISFIED.
+5. Verify CSV timelock. If not met, return UNSATISFIED.
+6. Return SATISFIED.
+
+### 7.47 EPOCH_GATE (0x0801)
+
+**Required fields:** 2 x NUMERIC (epoch_size, window_size)
+**Context requirements:** `ctx.block_height`
+
+**Evaluation:**
+
+1. If epoch_size <= 0, window_size <= 0, or window_size > epoch_size, return ERROR.
+2. Compute `position = block_height % epoch_size`.
+3. If `position < window_size`, return SATISFIED.
+4. Return UNSATISFIED.
+
+### 7.48 WEIGHT_LIMIT (0x0802)
+
+**Required fields:** NUMERIC (max_weight)
+**Context requirements:** `ctx.tx`
+
+**Evaluation:**
+
+1. If no tx context, return SATISFIED.
+2. If `GetTransactionWeight(tx) <= max_weight`, return SATISFIED.
+3. Return UNSATISFIED.
+
+### 7.49 INPUT_COUNT (0x0803)
+
+**Required fields:** 2 x NUMERIC (min_inputs, max_inputs)
+**Context requirements:** `ctx.tx`
+
+**Evaluation:**
+
+1. If min_inputs > max_inputs, return ERROR.
+2. If no tx context, return SATISFIED.
+3. If `tx.vin.size()` within [min, max], return SATISFIED.
+4. Return UNSATISFIED.
+
+### 7.50 OUTPUT_COUNT (0x0804)
+
+**Required fields:** 2 x NUMERIC (min_outputs, max_outputs)
+**Context requirements:** `ctx.tx`
+
+**Evaluation:**
+
+1. If min_outputs > max_outputs, return ERROR.
+2. If no tx context, return SATISFIED.
+3. If `tx.vout.size()` within [min, max], return SATISFIED.
+4. Return UNSATISFIED.
+
+### 7.51 RELATIVE_VALUE (0x0805)
+
+**Required fields:** 2 x NUMERIC (numerator, denominator)
+**Context requirements:** `ctx.input_amount`, `ctx.output_amount`
+
+**Evaluation:**
+
+1. If denominator == 0, return ERROR.
+2. Compute `output_amount * denominator >= input_amount * numerator` (128-bit safe).
+3. If true, return SATISFIED.
+4. Return UNSATISFIED.
+
+### 7.52 ACCUMULATOR (0x0806)
+
+**Required fields:** >= 3 x HASH256 (root at index 0, proof siblings, leaf at last index)
+
+**Evaluation:**
+
+1. If fewer than 3 HASH256 fields, return ERROR.
+2. Set `current = leaf` (last hash).
+3. For each sibling (hashes[1..N-1]):
+   - If `current < sibling`, compute `SHA256(current || sibling)`.
+   - Else, compute `SHA256(sibling || current)`.
+4. If `current == root`, return SATISFIED.
+5. Return UNSATISFIED.
 
 ---
 

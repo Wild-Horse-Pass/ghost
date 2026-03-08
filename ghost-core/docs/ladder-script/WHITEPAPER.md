@@ -82,11 +82,13 @@ This makes Ladder Script programs amenable to static analysis. The set of condit
 
 ### 2.4 Block Type Families
 
-Block types are organized into seven families:
+Block types are organized into nine families:
 
 - **Signature, Timelock, and Hash** (0x0001--0x02FF): Core spending primitives covering the functionality of existing Bitcoin Script.
 - **Covenant and Anchor** (0x0300--0x05FF): Output constraints, L2 integration, and protocol-specific UTXO tagging.
 - **Recursion and PLC** (0x0400--0x06FF): State machines, self-referential covenants, and advanced flow control.
+- **Compound** (0x0700--0x07FF): Multi-condition blocks combining signature, timelock, and hash checks in a single block (HTLC, PTLC, TIMELOCKED_SIG, CLTV_SIG, HASH_SIG, TIMELOCKED_MULTISIG).
+- **Governance** (0x0800--0x08FF): Transaction-level constraints (epoch gates, weight limits, input/output count bounds, relative value ratios, Merkle accumulator proofs).
 
 All block types are activated as a single deployment and are standard upon activation.
 
