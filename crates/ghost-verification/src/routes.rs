@@ -566,7 +566,12 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             post(api_shroud_configure_handler),
         )
         // Dashboard: Node restart
-        .route("/api/v1/node/restart", post(api_node_restart_handler));
+        .route("/api/v1/node/restart", post(api_node_restart_handler))
+        // L2 commitment sync (authenticated alternative to localhost-only sync-commitment)
+        .route(
+            "/api/internal/l2/sync-commitment",
+            post(api_l2_sync_commitment_handler),
+        );
 
     // H-3: Apply authentication middleware - ALWAYS required for internal endpoints
     let internal_router = if let Some(ref auth) = state.internal_auth {
