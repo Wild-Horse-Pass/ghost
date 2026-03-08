@@ -21,27 +21,49 @@ static constexpr size_t MAX_RUNGS = 16;
 static constexpr size_t MAX_BLOCKS_PER_RUNG = 8;
 /** Maximum number of fields per block. */
 static constexpr size_t MAX_FIELDS_PER_BLOCK = 16;
-/** Maximum total ladder witness size in bytes.
- *  Largest PQ sig is DILITHIUM3 at ~3.3KB; FALCON1024 at ~1.3KB.
- *  10KB per input is generous headroom for multi-block rungs. */
-static constexpr size_t MAX_LADDER_WITNESS_SIZE = 10000;
+/** Maximum total ladder witness size in bytes (must accommodate PQ signatures). */
+static constexpr size_t MAX_LADDER_WITNESS_SIZE = 100000;
+/** Maximum number of preimage-bearing blocks (HASH_PREIMAGE, HASH160_PREIMAGE,
+ *  TAGGED_HASH) per ladder witness. Limits user-chosen data to ~504 bytes
+ *  (2 * 252 bytes PREIMAGE max) while covering all legitimate use cases. */
+static constexpr size_t MAX_PREIMAGE_BLOCKS_PER_WITNESS = 2;
+/** Maximum number of relays per ladder witness. */
+static constexpr size_t MAX_RELAYS = 8;
+/** Maximum number of relay requirements per rung or relay. */
+static constexpr size_t MAX_REQUIRES = 8;
+/** Maximum transitive relay chain depth (relay requiring relay requiring relay...). */
+static constexpr size_t MAX_RELAY_DEPTH = 4;
+
+/** Serialization context — determines which implicit field table to use. */
+enum class SerializationContext : uint8_t {
+    WITNESS,     //!< Witness (spending) side — SIGNATURE, PREIMAGE allowed
+    CONDITIONS,  //!< Conditions (locking) side — only condition data types
+};
 
 /** Deserialize a LadderWitness from raw witness bytes.
  *  Performs full type and size validation during deserialization.
  *  Returns false with error message on any malformed data.
  *
- *  Wire format (v2):
+ *  Wire format (v3 — micro-header + varint NUMERIC + implicit fields):
  *    [n_rungs: varint]
  *    for each rung:
  *      [n_blocks: varint]
  *      for each block:
- *        [block_type: uint16_t LE]
- *        [inverted: uint8_t (0x00 or 0x01)]
- *        [n_fields: varint]
- *        for each field:
- *          [data_type: uint8_t]
- *          [data_len: varint]
- *          [data: bytes]
+ *        [micro_header: uint8_t]    -- 0x00-0x7F = lookup table index
+ *                                   -- 0x80 = escape (full header follows, not inverted)
+ *                                   -- 0x81 = escape (full header follows, inverted)
+ *        if escape: [block_type: uint16_t LE]
+ *        if micro-header with implicit field table for context:
+ *          -- field count and type bytes omitted
+ *          for each implicit field:
+ *            if NUMERIC: [value: CompactSize]
+ *            else: [data_len: CompactSize] [data: bytes]
+ *        else:
+ *          [n_fields: varint]
+ *          for each field:
+ *            [data_type: uint8_t]
+ *            if NUMERIC: [value: CompactSize]
+ *            else: [data_len: CompactSize] [data: bytes]
  *    [coil_type: uint8_t]
  *    [attestation: uint8_t]
  *    [scheme: uint8_t]
@@ -54,10 +76,12 @@ static constexpr size_t MAX_LADDER_WITNESS_SIZE = 10000;
  */
 bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
                               LadderWitness& ladder_out,
-                              std::string& error);
+                              std::string& error,
+                              SerializationContext ctx = SerializationContext::WITNESS);
 
 /** Serialize a LadderWitness to raw bytes. */
-std::vector<uint8_t> SerializeLadderWitness(const LadderWitness& ladder);
+std::vector<uint8_t> SerializeLadderWitness(const LadderWitness& ladder,
+                                             SerializationContext ctx = SerializationContext::WITNESS);
 
 } // namespace rung
 

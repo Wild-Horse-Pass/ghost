@@ -21,7 +21,7 @@ static uint256 HashRungConditions(const RungConditions& conditions)
 {
     LadderWitness ladder;
     ladder.rungs = conditions.rungs;
-    auto bytes = SerializeLadderWitness(ladder);
+    auto bytes = SerializeLadderWitness(ladder, SerializationContext::CONDITIONS);
 
     HashWriter ss{};
     ss.write(MakeByteSpan(bytes));

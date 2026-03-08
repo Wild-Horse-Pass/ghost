@@ -11,9 +11,269 @@
 
 namespace rung {
 
+// ============================================================================
+// Helper: serialize a single field (varint NUMERIC optimization)
+// ============================================================================
+
+static void SerializeField(DataStream& ss, const RungField& field, bool write_type)
+{
+    if (write_type) {
+        ss << static_cast<uint8_t>(field.type);
+    }
+    if (field.type == RungDataType::NUMERIC) {
+        // Varint NUMERIC: encode LE value directly as CompactSize (no length prefix)
+        uint32_t val = 0;
+        for (size_t i = 0; i < field.data.size(); ++i) {
+            val |= static_cast<uint32_t>(field.data[i]) << (8 * i);
+        }
+        WriteCompactSize(ss, val);
+    } else if (field.type == RungDataType::SCHEME && field.data.size() == 1) {
+        // Fixed 1-byte field: write data directly, no length prefix needed
+        // when using implicit layout (write_type == false and fixed_size > 0).
+        // But when write_type is true, we still need the length.
+        if (write_type) {
+            WriteCompactSize(ss, field.data.size());
+            ss.write(MakeByteSpan(field.data));
+        } else {
+            // Implicit: fixed_size is known, write data only
+            ss.write(MakeByteSpan(field.data));
+        }
+    } else {
+        // Standard: length-prefixed data
+        if (!write_type) {
+            // Implicit: caller knows the type, but we still need length for variable fields
+            // Fixed-size fields skip the length prefix (handled by caller via fixed_size)
+            WriteCompactSize(ss, field.data.size());
+            if (!field.data.empty()) {
+                ss.write(MakeByteSpan(field.data));
+            }
+        } else {
+            WriteCompactSize(ss, field.data.size());
+            if (!field.data.empty()) {
+                ss.write(MakeByteSpan(field.data));
+            }
+        }
+    }
+}
+
+/** Serialize a field with implicit layout knowledge (fixed_size optimization). */
+static void SerializeImplicitField(DataStream& ss, const RungField& field, uint16_t fixed_size)
+{
+    if (field.type == RungDataType::NUMERIC) {
+        // Varint NUMERIC
+        uint32_t val = 0;
+        for (size_t i = 0; i < field.data.size(); ++i) {
+            val |= static_cast<uint32_t>(field.data[i]) << (8 * i);
+        }
+        WriteCompactSize(ss, val);
+    } else if (fixed_size > 0) {
+        // Fixed-size: write data directly (no length prefix)
+        ss.write(MakeByteSpan(field.data));
+    } else {
+        // Variable-size: write length + data
+        WriteCompactSize(ss, field.data.size());
+        if (!field.data.empty()) {
+            ss.write(MakeByteSpan(field.data));
+        }
+    }
+}
+
+// ============================================================================
+// Helper: serialize a block (micro-header + implicit fields)
+// ============================================================================
+
+static void SerializeBlock(DataStream& ss, const RungBlock& block, uint8_t ctx)
+{
+    int slot = MicroHeaderSlot(block.type);
+    const auto& layout = GetImplicitLayout(block.type, ctx);
+    // Use micro-header only when:
+    // - Not inverted, AND
+    // - Either fields match implicit layout, or no implicit layout exists for this context
+    //   (if an implicit layout exists but fields don't match, we must escape to
+    //    avoid ambiguity — deserializer uses layout presence as the signal)
+    bool fields_match = MatchesImplicitLayout(block, layout);
+    bool can_use_micro = (slot >= 0) && !block.inverted &&
+                         (fields_match || layout.count == 0);
+    // Implicit field encoding is only used with micro-header + matching layout
+    bool use_implicit = can_use_micro && fields_match;
+
+    if (can_use_micro) {
+        // Micro-header: 1-byte slot index
+        ss << static_cast<uint8_t>(slot);
+    } else if (!block.inverted) {
+        // Escape 0x80 + type
+        ss << MICRO_HEADER_ESCAPE;
+        uint16_t btype = static_cast<uint16_t>(block.type);
+        ss << static_cast<uint8_t>(btype & 0xFF);
+        ss << static_cast<uint8_t>((btype >> 8) & 0xFF);
+    } else {
+        // Escape 0x81 + type (inverted)
+        ss << MICRO_HEADER_ESCAPE_INV;
+        uint16_t btype = static_cast<uint16_t>(block.type);
+        ss << static_cast<uint8_t>(btype & 0xFF);
+        ss << static_cast<uint8_t>((btype >> 8) & 0xFF);
+    }
+
+    if (use_implicit) {
+        // Implicit fields: no field count, no type bytes
+        for (uint8_t i = 0; i < layout.count; ++i) {
+            SerializeImplicitField(ss, block.fields[i], layout.fields[i].fixed_size);
+        }
+    } else {
+        // Explicit fields: field count + type byte + data per field
+        WriteCompactSize(ss, block.fields.size());
+        for (const auto& field : block.fields) {
+            SerializeField(ss, field, /*write_type=*/true);
+        }
+    }
+}
+
+// ============================================================================
+// Helper: deserialize a single field
+// ============================================================================
+
+static bool DeserializeField(DataStream& ss, RungField& field_out,
+                             RungDataType type, uint16_t fixed_size,
+                             std::string& error)
+{
+    field_out.type = type;
+
+    if (type == RungDataType::NUMERIC) {
+        // Varint NUMERIC: read CompactSize as value (not size), convert to 4-byte LE
+        uint64_t val = ReadCompactSize(ss, false); // range_check=false: values can exceed MAX_SIZE
+        if (val > 0xFFFFFFFF) {
+            error = "NUMERIC value exceeds uint32 max";
+            return false;
+        }
+        // Always store as 4-byte LE for evaluator compatibility
+        // (evaluators and recursion checks compare field.data byte-by-byte)
+        field_out.data.resize(4);
+        field_out.data[0] = static_cast<uint8_t>(val & 0xFF);
+        field_out.data[1] = static_cast<uint8_t>((val >> 8) & 0xFF);
+        field_out.data[2] = static_cast<uint8_t>((val >> 16) & 0xFF);
+        field_out.data[3] = static_cast<uint8_t>((val >> 24) & 0xFF);
+    } else if (fixed_size > 0) {
+        // Fixed-size field: read exactly fixed_size bytes (no length prefix)
+        field_out.data.resize(fixed_size);
+        ss.read(MakeWritableByteSpan(field_out.data));
+    } else {
+        // Variable-size field: read CompactSize length + data
+        uint64_t data_len = ReadCompactSize(ss);
+        size_t min_sz = FieldMinSize(type);
+        size_t max_sz = FieldMaxSize(type);
+        if (data_len < min_sz) {
+            error = DataTypeName(type) + " too small: " + std::to_string(data_len) +
+                    " < " + std::to_string(min_sz);
+            return false;
+        }
+        if (data_len > max_sz) {
+            error = DataTypeName(type) + " too large: " + std::to_string(data_len) +
+                    " > " + std::to_string(max_sz);
+            return false;
+        }
+        field_out.data.resize(data_len);
+        if (data_len > 0) {
+            ss.read(MakeWritableByteSpan(field_out.data));
+        }
+    }
+
+    // Validate field content
+    std::string field_reason;
+    if (!field_out.IsValid(field_reason)) {
+        error = field_reason;
+        return false;
+    }
+    return true;
+}
+
+// ============================================================================
+// Helper: deserialize a block (micro-header + implicit fields)
+// ============================================================================
+
+static bool DeserializeBlock(DataStream& ss, RungBlock& block_out,
+                             uint8_t ctx, std::string& error)
+{
+    uint8_t first_byte;
+    ss >> first_byte;
+
+    if (first_byte < MICRO_HEADER_ESCAPE) {
+        // Micro-header: lookup block type from table
+        if (MICRO_HEADER_TABLE[first_byte] == 0xFFFF) {
+            error = "unused micro-header slot: 0x" + HexStr(std::span<const uint8_t>{&first_byte, 1});
+            return false;
+        }
+        uint16_t block_type_val = MICRO_HEADER_TABLE[first_byte];
+        if (!IsKnownBlockType(block_type_val)) {
+            error = "unknown block type from micro-header: 0x" + HexStr(std::vector<uint8_t>{
+                static_cast<uint8_t>(block_type_val & 0xFF),
+                static_cast<uint8_t>((block_type_val >> 8) & 0xFF)});
+            return false;
+        }
+        block_out.type = static_cast<RungBlockType>(block_type_val);
+        block_out.inverted = false;
+    } else if (first_byte == MICRO_HEADER_ESCAPE || first_byte == MICRO_HEADER_ESCAPE_INV) {
+        // Full header escape: read block_type uint16_t LE
+        uint8_t lo, hi;
+        ss >> lo >> hi;
+        uint16_t block_type_val = static_cast<uint16_t>(lo) | (static_cast<uint16_t>(hi) << 8);
+        if (!IsKnownBlockType(block_type_val)) {
+            error = "unknown block type: 0x" + HexStr(std::vector<uint8_t>{lo, hi});
+            return false;
+        }
+        block_out.type = static_cast<RungBlockType>(block_type_val);
+        block_out.inverted = (first_byte == MICRO_HEADER_ESCAPE_INV);
+    } else {
+        error = "invalid header byte: 0x" + HexStr(std::span<const uint8_t>{&first_byte, 1});
+        return false;
+    }
+
+    // Check for implicit field layout
+    const auto& layout = GetImplicitLayout(block_out.type, ctx);
+
+    if (layout.count > 0 && first_byte < MICRO_HEADER_ESCAPE) {
+        // Try implicit encoding: peek to see if field count follows
+        // Implicit blocks have no field count — first byte is field data.
+        // We use the micro-header as the signal: micro-header + implicit layout = implicit fields.
+        block_out.fields.resize(layout.count);
+        for (uint8_t i = 0; i < layout.count; ++i) {
+            if (!DeserializeField(ss, block_out.fields[i], layout.fields[i].type,
+                                  layout.fields[i].fixed_size, error)) {
+                return false;
+            }
+        }
+    } else {
+        // Explicit fields: read field count + per-field type + data
+        uint64_t n_fields = ReadCompactSize(ss);
+        if (n_fields > MAX_FIELDS_PER_BLOCK) {
+            error = "block has too many fields: " + std::to_string(n_fields);
+            return false;
+        }
+        block_out.fields.resize(n_fields);
+        for (uint64_t f = 0; f < n_fields; ++f) {
+            uint8_t data_type_byte;
+            ss >> data_type_byte;
+            if (!IsKnownDataType(data_type_byte)) {
+                error = "unknown data type: 0x" + HexStr(std::span<const uint8_t>{&data_type_byte, 1});
+                return false;
+            }
+            RungDataType dtype = static_cast<RungDataType>(data_type_byte);
+            if (!DeserializeField(ss, block_out.fields[f], dtype, 0, error)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
 bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
                               LadderWitness& ladder_out,
-                              std::string& error)
+                              std::string& error,
+                              SerializationContext ctx)
 {
     if (witness_bytes.empty()) {
         error = "empty ladder witness";
@@ -26,6 +286,7 @@ bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
     }
 
     DataStream ss{witness_bytes};
+    uint8_t ctx_val = static_cast<uint8_t>(ctx);
 
     try {
         uint64_t n_rungs = ReadCompactSize(ss);
@@ -52,76 +313,10 @@ bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
 
             ladder_out.rungs[r].blocks.resize(n_blocks);
             for (uint64_t b = 0; b < n_blocks; ++b) {
-                // Read block type — uint16_t little-endian
-                uint8_t lo, hi;
-                ss >> lo >> hi;
-                uint16_t block_type_val = static_cast<uint16_t>(lo) | (static_cast<uint16_t>(hi) << 8);
-                if (!IsKnownBlockType(block_type_val)) {
-                    error = "unknown block type: 0x" + HexStr(std::vector<uint8_t>{lo, hi});
+                if (!DeserializeBlock(ss, ladder_out.rungs[r].blocks[b], ctx_val, error)) {
                     return false;
-                }
-                ladder_out.rungs[r].blocks[b].type = static_cast<RungBlockType>(block_type_val);
-
-                // Read inverted flag — single byte, must be 0x00 or 0x01
-                uint8_t inverted_byte;
-                ss >> inverted_byte;
-                if (inverted_byte > 0x01) {
-                    error = "invalid inverted flag: 0x" + HexStr(std::span<const uint8_t>{&inverted_byte, 1});
-                    return false;
-                }
-                ladder_out.rungs[r].blocks[b].inverted = (inverted_byte == 0x01);
-
-                // Read fields
-                uint64_t n_fields = ReadCompactSize(ss);
-                if (n_fields > MAX_FIELDS_PER_BLOCK) {
-                    error = "block has too many fields: " + std::to_string(n_fields);
-                    return false;
-                }
-
-                ladder_out.rungs[r].blocks[b].fields.resize(n_fields);
-                for (uint64_t f = 0; f < n_fields; ++f) {
-                    // Read data type
-                    uint8_t data_type_byte;
-                    ss >> data_type_byte;
-                    if (!IsKnownDataType(data_type_byte)) {
-                        error = "unknown data type: 0x" + HexStr(std::span<const uint8_t>{&data_type_byte, 1});
-                        return false;
-                    }
-                    RungDataType dtype = static_cast<RungDataType>(data_type_byte);
-
-                    // Read data length
-                    uint64_t data_len = ReadCompactSize(ss);
-
-                    // Validate field size against type constraints
-                    size_t min_sz = FieldMinSize(dtype);
-                    size_t max_sz = FieldMaxSize(dtype);
-                    if (data_len < min_sz) {
-                        error = DataTypeName(dtype) + " too small: " + std::to_string(data_len) +
-                                " < " + std::to_string(min_sz);
-                        return false;
-                    }
-                    if (data_len > max_sz) {
-                        error = DataTypeName(dtype) + " too large: " + std::to_string(data_len) +
-                                " > " + std::to_string(max_sz);
-                        return false;
-                    }
-
-                    // Read data
-                    ladder_out.rungs[r].blocks[b].fields[f].type = dtype;
-                    ladder_out.rungs[r].blocks[b].fields[f].data.resize(data_len);
-                    if (data_len > 0) {
-                        ss.read(MakeWritableByteSpan(ladder_out.rungs[r].blocks[b].fields[f].data));
-                    }
-
-                    // Validate field content
-                    std::string field_reason;
-                    if (!ladder_out.rungs[r].blocks[b].fields[f].IsValid(field_reason)) {
-                        error = field_reason;
-                        return false;
-                    }
                 }
             }
-
         }
 
         // Read coil (per-ladder, after all rungs)
@@ -142,7 +337,7 @@ bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
             ss.read(MakeWritableByteSpan(ladder_out.coil.address));
         }
 
-        // Read coil condition rungs
+        // Read coil condition rungs (always use CONDITIONS context)
         uint64_t n_coil_rungs = ReadCompactSize(ss);
         if (n_coil_rungs > MAX_RUNGS) {
             error = "too many coil condition rungs: " + std::to_string(n_coil_rungs);
@@ -161,53 +356,81 @@ bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
             }
             ladder_out.coil.conditions[cr].blocks.resize(n_cblocks);
             for (uint64_t cb = 0; cb < n_cblocks; ++cb) {
-                uint8_t clo, chi;
-                ss >> clo >> chi;
-                uint16_t cblock_type = static_cast<uint16_t>(clo) | (static_cast<uint16_t>(chi) << 8);
-                if (!IsKnownBlockType(cblock_type)) {
-                    error = "unknown coil block type: 0x" + HexStr(std::vector<uint8_t>{clo, chi});
+                // Coil conditions always use CONDITIONS context
+                if (!DeserializeBlock(ss, ladder_out.coil.conditions[cr].blocks[cb],
+                                     static_cast<uint8_t>(SerializationContext::CONDITIONS), error)) {
                     return false;
                 }
-                ladder_out.coil.conditions[cr].blocks[cb].type = static_cast<RungBlockType>(cblock_type);
+            }
+        }
 
-                uint8_t cinv;
-                ss >> cinv;
-                if (cinv > 0x01) {
-                    error = "invalid coil inverted flag";
-                    return false;
-                }
-                ladder_out.coil.conditions[cr].blocks[cb].inverted = (cinv == 0x01);
+        // Read relays (optional — backward compatible, 0 relays if EOF)
+        if (!ss.empty()) {
+            uint64_t n_relays = ReadCompactSize(ss);
+            if (n_relays > MAX_RELAYS) {
+                error = "too many relays: " + std::to_string(n_relays);
+                return false;
+            }
 
-                uint64_t cn_fields = ReadCompactSize(ss);
-                if (cn_fields > MAX_FIELDS_PER_BLOCK) {
-                    error = "coil block has too many fields: " + std::to_string(cn_fields);
+            ladder_out.relays.resize(n_relays);
+            for (uint64_t rl = 0; rl < n_relays; ++rl) {
+                // Read relay blocks
+                uint64_t n_rblocks = ReadCompactSize(ss);
+                if (n_rblocks == 0) {
+                    error = "relay " + std::to_string(rl) + " has zero blocks";
                     return false;
                 }
-                ladder_out.coil.conditions[cr].blocks[cb].fields.resize(cn_fields);
-                for (uint64_t cf = 0; cf < cn_fields; ++cf) {
-                    uint8_t cdt;
-                    ss >> cdt;
-                    if (!IsKnownDataType(cdt)) {
-                        error = "unknown coil data type: 0x" + HexStr(std::span<const uint8_t>{&cdt, 1});
+                if (n_rblocks > MAX_BLOCKS_PER_RUNG) {
+                    error = "relay " + std::to_string(rl) + " has too many blocks: " + std::to_string(n_rblocks);
+                    return false;
+                }
+
+                ladder_out.relays[rl].blocks.resize(n_rblocks);
+                for (uint64_t rb = 0; rb < n_rblocks; ++rb) {
+                    if (!DeserializeBlock(ss, ladder_out.relays[rl].blocks[rb], ctx_val, error)) {
                         return false;
                     }
-                    RungDataType cdtype = static_cast<RungDataType>(cdt);
-                    uint64_t cdl = ReadCompactSize(ss);
-                    size_t cmin = FieldMinSize(cdtype);
-                    size_t cmax = FieldMaxSize(cdtype);
-                    if (cdl < cmin || cdl > cmax) {
-                        error = DataTypeName(cdtype) + " size out of range in coil condition";
+                }
+
+                // Read relay relay_refs (indices of other relays)
+                uint64_t n_relay_reqs = ReadCompactSize(ss);
+                if (n_relay_reqs > MAX_REQUIRES) {
+                    error = "relay " + std::to_string(rl) + " has too many relay_refs";
+                    return false;
+                }
+                ladder_out.relays[rl].relay_refs.resize(n_relay_reqs);
+                for (uint64_t rr = 0; rr < n_relay_reqs; ++rr) {
+                    uint64_t req_idx = ReadCompactSize(ss);
+                    if (req_idx >= rl) {
+                        error = "relay " + std::to_string(rl) + " requires forward/self reference: " + std::to_string(req_idx);
                         return false;
                     }
-                    ladder_out.coil.conditions[cr].blocks[cb].fields[cf].type = cdtype;
-                    ladder_out.coil.conditions[cr].blocks[cb].fields[cf].data.resize(cdl);
-                    if (cdl > 0) {
-                        ss.read(MakeWritableByteSpan(ladder_out.coil.conditions[cr].blocks[cb].fields[cf].data));
-                    }
-                    std::string cfield_reason;
-                    if (!ladder_out.coil.conditions[cr].blocks[cb].fields[cf].IsValid(cfield_reason)) {
-                        error = cfield_reason;
+                    ladder_out.relays[rl].relay_refs[rr] = static_cast<uint16_t>(req_idx);
+                }
+            }
+
+            // Read per-rung relay_refs
+            if (!ss.empty()) {
+                uint64_t n_rung_reqs = ReadCompactSize(ss);
+                if (n_rung_reqs != ladder_out.rungs.size()) {
+                    error = "rung relay_refs count mismatch: " + std::to_string(n_rung_reqs) +
+                            " vs " + std::to_string(ladder_out.rungs.size()) + " rungs";
+                    return false;
+                }
+                for (uint64_t rq = 0; rq < n_rung_reqs; ++rq) {
+                    uint64_t n_reqs = ReadCompactSize(ss);
+                    if (n_reqs > MAX_REQUIRES) {
+                        error = "rung " + std::to_string(rq) + " has too many relay_refs";
                         return false;
+                    }
+                    ladder_out.rungs[rq].relay_refs.resize(n_reqs);
+                    for (uint64_t ri = 0; ri < n_reqs; ++ri) {
+                        uint64_t req_idx = ReadCompactSize(ss);
+                        if (req_idx >= ladder_out.relays.size()) {
+                            error = "rung " + std::to_string(rq) + " relay_refs invalid relay index: " + std::to_string(req_idx);
+                            return false;
+                        }
+                        ladder_out.rungs[rq].relay_refs[ri] = static_cast<uint16_t>(req_idx);
                     }
                 }
             }
@@ -227,29 +450,17 @@ bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
     return true;
 }
 
-std::vector<uint8_t> SerializeLadderWitness(const LadderWitness& ladder)
+std::vector<uint8_t> SerializeLadderWitness(const LadderWitness& ladder,
+                                             SerializationContext ctx)
 {
     DataStream ss{};
+    uint8_t ctx_val = static_cast<uint8_t>(ctx);
 
     WriteCompactSize(ss, ladder.rungs.size());
     for (const auto& rung : ladder.rungs) {
         WriteCompactSize(ss, rung.blocks.size());
         for (const auto& block : rung.blocks) {
-            // Write block type as uint16_t little-endian
-            uint16_t btype = static_cast<uint16_t>(block.type);
-            ss << static_cast<uint8_t>(btype & 0xFF);
-            ss << static_cast<uint8_t>((btype >> 8) & 0xFF);
-            // Write inverted flag
-            ss << static_cast<uint8_t>(block.inverted ? 0x01 : 0x00);
-            // Write fields
-            WriteCompactSize(ss, block.fields.size());
-            for (const auto& field : block.fields) {
-                ss << static_cast<uint8_t>(field.type);
-                WriteCompactSize(ss, field.data.size());
-                if (!field.data.empty()) {
-                    ss.write(MakeByteSpan(field.data));
-                }
-            }
+            SerializeBlock(ss, block, ctx_val);
         }
     }
 
@@ -264,22 +475,43 @@ std::vector<uint8_t> SerializeLadderWitness(const LadderWitness& ladder)
         ss.write(MakeByteSpan(ladder.coil.address));
     }
 
-    // Write coil condition rungs
+    // Write coil condition rungs (always use CONDITIONS context)
     WriteCompactSize(ss, ladder.coil.conditions.size());
     for (const auto& crung : ladder.coil.conditions) {
         WriteCompactSize(ss, crung.blocks.size());
         for (const auto& cblock : crung.blocks) {
-            uint16_t cbtype = static_cast<uint16_t>(cblock.type);
-            ss << static_cast<uint8_t>(cbtype & 0xFF);
-            ss << static_cast<uint8_t>((cbtype >> 8) & 0xFF);
-            ss << static_cast<uint8_t>(cblock.inverted ? 0x01 : 0x00);
-            WriteCompactSize(ss, cblock.fields.size());
-            for (const auto& cfield : cblock.fields) {
-                ss << static_cast<uint8_t>(cfield.type);
-                WriteCompactSize(ss, cfield.data.size());
-                if (!cfield.data.empty()) {
-                    ss.write(MakeByteSpan(cfield.data));
-                }
+            SerializeBlock(ss, cblock, static_cast<uint8_t>(SerializationContext::CONDITIONS));
+        }
+    }
+
+    // Write relays (only if any relays or rung relay_refs exist)
+    bool has_relay_refs = !ladder.relays.empty();
+    if (!has_relay_refs) {
+        for (const auto& rung : ladder.rungs) {
+            if (!rung.relay_refs.empty()) { has_relay_refs = true; break; }
+        }
+    }
+
+    if (has_relay_refs) {
+        WriteCompactSize(ss, ladder.relays.size());
+        for (const auto& relay : ladder.relays) {
+            WriteCompactSize(ss, relay.blocks.size());
+            for (const auto& block : relay.blocks) {
+                SerializeBlock(ss, block, ctx_val);
+            }
+            // Write relay relay_refs
+            WriteCompactSize(ss, relay.relay_refs.size());
+            for (uint16_t req : relay.relay_refs) {
+                WriteCompactSize(ss, req);
+            }
+        }
+
+        // Write per-rung relay_refs
+        WriteCompactSize(ss, ladder.rungs.size());
+        for (const auto& rung : ladder.rungs) {
+            WriteCompactSize(ss, rung.relay_refs.size());
+            for (uint16_t req : rung.relay_refs) {
+                WriteCompactSize(ss, req);
             }
         }
     }

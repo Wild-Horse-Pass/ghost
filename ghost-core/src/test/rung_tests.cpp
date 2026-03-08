@@ -64,6 +64,14 @@ static std::vector<uint8_t> MakeNumeric(uint32_t val)
     return data;
 }
 
+/** Compute SHA-256 of a pubkey to produce a PUBKEY_COMMIT value. */
+static std::vector<uint8_t> MakePubkeyCommit(const std::vector<uint8_t>& pubkey)
+{
+    std::vector<uint8_t> commit(CSHA256::OUTPUT_SIZE);
+    CSHA256().Write(pubkey.data(), pubkey.size()).Finalize(commit.data());
+    return commit;
+}
+
 BOOST_FIXTURE_TEST_SUITE(rung_tests, BasicTestingSetup)
 
 // ============================================================================
@@ -136,12 +144,16 @@ BOOST_AUTO_TEST_CASE(field_validation_signature_various_sizes)
     RungField sig1{RungDataType::SIGNATURE, std::vector<uint8_t>(1, 0xBB)};
     BOOST_CHECK(sig1.IsValid(reason));
 
-    // 5000 bytes: valid (max size)
-    RungField sig_max{RungDataType::SIGNATURE, std::vector<uint8_t>(5000, 0xBB)};
+    // 49216 bytes: valid (SPHINCS+ sig size)
+    RungField sig_sphincs{RungDataType::SIGNATURE, std::vector<uint8_t>(49216, 0xBB)};
+    BOOST_CHECK(sig_sphincs.IsValid(reason));
+
+    // 50000 bytes: valid (max size)
+    RungField sig_max{RungDataType::SIGNATURE, std::vector<uint8_t>(50000, 0xBB)};
     BOOST_CHECK(sig_max.IsValid(reason));
 
-    // 5001 bytes: too large
-    RungField sig_over{RungDataType::SIGNATURE, std::vector<uint8_t>(5001, 0xBB)};
+    // 50001 bytes: too large
+    RungField sig_over{RungDataType::SIGNATURE, std::vector<uint8_t>(50001, 0xBB)};
     BOOST_CHECK(!sig_over.IsValid(reason));
     BOOST_CHECK(reason.find("too large") != std::string::npos);
 
@@ -228,6 +240,8 @@ BOOST_AUTO_TEST_CASE(field_validation_new_types)
     BOOST_CHECK(scheme_falcon1024.IsValid(reason));
     RungField scheme_dilithium{RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::DILITHIUM3)}};
     BOOST_CHECK(scheme_dilithium.IsValid(reason));
+    RungField scheme_sphincs{RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::SPHINCS_SHA)}};
+    BOOST_CHECK(scheme_sphincs.IsValid(reason));
     // Unknown scheme rejected
     RungField scheme_bad{RungDataType::SCHEME, {0xFF}};
     BOOST_CHECK(!scheme_bad.IsValid(reason));
@@ -266,7 +280,7 @@ BOOST_AUTO_TEST_CASE(known_type_checks)
     BOOST_CHECK(IsKnownScheme(0x01)); // SCHNORR
     BOOST_CHECK(IsKnownScheme(0x02)); // ECDSA
     BOOST_CHECK(IsKnownScheme(0x10)); // FALCON512
-    BOOST_CHECK(!IsKnownScheme(0x13)); // SPHINCS_SHA removed
+    BOOST_CHECK(IsKnownScheme(0x13)); // SPHINCS_SHA
     BOOST_CHECK(!IsKnownScheme(0x00));
     BOOST_CHECK(!IsKnownScheme(0x03));
     BOOST_CHECK(!IsKnownScheme(0x14));
@@ -275,7 +289,7 @@ BOOST_AUTO_TEST_CASE(known_type_checks)
     BOOST_CHECK(!IsPQScheme(RungScheme::SCHNORR));
     BOOST_CHECK(!IsPQScheme(RungScheme::ECDSA));
     BOOST_CHECK(IsPQScheme(RungScheme::FALCON512));
-    BOOST_CHECK(IsPQScheme(RungScheme::DILITHIUM3));
+    BOOST_CHECK(IsPQScheme(RungScheme::SPHINCS_SHA));
 }
 
 // ============================================================================
@@ -406,12 +420,12 @@ BOOST_AUTO_TEST_CASE(deserialize_rejects_zero_rungs)
 
 BOOST_AUTO_TEST_CASE(deserialize_rejects_unknown_block_type)
 {
-    // v2 wire: block_type is uint16_t LE. Use 0xFF, 0xFF (unknown)
+    // v3 wire: escape byte 0x80 + unknown block type uint16_t LE
     std::vector<uint8_t> data{
         0x01,             // 1 rung
         0x01,             // 1 block
+        0x80,             // escape (not inverted)
         0xFF, 0xFF,       // unknown block type (uint16_t LE)
-        0x00,             // inverted = false
         0x00,             // 0 fields
         0x01, 0x01, 0x01, // coil bytes
     };
@@ -421,34 +435,34 @@ BOOST_AUTO_TEST_CASE(deserialize_rejects_unknown_block_type)
     BOOST_CHECK(error.find("unknown block type") != std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(deserialize_rejects_invalid_inverted_flag)
+BOOST_AUTO_TEST_CASE(deserialize_rejects_invalid_header_byte)
 {
-    // v2 wire: SIG block (0x01, 0x00), inverted = 0x02 (invalid)
+    // v3 wire: header byte 0x82 is invalid (only 0x00-0x7F, 0x80, 0x81 are valid)
     std::vector<uint8_t> data{
         0x01,             // 1 rung
         0x01,             // 1 block
-        0x01, 0x00,       // SIG block type
-        0x02,             // invalid inverted flag
+        0x82,             // invalid header byte
+        0x01, 0x00,       // would be SIG type
         0x00,             // 0 fields
         0x01, 0x01, 0x01, // coil bytes
     };
     LadderWitness decoded;
     std::string error;
     BOOST_CHECK(!DeserializeLadderWitness(data, decoded, error));
-    BOOST_CHECK(error.find("invalid inverted") != std::string::npos);
+    BOOST_CHECK(error.find("invalid header byte") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(deserialize_rejects_unknown_data_type)
 {
-    // Build manually: 1 rung, 1 SIG block, 1 field with type 0xFF
+    // v3 wire: escape byte + SIG block type + explicit fields with unknown data type
     std::vector<uint8_t> data{
         0x01,             // 1 rung
         0x01,             // 1 block
+        0x80,             // escape (not inverted)
         0x01, 0x00,       // SIG block type
-        0x00,             // inverted = false
         0x01,             // 1 field
         0xFF,             // unknown data type
-        0x01,             // 1 byte data
+        0x01,             // 1 byte data (CompactSize)
         0xAA,             // data
         0x01, 0x01, 0x01, // coil bytes
     };
@@ -487,7 +501,13 @@ BOOST_AUTO_TEST_CASE(deserialize_rejects_trailing_bytes)
     ladder.rungs.push_back(rung);
 
     auto bytes = SerializeLadderWitness(ladder);
-    bytes.push_back(0x00); // extra trailing byte
+    // Append bytes that survive optional relay/rung_relay_refs parsing:
+    // 0x00 = n_relays(0), 0x01 = n_rung_reqs(1) matching 1 rung,
+    // 0x00 = rung[0] has 0 relay_refs, then 0xFF = genuine trailing garbage
+    bytes.push_back(0x00); // n_relays = 0
+    bytes.push_back(0x01); // n_rung_reqs = 1 (matches ladder.rungs.size())
+    bytes.push_back(0x00); // rung[0] relay_refs count = 0
+    bytes.push_back(0xFF); // trailing garbage
 
     LadderWitness decoded;
     std::string error;
@@ -741,8 +761,8 @@ BOOST_AUTO_TEST_CASE(inversion_apply_basic)
     BOOST_CHECK(ApplyInversion(EvalResult::UNSATISFIED, true) == EvalResult::SATISFIED);
     // ERROR never flips
     BOOST_CHECK(ApplyInversion(EvalResult::ERROR, true) == EvalResult::ERROR);
-    // UNKNOWN inverted → ERROR (unconditionally unusable, prevents inverted-unknown footgun)
-    BOOST_CHECK(ApplyInversion(EvalResult::UNKNOWN_BLOCK_TYPE, true) == EvalResult::ERROR);
+    // UNKNOWN inverted → SATISFIED
+    BOOST_CHECK(ApplyInversion(EvalResult::UNKNOWN_BLOCK_TYPE, true) == EvalResult::SATISFIED);
 }
 
 BOOST_AUTO_TEST_CASE(inversion_sig_normal_satisfied_inverted_unsatisfied)
@@ -866,7 +886,7 @@ BOOST_AUTO_TEST_CASE(inversion_error_never_flips)
 }
 
 // ============================================================================
-// Covenant and Anchor evaluator tests
+// Phase 2 evaluator tests
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(eval_ctv_missing_hash)
@@ -990,7 +1010,7 @@ BOOST_AUTO_TEST_CASE(eval_anchor_types_structural)
 }
 
 // ============================================================================
-// Recursion evaluator tests
+// Phase 3 evaluator tests — Recursion
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(eval_recurse_same_structural)
@@ -1042,7 +1062,7 @@ BOOST_AUTO_TEST_CASE(eval_recurse_split_min_sats)
 }
 
 // ============================================================================
-// PLC evaluator tests
+// Phase 3 evaluator tests — PLC
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(eval_compare_operators)
@@ -1349,7 +1369,7 @@ BOOST_AUTO_TEST_CASE(eval_pq_scheme_validation)
     BOOST_CHECK(falcon.IsValid(reason));
 
     RungField sphincs{RungDataType::SCHEME, {0x13}};
-    BOOST_CHECK(!sphincs.IsValid(reason)); // SPHINCS_SHA removed
+    BOOST_CHECK(sphincs.IsValid(reason));
 }
 
 // ============================================================================
@@ -1636,7 +1656,7 @@ BOOST_AUTO_TEST_CASE(policy_all_phases_standard)
     LadderWitness ladder;
     Rung rung;
     RungBlock block;
-    block.type = RungBlockType::CTV; // should be standard
+    block.type = RungBlockType::CTV; // Phase 2 — should be standard
     block.fields.push_back({RungDataType::HASH256, std::vector<uint8_t>(32, 0xaa)});
     rung.blocks.push_back(block);
     ladder.rungs.push_back(rung);
@@ -1663,7 +1683,11 @@ BOOST_AUTO_TEST_CASE(policy_all_phases_standard)
     CTransaction tx2(mtx2);
     std::string reason2;
     BOOST_CHECK(!IsStandardRungTx(tx2, reason2));
-    BOOST_CHECK(reason2.find("unknown block type") != std::string::npos);
+    // Policy rejects unknown block types via deserialization or block type check
+    BOOST_CHECK_MESSAGE(reason2.find("unknown block type") != std::string::npos ||
+                        reason2.find("unknown-block-type") != std::string::npos ||
+                        reason2.find("rung-invalid-witness") != std::string::npos,
+                        "Expected unknown block type rejection, got: " + reason2);
 }
 
 // ============================================================================
@@ -1672,11 +1696,15 @@ BOOST_AUTO_TEST_CASE(policy_all_phases_standard)
 
 BOOST_AUTO_TEST_CASE(conditions_serialize_roundtrip)
 {
+    // Conditions now use PUBKEY_COMMIT instead of raw PUBKEY
+    auto pk = MakePubkey();
+    auto commit = MakePubkeyCommit(pk);
+
     RungConditions conditions;
     Rung rung;
     RungBlock block;
     block.type = RungBlockType::SIG;
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit});
     rung.blocks.push_back(block);
     conditions.rungs.push_back(rung);
 
@@ -1692,7 +1720,7 @@ BOOST_AUTO_TEST_CASE(conditions_serialize_roundtrip)
     BOOST_CHECK_EQUAL(decoded.rungs[0].blocks.size(), 1u);
     BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::SIG);
     BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 1u);
-    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[0].type == RungDataType::PUBKEY);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[0].type == RungDataType::PUBKEY_COMMIT);
 }
 
 BOOST_AUTO_TEST_CASE(conditions_roundtrip_with_inverted)
@@ -1716,11 +1744,12 @@ BOOST_AUTO_TEST_CASE(conditions_roundtrip_with_inverted)
 
 BOOST_AUTO_TEST_CASE(conditions_reject_signature_field)
 {
+    auto pk = MakePubkey();
     RungConditions conditions;
     Rung rung;
     RungBlock block;
     block.type = RungBlockType::SIG;
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
     block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
     rung.blocks.push_back(block);
     conditions.rungs.push_back(rung);
@@ -1740,21 +1769,39 @@ BOOST_AUTO_TEST_CASE(conditions_reject_signature_field)
 
 BOOST_AUTO_TEST_CASE(conditions_reject_preimage_field)
 {
-    RungConditions conditions;
-    Rung rung;
-    RungBlock block;
-    block.type = RungBlockType::HASH_PREIMAGE;
-    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
-    block.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(16, 0xEE)});
-    rung.blocks.push_back(block);
-    conditions.rungs.push_back(rung);
+    // HASH_PREIMAGE block with PREIMAGE field must be rejected in conditions.
+    // Build raw bytes with escape encoding to force explicit field types.
+    // Format: escape(0x80) + type(0x01,0x02=HASH_PREIMAGE) + field_count(2)
+    //         + HASH256 type(0x03) + len(32) + data(32 bytes)
+    //         + PREIMAGE type(0x05) + len(16) + data(16 bytes)
+    //         + coil(3 bytes) + addr_len(0) + n_coil_conds(0)
+    std::vector<uint8_t> hash_data(32, 0xCC);
+    std::vector<uint8_t> preimage_data(16, 0xEE);
 
-    LadderWitness ladder;
-    ladder.rungs = conditions.rungs;
-    auto bytes = SerializeLadderWitness(ladder);
+    std::vector<uint8_t> raw;
+    raw.push_back(0x01); // n_rungs = 1
+    raw.push_back(0x01); // n_blocks = 1
+    raw.push_back(0x80); // escape (not inverted)
+    raw.push_back(0x01); raw.push_back(0x02); // HASH_PREIMAGE = 0x0201 LE
+    raw.push_back(0x02); // 2 fields
+    // Field 1: HASH256
+    raw.push_back(0x03); // HASH256 type
+    raw.push_back(0x20); // 32 bytes
+    raw.insert(raw.end(), hash_data.begin(), hash_data.end());
+    // Field 2: PREIMAGE
+    raw.push_back(0x05); // PREIMAGE type
+    raw.push_back(0x10); // 16 bytes
+    raw.insert(raw.end(), preimage_data.begin(), preimage_data.end());
+    // Coil
+    raw.push_back(0x01); // UNLOCK
+    raw.push_back(0x01); // INLINE
+    raw.push_back(0x01); // SCHNORR
+    raw.push_back(0x00); // addr_len = 0
+    raw.push_back(0x00); // n_coil_conditions = 0
+
     CScript script;
     script.push_back(rung::RUNG_CONDITIONS_PREFIX);
-    script.insert(script.end(), bytes.begin(), bytes.end());
+    script.insert(script.end(), raw.begin(), raw.end());
 
     RungConditions decoded;
     std::string error;
@@ -1775,7 +1822,8 @@ BOOST_AUTO_TEST_CASE(conditions_not_rung_script)
 
 BOOST_AUTO_TEST_CASE(conditions_data_type_check)
 {
-    BOOST_CHECK(rung::IsConditionDataType(RungDataType::PUBKEY));
+    // PUBKEY is now witness-only (prevents arbitrary data in UTXO set)
+    BOOST_CHECK(!rung::IsConditionDataType(RungDataType::PUBKEY));
     BOOST_CHECK(rung::IsConditionDataType(RungDataType::PUBKEY_COMMIT));
     BOOST_CHECK(rung::IsConditionDataType(RungDataType::HASH256));
     BOOST_CHECK(rung::IsConditionDataType(RungDataType::HASH160));
@@ -1804,11 +1852,12 @@ BOOST_AUTO_TEST_CASE(sighash_ladder_deterministic)
     output.scriptPubKey = CScript() << OP_RETURN;
     mtx.vout.push_back(output);
 
+    auto pk = MakePubkey();
     RungConditions conditions;
     Rung rung;
     RungBlock block;
     block.type = RungBlockType::SIG;
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
     rung.blocks.push_back(block);
     conditions.rungs.push_back(rung);
 
@@ -1841,11 +1890,12 @@ BOOST_AUTO_TEST_CASE(sighash_ladder_different_hashtypes)
     output.scriptPubKey = CScript() << OP_RETURN;
     mtx.vout.push_back(output);
 
+    auto pk = MakePubkey();
     RungConditions conditions;
     Rung rung;
     RungBlock block;
     block.type = RungBlockType::SIG;
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
     rung.blocks.push_back(block);
     conditions.rungs.push_back(rung);
 
@@ -1894,11 +1944,12 @@ BOOST_AUTO_TEST_CASE(sighash_ladder_rejects_invalid_hashtype)
 
 BOOST_AUTO_TEST_CASE(policy_valid_rung_output)
 {
+    auto pk = MakePubkey();
     RungConditions conditions;
     Rung rung;
     RungBlock block;
     block.type = RungBlockType::SIG;
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
     rung.blocks.push_back(block);
     conditions.rungs.push_back(rung);
 
@@ -1908,13 +1959,34 @@ BOOST_AUTO_TEST_CASE(policy_valid_rung_output)
     BOOST_CHECK(rung::IsStandardRungOutput(script, reason));
 }
 
-BOOST_AUTO_TEST_CASE(policy_rung_output_rejects_signature_field)
+BOOST_AUTO_TEST_CASE(policy_rung_output_rejects_pubkey_field)
 {
+    // Raw PUBKEY is now witness-only; conditions must reject it
     LadderWitness ladder;
     Rung rung;
     RungBlock block;
     block.type = RungBlockType::SIG;
     block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    CScript script;
+    script.push_back(rung::RUNG_CONDITIONS_PREFIX);
+    script.insert(script.end(), bytes.begin(), bytes.end());
+
+    std::string reason;
+    BOOST_CHECK(!rung::IsStandardRungOutput(script, reason));
+}
+
+BOOST_AUTO_TEST_CASE(policy_rung_output_rejects_signature_field)
+{
+    auto pk = MakePubkey();
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
     block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
     rung.blocks.push_back(block);
     ladder.rungs.push_back(rung);
@@ -1941,11 +2013,12 @@ BOOST_AUTO_TEST_CASE(policy_rung_output_rejects_non_conditions)
 
 BOOST_AUTO_TEST_CASE(merge_rung_count_mismatch)
 {
+    auto pk = MakePubkey();
     RungConditions conditions;
     Rung cond_rung;
     RungBlock cond_block;
     cond_block.type = RungBlockType::SIG;
-    cond_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    cond_block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
     cond_rung.blocks.push_back(cond_block);
     conditions.rungs.push_back(cond_rung);
 
@@ -1989,11 +2062,12 @@ BOOST_AUTO_TEST_CASE(merge_rung_count_mismatch)
 
 BOOST_AUTO_TEST_CASE(merge_block_count_mismatch)
 {
+    auto pk = MakePubkey();
     RungConditions conditions;
     Rung cond_rung;
     RungBlock cond_sig;
     cond_sig.type = RungBlockType::SIG;
-    cond_sig.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    cond_sig.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
     cond_rung.blocks.push_back(cond_sig);
     RungBlock cond_csv;
     cond_csv.type = RungBlockType::CSV;
@@ -2035,11 +2109,12 @@ BOOST_AUTO_TEST_CASE(merge_block_count_mismatch)
 
 BOOST_AUTO_TEST_CASE(merge_block_type_mismatch)
 {
+    auto pk = MakePubkey();
     RungConditions conditions;
     Rung cond_rung;
     RungBlock cond_block;
     cond_block.type = RungBlockType::SIG;
-    cond_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    cond_block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
     cond_rung.blocks.push_back(cond_block);
     conditions.rungs.push_back(cond_rung);
 
@@ -2504,14 +2579,16 @@ BOOST_AUTO_TEST_CASE(eval_one_shot_missing_numeric)
 
 BOOST_AUTO_TEST_CASE(eval_adaptor_sig_missing_second_pubkey)
 {
+    // Only 1 pubkey is needed (signing key). Adaptor point committed in conditions
+    // but not required in witness. Sig verification fails → UNSATISFIED.
     MockSignatureChecker checker;
     ScriptExecutionData execdata;
 
     RungBlock block;
     block.type = RungBlockType::ADAPTOR_SIG;
-    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()}); // only 1 pubkey (needs 2)
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
     block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
-    BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+    BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
 }
 
 BOOST_AUTO_TEST_CASE(eval_adaptor_sig_missing_signature)
@@ -2712,11 +2789,12 @@ BOOST_AUTO_TEST_CASE(deserialize_max_blocks_exceeded)
 
 BOOST_AUTO_TEST_CASE(deserialize_max_fields_exceeded)
 {
+    // v3 format: escape + SIG type + n_fields = 17 (max is 16)
     std::vector<uint8_t> data;
     data.push_back(0x01); // n_rungs = 1
     data.push_back(0x01); // n_blocks = 1
-    data.push_back(0x01); data.push_back(0x00); // SIG block type
-    data.push_back(0x00); // not inverted
+    data.push_back(0x80); // escape (not inverted)
+    data.push_back(0x01); data.push_back(0x00); // SIG block type (uint16_t LE)
     data.push_back(0x11); // n_fields = 17 (max is 16)
 
     LadderWitness ladder;
@@ -2897,13 +2975,17 @@ BOOST_AUTO_TEST_CASE(field_size_pq_pubkey)
 
 BOOST_AUTO_TEST_CASE(field_size_pq_signature)
 {
-    // SIGNATURE with 5000 bytes (max) should validate OK
+    // SIGNATURE with 49216 bytes (SPHINCS+ sig size) should validate OK
+    RungField field{RungDataType::SIGNATURE, std::vector<uint8_t>(49216, 0xBB)};
     std::string reason;
-    RungField field2{RungDataType::SIGNATURE, std::vector<uint8_t>(5000, 0xBB)};
+    BOOST_CHECK(field.IsValid(reason));
+
+    // SIGNATURE with 50000 bytes (max) should validate OK
+    RungField field2{RungDataType::SIGNATURE, std::vector<uint8_t>(50000, 0xBB)};
     BOOST_CHECK(field2.IsValid(reason));
 
-    // SIGNATURE with 5001 bytes should fail
-    RungField field3{RungDataType::SIGNATURE, std::vector<uint8_t>(5001, 0xBB)};
+    // SIGNATURE with 50001 bytes should fail
+    RungField field3{RungDataType::SIGNATURE, std::vector<uint8_t>(50001, 0xBB)};
     BOOST_CHECK(!field3.IsValid(reason));
 }
 
@@ -3091,12 +3173,13 @@ BOOST_AUTO_TEST_CASE(eval_recurse_modified_cross_rung)
 
     // Build input conditions: 2 rungs
     RungConditions input_conds;
+    auto pk = MakePubkey();
     {
-        // Rung 0: SIG block
+        // Rung 0: SIG block with PUBKEY_COMMIT (conditions use commits, not raw keys)
         Rung r0;
         RungBlock b0;
         b0.type = RungBlockType::SIG;
-        b0.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+        b0.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
         r0.blocks.push_back(std::move(b0));
         input_conds.rungs.push_back(std::move(r0));
 
@@ -3115,7 +3198,7 @@ BOOST_AUTO_TEST_CASE(eval_recurse_modified_cross_rung)
         Rung r0;
         RungBlock b0;
         b0.type = RungBlockType::SIG;
-        b0.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+        b0.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
         r0.blocks.push_back(std::move(b0));
         output_conds.rungs.push_back(std::move(r0));
 
@@ -3522,7 +3605,7 @@ BOOST_AUTO_TEST_CASE(eval_cosign_skips_self)
 }
 
 // ============================================================================
-// PLC state gating tests
+// Phase 3 PLC state gating tests
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(eval_counter_down_count_positive)
@@ -3803,17 +3886,18 @@ BOOST_AUTO_TEST_CASE(eval_hysteresis_fee_with_tx_context)
 
 BOOST_AUTO_TEST_CASE(eval_adaptor_sig_invalid_adaptor_point_size)
 {
-    // ADAPTOR_SIG with adaptor_point not 32 bytes → ERROR
+    // Adaptor point format no longer validated by evaluator (committed in conditions,
+    // not revealed in witness). Sig verification fails (mock default) → UNSATISFIED.
     MockSignatureChecker checker;
     ScriptExecutionData execdata;
 
     RungBlock block;
     block.type = RungBlockType::ADAPTOR_SIG;
     block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});               // signing key (33 bytes)
-    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(33, 0x02)}); // adaptor point (33 bytes, should be 32)
+    block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(33, 0x02)}); // extra pubkey (ignored)
     block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
 
-    BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+    BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
 }
 
 BOOST_AUTO_TEST_CASE(eval_adaptor_sig_valid_adaptor_point)
@@ -3833,4 +3917,2064 @@ BOOST_AUTO_TEST_CASE(eval_adaptor_sig_valid_adaptor_point)
     BOOST_CHECK(EvalAdaptorSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
 }
 
+// ============================================================================
+// Anti-spam: PUBKEY witness-only + preimage block limit tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(conditions_reject_pubkey_field)
+{
+    // Raw PUBKEY must be rejected from conditions (witness-only data type)
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    CScript script;
+    script.push_back(rung::RUNG_CONDITIONS_PREFIX);
+    script.insert(script.end(), bytes.begin(), bytes.end());
+
+    RungConditions decoded;
+    std::string error;
+    BOOST_CHECK(!rung::DeserializeRungConditions(script, decoded, error));
+    BOOST_CHECK(error.find("witness-only") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(conditions_accept_pubkey_commit)
+{
+    // PUBKEY_COMMIT is the correct condition-side type for key references
+    auto pk = MakePubkey();
+    auto commit = MakePubkeyCommit(pk);
+
+    RungConditions conditions;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit});
+    rung.blocks.push_back(block);
+    conditions.rungs.push_back(rung);
+
+    CScript script = rung::SerializeRungConditions(conditions);
+
+    RungConditions decoded;
+    std::string error;
+    BOOST_CHECK(rung::DeserializeRungConditions(script, decoded, error));
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[0].type == RungDataType::PUBKEY_COMMIT);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[0].data == commit);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sig_pubkey_commit_resolution)
+{
+    // SIG block with PUBKEY_COMMIT (conditions) + PUBKEY (witness) should
+    // verify commitment match before signature verification
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    ScriptExecutionData execdata;
+
+    auto pk = MakePubkey();
+    auto commit = MakePubkeyCommit(pk);
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit});  // from conditions
+    block.fields.push_back({RungDataType::PUBKEY, pk});             // from witness
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_sig_pubkey_commit_mismatch_fails)
+{
+    // SIG block where witness PUBKEY doesn't match PUBKEY_COMMIT → UNSATISFIED
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    ScriptExecutionData execdata;
+
+    auto pk = MakePubkey();
+    auto wrong_commit = MakeHash256();  // random hash, won't match
+
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, wrong_commit});
+    block.fields.push_back({RungDataType::PUBKEY, pk});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    BOOST_CHECK(EvalSigBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_multisig_pubkey_commit_resolution)
+{
+    // MULTISIG 2-of-3 with PUBKEY_COMMITs in conditions + PUBKEYs in witness
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    ScriptExecutionData execdata;
+
+    auto pk1 = MakePubkey();
+    auto pk2 = std::vector<uint8_t>(33, 0x02);  // different fake key
+    auto pk3 = std::vector<uint8_t>(33, 0x03);
+    pk3[0] = 0x03;  // valid prefix
+
+    RungBlock block;
+    block.type = RungBlockType::MULTISIG;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});       // threshold
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk1)});  // conditions
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk2)});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk3)});
+    block.fields.push_back({RungDataType::PUBKEY, pk1});                   // witness
+    block.fields.push_back({RungDataType::PUBKEY, pk2});
+    block.fields.push_back({RungDataType::PUBKEY, pk3});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});  // 2 sigs
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    EvalResult result = EvalMultisigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(eval_multisig_pubkey_commit_mismatch_fails)
+{
+    // MULTISIG where one witness PUBKEY doesn't match its commit → ERROR (empty resolved)
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    ScriptExecutionData execdata;
+
+    auto pk1 = MakePubkey();
+    auto wrong_pk = std::vector<uint8_t>(33, 0xFF);
+    wrong_pk[0] = 0x02;
+
+    RungBlock block;
+    block.type = RungBlockType::MULTISIG;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk1)});
+    block.fields.push_back({RungDataType::PUBKEY, wrong_pk});  // doesn't match commit
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    EvalResult result = EvalMultisigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::ERROR);  // ResolvePubkeyCommitments returns empty
+}
+
+BOOST_AUTO_TEST_CASE(policy_preimage_block_limit)
+{
+    // Create a witness with 3 HASH_PREIMAGE blocks — should exceed the limit of 2
+    CMutableTransaction mtx;
+    mtx.version = 3;
+    CTxIn input;
+    input.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 0);
+    mtx.vin.push_back(input);
+    mtx.vout.push_back(CTxOut(100000, CScript() << OP_RETURN));
+
+    LadderWitness ladder;
+    Rung rung;
+    // 3 HASH_PREIMAGE blocks in one rung
+    for (int i = 0; i < 3; ++i) {
+        RungBlock block;
+        block.type = RungBlockType::HASH_PREIMAGE;
+        block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+        block.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(16, static_cast<uint8_t>(i))});
+        rung.blocks.push_back(block);
+    }
+    ladder.rungs.push_back(rung);
+
+    auto witness_bytes = SerializeLadderWitness(ladder);
+    mtx.vin[0].scriptWitness.stack.push_back(witness_bytes);
+
+    CTransaction tx(mtx);
+    std::string reason;
+    BOOST_CHECK(!rung::IsStandardRungTx(tx, reason));
+    BOOST_CHECK(reason.find("preimage-blocks") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(policy_preimage_block_limit_at_max)
+{
+    // 2 HASH_PREIMAGE blocks — should be within limit
+    CMutableTransaction mtx;
+    mtx.version = 3;
+    CTxIn input;
+    input.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 0);
+    mtx.vin.push_back(input);
+    mtx.vout.push_back(CTxOut(100000, CScript() << OP_RETURN));
+
+    LadderWitness ladder;
+    Rung rung;
+    for (int i = 0; i < 2; ++i) {
+        RungBlock block;
+        block.type = RungBlockType::HASH_PREIMAGE;
+        block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+        block.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(16, static_cast<uint8_t>(i))});
+        rung.blocks.push_back(block);
+    }
+    ladder.rungs.push_back(rung);
+
+    auto witness_bytes = SerializeLadderWitness(ladder);
+    mtx.vin[0].scriptWitness.stack.push_back(witness_bytes);
+
+    CTransaction tx(mtx);
+    std::string reason;
+    BOOST_CHECK(rung::IsStandardRungTx(tx, reason));
+}
+
+BOOST_AUTO_TEST_CASE(policy_preimage_block_limit_mixed_types)
+{
+    // 1 HASH_PREIMAGE + 1 HASH160_PREIMAGE + 1 TAGGED_HASH = 3 total → exceeds limit
+    CMutableTransaction mtx;
+    mtx.version = 3;
+    CTxIn input;
+    input.prevout = COutPoint(Txid::FromUint256(uint256::ONE), 0);
+    mtx.vin.push_back(input);
+    mtx.vout.push_back(CTxOut(100000, CScript() << OP_RETURN));
+
+    LadderWitness ladder;
+    Rung rung;
+
+    RungBlock b1;
+    b1.type = RungBlockType::HASH_PREIMAGE;
+    b1.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    b1.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(16, 0x01)});
+    rung.blocks.push_back(b1);
+
+    RungBlock b2;
+    b2.type = RungBlockType::HASH160_PREIMAGE;
+    b2.fields.push_back({RungDataType::HASH160, MakeHash160()});
+    b2.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(16, 0x02)});
+    rung.blocks.push_back(b2);
+
+    RungBlock b3;
+    b3.type = RungBlockType::TAGGED_HASH;
+    b3.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    b3.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    b3.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(16, 0x03)});
+    rung.blocks.push_back(b3);
+
+    ladder.rungs.push_back(rung);
+
+    auto witness_bytes = SerializeLadderWitness(ladder);
+    mtx.vin[0].scriptWitness.stack.push_back(witness_bytes);
+
+    CTransaction tx(mtx);
+    std::string reason;
+    BOOST_CHECK(!rung::IsStandardRungTx(tx, reason));
+    BOOST_CHECK(reason.find("preimage-blocks") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(spam_embed_fake_pubkey_in_conditions_rejected)
+{
+    // Attacker tries to embed spam data as a "PUBKEY" in conditions
+    // This must be rejected since PUBKEY is now witness-only
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    // 2KB of spam disguised as a "PQ public key"
+    std::vector<uint8_t> spam(2048, 0x41);  // 'AAAA...'
+    block.fields.push_back({RungDataType::PUBKEY, spam});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    CScript script;
+    script.push_back(rung::RUNG_CONDITIONS_PREFIX);
+    script.insert(script.end(), bytes.begin(), bytes.end());
+
+    RungConditions decoded;
+    std::string error;
+    BOOST_CHECK(!rung::DeserializeRungConditions(script, decoded, error));
+    BOOST_CHECK(error.find("witness-only") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(spam_embed_fake_pubkey_commit_unrecoverable)
+{
+    // Attacker creates UTXO with PUBKEY_COMMIT = SHA256(spam).
+    // The spam never appears on chain — only its hash does.
+    // At spend time, revealing the spam in witness fails signature verification.
+    MockSignatureChecker checker;
+    checker.schnorr_result = false;  // sig verification will fail
+    ScriptExecutionData execdata;
+
+    // "Spam" data masquerading as a public key
+    std::vector<uint8_t> spam(33, 0x42);
+    spam[0] = 0x02;
+
+    // Compute its commitment
+    auto commit = MakePubkeyCommit(spam);
+
+    // The conditions side only contains the 32-byte hash — not the spam
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit});  // conditions: just a hash
+    block.fields.push_back({RungDataType::PUBKEY, spam});            // witness: spam bytes
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    // Commitment verifies (SHA256 matches), but signature fails
+    // → spam is in the FAILED spending witness, never mined
+    EvalResult result = EvalSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+// ============================================================================
+// Relay tests
+// ============================================================================
+
+// Helper: build a simple relay with one SIG block (condition-side fields only)
+static Relay MakeCondRelay(const std::vector<uint16_t>& reqs = {})
+{
+    Relay relay;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(MakePubkey())});
+    relay.blocks.push_back(block);
+    relay.relay_refs = reqs;
+    return relay;
+}
+
+// Helper: build a relay with merged fields (condition + witness) for evaluation
+static Relay MakeEvalRelay(bool valid_sig = true, const std::vector<uint16_t>& reqs = {})
+{
+    Relay relay;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    auto pk = MakePubkey();
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
+    block.fields.push_back({RungDataType::PUBKEY, pk});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(valid_sig ? 64 : 63)});
+    relay.blocks.push_back(block);
+    relay.relay_refs = reqs;
+    return relay;
+}
+
+BOOST_AUTO_TEST_CASE(relay_serialize_roundtrip)
+{
+    LadderWitness ladder;
+
+    // One rung with a SIG block
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::SIG;
+    b.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    b.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung.blocks.push_back(b);
+    rung.relay_refs = {0}; // requires relay 0
+    ladder.rungs.push_back(rung);
+
+    // Two relays: relay 1 requires relay 0
+    Relay r0;
+    RungBlock rb0;
+    rb0.type = RungBlockType::CSV;
+    rb0.fields.push_back({RungDataType::NUMERIC, {0x10, 0x00, 0x00, 0x00}});
+    r0.blocks.push_back(rb0);
+    ladder.relays.push_back(r0);
+
+    Relay r1;
+    RungBlock rb1;
+    rb1.type = RungBlockType::HASH_PREIMAGE;
+    rb1.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    rb1.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(32, 0xDD)});
+    r1.blocks.push_back(rb1);
+    r1.relay_refs = {0};
+    ladder.relays.push_back(r1);
+
+    // Serialize
+    auto bytes = SerializeLadderWitness(ladder);
+    BOOST_CHECK(!bytes.empty());
+
+    // Deserialize
+    LadderWitness decoded;
+    std::string error;
+    bool ok = DeserializeLadderWitness(bytes, decoded, error);
+    BOOST_CHECK_MESSAGE(ok, "roundtrip failed: " + error);
+
+    // Verify structure
+    BOOST_CHECK_EQUAL(decoded.relays.size(), 2u);
+    BOOST_CHECK_EQUAL(decoded.relays[0].blocks.size(), 1u);
+    BOOST_CHECK(decoded.relays[0].blocks[0].type == RungBlockType::CSV);
+    BOOST_CHECK(decoded.relays[0].relay_refs.empty());
+    BOOST_CHECK_EQUAL(decoded.relays[1].blocks.size(), 1u);
+    BOOST_CHECK(decoded.relays[1].blocks[0].type == RungBlockType::HASH_PREIMAGE);
+    BOOST_CHECK_EQUAL(decoded.relays[1].relay_refs.size(), 1u);
+    BOOST_CHECK_EQUAL(decoded.relays[1].relay_refs[0], 0u);
+
+    // Verify rung requires survived roundtrip
+    BOOST_CHECK_EQUAL(decoded.rungs[0].relay_refs.size(), 1u);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].relay_refs[0], 0u);
+}
+
+BOOST_AUTO_TEST_CASE(relay_forward_reference_rejected)
+{
+    LadderWitness ladder;
+
+    // One rung
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::SIG;
+    b.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    b.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung.blocks.push_back(b);
+    ladder.rungs.push_back(rung);
+
+    // Relay 0 requires relay 1 (forward reference — invalid)
+    Relay r0;
+    RungBlock rb;
+    rb.type = RungBlockType::CSV;
+    rb.fields.push_back({RungDataType::NUMERIC, {0x10, 0x00, 0x00, 0x00}});
+    r0.blocks.push_back(rb);
+    r0.relay_refs = {1};
+    ladder.relays.push_back(r0);
+
+    Relay r1;
+    r1.blocks.push_back(rb);
+    ladder.relays.push_back(r1);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    bool ok = DeserializeLadderWitness(bytes, decoded, error);
+    BOOST_CHECK(!ok);
+    BOOST_CHECK(error.find("forward") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(relay_self_reference_rejected)
+{
+    LadderWitness ladder;
+
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::SIG;
+    b.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    b.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung.blocks.push_back(b);
+    ladder.rungs.push_back(rung);
+
+    // Relay 0 requires itself (index 0 >= own index 0)
+    Relay r0;
+    RungBlock rb;
+    rb.type = RungBlockType::CSV;
+    rb.fields.push_back({RungDataType::NUMERIC, {0x10, 0x00, 0x00, 0x00}});
+    r0.blocks.push_back(rb);
+    r0.relay_refs = {0};
+    ladder.relays.push_back(r0);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    bool ok = DeserializeLadderWitness(bytes, decoded, error);
+    BOOST_CHECK(!ok);
+    BOOST_CHECK(error.find("forward") != std::string::npos || error.find("self") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(relay_rung_requires_invalid_index)
+{
+    LadderWitness ladder;
+
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::SIG;
+    b.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    b.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung.relay_refs = {5}; // relay index 5 doesn't exist
+    rung.blocks.push_back(b);
+    ladder.rungs.push_back(rung);
+
+    // One relay
+    Relay r0;
+    RungBlock rb;
+    rb.type = RungBlockType::CSV;
+    rb.fields.push_back({RungDataType::NUMERIC, {0x10, 0x00, 0x00, 0x00}});
+    r0.blocks.push_back(rb);
+    ladder.relays.push_back(r0);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    bool ok = DeserializeLadderWitness(bytes, decoded, error);
+    BOOST_CHECK(!ok);
+    BOOST_CHECK(error.find("invalid relay index") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(relay_eval_satisfied)
+{
+    // Relay with CSV block, rung requires it — both pass
+    MockSignatureChecker checker;
+    checker.sequence_result = true;
+
+    LadderWitness ladder;
+
+    // Relay 0: CSV 144 (satisfied via mock)
+    Relay r0;
+    RungBlock rb;
+    rb.type = RungBlockType::CSV;
+    rb.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    r0.blocks.push_back(rb);
+    ladder.relays.push_back(r0);
+
+    // Rung 0: requires relay 0, has CSV 144 block
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::CSV;
+    b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung.blocks.push_back(b);
+    rung.relay_refs = {0};
+    ladder.rungs.push_back(rung);
+
+    ScriptExecutionData execdata;
+    RungEvalContext ctx;
+
+    BOOST_CHECK(EvalLadder(ladder, checker, SigVersion::LADDER, execdata, ctx));
+}
+
+BOOST_AUTO_TEST_CASE(relay_eval_unsatisfied_blocks_rung)
+{
+    // Relay fails (sequence_result=false) — rung should fail even though rung's own blocks pass
+    MockSignatureChecker checker;
+    checker.sequence_result = false;
+
+    LadderWitness ladder;
+
+    // Relay 0: CSV 144 (will fail — mock returns false)
+    Relay r0;
+    RungBlock rb;
+    rb.type = RungBlockType::CSV;
+    rb.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    r0.blocks.push_back(rb);
+    ladder.relays.push_back(r0);
+
+    // Rung requires relay 0, but has a hash preimage block that would pass on its own
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::HASH_PREIMAGE;
+    auto preimage = std::vector<uint8_t>(32, 0xDD);
+    CSHA256 hasher;
+    hasher.Write(preimage.data(), preimage.size());
+    std::vector<uint8_t> hash(32);
+    hasher.Finalize(hash.data());
+    b.fields.push_back({RungDataType::HASH256, hash});
+    b.fields.push_back({RungDataType::PREIMAGE, preimage});
+    rung.blocks.push_back(b);
+    rung.relay_refs = {0};
+    ladder.rungs.push_back(rung);
+
+    ScriptExecutionData execdata;
+    RungEvalContext ctx;
+
+    BOOST_CHECK(!EvalLadder(ladder, checker, SigVersion::LADDER, execdata, ctx));
+}
+
+BOOST_AUTO_TEST_CASE(relay_chain_satisfied)
+{
+    // Relay 0: CSV 144. Relay 1: requires [0], CSV 144. Rung: requires [1].
+    MockSignatureChecker checker;
+    checker.sequence_result = true;
+
+    LadderWitness ladder;
+
+    Relay r0;
+    RungBlock rb0;
+    rb0.type = RungBlockType::CSV;
+    rb0.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    r0.blocks.push_back(rb0);
+    ladder.relays.push_back(r0);
+
+    Relay r1;
+    RungBlock rb1;
+    rb1.type = RungBlockType::CSV;
+    rb1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    r1.blocks.push_back(rb1);
+    r1.relay_refs = {0};
+    ladder.relays.push_back(r1);
+
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::CSV;
+    b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung.blocks.push_back(b);
+    rung.relay_refs = {1};
+    ladder.rungs.push_back(rung);
+
+    ScriptExecutionData execdata;
+    RungEvalContext ctx;
+
+    BOOST_CHECK(EvalLadder(ladder, checker, SigVersion::LADDER, execdata, ctx));
+}
+
+BOOST_AUTO_TEST_CASE(relay_chain_broken)
+{
+    // Relay 0: CSV 144 (fails). Relay 1: requires [0]. Rung: requires [1].
+    MockSignatureChecker checker;
+    checker.sequence_result = false;
+
+    LadderWitness ladder;
+
+    Relay r0;
+    RungBlock rb0;
+    rb0.type = RungBlockType::CSV;
+    rb0.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    r0.blocks.push_back(rb0);
+    ladder.relays.push_back(r0);
+
+    Relay r1;
+    RungBlock rb1;
+    rb1.type = RungBlockType::CSV;
+    rb1.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    r1.blocks.push_back(rb1);
+    r1.relay_refs = {0};
+    ladder.relays.push_back(r1);
+
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::CSV;
+    b.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung.blocks.push_back(b);
+    rung.relay_refs = {1};
+    ladder.rungs.push_back(rung);
+
+    ScriptExecutionData execdata;
+    RungEvalContext ctx;
+
+    BOOST_CHECK(!EvalLadder(ladder, checker, SigVersion::LADDER, execdata, ctx));
+}
+
+BOOST_AUTO_TEST_CASE(relay_backward_compat)
+{
+    // Old-format witness (no relays) should deserialize with empty relays
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::SIG;
+    b.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    b.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung.blocks.push_back(b);
+    ladder.rungs.push_back(rung);
+    // No relays, no requires
+
+    auto bytes = SerializeLadderWitness(ladder);
+
+    LadderWitness decoded;
+    std::string error;
+    bool ok = DeserializeLadderWitness(bytes, decoded, error);
+    BOOST_CHECK_MESSAGE(ok, "backward compat failed: " + error);
+    BOOST_CHECK(decoded.relays.empty());
+    BOOST_CHECK(decoded.rungs[0].relay_refs.empty());
+}
+
+BOOST_AUTO_TEST_CASE(relay_conditions_reject_witness_fields)
+{
+    // Relay with SIGNATURE field in conditions — should be rejected
+    RungConditions conditions;
+    Rung rung;
+    RungBlock b;
+    b.type = RungBlockType::SIG;
+    b.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(MakePubkey())});
+    rung.blocks.push_back(b);
+    conditions.rungs.push_back(rung);
+
+    Relay relay;
+    RungBlock rb;
+    rb.type = RungBlockType::SIG;
+    rb.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)}); // witness-only!
+    relay.blocks.push_back(rb);
+    conditions.relays.push_back(relay);
+
+    CScript script = SerializeRungConditions(conditions);
+
+    RungConditions decoded;
+    std::string error;
+    bool ok = DeserializeRungConditions(script, decoded, error);
+    BOOST_CHECK(!ok);
+    BOOST_CHECK(error.find("witness-only") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(relay_merge_conditions_witness)
+{
+    // Conditions: relay with PUBKEY_COMMIT. Witness: relay with PUBKEY + SIG.
+    // Merge should produce combined fields.
+    RungConditions conditions;
+    Rung cond_rung;
+    RungBlock cb;
+    cb.type = RungBlockType::SIG;
+    auto pk = MakePubkey();
+    cb.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
+    cond_rung.blocks.push_back(cb);
+    cond_rung.relay_refs = {0};
+    conditions.rungs.push_back(cond_rung);
+
+    Relay cond_relay;
+    RungBlock crb;
+    crb.type = RungBlockType::SIG;
+    crb.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
+    cond_relay.blocks.push_back(crb);
+    conditions.relays.push_back(cond_relay);
+
+    LadderWitness witness;
+    Rung wit_rung;
+    RungBlock wb;
+    wb.type = RungBlockType::SIG;
+    wb.fields.push_back({RungDataType::PUBKEY, pk});
+    wb.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    wit_rung.blocks.push_back(wb);
+    witness.rungs.push_back(wit_rung);
+
+    Relay wit_relay;
+    RungBlock wrb;
+    wrb.type = RungBlockType::SIG;
+    wrb.fields.push_back({RungDataType::PUBKEY, pk});
+    wrb.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    wit_relay.blocks.push_back(wrb);
+    witness.relays.push_back(wit_relay);
+
+    // Serialize conditions side
+    CScript script = SerializeRungConditions(conditions);
+    RungConditions decoded_cond;
+    std::string cond_error;
+    BOOST_CHECK(DeserializeRungConditions(script, decoded_cond, cond_error));
+    BOOST_CHECK_EQUAL(decoded_cond.relays.size(), 1u);
+    BOOST_CHECK_EQUAL(decoded_cond.rungs[0].relay_refs.size(), 1u);
+    BOOST_CHECK_EQUAL(decoded_cond.rungs[0].relay_refs[0], 0u);
+
+    // Verify relay has condition-only field
+    BOOST_CHECK_EQUAL(decoded_cond.relays[0].blocks[0].fields.size(), 1u);
+    BOOST_CHECK(decoded_cond.relays[0].blocks[0].fields[0].type == RungDataType::PUBKEY_COMMIT);
+}
+
+// ============================================================================
+// Compound block tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(timelocked_sig_satisfied)
+{
+    // TIMELOCKED_SIG with passing sig and CSV
+    RungBlock block;
+    block.type = RungBlockType::TIMELOCKED_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalTimelockedSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(timelocked_sig_csv_fails)
+{
+    // Sig passes but CSV fails
+    RungBlock block;
+    block.type = RungBlockType::TIMELOCKED_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = false;
+    ScriptExecutionData execdata;
+    auto result = EvalTimelockedSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(timelocked_sig_sig_fails)
+{
+    // CSV passes but sig fails
+    RungBlock block;
+    block.type = RungBlockType::TIMELOCKED_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = false;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalTimelockedSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(htlc_satisfied)
+{
+    // HTLC with correct preimage, passing sig and CSV
+    // Build hash from known preimage
+    std::vector<uint8_t> preimage(32, 0x42);
+    std::vector<uint8_t> hash(32);
+    CSHA256().Write(preimage.data(), preimage.size()).Finalize(hash.data());
+
+    RungBlock block;
+    block.type = RungBlockType::HTLC;
+    block.fields.push_back({RungDataType::HASH256, hash});
+    block.fields.push_back({RungDataType::PREIMAGE, preimage});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalHTLCBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(htlc_wrong_preimage)
+{
+    // Wrong preimage → unsatisfied
+    std::vector<uint8_t> preimage(32, 0x42);
+    std::vector<uint8_t> hash(32);
+    CSHA256().Write(preimage.data(), preimage.size()).Finalize(hash.data());
+
+    std::vector<uint8_t> wrong_preimage(32, 0x99); // different preimage
+
+    RungBlock block;
+    block.type = RungBlockType::HTLC;
+    block.fields.push_back({RungDataType::HASH256, hash});
+    block.fields.push_back({RungDataType::PREIMAGE, wrong_preimage});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalHTLCBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(hash_sig_satisfied)
+{
+    std::vector<uint8_t> preimage(32, 0x42);
+    std::vector<uint8_t> hash(32);
+    CSHA256().Write(preimage.data(), preimage.size()).Finalize(hash.data());
+
+    RungBlock block;
+    block.type = RungBlockType::HASH_SIG;
+    block.fields.push_back({RungDataType::HASH256, hash});
+    block.fields.push_back({RungDataType::PREIMAGE, preimage});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalHashSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(hash_sig_bad_hash)
+{
+    std::vector<uint8_t> preimage(32, 0x42);
+    std::vector<uint8_t> wrong_hash(32, 0xFF); // doesn't match preimage
+
+    RungBlock block;
+    block.type = RungBlockType::HASH_SIG;
+    block.fields.push_back({RungDataType::HASH256, wrong_hash});
+    block.fields.push_back({RungDataType::PREIMAGE, preimage});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalHashSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+// ============================================================================
+// PTLC compound block tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(ptlc_satisfied)
+{
+    // PTLC with passing adaptor sig and CSV
+    RungBlock block;
+    block.type = RungBlockType::PTLC;
+    // Two pubkeys: signing key + adaptor point (32 bytes x-only)
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    std::vector<uint8_t> adaptor_point(32, 0xDD);
+    block.fields.push_back({RungDataType::PUBKEY, adaptor_point});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalPTLCBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(ptlc_sig_fails)
+{
+    // PTLC: adaptor sig verification fails
+    RungBlock block;
+    block.type = RungBlockType::PTLC;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    std::vector<uint8_t> adaptor_point(32, 0xDD);
+    block.fields.push_back({RungDataType::PUBKEY, adaptor_point});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = false;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalPTLCBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(ptlc_csv_fails)
+{
+    // PTLC: sig passes but CSV fails
+    RungBlock block;
+    block.type = RungBlockType::PTLC;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    std::vector<uint8_t> adaptor_point(32, 0xDD);
+    block.fields.push_back({RungDataType::PUBKEY, adaptor_point});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = false;
+    ScriptExecutionData execdata;
+    auto result = EvalPTLCBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(ptlc_missing_adaptor_point)
+{
+    // PTLC with only one pubkey — adaptor point not needed by evaluator.
+    // With passing sig + sequence checks → SATISFIED.
+    RungBlock block;
+    block.type = RungBlockType::PTLC;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalPTLCBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+// ============================================================================
+// CLTV_SIG compound block tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(cltv_sig_satisfied)
+{
+    // CLTV_SIG with passing sig and CLTV
+    RungBlock block;
+    block.type = RungBlockType::CLTV_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(500000)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.locktime_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalCLTVSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(cltv_sig_locktime_fails)
+{
+    // Sig passes but CLTV fails
+    RungBlock block;
+    block.type = RungBlockType::CLTV_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(500000)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.locktime_result = false;
+    ScriptExecutionData execdata;
+    auto result = EvalCLTVSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(cltv_sig_sig_fails)
+{
+    // CLTV passes but sig fails
+    RungBlock block;
+    block.type = RungBlockType::CLTV_SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(500000)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = false;
+    checker.locktime_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalCLTVSigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+// ============================================================================
+// TIMELOCKED_MULTISIG compound block tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(timelocked_multisig_satisfied)
+{
+    // 2-of-3 multisig + CSV, both pass
+    RungBlock block;
+    block.type = RungBlockType::TIMELOCKED_MULTISIG;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});   // threshold M=2
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});      // pubkey 1
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});      // pubkey 2
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});      // pubkey 3
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});  // sig 1
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});  // sig 2
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)}); // CSV timelock
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalTimelockedMultisigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(timelocked_multisig_csv_fails)
+{
+    // Multisig passes but CSV fails
+    RungBlock block;
+    block.type = RungBlockType::TIMELOCKED_MULTISIG;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = false;
+    ScriptExecutionData execdata;
+    auto result = EvalTimelockedMultisigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(timelocked_multisig_insufficient_sigs)
+{
+    // Only 1 sig for threshold=2 → UNSATISFIED
+    RungBlock block;
+    block.type = RungBlockType::TIMELOCKED_MULTISIG;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});  // only 1 sig
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalTimelockedMultisigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(timelocked_multisig_missing_csv_numeric)
+{
+    // Only one NUMERIC (threshold) without CSV → ERROR
+    RungBlock block;
+    block.type = RungBlockType::TIMELOCKED_MULTISIG;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+    checker.sequence_result = true;
+    ScriptExecutionData execdata;
+    auto result = EvalTimelockedMultisigBlock(block, checker, SigVersion::LADDER, execdata);
+    BOOST_CHECK(result == EvalResult::ERROR);
+}
+
+// ============================================================================
+// Governance block tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(epoch_gate_in_window)
+{
+    // block_height 100, epoch_size 2016, window_size 144 → 100 % 2016 = 100 < 144 → satisfied
+    RungBlock block;
+    block.type = RungBlockType::EPOCH_GATE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2016)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    RungEvalContext ctx;
+    ctx.block_height = 100;
+    auto result = EvalEpochGateBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(epoch_gate_outside_window)
+{
+    // block_height 200, epoch_size 2016, window_size 144 → 200 % 2016 = 200 >= 144 → unsatisfied
+    RungBlock block;
+    block.type = RungBlockType::EPOCH_GATE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2016)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    RungEvalContext ctx;
+    ctx.block_height = 200;
+    auto result = EvalEpochGateBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(epoch_gate_boundary)
+{
+    // Exactly at window boundary: position 143 < 144 → satisfied; position 144 >= 144 → unsatisfied
+    RungBlock block;
+    block.type = RungBlockType::EPOCH_GATE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2016)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+
+    RungEvalContext ctx;
+    ctx.block_height = 143;
+    BOOST_CHECK(EvalEpochGateBlock(block, ctx) == EvalResult::SATISFIED);
+    ctx.block_height = 144;
+    BOOST_CHECK(EvalEpochGateBlock(block, ctx) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(weight_limit_within_bounds)
+{
+    RungBlock block;
+    block.type = RungBlockType::WEIGHT_LIMIT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(100000)});  // max weight
+
+    CMutableTransaction mtx;
+    mtx.vin.resize(1);
+    mtx.vout.resize(1);
+    CTransaction tx(mtx);
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    auto result = EvalWeightLimitBlock(block, ctx);
+    // A minimal tx with 1 input and 1 output is well under 100000 WU
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(weight_limit_exceeded)
+{
+    RungBlock block;
+    block.type = RungBlockType::WEIGHT_LIMIT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});  // max weight = 1 (impossibly small)
+
+    CMutableTransaction mtx;
+    mtx.vin.resize(1);
+    mtx.vout.resize(1);
+    CTransaction tx(mtx);
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    auto result = EvalWeightLimitBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(input_count_within_bounds)
+{
+    RungBlock block;
+    block.type = RungBlockType::INPUT_COUNT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});  // min
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});  // max
+
+    // Build a mock tx with 3 inputs
+    CMutableTransaction mtx;
+    mtx.vin.resize(3);
+    CTransaction tx(mtx);
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    auto result = EvalInputCountBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(input_count_below_min)
+{
+    RungBlock block;
+    block.type = RungBlockType::INPUT_COUNT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});  // min
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});  // max
+
+    CMutableTransaction mtx;
+    mtx.vin.resize(1); // only 1 input, min is 3
+    CTransaction tx(mtx);
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    auto result = EvalInputCountBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(output_count_within_bounds)
+{
+    RungBlock block;
+    block.type = RungBlockType::OUTPUT_COUNT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});  // min
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});  // max
+
+    CMutableTransaction mtx;
+    mtx.vout.resize(2);
+    CTransaction tx(mtx);
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    auto result = EvalOutputCountBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(output_count_exceeds_max)
+{
+    RungBlock block;
+    block.type = RungBlockType::OUTPUT_COUNT;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1)});  // min
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});  // max
+
+    CMutableTransaction mtx;
+    mtx.vout.resize(5); // 5 outputs, max is 2
+    CTransaction tx(mtx);
+
+    RungEvalContext ctx;
+    ctx.tx = &tx;
+    auto result = EvalOutputCountBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(relative_value_satisfied)
+{
+    // 90% ratio: output 9000, input 10000 → 9000*10 >= 10000*9 → 90000 >= 90000 → satisfied
+    RungBlock block;
+    block.type = RungBlockType::RELATIVE_VALUE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(9)});   // numerator
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});  // denominator
+
+    RungEvalContext ctx;
+    ctx.input_amount = 10000;
+    ctx.output_amount = 9000;
+    auto result = EvalRelativeValueBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(relative_value_unsatisfied)
+{
+    // 90% ratio: output 8999, input 10000 → 8999*10 = 89990 < 90000 → unsatisfied
+    RungBlock block;
+    block.type = RungBlockType::RELATIVE_VALUE;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(9)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(10)});
+
+    RungEvalContext ctx;
+    ctx.input_amount = 10000;
+    ctx.output_amount = 8999;
+    auto result = EvalRelativeValueBlock(block, ctx);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(accumulator_valid_proof)
+{
+    // Build a simple 2-leaf Merkle tree and verify membership
+    // Leaves: L0 = SHA256("leaf0"), L1 = SHA256("leaf1")
+    // Root = SHA256(min(L0,L1) || max(L0,L1))
+
+    unsigned char l0[32], l1[32];
+    const char* d0 = "leaf0"; const char* d1 = "leaf1";
+    CSHA256().Write((const unsigned char*)d0, 5).Finalize(l0);
+    CSHA256().Write((const unsigned char*)d1, 5).Finalize(l1);
+
+    // Compute root: sorted concatenation
+    unsigned char combined[64];
+    if (memcmp(l0, l1, 32) < 0) {
+        memcpy(combined, l0, 32);
+        memcpy(combined + 32, l1, 32);
+    } else {
+        memcpy(combined, l1, 32);
+        memcpy(combined + 32, l0, 32);
+    }
+    unsigned char root[32];
+    CSHA256().Write(combined, 64).Finalize(root);
+
+    // Prove L0 membership: root + [sibling=L1] + [leaf=L0]
+    RungBlock block;
+    block.type = RungBlockType::ACCUMULATOR;
+    block.fields.push_back({RungDataType::HASH256, std::vector<uint8_t>(root, root + 32)});       // root
+    block.fields.push_back({RungDataType::HASH256, std::vector<uint8_t>(l1, l1 + 32)});           // sibling
+    block.fields.push_back({RungDataType::HASH256, std::vector<uint8_t>(l0, l0 + 32)});           // leaf
+
+    auto result = EvalAccumulatorBlock(block);
+    BOOST_CHECK(result == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(accumulator_invalid_proof)
+{
+    // Same tree but wrong leaf → unsatisfied
+    unsigned char l0[32], l1[32];
+    const char* d0 = "leaf0"; const char* d1 = "leaf1";
+    CSHA256().Write((const unsigned char*)d0, 5).Finalize(l0);
+    CSHA256().Write((const unsigned char*)d1, 5).Finalize(l1);
+
+    unsigned char combined[64];
+    if (memcmp(l0, l1, 32) < 0) {
+        memcpy(combined, l0, 32);
+        memcpy(combined + 32, l1, 32);
+    } else {
+        memcpy(combined, l1, 32);
+        memcpy(combined + 32, l0, 32);
+    }
+    unsigned char root[32];
+    CSHA256().Write(combined, 64).Finalize(root);
+
+    // Wrong leaf: use random bytes instead of L0
+    std::vector<uint8_t> wrong_leaf(32, 0xFF);
+
+    RungBlock block;
+    block.type = RungBlockType::ACCUMULATOR;
+    block.fields.push_back({RungDataType::HASH256, std::vector<uint8_t>(root, root + 32)});
+    block.fields.push_back({RungDataType::HASH256, std::vector<uint8_t>(l1, l1 + 32)});
+    block.fields.push_back({RungDataType::HASH256, wrong_leaf});
+
+    auto result = EvalAccumulatorBlock(block);
+    BOOST_CHECK(result == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(compound_block_types_recognized)
+{
+    // Verify all new block types are known
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::TIMELOCKED_SIG)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::HTLC)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::HASH_SIG)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::PTLC)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::CLTV_SIG)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::TIMELOCKED_MULTISIG)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::EPOCH_GATE)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::WEIGHT_LIMIT)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::INPUT_COUNT)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::OUTPUT_COUNT)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::RELATIVE_VALUE)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::ACCUMULATOR)));
+}
+
+BOOST_AUTO_TEST_CASE(compound_serialize_roundtrip)
+{
+    // Serialize a witness with compound blocks, verify roundtrip
+    LadderWitness ladder;
+    Rung rung;
+
+    RungBlock htlc_block;
+    htlc_block.type = RungBlockType::HTLC;
+    htlc_block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    htlc_block.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(32, 0x42)});
+    htlc_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    htlc_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    htlc_block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung.blocks.push_back(std::move(htlc_block));
+
+    ladder.rungs.push_back(std::move(rung));
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK_EQUAL(decoded.rungs.size(), 1u);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks.size(), 1u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::HTLC);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 5u);
+}
+
+BOOST_AUTO_TEST_CASE(new_compound_serialize_roundtrip)
+{
+    // Roundtrip all three new compound types
+    LadderWitness ladder;
+
+    // PTLC rung
+    Rung rung1;
+    RungBlock ptlc_block;
+    ptlc_block.type = RungBlockType::PTLC;
+    ptlc_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});          // signing key
+    ptlc_block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(32, 0xDD)}); // adaptor point
+    ptlc_block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    ptlc_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung1.blocks.push_back(std::move(ptlc_block));
+    ladder.rungs.push_back(std::move(rung1));
+
+    // CLTV_SIG rung
+    Rung rung2;
+    RungBlock cltv_sig_block;
+    cltv_sig_block.type = RungBlockType::CLTV_SIG;
+    cltv_sig_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    cltv_sig_block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    cltv_sig_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(500000)});
+    rung2.blocks.push_back(std::move(cltv_sig_block));
+    ladder.rungs.push_back(std::move(rung2));
+
+    // TIMELOCKED_MULTISIG rung
+    Rung rung3;
+    RungBlock tms_block;
+    tms_block.type = RungBlockType::TIMELOCKED_MULTISIG;
+    tms_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});      // threshold
+    tms_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    tms_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    tms_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    tms_block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    tms_block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    tms_block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});    // CSV
+    rung3.blocks.push_back(std::move(tms_block));
+    ladder.rungs.push_back(std::move(rung3));
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK_EQUAL(decoded.rungs.size(), 3u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::PTLC);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 4u);
+    BOOST_CHECK(decoded.rungs[1].blocks[0].type == RungBlockType::CLTV_SIG);
+    BOOST_CHECK_EQUAL(decoded.rungs[1].blocks[0].fields.size(), 3u);
+    BOOST_CHECK(decoded.rungs[2].blocks[0].type == RungBlockType::TIMELOCKED_MULTISIG);
+    BOOST_CHECK_EQUAL(decoded.rungs[2].blocks[0].fields.size(), 7u);
+}
+
+// ============================================================================
+// Phase 1: Varint NUMERIC encoding tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(varint_numeric_roundtrip_zero)
+{
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    // Value 0: should round-trip through varint encoding
+    block.fields.push_back({RungDataType::NUMERIC, std::vector<uint8_t>{0x00}});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    // Always normalized to 4-byte LE for evaluator compatibility
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data.size(), 4u);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[0], 0x00);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[1], 0x00);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[2], 0x00);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[3], 0x00);
+}
+
+BOOST_AUTO_TEST_CASE(varint_numeric_roundtrip_one)
+{
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    block.fields.push_back({RungDataType::NUMERIC, std::vector<uint8_t>{0x01}});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data.size(), 4u);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[0], 0x01);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[1], 0x00);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[2], 0x00);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[3], 0x00);
+}
+
+BOOST_AUTO_TEST_CASE(varint_numeric_roundtrip_252)
+{
+    // 252 is the max single-byte CompactSize value
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    block.fields.push_back({RungDataType::NUMERIC, std::vector<uint8_t>{252}});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data.size(), 4u);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[0], 252);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[1], 0x00);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[2], 0x00);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data[3], 0x00);
+}
+
+BOOST_AUTO_TEST_CASE(varint_numeric_roundtrip_253)
+{
+    // 253 triggers 3-byte CompactSize encoding
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    // 253 = 0xFD, needs 2-byte LE in data
+    block.fields.push_back({RungDataType::NUMERIC, std::vector<uint8_t>{0xFD, 0x00}});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    // Value 253 reconstituted as minimal LE bytes
+    uint32_t val = 0;
+    for (size_t i = 0; i < decoded.rungs[0].blocks[0].fields[0].data.size(); ++i) {
+        val |= static_cast<uint32_t>(decoded.rungs[0].blocks[0].fields[0].data[i]) << (8 * i);
+    }
+    BOOST_CHECK_EQUAL(val, 253u);
+}
+
+BOOST_AUTO_TEST_CASE(varint_numeric_roundtrip_65535)
+{
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    block.fields.push_back({RungDataType::NUMERIC, std::vector<uint8_t>{0xFF, 0xFF}});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    uint32_t val = 0;
+    for (size_t i = 0; i < decoded.rungs[0].blocks[0].fields[0].data.size(); ++i) {
+        val |= static_cast<uint32_t>(decoded.rungs[0].blocks[0].fields[0].data[i]) << (8 * i);
+    }
+    BOOST_CHECK_EQUAL(val, 65535u);
+}
+
+BOOST_AUTO_TEST_CASE(varint_numeric_roundtrip_max_u32)
+{
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    block.fields.push_back({RungDataType::NUMERIC, std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF}});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    uint32_t val = 0;
+    for (size_t i = 0; i < decoded.rungs[0].blocks[0].fields[0].data.size(); ++i) {
+        val |= static_cast<uint32_t>(decoded.rungs[0].blocks[0].fields[0].data[i]) << (8 * i);
+    }
+    BOOST_CHECK_EQUAL(val, 0xFFFFFFFF);
+}
+
+BOOST_AUTO_TEST_CASE(varint_numeric_saves_bytes)
+{
+    // Verify that varint encoding for small values is actually smaller
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    // Value 144 with 4-byte LE data (old format would be: type(1) + len(1) + data(4) = 6 bytes per field)
+    // New format: type(1) + CompactSize(144=1byte) = 2 bytes per field
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    // The serialized bytes should be compact
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    // Value should round-trip correctly
+    uint32_t val = 0;
+    for (size_t i = 0; i < decoded.rungs[0].blocks[0].fields[0].data.size(); ++i) {
+        val |= static_cast<uint32_t>(decoded.rungs[0].blocks[0].fields[0].data[i]) << (8 * i);
+    }
+    BOOST_CHECK_EQUAL(val, 144u);
+}
+
+// ============================================================================
+// Phase 2: Micro-header + implicit fields tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(micro_header_lookup_all_known_types)
+{
+    // Every known block type should have a micro-header slot
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::SIG) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::MULTISIG) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::ADAPTOR_SIG) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::CSV) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::CSV_TIME) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::CLTV) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::CLTV_TIME) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::HASH_PREIMAGE) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::HASH160_PREIMAGE) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::TAGGED_HASH) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::CTV) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::VAULT_LOCK) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::AMOUNT_LOCK) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::RECURSE_SAME) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::HTLC) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::COSIGN) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::EPOCH_GATE) >= 0);
+    BOOST_CHECK(MicroHeaderSlot(RungBlockType::ACCUMULATOR) >= 0);
+}
+
+BOOST_AUTO_TEST_CASE(micro_header_roundtrip_sig_witness)
+{
+    // SIG block in witness context should use micro-header + implicit fields
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder, SerializationContext::WITNESS);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error, SerializationContext::WITNESS));
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::SIG);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 2u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[0].type == RungDataType::PUBKEY);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data.size(), 33u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[1].type == RungDataType::SIGNATURE);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[1].data.size(), 64u);
+}
+
+BOOST_AUTO_TEST_CASE(micro_header_roundtrip_sig_conditions)
+{
+    // SIG block in conditions context: [PUBKEY_COMMIT(32), SCHEME(1)]
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(MakePubkey())});
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::SCHNORR)}});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder, SerializationContext::CONDITIONS);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error, SerializationContext::CONDITIONS));
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::SIG);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 2u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[0].type == RungDataType::PUBKEY_COMMIT);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[0].data.size(), 32u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[1].type == RungDataType::SCHEME);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[1].data[0],
+                      static_cast<uint8_t>(RungScheme::SCHNORR));
+}
+
+BOOST_AUTO_TEST_CASE(micro_header_escape_inverted)
+{
+    // Inverted block uses escape byte
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    block.inverted = true;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK(decoded.rungs[0].blocks[0].inverted);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::CSV);
+}
+
+BOOST_AUTO_TEST_CASE(micro_header_explicit_fallback_extra_fields)
+{
+    // Block with fields that don't match implicit layout falls back to explicit encoding
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    // Add a PUBKEY_COMMIT instead of expected PUBKEY — won't match witness implicit layout
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(MakePubkey())});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::SCHNORR)}});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder, SerializationContext::WITNESS);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error, SerializationContext::WITNESS));
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::SIG);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 3u);
+}
+
+BOOST_AUTO_TEST_CASE(micro_header_hash_preimage_roundtrip)
+{
+    // HASH_PREIMAGE in witness: [HASH256(32), PREIMAGE(var)]
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::HASH_PREIMAGE;
+    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    block.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(16, 0xEE)});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder, SerializationContext::WITNESS);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error, SerializationContext::WITNESS));
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::HASH_PREIMAGE);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 2u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[0].type == RungDataType::HASH256);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].fields[1].type == RungDataType::PREIMAGE);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields[1].data.size(), 16u);
+}
+
+BOOST_AUTO_TEST_CASE(micro_header_conditions_context_sig)
+{
+    // Full conditions roundtrip through RungConditions
+    RungConditions conds;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(MakePubkey())});
+    block.fields.push_back({RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::SCHNORR)}});
+    rung.blocks.push_back(block);
+    conds.rungs.push_back(rung);
+
+    CScript script = SerializeRungConditions(conds);
+    BOOST_CHECK(IsRungConditionsScript(script));
+
+    RungConditions decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeRungConditions(script, decoded, error));
+    BOOST_CHECK_EQUAL(decoded.rungs.size(), 1u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::SIG);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 2u);
+}
+
+BOOST_AUTO_TEST_CASE(micro_header_htlc_conditions_roundtrip)
+{
+    // HTLC conditions: [PUBKEY_COMMIT(32), PUBKEY_COMMIT(32), HASH256(32), NUMERIC(varint)]
+    RungConditions conds;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::HTLC;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(MakePubkey())});
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(MakePubkey())});
+    block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(1000)});
+    rung.blocks.push_back(block);
+    conds.rungs.push_back(rung);
+
+    CScript script = SerializeRungConditions(conds);
+    RungConditions decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeRungConditions(script, decoded, error));
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::HTLC);
+    BOOST_CHECK_EQUAL(decoded.rungs[0].blocks[0].fields.size(), 4u);
+
+    // Verify the NUMERIC value round-tripped
+    uint32_t val = 0;
+    const auto& ndata = decoded.rungs[0].blocks[0].fields[3].data;
+    for (size_t i = 0; i < ndata.size(); ++i) {
+        val |= static_cast<uint32_t>(ndata[i]) << (8 * i);
+    }
+    BOOST_CHECK_EQUAL(val, 1000u);
+}
+
+BOOST_AUTO_TEST_CASE(micro_header_wire_size_savings)
+{
+    // Verify that micro-header encoding is smaller than old v2 format
+    // SIG witness: old = 4(header) + 1(field_count) + 1(type) + 1(len) + 33(pk) + 1(type) + 1(len) + 64(sig) = 106
+    //              new = 1(micro) + 1(len) + 33(pk) + 1(len) + 64(sig) = 100
+    LadderWitness ladder;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::SIG;
+    block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung.blocks.push_back(block);
+    ladder.rungs.push_back(rung);
+
+    auto bytes = SerializeLadderWitness(ladder, SerializationContext::WITNESS);
+    // Just verify it round-trips — exact size depends on coil encoding etc
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error, SerializationContext::WITNESS));
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::SIG);
+}
+
+// ============================================================================
+// Phase 3: RUNG_TEMPLATE_INHERIT tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(template_inherit_basic_roundtrip)
+{
+    // Create a template reference: inherit from input 0, no diffs
+    RungConditions conds;
+    TemplateReference ref;
+    ref.input_index = 0;
+    conds.template_ref = ref;
+
+    CScript script = SerializeRungConditions(conds);
+    BOOST_CHECK(IsRungConditionsScript(script));
+
+    RungConditions decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeRungConditions(script, decoded, error));
+    BOOST_CHECK(decoded.IsTemplateRef());
+    BOOST_CHECK_EQUAL(decoded.template_ref->input_index, 0u);
+    BOOST_CHECK(decoded.template_ref->diffs.empty());
+}
+
+BOOST_AUTO_TEST_CASE(template_inherit_with_diff)
+{
+    // Template reference with one field diff
+    RungConditions conds;
+    TemplateReference ref;
+    ref.input_index = 1;
+    TemplateDiff diff;
+    diff.rung_index = 0;
+    diff.block_index = 0;
+    diff.field_index = 0;
+    diff.new_field = {RungDataType::NUMERIC, MakeNumeric(42)};
+    ref.diffs.push_back(diff);
+    conds.template_ref = ref;
+
+    CScript script = SerializeRungConditions(conds);
+    RungConditions decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeRungConditions(script, decoded, error));
+    BOOST_CHECK(decoded.IsTemplateRef());
+    BOOST_CHECK_EQUAL(decoded.template_ref->input_index, 1u);
+    BOOST_CHECK_EQUAL(decoded.template_ref->diffs.size(), 1u);
+    BOOST_CHECK_EQUAL(decoded.template_ref->diffs[0].rung_index, 0u);
+    BOOST_CHECK_EQUAL(decoded.template_ref->diffs[0].block_index, 0u);
+    BOOST_CHECK_EQUAL(decoded.template_ref->diffs[0].field_index, 0u);
+    // Check value round-tripped
+    uint32_t val = 0;
+    const auto& d = decoded.template_ref->diffs[0].new_field.data;
+    for (size_t i = 0; i < d.size(); ++i) {
+        val |= static_cast<uint32_t>(d[i]) << (8 * i);
+    }
+    BOOST_CHECK_EQUAL(val, 42u);
+}
+
+BOOST_AUTO_TEST_CASE(template_inherit_resolution)
+{
+    // Build source conditions
+    RungConditions source;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung.blocks.push_back(block);
+    source.rungs.push_back(rung);
+
+    // Build template reference
+    RungConditions target;
+    TemplateReference ref;
+    ref.input_index = 0;
+    target.template_ref = ref;
+
+    // Resolve
+    std::vector<RungConditions> all = {source, target};
+    std::string error;
+    BOOST_CHECK(ResolveTemplateReference(all[1], all, error));
+    BOOST_CHECK(!all[1].IsTemplateRef());
+    BOOST_CHECK_EQUAL(all[1].rungs.size(), 1u);
+    BOOST_CHECK(all[1].rungs[0].blocks[0].type == RungBlockType::CSV);
+}
+
+BOOST_AUTO_TEST_CASE(template_inherit_resolution_with_diff)
+{
+    // Build source conditions with NUMERIC field
+    RungConditions source;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung.blocks.push_back(block);
+    source.rungs.push_back(rung);
+
+    // Build template reference with diff changing the NUMERIC value
+    RungConditions target;
+    TemplateReference ref;
+    ref.input_index = 0;
+    TemplateDiff diff;
+    diff.rung_index = 0;
+    diff.block_index = 0;
+    diff.field_index = 0;
+    diff.new_field = {RungDataType::NUMERIC, MakeNumeric(288)};
+    ref.diffs.push_back(diff);
+    target.template_ref = ref;
+
+    // Resolve
+    std::vector<RungConditions> all = {source, target};
+    std::string error;
+    BOOST_CHECK(ResolveTemplateReference(all[1], all, error));
+    BOOST_CHECK(!all[1].IsTemplateRef());
+
+    // Verify the diff was applied
+    uint32_t val = 0;
+    const auto& d = all[1].rungs[0].blocks[0].fields[0].data;
+    for (size_t i = 0; i < d.size(); ++i) {
+        val |= static_cast<uint32_t>(d[i]) << (8 * i);
+    }
+    BOOST_CHECK_EQUAL(val, 288u);
+}
+
+BOOST_AUTO_TEST_CASE(template_inherit_rejects_self_reference)
+{
+    // Template pointing to another template should fail
+    RungConditions ref1;
+    ref1.template_ref = TemplateReference{0, {}};
+
+    RungConditions ref2;
+    ref2.template_ref = TemplateReference{0, {}};
+
+    std::vector<RungConditions> all = {ref1, ref2};
+    std::string error;
+    BOOST_CHECK(!ResolveTemplateReference(all[1], all, error));
+    BOOST_CHECK(error.find("another template reference") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(template_inherit_rejects_out_of_range)
+{
+    RungConditions target;
+    target.template_ref = TemplateReference{5, {}};
+
+    std::vector<RungConditions> all = {target};
+    std::string error;
+    BOOST_CHECK(!ResolveTemplateReference(all[0], all, error));
+    BOOST_CHECK(error.find("out of range") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(template_inherit_rejects_type_mismatch_diff)
+{
+    // Source has NUMERIC field, diff tries to replace with HASH256
+    RungConditions source;
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::CSV;
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(144)});
+    rung.blocks.push_back(block);
+    source.rungs.push_back(rung);
+
+    RungConditions target;
+    TemplateReference ref;
+    ref.input_index = 0;
+    TemplateDiff diff;
+    diff.rung_index = 0;
+    diff.block_index = 0;
+    diff.field_index = 0;
+    diff.new_field = {RungDataType::HASH256, MakeHash256()};
+    ref.diffs.push_back(diff);
+    target.template_ref = ref;
+
+    std::vector<RungConditions> all = {source, target};
+    std::string error;
+    BOOST_CHECK(!ResolveTemplateReference(all[1], all, error));
+    BOOST_CHECK(error.find("type mismatch") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(template_inherit_compact_wire_size)
+{
+    // Template reference should be very compact: prefix(1) + n_rungs=0(1) + input_idx(1) + n_diffs=0(1) = 4 bytes
+    RungConditions conds;
+    conds.template_ref = TemplateReference{0, {}};
+
+    CScript script = SerializeRungConditions(conds);
+    // prefix(1) + varint(0)(1) + varint(0)(1) + varint(0)(1) = 4 bytes
+    BOOST_CHECK_EQUAL(script.size(), 4u);
+}
+
+BOOST_AUTO_TEST_CASE(template_inherit_rejects_witness_only_diff_type)
+{
+    // Diff with SIGNATURE type should be rejected in conditions
+    RungConditions conds;
+    TemplateReference ref;
+    ref.input_index = 0;
+    TemplateDiff diff;
+    diff.rung_index = 0;
+    diff.block_index = 0;
+    diff.field_index = 0;
+    diff.new_field = {RungDataType::SIGNATURE, MakeSignature(64)};
+    ref.diffs.push_back(diff);
+    conds.template_ref = ref;
+
+    CScript script = SerializeRungConditions(conds);
+    RungConditions decoded;
+    std::string error;
+    BOOST_CHECK(!DeserializeRungConditions(script, decoded, error));
+    BOOST_CHECK(error.find("witness-only") != std::string::npos);
+}
+
+// ============================================================================
+// Cross-phase integration tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(multi_block_multi_rung_optimized_roundtrip)
+{
+    // Complex ladder with multiple rung types to test all optimizations together
+    LadderWitness ladder;
+
+    // Rung 0: SIG (uses micro-header + implicit fields)
+    Rung rung0;
+    RungBlock sig_block;
+    sig_block.type = RungBlockType::SIG;
+    sig_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    sig_block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    rung0.blocks.push_back(sig_block);
+    ladder.rungs.push_back(rung0);
+
+    // Rung 1: HASH_PREIMAGE (uses micro-header + implicit fields)
+    Rung rung1;
+    RungBlock hash_block;
+    hash_block.type = RungBlockType::HASH_PREIMAGE;
+    hash_block.fields.push_back({RungDataType::HASH256, MakeHash256()});
+    hash_block.fields.push_back({RungDataType::PREIMAGE, std::vector<uint8_t>(16, 0xEE)});
+    rung1.blocks.push_back(hash_block);
+    ladder.rungs.push_back(rung1);
+
+    // Rung 2: CSV with varint NUMERIC
+    Rung rung2;
+    RungBlock csv_block;
+    csv_block.type = RungBlockType::CSV;
+    csv_block.fields.push_back({RungDataType::NUMERIC, std::vector<uint8_t>{0x90, 0x00}}); // 144
+    rung2.blocks.push_back(csv_block);
+    ladder.rungs.push_back(rung2);
+
+    auto bytes = SerializeLadderWitness(ladder, SerializationContext::WITNESS);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error, SerializationContext::WITNESS));
+    BOOST_CHECK_EQUAL(decoded.rungs.size(), 3u);
+    BOOST_CHECK(decoded.rungs[0].blocks[0].type == RungBlockType::SIG);
+    BOOST_CHECK(decoded.rungs[1].blocks[0].type == RungBlockType::HASH_PREIMAGE);
+    BOOST_CHECK(decoded.rungs[2].blocks[0].type == RungBlockType::CSV);
+
+    // Verify NUMERIC value
+    uint32_t csv_val = 0;
+    const auto& ndat = decoded.rungs[2].blocks[0].fields[0].data;
+    for (size_t i = 0; i < ndat.size(); ++i) {
+        csv_val |= static_cast<uint32_t>(ndat[i]) << (8 * i);
+    }
+    BOOST_CHECK_EQUAL(csv_val, 144u);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
+

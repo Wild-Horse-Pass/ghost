@@ -28,6 +28,7 @@ static const char* SchemeToAlgName(RungScheme scheme)
     case RungScheme::FALCON512:   return OQS_SIG_alg_falcon_512;
     case RungScheme::FALCON1024:  return OQS_SIG_alg_falcon_1024;
     case RungScheme::DILITHIUM3:  return OQS_SIG_alg_dilithium_3;
+    case RungScheme::SPHINCS_SHA: return OQS_SIG_alg_sphincs_sha2_256f_simple;
     default: return nullptr;
     }
 }

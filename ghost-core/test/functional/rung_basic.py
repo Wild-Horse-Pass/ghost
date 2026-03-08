@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://opensource.org/license/mit/.
 
-"""Ladder Script functional tests for all block types (v2 wire format).
+"""Ladder Script functional tests for all block types (v3 wire format).
 
 Tests:
 - Signature/Timelock/Hash: createrung, decoderung, validateladder, malformed, SIG spend
@@ -340,7 +340,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
 
         result = node.validateladder(raw_tx)
         assert_equal(result["valid"], False)
-        assert "Not a v4" in result["error"]
+        assert "Not a v3 RUNG_TX" in result["error"]
 
         self.log.info("  Non-v4 transaction correctly rejected")
 
@@ -351,15 +351,15 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         # Empty / truncated
         assert_raises_rpc_error(-22, "Failed to decode", node.decoderung, "00")
 
-        # Unknown block type (0x00ff LE): 01 rung, 01 block, ff00 type, 00 inverted, 00 fields, coil bytes
-        assert_raises_rpc_error(-22, "unknown block type", node.decoderung, "0101ff000000010101" + "0000")
+        # Unknown block type via escape: 01 rung, 01 block, 80 escape, ff00 type LE, 00 fields, coil, relay
+        assert_raises_rpc_error(-22, "unknown block type", node.decoderung, "010180ff0000010101" + "0000")
 
-        # Unknown data type (0xff): 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, ff type, 01 len, aa data, coil bytes
-        assert_raises_rpc_error(-22, "unknown data type", node.decoderung, "010101000001ff01aa010101" + "0000")
+        # Unknown data type (0xff) via escape: 01 rung, 01 block, 80 escape, 0100 SIG type LE, 01 field, ff type, 01 len, aa data, coil, relay
+        assert_raises_rpc_error(-22, "unknown data type", node.decoderung, "0101800100" + "01ff01aa" + "010101" + "0000")
 
-        # Oversized PUBKEY field (2049 bytes, max is 2048):
-        # 01 rung, 01 block, 0100 SIG, 00 inverted, 01 field, 01 PUBKEY, varint len=2049, 2049 bytes, coil bytes
-        oversized = "010101000001" + "01" + "fd0108" + "02" * 2049 + "010101" + "0000"
+        # Oversized PUBKEY field (2049 bytes, max is 2048) via escape:
+        # 01 rung, 01 block, 80 escape, 0100 SIG type LE, 01 field, 01 PUBKEY, varint len=2049, 2049 bytes, coil, relay
+        oversized = "0101800100" + "01" + "01" + "fd0108" + "02" * 2049 + "010101" + "0000"
         assert_raises_rpc_error(-22, "too large", node.decoderung, oversized)
 
         self.log.info("  All malformed inputs correctly rejected")
@@ -3636,7 +3636,7 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         sign_result = node.signrungtx(
             spend["hex"],
             [{"input": 0, "blocks": [
-                {"type": "SIG", "scheme": "FALCON512", "pq_privkey": pq_privkey}
+                {"type": "SIG", "scheme": "FALCON512", "pq_privkey": pq_privkey, "pq_pubkey": pq_pubkey}
             ]}],
             [{"amount": amount, "scriptPubKey": spk}]
         )

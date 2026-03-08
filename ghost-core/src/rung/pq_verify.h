@@ -16,7 +16,7 @@ namespace rung {
 bool HasPQSupport();
 
 /** Verify a post-quantum signature.
- *  @param scheme   The PQ signature scheme (FALCON512, FALCON1024, DILITHIUM3)
+ *  @param scheme   The PQ signature scheme (FALCON512, FALCON1024, DILITHIUM3, SPHINCS_SHA)
  *  @param sig      The signature bytes
  *  @param msg      The message that was signed
  *  @param pubkey   The public key bytes

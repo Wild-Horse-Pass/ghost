@@ -12,16 +12,25 @@
 
 namespace rung {
 
-/** Check whether a v4 RUNG_TX transaction conforms to mempool policy.
+/** Check whether a block type is a base block (signature, timelock, hash, compound). */
+bool IsBaseBlockType(uint16_t block_type);
+
+/** Check whether a block type is a covenant, anchor, or governance block. */
+bool IsCovenantBlockType(uint16_t block_type);
+
+/** Check whether a block type is a recursion or PLC block. */
+bool IsStatefulBlockType(uint16_t block_type);
+
+/** Check whether a v3 RUNG_TX transaction conforms to mempool policy.
  *  Validates:
  *    - Max 16 rungs per input witness
  *    - Max 8 blocks per rung
  *    - All data types known and correctly sized
- *    - All known block types are standard
+ *    - All known block types
  *  Returns false with reason populated on policy violation. */
 bool IsStandardRungTx(const CTransaction& tx, std::string& reason);
 
-/** Check whether a v4 output scriptPubKey is a valid rung conditions script. */
+/** Check whether a v3 output scriptPubKey is a valid rung conditions script. */
 bool IsStandardRungOutput(const CScript& scriptPubKey, std::string& reason);
 
 } // namespace rung

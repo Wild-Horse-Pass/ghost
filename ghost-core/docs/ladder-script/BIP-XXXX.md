@@ -52,24 +52,20 @@ The first element of the segregated witness stack for each v4 input is a seriali
 
 The function `VerifyRungTx` is called for each input of a v4 transaction. It deserializes both the conditions (from the spent output's `scriptPubKey`) and the witness (from the spending input), then evaluates the ladder.
 
-### Wire Format (v2)
+### Wire Format (v3)
 
-All multi-byte integers are encoded as Bitcoin compact-size varints unless otherwise noted. Block types are encoded as `uint16_t` little-endian. Single-byte enumerations are encoded as `uint8_t`.
+All multi-byte integers are encoded as Bitcoin compact-size varints unless otherwise noted. Single-byte enumerations are encoded as `uint8_t`. Serialization is context-aware: the same block type may use different implicit field layouts depending on whether it appears in CONDITIONS (locking) or WITNESS (spending) context.
+
+#### Ladder Structure
 
 ```
 LADDER WITNESS / RUNG CONDITIONS:
 
-[n_rungs: varint]                         -- number of rungs (1..MAX_RUNGS)
+[n_rungs: varint]                         -- number of rungs (0 = template mode, 1..MAX_RUNGS = normal)
   for each rung:
     [n_blocks: varint]                    -- number of blocks in this rung (1..MAX_BLOCKS_PER_RUNG)
       for each block:
-        [block_type: uint16_t LE]         -- RungBlockType enum value
-        [inverted: uint8_t]               -- 0x00 = normal, 0x01 = inverted
-        [n_fields: varint]                -- number of typed fields (0..MAX_FIELDS_PER_BLOCK)
-          for each field:
-            [data_type: uint8_t]          -- RungDataType enum value
-            [data_len: varint]            -- length of data payload
-            [data: bytes]                 -- typed data (validated against type constraints)
+        <block encoding>                  -- micro-header or escape (see below)
 [coil_type: uint8_t]                      -- RungCoilType enum
 [attestation: uint8_t]                    -- RungAttestationMode enum
 [scheme: uint8_t]                         -- RungScheme enum
@@ -78,17 +74,152 @@ LADDER WITNESS / RUNG CONDITIONS:
 [n_coil_conditions: varint]               -- number of coil condition rungs (0 = none)
   for each coil condition rung:
     [n_blocks: varint]
-      for each block:                     -- same format as input blocks
-        [block_type: uint16_t LE]
-        [inverted: uint8_t]
-        [n_fields: varint]
-          for each field:
-            [data_type: uint8_t]
-            [data_len: varint]
-            [data: bytes]
+      for each block:
+        <block encoding>                  -- same encoding as input blocks
+[n_relays: varint]                        -- number of relay definitions (0 = none)
+  for each relay:
+    [n_requirements: varint]              -- number of required input indices
+      for each requirement:
+        [input_index: uint16_t LE]        -- required co-spend input index
+    [n_blocks: varint]
+      for each block:
+        <block encoding>                  -- relay condition blocks
 ```
 
-Deserialization performs full type and size validation. Any malformed data causes immediate rejection. Trailing bytes after the coil section cause rejection.
+#### Block Encoding: Micro-Headers
+
+Each block begins with a single byte that determines the encoding mode:
+
+| First Byte | Mode | Encoding |
+|------------|------|----------|
+| `0x00`–`0x7F` | Micro-header | Lookup table maps byte to block type; inverted = false |
+| `0x80` | Escape | Followed by `type(uint16_t LE)`; inverted = false |
+| `0x81` | Escape + inverted | Followed by `type(uint16_t LE)`; inverted = true |
+
+The micro-header lookup table maps 128 slot indices to block type values. All 51 current block types have assigned slots:
+
+| Slot | Block Type | Slot | Block Type | Slot | Block Type |
+|------|------------|------|------------|------|------------|
+| 0x00 | SIG | 0x12 | ANCHOR_RESERVE | 0x24 | COUNTER_PRESET |
+| 0x01 | MULTISIG | 0x13 | ANCHOR_SEAL | 0x25 | COUNTER_UP |
+| 0x02 | ADAPTOR_SIG | 0x14 | ANCHOR_ORACLE | 0x26 | COMPARE |
+| 0x03 | CSV | 0x15 | RECURSE_SAME | 0x27 | SEQUENCER |
+| 0x04 | CSV_TIME | 0x16 | RECURSE_MODIFIED | 0x28 | ONE_SHOT |
+| 0x05 | CLTV | 0x17 | RECURSE_UNTIL | 0x29 | RATE_LIMIT |
+| 0x06 | CLTV_TIME | 0x18 | RECURSE_COUNT | 0x2A | COSIGN |
+| 0x07 | HASH_PREIMAGE | 0x19 | RECURSE_SPLIT | 0x2B | EPOCH_GATE |
+| 0x08 | HASH160_PREIMAGE | 0x1A | RECURSE_DECAY | 0x2C | RELAY_GATE |
+| 0x09 | TAGGED_HASH | 0x1B | HYSTERESIS_FEE | 0x2D | TAPROOT_COMMIT |
+| 0x0A | CTV | 0x1C | HYSTERESIS_VALUE | 0x2E | MERKLE_VERIFY |
+| 0x0B | VAULT_LOCK | 0x1D | TIMER_CONTINUOUS | 0x2F | DELEGATION |
+| 0x0C | AMOUNT_LOCK | 0x1E | TIMER_OFF_DELAY | 0x30 | GUARDIAN_ROTATE |
+| 0x0D | ANCHOR | 0x1F | LATCH_SET | 0x31 | QUORUM_VOTE |
+| 0x0E | ANCHOR_CHANNEL | 0x20 | LATCH_RESET | 0x32 | VETO |
+| 0x0F | ANCHOR_POOL | 0x21 | COUNTER_DOWN | | |
+| 0x10 | ACCUMULATOR | 0x22 | DEAD_MAN | | |
+| 0x11 | ANCHOR_OPERATOR | 0x23 | COUNTER_GATE | | |
+
+Slots `0x33`–`0x7F` are reserved for future block types. Unknown micro-header slots are rejected during deserialization.
+
+A micro-header is used when all three conditions are met:
+1. The block type has an assigned micro-header slot.
+2. The block is not inverted (`inverted = false`).
+3. The block's fields match the implicit field layout for the current context (or no implicit layout exists for the type).
+
+When condition 3 is not met (unusual field composition), the escape byte is used even if the block type has a micro-header slot.
+
+#### Field Encoding
+
+Fields within a block are encoded in one of two modes:
+
+**Explicit fields** (used with escape headers, or micro-headers without implicit layout):
+```
+[n_fields: varint]
+  for each field:
+    [data_type: uint8_t]
+    <field data>                          -- encoding depends on type (see below)
+```
+
+**Implicit fields** (used with micro-headers when implicit layout matches):
+```
+-- n_fields is omitted (count known from layout)
+-- data_type bytes are omitted (types known from layout)
+  for each field:
+    <field data>                          -- encoding depends on type (see below)
+```
+
+**Per-type field data encoding:**
+
+| Data Type | Encoding |
+|-----------|----------|
+| NUMERIC | `CompactSize(value)` — the numeric value itself, not a length prefix. Values 0–252 use 1 byte; 253–65535 use 3 bytes; 65536–2³²−1 use 5 bytes. After deserialization, always stored as 4-byte LE internally. |
+| Fixed-size (PUBKEY_COMMIT, HASH256, HASH160, SPEND_INDEX, SCHEME) | Implicit: raw data only (size known from layout). Explicit: `CompactSize(len) + data`. |
+| Variable-size (PUBKEY, SIGNATURE, PREIMAGE) | `CompactSize(len) + data` (always length-prefixed). |
+
+#### Implicit Field Layouts
+
+For block types with a micro-header, the implicit field layout defines the expected field types and whether their sizes are fixed. This enables skipping field count, type bytes, and length prefixes for fixed-size fields.
+
+**Example layouts (CONDITIONS context):**
+
+| Block Type | Implicit Fields |
+|------------|----------------|
+| SIG | PUBKEY_COMMIT(fixed 32) + SCHEME(fixed 1) |
+| CSV | NUMERIC(varint) |
+| CLTV | NUMERIC(varint) |
+| HTLC (HASH_PREIMAGE) | PUBKEY_COMMIT(fixed 32) + PUBKEY_COMMIT(fixed 32) + HASH256(fixed 32) + NUMERIC(varint) |
+| CTV | HASH256(fixed 32) |
+| COSIGN | HASH256(fixed 32) |
+
+**Example layouts (WITNESS context):**
+
+| Block Type | Implicit Fields |
+|------------|----------------|
+| SIG | SIGNATURE(variable) |
+| CSV | *(empty — no witness fields)* |
+| HASH_PREIMAGE | SIGNATURE(variable) + PREIMAGE(variable) |
+
+Block types with variable field counts (e.g., MULTISIG with N pubkeys) have no implicit layout. They use micro-headers for the 3-byte header saving but encode fields explicitly.
+
+#### Template Inheritance
+
+When `n_rungs = 0` in a conditions script, the output uses **template inheritance**: conditions are copied from another input's conditions with optional field-level diffs.
+
+```
+TEMPLATE REFERENCE (n_rungs = 0):
+
+[n_rungs: varint = 0]                    -- signals template mode
+[input_index: varint]                    -- which input's conditions to inherit
+[n_diffs: varint]                        -- number of field-level patches
+  for each diff:
+    [rung_index: varint]                 -- target rung
+    [block_index: varint]               -- target block within rung
+    [field_index: varint]               -- target field within block
+    [data_type: uint8_t]                -- replacement field type
+    <field data>                        -- encoded per type (NUMERIC = varint, others = length-prefixed)
+```
+
+Template resolution rules:
+- The referenced input must have non-template conditions (no chaining).
+- Each diff's `data_type` must match the original field's type (type-safe patching).
+- Only condition data types are permitted in diffs (SIGNATURE and PREIMAGE are rejected).
+- Resolution copies the source conditions and applies diffs in order.
+- The sighash always commits to the **resolved** conditions, not the compact template reference.
+
+#### Wire Size Comparison (per block, v2 → v3)
+
+| Scenario | V2 | V3 | Saved |
+|----------|---:|---:|------:|
+| SIG conditions | 41 B | 34 B | 17% |
+| SIG witness | 70 B | 66 B | 6% |
+| CSV conditions | 7 B | 2 B | 71% |
+| HTLC conditions | 109 B | 98 B | 10% |
+| HTLC witness | 104 B | 99 B | 5% |
+| Template ref (vs repeated SIG conds) | 41 B | ~3 B | 93% |
+
+Conditions savings are amplified 4× by segwit weight accounting.
+
+Deserialization performs full type and size validation. Any malformed data causes immediate rejection. Trailing bytes after the relay section cause rejection.
 
 ### Data Types
 
@@ -103,7 +234,7 @@ Every field in a Ladder Script witness or conditions structure has one of the fo
 | `0x05` | PREIMAGE | 1 | 252 | Witness only | Hash preimage (forbidden in conditions) |
 | `0x06` | SIGNATURE | 1 | 5,000 | Witness only | Signature (Schnorr 64-65B, ECDSA 8-72B, PQ up to ~3,300B) |
 | `0x07` | SPEND_INDEX | 4 | 4 | Both | Index reference (uint32 LE) for aggregate attestation |
-| `0x08` | NUMERIC | 1 | 4 | Both | Unsigned 32-bit integer (LE) for thresholds, timelocks, counters |
+| `0x08` | NUMERIC | 1 | 4 | Both | Unsigned 32-bit integer. Encoded on wire as CompactSize(value); stored internally as 4-byte LE. |
 | `0x09` | SCHEME | 1 | 1 | Both | Signature scheme selector byte |
 
 The SIGNATURE maximum of 5,000 bytes accommodates Dilithium3 signatures (3,293 bytes) with headroom. The PUBKEY maximum of 2,048 bytes accommodates FALCON-1024 public keys (1,793 bytes).
@@ -379,9 +510,9 @@ The reference implementation is located in the `src/rung/` directory of ghost-co
 | File | Purpose |
 |------|---------|
 | `types.h` / `types.cpp` | Core type definitions: `RungBlockType`, `RungDataType`, `RungCoilType`, `RungAttestationMode`, `RungScheme`, and all struct definitions. |
-| `conditions.h` / `conditions.cpp` | Conditions (locking side): `RungConditions`, serialization to/from `CScript` with `0xc1` prefix, condition data type validation. |
-| `serialize.h` / `serialize.cpp` | Wire format v2 serialization/deserialization with full validation. Policy limit constants. |
-| `evaluator.h` / `evaluator.cpp` | Block evaluators for all 39 block types. Rung AND logic, ladder OR logic, inversion. `VerifyRungTx` entry point. `LadderSignatureChecker` for Schnorr/PQ signature verification. |
+| `conditions.h` / `conditions.cpp` | Conditions (locking side): `RungConditions`, serialization to/from `CScript` with `0xc1` prefix, condition data type validation, template inheritance resolution. |
+| `serialize.h` / `serialize.cpp` | Wire format v3 serialization/deserialization with micro-headers, implicit fields, varint NUMERIC, and context-aware encoding. Policy limit constants. |
+| `evaluator.h` / `evaluator.cpp` | Block evaluators for all 51 block types. Rung AND logic, ladder OR logic, inversion. `VerifyRungTx` entry point. `LadderSignatureChecker` for Schnorr/PQ signature verification. |
 | `sighash.h` / `sighash.cpp` | `SignatureHashLadder` tagged hash computation. |
 | `policy.h` / `policy.cpp` | Mempool policy enforcement: `IsStandardRungTx`, `IsStandardRungOutput`. |
 | `aggregate.h` / `aggregate.cpp` | Block-level signature aggregation and deferred attestation. |
@@ -393,9 +524,9 @@ The reference implementation is located in the `src/rung/` directory of ghost-co
 
 The implementation includes comprehensive test coverage across two layers:
 
-**Unit tests** (`src/test/rung_tests.cpp`): 185 test cases covering:
+**Unit tests** (`src/test/rung_tests.cpp`): 268 test cases covering:
 - Field validation for all 9 data types with boundary conditions
-- Serialization round-trips for all 39 block types
+- Serialization round-trips for all 51 block types
 - Deserialization rejection of malformed inputs (empty, truncated, trailing bytes, oversized, unknown types)
 - Block evaluation for all block types
 - Inversion logic including ERROR non-inversion
@@ -412,6 +543,11 @@ The implementation includes comprehensive test coverage across two layers:
 - RECURSE_MODIFIED cross-rung and multi-field mutation
 - RECURSE_DECAY multi-field parameter decay
 - Counter, latch, and one-shot state gating
+- Varint NUMERIC encoding edge cases (0, 1, 252, 253, 65535, max uint32)
+- Micro-header roundtrips for all known block types
+- Implicit field encoding in CONDITIONS and WITNESS contexts
+- Template inheritance serialization, resolution, and diff application
+- Cross-phase integration (multi-block, multi-rung optimized roundtrips)
 
 **Functional tests** (`test/functional/rung_basic.py`): 115 end-to-end test scenarios covering:
 - RPC interface for rung creation, decoding, and validation
