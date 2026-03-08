@@ -680,9 +680,9 @@ inject_shields() {
     local iteration="$1"
     local count="${2:-1}"  # shields per iteration (each sent to ALL VMs)
 
-    # Use a high base index (1000+) to avoid collision with existing sparse entries.
+    # Use a high base index to avoid collision with existing sparse entries.
     # Increment by iteration to ensure unique indices across soak iterations.
-    local base_idx=$((1000 + (iteration - 1) * count))
+    local base_idx=$((2000 + (iteration - 1) * count))
 
     local injected=0
     for s in $(seq 1 "$count"); do

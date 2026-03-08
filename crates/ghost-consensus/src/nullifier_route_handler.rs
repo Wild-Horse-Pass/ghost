@@ -1490,19 +1490,28 @@ impl NullifierRouteHandler {
                 let _ = self.epoch_manager.spend_nullifier(tx.nullifier, height);
             }
 
-            // Add valid root
-            let root = self.epoch_manager.current_root()?;
-            self.epoch_manager.add_valid_root(root, height)?;
+            // Add valid roots (both local and canonical)
+            let local_root = self.epoch_manager.current_root()?;
+            self.epoch_manager.add_valid_root(local_root, height)?;
+
+            // Use the proposal's new_commitment_root as canonical root, matching
+            // finalize_checkpoint() behavior. The local root may differ if this node
+            // has pending shields that aren't in the checkpoint, but the canonical
+            // root must match what all other nodes agreed on via BFT.
+            let canonical_root = block.new_commitment_root;
+            if canonical_root != local_root {
+                self.epoch_manager.add_valid_root(canonical_root, height)?;
+            }
 
             // Process epoch transitions
             self.epoch_manager.on_checkpoint_finalized(height)?;
 
-            // Persist synced checkpoint to DB (idempotent via INSERT OR REPLACE)
-            let tx_count = block.transactions.len();
+            // Persist synced checkpoint with canonical root (not local root)
+            let tx_count = block.transactions.len() + block.shield_commitments.len();
             let record = ghost_storage::L2CheckpointRecord {
                 height,
                 epoch: block.epoch,
-                commitment_root: root,
+                commitment_root: canonical_root,
                 tx_count: tx_count as u32,
                 proposer_id: hex::encode(block.proposer),
                 active_node_count: block.active_node_count,
@@ -1511,14 +1520,16 @@ impl NullifierRouteHandler {
             self.db.upsert_l2_checkpoint(&record)?;
         }
 
-        // Update checkpoint base root to the last replayed checkpoint's root
-        let our_root = self.epoch_manager.current_root()?;
-        *self.checkpoint_base_root.write() = our_root;
+        // Update checkpoint base root to the last replayed checkpoint's canonical root
+        if let Some(last) = response.checkpoints.last() {
+            *self.checkpoint_base_root.write() = last.new_commitment_root;
+        }
 
         // Verify our root matches the peer's reported root
-        if our_root != response.commitment_root {
+        let final_root = self.epoch_manager.current_root()?;
+        if final_root != response.commitment_root {
             warn!(
-                our_root = %hex::encode(&our_root[..8]),
+                our_root = %hex::encode(&final_root[..8]),
                 peer_root = %hex::encode(&response.commitment_root[..8]),
                 "Root mismatch after tree sync — requesting more data"
             );
