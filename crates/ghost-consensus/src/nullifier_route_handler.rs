@@ -190,6 +190,10 @@ pub struct NullifierRouteHandler {
     /// C-2: Heights for which we (as proposer) already applied commitments during propose_checkpoint.
     /// Prevents double-applying commitments when finalize_checkpoint runs on the proposer node.
     proposed_heights: RwLock<HashSet<u64>>,
+    /// Cached proposal for the current height. Reused on repeated proposal cycles to ensure
+    /// hash stability — without this, any tree mutation between cycles would change the hash
+    /// and reset peer vote state, preventing BFT quorum.
+    cached_proposal: RwLock<Option<L2CheckpointBlockMessage>>,
     /// Callback for checkpoint finalization (notifies ghost-pay)
     finalize_fn: RwLock<Option<FinalizeFn>>,
     /// Prometheus metrics (optional, set after construction)
@@ -228,6 +232,7 @@ impl NullifierRouteHandler {
             global_msg_rate: RwLock::new((Instant::now(), 0)),
             sync_requests: RwLock::new(HashMap::new()),
             proposed_heights: RwLock::new(HashSet::new()),
+            cached_proposal: RwLock::new(None),
             finalize_fn: RwLock::new(None),
             metrics: RwLock::new(None),
             checkpoint_base_root: RwLock::new(base_root),
@@ -735,7 +740,16 @@ impl NullifierRouteHandler {
     /// Implements proposer timeout: if the primary proposer hasn't produced within
     /// PROPOSER_GRACE_SECS, the fallback proposer takes over.
     pub fn propose_checkpoint(&self) -> GhostResult<Option<L2CheckpointBlockMessage>> {
+        // Return cached proposal if we already proposed for the current height.
+        // This guarantees hash stability across repeated 10s cycles — any tree mutations
+        // (shield syncs, etc.) between cycles won't change the proposal hash.
         let base_height = self.epoch_manager.current_height() + 1;
+        if let Some(ref cached) = *self.cached_proposal.read() {
+            if cached.height == base_height {
+                return Ok(Some(cached.clone()));
+            }
+        }
+
         let elapsed = self.last_checkpoint_time.read().elapsed();
         let stuck = elapsed.as_secs() > PROPOSER_GRACE_SECS * 2;
 
@@ -817,24 +831,25 @@ impl NullifierRouteHandler {
         // Use checkpoint base root (stable across shield insertions) instead of current_root()
         let prev_root = *self.checkpoint_base_root.read();
 
-        // Append new commitments to tree (needed to compute new_commitment_root).
-        // These mutations are safe because:
-        // - If this proposal wins: finalize_checkpoint uses proposed_heights guard to skip re-apply
-        // - If this proposal loses: the orphaned commitments exist in the tree but
-        //   checkpoint_base_root is set from the WINNING proposal's new_commitment_root,
-        //   so consensus stays aligned. The orphaned entries become harmless dead leaves.
-        for tx in &transactions {
-            self.epoch_manager
-                .append_commitment(tx.change_commitment, height)?;
-            self.epoch_manager
-                .append_commitment(tx.recipient_commitment, height)?;
+        // Append new commitments to tree ONLY if this height hasn't been proposed yet.
+        // Without this guard, repeated proposal cycles (every 10s) would re-append
+        // commitments, changing the tree root each time. This makes the checkpoint hash
+        // unstable, causing vote state resets on peers and preventing BFT quorum.
+        let already_proposed = self.proposed_heights.read().contains(&height);
+        if !already_proposed {
+            for tx in &transactions {
+                self.epoch_manager
+                    .append_commitment(tx.change_commitment, height)?;
+                self.epoch_manager
+                    .append_commitment(tx.recipient_commitment, height)?;
+            }
+
+            // Mark this height as already having commitments applied by the proposer.
+            // finalize_checkpoint() will skip re-applying for this height.
+            self.proposed_heights.write().insert(height);
         }
 
-        // Mark this height as already having commitments applied by the proposer.
-        // finalize_checkpoint() will skip re-applying for this height.
-        self.proposed_heights.write().insert(height);
-
-        // Compute new root (includes all tree mutations above)
+        // Compute new root (stable across repeated proposal cycles for the same height)
         let new_root = self.epoch_manager.current_root()?;
 
         let mut proposal = L2CheckpointBlockMessage {
@@ -861,6 +876,9 @@ impl NullifierRouteHandler {
             fallback = is_fallback,
             "Proposed checkpoint block"
         );
+
+        // Cache proposal so repeated cycles reuse it with identical hash
+        *self.cached_proposal.write() = Some(proposal.clone());
 
         Ok(Some(proposal))
     }
@@ -1191,6 +1209,9 @@ impl NullifierRouteHandler {
             }
         }
         self.proposed_heights.write().remove(&height);
+
+        // Clear cached proposal — height has advanced, next cycle builds a fresh proposal
+        *self.cached_proposal.write() = None;
 
         // Remove finalized data from in-memory pools.
         // Since we clone (not drain) in propose_checkpoint(), data remains in the pools
