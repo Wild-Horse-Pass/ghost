@@ -34,6 +34,11 @@ POOL_PORT="8080"
 API_SECRET="${GHOST_PAY_API_SECRET:-}"
 RUN_PHASE=0
 
+# SSH tunnelling — all HTTP requests route through SSH to localhost on the VM
+SSH_KEY="$HOME/.ssh/ghost_signet_ed25519"
+SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=/tmp/ghost-l2test-ssh-%h -o ControlPersist=120"
+SSH_USER="ghost"
+
 # Shared state across phases
 GHOST_ID=""
 FIRST_LOCK_ID=""
@@ -123,7 +128,7 @@ should_run() {
 
 ghost_pay_request() {
     local method="$1" path="$2" body="${3:-}"
-    local url="http://${HOST}:${GHOST_PAY_PORT}${path}"
+    local url="http://127.0.0.1:${GHOST_PAY_PORT}${path}"
     local timestamp
     timestamp=$(date +%s)
 
@@ -133,22 +138,26 @@ ghost_pay_request() {
     local sig
     if [[ -n "$body" ]]; then
         sig=$(printf '%s%s' "$timestamp" "$body" | openssl dgst -sha256 -hmac "$API_SECRET" -binary | xxd -p -c 256)
-        curl -s --connect-timeout 5 --max-time 15 \
+        # shellcheck disable=SC2086
+        ssh $SSH_OPTS "${SSH_USER}@${HOST}" \
+            curl -s --connect-timeout 5 --max-time 15 \
             -X "$method" \
-            -H "Content-Type: application/json" \
-            -H "X-Ghost-Signature: $sig" \
-            -H "X-Ghost-Timestamp: $timestamp" \
-            -d "$body" \
-            -w "\n%{http_code}" \
-            "$url" 2>/dev/null
+            -H "'Content-Type: application/json'" \
+            -H "'X-Ghost-Signature: $sig'" \
+            -H "'X-Ghost-Timestamp: $timestamp'" \
+            -d "'$body'" \
+            -w "'\\n%{http_code}'" \
+            "'$url'" 2>/dev/null
     else
         sig=$(printf '%s' "$timestamp" | openssl dgst -sha256 -hmac "$API_SECRET" -binary | xxd -p -c 256)
-        curl -s --connect-timeout 5 --max-time 15 \
+        # shellcheck disable=SC2086
+        ssh $SSH_OPTS "${SSH_USER}@${HOST}" \
+            curl -s --connect-timeout 5 --max-time 15 \
             -X "$method" \
-            -H "X-Ghost-Signature: $sig" \
-            -H "X-Ghost-Timestamp: $timestamp" \
-            -w "\n%{http_code}" \
-            "$url" 2>/dev/null
+            -H "'X-Ghost-Signature: $sig'" \
+            -H "'X-Ghost-Timestamp: $timestamp'" \
+            -w "'\\n%{http_code}'" \
+            "'$url'" 2>/dev/null
     fi
 }
 
@@ -189,7 +198,9 @@ test_pool_endpoint() {
     local id="$1" name="$2" path="$3"
     run_test "$id" "$name"
     local response http_code body_out
-    response=$(curl -s --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "http://${HOST}:${POOL_PORT}${path}" 2>/dev/null) || { fail "Connection failed"; return 1; }
+    # shellcheck disable=SC2086
+    response=$(ssh $SSH_OPTS "${SSH_USER}@${HOST}" \
+        curl -s --connect-timeout 5 --max-time 15 -w "'\\n%{http_code}'" "'http://127.0.0.1:${POOL_PORT}${path}'" 2>/dev/null) || { fail "Connection failed"; return 1; }
     http_code=$(echo "$response" | tail -1)
     body_out=$(echo "$response" | sed '$d')
     if [[ "$http_code" != "200" ]]; then fail "HTTP $http_code"; return 1; fi

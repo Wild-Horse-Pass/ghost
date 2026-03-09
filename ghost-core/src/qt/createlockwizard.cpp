@@ -419,7 +419,7 @@ bool CreateLockConfirmPage::validatePage()
         request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
         QJsonObject body;
-        body[QStringLiteral("amount_sats")] = GhostPay::denominationSats(wiz->selectedDenomination());
+        body[QStringLiteral("amount_sats")] = static_cast<double>(GhostPay::denominationSats(wiz->selectedDenomination()));
         body[QStringLiteral("timelock_tier")] = static_cast<int>(wiz->selectedTimelockTier());
         if (!wiz->lockLabel().isEmpty()) {
             body[QStringLiteral("label")] = wiz->lockLabel();

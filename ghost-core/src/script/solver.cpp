@@ -29,6 +29,7 @@ std::string GetTxnOutputType(TxoutType t)
     case TxoutType::WITNESS_V0_SCRIPTHASH: return "witness_v0_scripthash";
     case TxoutType::WITNESS_V1_TAPROOT: return "witness_v1_taproot";
     case TxoutType::WITNESS_UNKNOWN: return "witness_unknown";
+    case TxoutType::RUNG_CONDITIONS: return "rung_conditions";
     } // no default case, so the compiler can warn about missing cases
     assert(false);
 }
@@ -149,6 +150,12 @@ TxoutType Solver(const CScript& scriptPubKey, std::vector<std::vector<unsigned c
         std::vector<unsigned char> hashBytes(scriptPubKey.begin()+2, scriptPubKey.begin()+22);
         vSolutionsRet.push_back(hashBytes);
         return TxoutType::SCRIPTHASH;
+    }
+
+    // Ladder Script: 0xc1 prefix identifies rung conditions
+    if (scriptPubKey.size() >= 2 && scriptPubKey[0] == 0xc1) {
+        vSolutionsRet.push_back(std::vector<unsigned char>(scriptPubKey.begin() + 1, scriptPubKey.end()));
+        return TxoutType::RUNG_CONDITIONS;
     }
 
     int witnessversion;

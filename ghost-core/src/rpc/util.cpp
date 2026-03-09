@@ -354,6 +354,14 @@ public:
         obj.pushKV("spend_pubkey", HexStr(sp.GetSpendPubKey()));
         return obj;
     }
+
+    UniValue operator()(const LadderDestination& ld) const
+    {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("isladder", true);
+        obj.pushKV("conditions", HexStr(ld.GetConditions()));
+        return obj;
+    }
 };
 
 UniValue DescribeAddress(const CTxDestination& dest)

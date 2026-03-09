@@ -298,6 +298,10 @@ public:
     // Default transaction version.
     static const uint32_t CURRENT_VERSION{2};
 
+    // LADDER SCRIPT: Version 3 transactions use typed ladder witnesses
+    // instead of raw script. Every witness byte must conform to a typed field.
+    static const uint32_t RUNG_TX_VERSION{3};
+
     // The local variables are made const to prevent unintended modification
     // without updating the cached hash value. However, CTransaction is not
     // actually immutable; deserialization and assignment are implemented,

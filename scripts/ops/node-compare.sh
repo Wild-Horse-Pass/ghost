@@ -85,17 +85,32 @@ collect_node() {
         echo "network=?" >> "$out"
     fi
 
-    # L2 height from /api/v1/ghostpay/status
+    # L2 height from /api/v1/l2/tree-state (authoritative checkpoint height from ghost-pool)
     local l2_height
-    l2_height=$(curl -sf --connect-timeout 3 "$base/api/v1/ghostpay/status" 2>/dev/null \
-        | jq -r '.l2_height // .height // "?"' 2>/dev/null) || l2_height="?"
+    l2_height=$(curl -sf --connect-timeout 3 "$base/api/v1/l2/tree-state" 2>/dev/null \
+        | jq -r '.checkpoint_height // "?"' 2>/dev/null) || l2_height="?"
     [[ -z "$l2_height" ]] && l2_height="?"
     echo "l2_height=$l2_height" >> "$out"
+
+    # L2 tree state from /api/v1/l2/tree-state
+    local tree_json
+    tree_json=$(curl -sf --connect-timeout 3 "$base/api/v1/l2/tree-state" 2>/dev/null) || tree_json=""
+    if [[ -n "$tree_json" ]] && ! echo "$tree_json" | jq -e '.error' >/dev/null 2>&1; then
+        echo "tree_root=$(echo "$tree_json" | jq -r '.tree_root // "?"' 2>/dev/null)" >> "$out"
+        echo "roots_match=$(echo "$tree_json" | jq -r '.roots_match // "?"' 2>/dev/null)" >> "$out"
+        echo "note_count=$(echo "$tree_json" | jq -r '.note_count // "?"' 2>/dev/null)" >> "$out"
+        echo "recent_finalizations=$(echo "$tree_json" | jq -r '.recent_finalizations // "?"' 2>/dev/null)" >> "$out"
+    else
+        echo "tree_root=?" >> "$out"
+        echo "roots_match=?" >> "$out"
+        echo "note_count=?" >> "$out"
+        echo "recent_finalizations=?" >> "$out"
+    fi
 
     # Peer count from /peers
     local peers
     peers=$(curl -sf --connect-timeout 3 "$base/peers" 2>/dev/null \
-        | jq 'length' 2>/dev/null) || peers="?"
+        | jq '.peer_count // (if type == "array" then length else .peers | length end) // 0' 2>/dev/null) || peers="?"
     [[ -z "$peers" ]] && peers="?"
     echo "peers=$peers" >> "$out"
 
@@ -148,6 +163,7 @@ wait
 # Read results into arrays
 # ---------------------------------------------------------------------------
 declare -a R_BLOCK R_L2 R_PEERS R_MPC R_VERSION R_MODE R_REAPER_EN R_REAPER_MODE R_NETWORK
+declare -a R_TREE_ROOT R_ROOTS_MATCH R_NOTE_COUNT R_RECENT_FINAL
 
 read_val() {
     local file="$1" key="$2" default="${3:-?}"
@@ -168,6 +184,10 @@ for i in "${!VM_IPS[@]}"; do
     R_REAPER_EN[$i]=$(read_val "$out" reaper_enabled)
     R_REAPER_MODE[$i]=$(read_val "$out" reaper_mode)
     R_NETWORK[$i]=$(read_val "$out" network)
+    R_TREE_ROOT[$i]=$(read_val "$out" tree_root)
+    R_ROOTS_MATCH[$i]=$(read_val "$out" roots_match)
+    R_NOTE_COUNT[$i]=$(read_val "$out" note_count)
+    R_RECENT_FINAL[$i]=$(read_val "$out" recent_finalizations)
 done
 
 # ---------------------------------------------------------------------------
@@ -263,8 +283,8 @@ for i in "${!VM_IPS[@]}"; do
         section+="${VM_NAMES[$i]}: ${RED}${val}${RESET} ${YELLOW}⚠ BEHIND${RESET}"
         has_issue=true
     elif (( max_l2 > 0 )) && (( max_l2 - val == 1 )); then
-        section+="${VM_NAMES[$i]}: ${YELLOW}${val}${RESET} ${YELLOW}⚠ BEHIND${RESET}"
-        has_issue=true
+        # 1-block delta is normal transient jitter with 10s checkpoint intervals
+        section+="${VM_NAMES[$i]}: ${val}"
     else
         section+="${VM_NAMES[$i]}: ${val}"
     fi
@@ -281,12 +301,71 @@ if $has_issue; then
             section+="    ${RED}→ CRITICAL: ${VM_NAMES[$i]} is $((max_l2 - val)) L2 blocks behind${RESET}\n"
             (( CRITICAL++ ))
         elif (( max_l2 > 0 )) && (( max_l2 - val == 1 )); then
-            section+="    ${YELLOW}→ WARNING: ${VM_NAMES[$i]} is 1 L2 block behind${RESET}\n"
-            (( WARNINGS++ ))
+            : # 1-block delta is normal jitter, not a warning
         fi
     done
 else
     section+="    ${GREEN}→ OK: All nodes in sync${RESET}\n"
+fi
+SECTIONS+=("$section")
+SECTION_HAS_ISSUE+=("$has_issue")
+
+# --- Commitment Tree ---
+section=""
+has_issue=false
+
+section+="  ${BOLD}Commitment Tree:${RESET}\n    "
+for i in "${!VM_IPS[@]}"; do
+    (( i > 0 )) && section+="   "
+    root="${R_TREE_ROOT[$i]}"
+    if [[ "$root" == "?" ]]; then
+        section+="${VM_NAMES[$i]}: ${RED}?${RESET}"
+        has_issue=true
+    else
+        # Show first 12 chars of root
+        section+="${VM_NAMES[$i]}: ${root:0:12}…"
+    fi
+done
+section+="\n"
+
+# Check poison: roots_match == false on any node
+for i in "${!VM_IPS[@]}"; do
+    rm_val="${R_ROOTS_MATCH[$i]}"
+    if [[ "$rm_val" == "false" ]]; then
+        has_issue=true
+        section+="    ${RED}→ CRITICAL: ${VM_NAMES[$i]} tree root POISONED (live root != checkpoint root)${RESET}\n"
+        (( CRITICAL++ ))
+    fi
+done
+
+# Check divergence: tree roots differ across nodes
+tree_roots_known=()
+for i in "${!VM_IPS[@]}"; do
+    [[ "${R_TREE_ROOT[$i]}" != "?" ]] && tree_roots_known+=("${R_TREE_ROOT[$i]}")
+done
+if [[ ${#tree_roots_known[@]} -ge 2 ]]; then
+    if ! all_identical "${tree_roots_known[@]}"; then
+        has_issue=true
+        section+="    ${RED}→ CRITICAL: Tree roots DIVERGED across nodes${RESET}\n"
+        (( CRITICAL++ ))
+    fi
+fi
+
+# Check finalization stall: notes exist but no recent finalizations
+for i in "${!VM_IPS[@]}"; do
+    nc="${R_NOTE_COUNT[$i]}"
+    rf="${R_RECENT_FINAL[$i]}"
+    if [[ "$nc" =~ ^[0-9]+$ ]] && [[ "$rf" =~ ^[0-9]+$ ]]; then
+        if (( nc > 0 )) && (( rf == 0 )); then
+            has_issue=true
+            section+="    ${YELLOW}→ WARNING: ${VM_NAMES[$i]} has $nc notes but 0 recent finalizations (stall)${RESET}\n"
+            (( WARNINGS++ ))
+        fi
+    fi
+done
+
+if ! $has_issue; then
+    section+="    ${GREEN}→ OK: Trees consistent, no poison or stall${RESET}\n"
 fi
 SECTIONS+=("$section")
 SECTION_HAS_ISSUE+=("$has_issue")

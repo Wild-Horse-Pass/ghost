@@ -399,9 +399,10 @@ impl SshController {
 
     /// Restart the ghost-core daemon (ghostd.service).
     /// Uses ghost-cli RPC to stop, then systemctl to start.
+    /// Also restarts ghost-pay since it has Requires=ghostd.service
+    /// (systemd stops ghost-pay when ghostd stops, but doesn't restart it).
     pub fn restart_ghost_core(node: &NodeInfo) -> Result<String, String> {
         println!("  [SSH] Restarting ghost-core on {}", node.name);
-        // Stop the running process via RPC (works regardless of systemd state)
         Self::run(
             node,
             "/opt/ghost/bin/ghost-cli -signet -datadir=/var/lib/bitcoin \
@@ -409,14 +410,16 @@ impl SshController {
              stop 2>/dev/null; \
              sleep 3; \
              sudo systemctl reset-failed ghostd 2>/dev/null; \
-             sudo systemctl start ghostd",
+             sudo systemctl start ghostd; \
+             sleep 2; \
+             sudo systemctl start ghost-pay 2>/dev/null; true",
         )
     }
 
     /// Stop the ghost-core daemon via RPC.
+    /// Note: ghost-pay will also be stopped by systemd (Requires=ghostd.service).
     pub fn stop_ghost_core(node: &NodeInfo) -> Result<String, String> {
         println!("  [SSH] Stopping ghost-core on {}", node.name);
-        // Use ghost-cli RPC to stop the daemon, works regardless of systemd service state
         Self::run(
             node,
             "/opt/ghost/bin/ghost-cli -signet -datadir=/var/lib/bitcoin \
@@ -428,13 +431,16 @@ impl SshController {
     }
 
     /// Start the ghost-core service.
+    /// Also restarts ghost-pay since it has Requires=ghostd.service
+    /// (systemd stops ghost-pay when ghostd stops, but doesn't restart it).
     pub fn start_ghost_core(node: &NodeInfo) -> Result<String, String> {
         println!("  [SSH] Starting ghost-core on {}", node.name);
-        // Reset any "failed" state before starting
         Self::run(
             node,
             "sudo systemctl reset-failed ghostd 2>/dev/null; \
-             sudo systemctl start ghostd",
+             sudo systemctl start ghostd; \
+             sleep 2; \
+             sudo systemctl start ghost-pay 2>/dev/null; true",
         )
     }
 

@@ -2228,6 +2228,66 @@ const BLOCK_FAMILIES = [
       ]},
     ]
   },
+  {
+    name: 'COMPOUND', color: '#d97706',
+    blocks: [
+      { type: 'TIMELOCKED_SIG', label: 'TL_SIG', desc: 'SIG + CSV combined — signature with relative timelock', fields: [
+        { name: 'pubkey', dataType: 'PUBKEY', label: 'Public Key', placeholder: '02abc...' },
+        { name: 'csv_delay', dataType: 'NUMERIC', label: 'CSV Delay', placeholder: '144' }
+      ]},
+      { type: 'HTLC', label: 'HTLC', desc: 'Hash Time-Locked Contract — sig + hash preimage + CSV', fields: [
+        { name: 'sender_key', dataType: 'PUBKEY', label: 'Sender Key', placeholder: '02abc...' },
+        { name: 'receiver_key', dataType: 'PUBKEY', label: 'Receiver Key', placeholder: '02def...' },
+        { name: 'hash_lock', dataType: 'HASH256', label: 'Hash Lock', placeholder: '32-byte hex' },
+        { name: 'csv_delay', dataType: 'NUMERIC', label: 'CSV Delay', placeholder: '144' }
+      ]},
+      { type: 'HASH_SIG', label: 'HASH_SIG', desc: 'Hash preimage + signature combined', fields: [
+        { name: 'pubkey', dataType: 'PUBKEY', label: 'Public Key', placeholder: '02abc...' },
+        { name: 'hash_lock', dataType: 'HASH256', label: 'Hash Lock', placeholder: '32-byte hex' }
+      ]},
+      { type: 'PTLC', label: 'PTLC', desc: 'Point Time-Locked Contract — adaptor sig + CSV', fields: [
+        { name: 'signing_key', dataType: 'PUBKEY', label: 'Signing Key', placeholder: '02abc...' },
+        { name: 'adaptor_point', dataType: 'PUBKEY', label: 'Adaptor Point', placeholder: '32-byte x-only' },
+        { name: 'csv_delay', dataType: 'NUMERIC', label: 'CSV Delay', placeholder: '144' }
+      ]},
+      { type: 'CLTV_SIG', label: 'CLTV_SIG', desc: 'SIG + CLTV combined — signature with absolute timelock', fields: [
+        { name: 'pubkey', dataType: 'PUBKEY', label: 'Public Key', placeholder: '02abc...' },
+        { name: 'cltv_height', dataType: 'NUMERIC', label: 'CLTV Height', placeholder: '850000' }
+      ]},
+      { type: 'TIMELOCKED_MULTISIG', label: 'TL_MULTI', desc: 'M-of-N multisig + CSV — threshold sigs with timelock', fields: [
+        { name: 'threshold', dataType: 'NUMERIC', label: 'Threshold (M)', placeholder: '2' },
+        { name: 'pubkeys', dataType: 'PUBKEY', label: 'Public Keys', placeholder: '02abc...', multi: true },
+        { name: 'csv_delay', dataType: 'NUMERIC', label: 'CSV Delay', placeholder: '144' }
+      ]},
+    ]
+  },
+  {
+    name: 'GOVERNANCE', color: '#059669',
+    blocks: [
+      { type: 'EPOCH_GATE', label: 'EPOCH', desc: 'Periodic spending window — spend only during window blocks of each epoch', fields: [
+        { name: 'epoch_size', dataType: 'NUMERIC', label: 'Epoch Size', placeholder: '144' },
+        { name: 'window_size', dataType: 'NUMERIC', label: 'Window Size', placeholder: '72' }
+      ]},
+      { type: 'WEIGHT_LIMIT', label: 'WT_LIM', desc: 'Maximum transaction weight constraint', fields: [
+        { name: 'max_weight', dataType: 'NUMERIC', label: 'Max Weight (WU)', placeholder: '4000' }
+      ]},
+      { type: 'INPUT_COUNT', label: 'IN_CNT', desc: 'Input count bounds [min, max]', fields: [
+        { name: 'min_inputs', dataType: 'NUMERIC', label: 'Min Inputs', placeholder: '1' },
+        { name: 'max_inputs', dataType: 'NUMERIC', label: 'Max Inputs', placeholder: '5' }
+      ]},
+      { type: 'OUTPUT_COUNT', label: 'OUT_CNT', desc: 'Output count bounds [min, max]', fields: [
+        { name: 'min_outputs', dataType: 'NUMERIC', label: 'Min Outputs', placeholder: '1' },
+        { name: 'max_outputs', dataType: 'NUMERIC', label: 'Max Outputs', placeholder: '3' }
+      ]},
+      { type: 'RELATIVE_VALUE', label: 'REL_VAL', desc: 'Output must be >= numerator/denominator of input value', fields: [
+        { name: 'numerator', dataType: 'NUMERIC', label: 'Numerator', placeholder: '9' },
+        { name: 'denominator', dataType: 'NUMERIC', label: 'Denominator', placeholder: '10' }
+      ]},
+      { type: 'ACCUMULATOR', label: 'ACCUM', desc: 'Merkle accumulator set membership proof', fields: [
+        { name: 'root', dataType: 'HASH256', label: 'Merkle Root', placeholder: '32-byte hex' }
+      ]},
+    ]
+  },
 ];
 
 // Internal block type for referencing output coils from other rungs
@@ -2296,6 +2356,18 @@ const BLOCK_RULES = {
   ONE_SHOT: 'Single-use: satisfied when state is 0. Once fired (state=1), permanently unsatisfied.',
   RATE_LIMIT: 'Rate limiter: unsatisfied when output_amount > max_per_block.',
   COSIGN: 'Satisfied when another input in the same tx has conditions matching the hash.',
+  TIMELOCKED_SIG: 'SIG + CSV in one block. Requires valid signature AND relative timelock. Supports PQ via SCHEME field.',
+  HTLC: 'Hash Time-Locked Contract. Requires valid signature, hash preimage reveal, AND CSV timelock. Standard Lightning HTLC pattern.',
+  HASH_SIG: 'HASH_PREIMAGE + SIG combined. Requires both valid preimage and signature. Atomic swap claim path.',
+  PTLC: 'Point Time-Locked Contract. ADAPTOR_SIG + CSV. Adapted Schnorr signature with timelock. Next-gen HTLC replacement.',
+  CLTV_SIG: 'SIG + CLTV in one block. Requires valid signature AND absolute timelock by block height.',
+  TIMELOCKED_MULTISIG: 'MULTISIG + CSV. M-of-N threshold signatures with relative timelock. Time-delayed governance.',
+  EPOCH_GATE: 'Periodic spending window. Satisfied when block_height % epoch_size < window_size.',
+  WEIGHT_LIMIT: 'Maximum transaction weight constraint. Unsatisfied if tx weight exceeds limit.',
+  INPUT_COUNT: 'Input count bounds [min, max]. Satisfied when tx input count within range.',
+  OUTPUT_COUNT: 'Output count bounds [min, max]. Satisfied when tx output count within range.',
+  RELATIVE_VALUE: 'Anti-fee-siphon: output must be >= numerator/denominator of input value.',
+  ACCUMULATOR: 'Merkle accumulator set membership proof. Verifies leaf is in tree with committed root.',
   OUTPUT_REF: 'References a named output coil from another rung.',
 };
 
@@ -3521,6 +3593,10 @@ function getTypeHex(type) {
     COUNTER_DOWN:'0631',COUNTER_PRESET:'0632',COUNTER_UP:'0633',
     COMPARE:'0641',SEQUENCER:'0651',ONE_SHOT:'0661',
     RATE_LIMIT:'0671',COSIGN:'0681',
+    TIMELOCKED_SIG:'0701',HTLC:'0702',HASH_SIG:'0703',
+    PTLC:'0704',CLTV_SIG:'0705',TIMELOCKED_MULTISIG:'0706',
+    EPOCH_GATE:'0801',WEIGHT_LIMIT:'0802',INPUT_COUNT:'0803',
+    OUTPUT_COUNT:'0804',RELATIVE_VALUE:'0805',ACCUMULATOR:'0806',
   };
   return map[type] || '????';
 }

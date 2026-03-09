@@ -95,6 +95,10 @@ bool ExtractDestination(const CScript& scriptPubKey, CTxDestination& addressRet)
         addressRet = WitnessUnknown{vSolutions[0][0], vSolutions[1]};
         return true;
     }
+    case TxoutType::RUNG_CONDITIONS: {
+        addressRet = LadderDestination(vSolutions[0]);
+        return true;
+    }
     case TxoutType::MULTISIG:
     case TxoutType::NULL_DATA:
     case TxoutType::NONSTANDARD:
@@ -155,6 +159,15 @@ public:
         // Return empty script - callers should derive the actual output address.
         return CScript();
     }
+
+    CScript operator()(const LadderDestination& ld) const
+    {
+        // Reconstruct scriptPubKey: 0xc1 prefix + conditions bytes
+        CScript script;
+        script.push_back(0xc1);
+        script.insert(script.end(), ld.GetConditions().begin(), ld.GetConditions().end());
+        return script;
+    }
 };
 
 class ValidDestinationVisitor
@@ -169,6 +182,7 @@ public:
     bool operator()(const WitnessV1Taproot& dest) const { return true; }
     bool operator()(const WitnessUnknown& dest) const { return true; }
     bool operator()(const SilentPaymentDestination& dest) const { return true; }
+    bool operator()(const LadderDestination& dest) const { return true; }
 };
 } // namespace
 

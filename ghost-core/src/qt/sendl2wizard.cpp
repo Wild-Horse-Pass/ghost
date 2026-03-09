@@ -483,7 +483,7 @@ bool SendL2ConfirmPage::validatePage()
 
         QJsonObject body;
         body[QStringLiteral("recipient")] = wiz->recipient();
-        body[QStringLiteral("amount_sats")] = wiz->amountSats();
+        body[QStringLiteral("amount_sats")] = static_cast<double>(wiz->amountSats());
         if (!wiz->memo().isEmpty()) {
             body[QStringLiteral("memo")] = wiz->memo();
         }

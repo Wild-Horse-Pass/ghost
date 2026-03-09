@@ -92,6 +92,9 @@ endif()
 # Ghost Haze: stripped block format, exorcism (strip-before-write), exorcist (archive conversion)
 add_subdirectory(haze)
 
+# Ghost Ladder Script: typed transaction format (v3 RUNG_TX)
+add_subdirectory(rung)
+
 # Ghost Tor mode: embedded Tor subprocess management
 add_subdirectory(tor)
 
@@ -183,6 +186,7 @@ if(ENABLE_WALLET)
       core_interface
       bitcoin_wallet
       bitcoin_common
+      bitcoin_rung
       bitcoin_util
       Boost::headers
     )
@@ -297,6 +301,7 @@ target_link_libraries(bitcoin_node
     $<TARGET_NAME_IF_EXISTS:bitcoin_zmq>
     $<TARGET_NAME_IF_EXISTS:bitcoin_gsp>
     bitcoin_haze
+    bitcoin_rung
     bitcoin_tor
     leveldb
     minisketch
