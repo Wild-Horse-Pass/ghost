@@ -127,6 +127,12 @@ bool IsStandardRungTx(const CTransaction& tx, std::string& reason)
             return false;
         }
 
+        // Diff witness: deserialization already validates field types and limits.
+        // Forward-only and no-chaining are consensus rules enforced at evaluation time.
+        if (ladder.IsWitnessRef()) {
+            continue;
+        }
+
         if (ladder.rungs.size() > MAX_RUNGS) {
             reason = "rung-too-many-rungs";
             return false;

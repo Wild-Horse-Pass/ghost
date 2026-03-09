@@ -866,6 +866,101 @@ on a separate state rung, with each UTXO spend representing one scan cycle.
 
 ---
 
+## 9. Diff Witness (Two-Input SIG Batch)
+
+### Scenario
+
+A user controls two UTXOs locked by the same SIG conditions (same public key). They want to consolidate both into a single output. Rather than providing a full witness for each input, the second input inherits the first input's witness structure and only provides a fresh signature (which differs because the sighash includes the input index).
+
+### Ladder Diagram
+
+```
+INPUT 0 (full witness):
+     L+                                              L-
+     |                                                |
+R000 |--[ SIG: pk=02ab..., sig=3045... ]---(  )-------|
+     |                                                |
+     +------------------------------------------------+
+
+INPUT 1 (diff witness → inherits from input 0):
+     L+                                              L-
+     |                                                |
+     |   DIFF_WITNESS: source=input_0                 |
+     |   diff[0]: rung=0, block=0, field=1 → sig=3046|
+     |---(  )------------------------------------------
+     |                                                |
+     +------------------------------------------------+
+```
+
+### Wire Comparison
+
+| Input | Encoding | Size |
+|-------|----------|------|
+| Input 0 | Full witness (SIG block + PUBKEY + SIGNATURE + coil) | 107 bytes |
+| Input 1 | Diff witness (sentinel + source_idx + 1 diff + coil) | 77 bytes |
+| **Savings** | | **28%** |
+
+### createrungtx JSON
+
+```json
+{
+  "inputs": [
+    {"txid": "aabb...", "vout": 0},
+    {"txid": "ccdd...", "vout": 0}
+  ],
+  "outputs": [
+    {
+      "amount": 0.099,
+      "conditions": [{"blocks": [{"type": "SIG", "fields": [
+        {"type": "PUBKEY", "hex": "02abcdef..."}
+      ]}]}]
+    }
+  ]
+}
+```
+
+### signrungtx JSON
+
+```json
+{
+  "signers": [
+    {"input": 0, "blocks": [{"type": "SIG", "privkey": "cVt..."}]},
+    {"input": 1, "diff_witness": {
+      "source_input": 0,
+      "diffs": [
+        {"rung_index": 0, "block_index": 0, "field_index": 1,
+         "field": {"type": "SIGNATURE", "privkey": "cVt..."}}
+      ]
+    }}
+  ]
+}
+```
+
+### Evaluation Walkthrough
+
+1. **Input 0** is deserialized as a normal ladder witness. The SIG block contains PUBKEY and SIGNATURE fields. `EvalBlock(SIG)` verifies the Schnorr signature against `LadderSighash(input_index=0)`. The rung is SATISFIED.
+
+2. **Input 1** is deserialized. `n_rungs = 0` triggers diff witness mode:
+   - `input_index = 0` → copy rungs and relays from input 0's witness.
+   - One diff: replace `rungs[0].blocks[0].fields[1]` (SIGNATURE) with a fresh signature.
+   - The coil is read fresh from the diff witness bytes.
+   - `witness_ref` is cleared; the witness is now fully resolved.
+
+3. The resolved witness for input 1 has the same structure as input 0 but with a different signature. `EvalBlock(SIG)` verifies the signature against `LadderSighash(input_index=1)` — a different sighash because the input index differs. The rung is SATISFIED.
+
+4. Both inputs pass evaluation. The transaction is valid.
+
+### When to Use Diff Witness
+
+Diff witness is most valuable when:
+- **Batch consolidation**: Many UTXOs with identical conditions spend in one transaction.
+- **Covenant chains**: Sequential spends where witness structure is repetitive.
+- **MULTISIG batches**: Inherit the full key set and threshold structure, diff only the signatures.
+
+Savings scale with witness complexity: a MULTISIG(3-of-5) witness saves ~60% per additional input via diff witness, since only the 3 signatures need diffs while 5 pubkeys are inherited.
+
+---
+
 ## Summary of Evaluation Rules
 
 | Rule | Scope | Behavior |

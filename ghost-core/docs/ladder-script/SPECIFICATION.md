@@ -197,6 +197,63 @@ Template resolution rules:
 - Diff type must match the field being replaced
 - Resolution produces fully expanded conditions for sighash computation
 
+### 3.6 Diff Witness (Witness Inheritance)
+
+When `n_rungs = 0` in a ladder witness (input witness stack element), the witness inherits its rungs and relays from another input's witness with optional field-level diffs. This is the witness-side counterpart to template inheritance (§3.5).
+
+#### Wire Format
+
+```
+DIFF WITNESS (n_rungs = 0 in witness):
+
+[n_rungs: varint = 0]                      // Signals diff witness mode
+[input_index: varint]                      // Source input to inherit from
+[n_diffs: varint]                          // Number of field-level diffs
+FOR EACH diff:
+  [rung_index: varint]
+  [block_index: varint]
+  [field_index: varint]
+  [data_type: uint8_t]                     // Replacement field type byte
+  [field_data]                             // Type-dependent encoding (same as standard fields)
+[coil]                                      // Fresh coil (always provided, never inherited)
+                                            // No relays section (inherited from source)
+```
+
+#### Resolution Rules
+
+- **Forward-only**: `input_index` must be strictly less than the current input index (`input_index < nIn`). This prevents cycles and ensures deterministic evaluation order.
+- **No chaining**: The source input's witness must not itself be a diff witness. Only one level of indirection is permitted.
+- **Coil never inherited**: The spending input always provides its own fresh coil. Inheriting destination addresses from another input would be a security footgun.
+- **Relays inherited**: Relays are copied wholesale from the source witness. The diff witness wire format omits the relay section entirely.
+- **Allowed diff field types**: Only witness-side data types are permitted in diffs: PUBKEY (`0x01`), SIGNATURE (`0x06`), PREIMAGE (`0x05`), and SCHEME (`0x09`). Condition-only types (PUBKEY_COMMIT, HASH256, HASH160, NUMERIC, SPEND_INDEX) are rejected during deserialization.
+- **Type matching at resolution**: Each diff's `data_type` must match the type of the field it replaces in the source witness. Mismatches are rejected.
+
+#### Resolution Process
+
+1. Deserialize the source input's witness from `tx.vin[input_index].scriptWitness.stack[0]`.
+2. Verify the source is not itself a diff witness (no chaining).
+3. Copy the source's rungs and relays into the current witness.
+4. Apply each diff: replace `rungs[rung_index].blocks[block_index].fields[field_index]` with the diff's new field.
+5. Clear the witness reference. The witness is now fully resolved and proceeds through normal evaluation.
+
+The sighash is computed against the current input's conditions (not the source's). Each input gets its own sighash even when inheriting witness structure, because the sighash includes the input index. This means SIGNATURE fields almost always require a diff — the same key produces different signatures for different inputs.
+
+#### Wire Size Savings
+
+For a two-input transaction spending identical SIG conditions with the same key:
+
+| Component | Full Witness | Diff Witness | Saved |
+|-----------|:-----------:|:------------:|:-----:|
+| Block header | 1 B | — | 1 B |
+| Field count | 0 B | — | 0 B |
+| PUBKEY | 34 B | — | 34 B |
+| SIGNATURE | 65 B | 65 B | 0 B |
+| Diff overhead | — | 4 B | −4 B |
+| Coil | 7 B | 7 B | 0 B |
+| **Total** | **107 B** | **77 B** | **28%** |
+
+Savings increase with more complex witness structures (MULTISIG, HTLC, compound blocks) where more fields can be inherited without diffs.
+
 ---
 
 ## 4. Output Format (scriptPubKey)

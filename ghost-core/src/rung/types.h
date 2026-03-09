@@ -6,6 +6,7 @@
 #define BITCOIN_RUNG_TYPES_H
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -393,16 +394,38 @@ struct Relay {
     std::vector<uint16_t> relay_refs;    //!< Indices of other relays (must be < own index)
 };
 
+/** A single field-level diff in a witness reference. */
+struct WitnessDiff {
+    uint16_t rung_index;   //!< Which rung in the inherited witness
+    uint16_t block_index;  //!< Which block within that rung
+    uint16_t field_index;  //!< Which field within that block
+    RungField new_field;   //!< Replacement field data
+};
+
+/** Witness reference: rungs/relays inherited from another input's witness with diffs.
+ *  Coil is always provided fresh (never inherited — inheriting destination
+ *  addresses would be a dangerous footgun). */
+struct WitnessReference {
+    uint32_t input_index;               //!< Which input's witness to inherit rungs/relays from
+    std::vector<WitnessDiff> diffs;     //!< Field-level patches to apply after inheritance
+};
+
 /** The complete ladder witness for one output.
  *  Rungs define input conditions (OR logic — first satisfied rung wins).
  *  Coil defines output semantics (destination, constraints).
- *  Relays are shared condition sets referenced via requires (AND composition). */
+ *  Relays are shared condition sets referenced via requires (AND composition).
+ *
+ *  When witness_ref is set (n_rungs == 0 on wire), rungs and relays are
+ *  inherited from the referenced input's witness. Only diffs and a fresh
+ *  coil are provided. Resolution happens in VerifyRungTx. */
 struct LadderWitness {
     std::vector<Rung> rungs;     //!< Input condition rungs
     RungCoil coil;               //!< Output coil (per-output, not per-rung)
     std::vector<Relay> relays;   //!< Relay definitions (shared across outputs)
+    std::optional<WitnessReference> witness_ref; //!< Witness inheritance reference
 
-    bool IsEmpty() const { return rungs.empty(); }
+    bool IsEmpty() const { return rungs.empty() && !witness_ref.has_value(); }
+    bool IsWitnessRef() const { return witness_ref.has_value(); }
 };
 
 // ============================================================================

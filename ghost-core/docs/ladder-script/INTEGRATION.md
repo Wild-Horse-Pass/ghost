@@ -18,6 +18,20 @@ A Ladder Script transaction uses version 4 (`CTransaction::RUNG_TX_VERSION = 4`)
 
 4. **Sign the transaction.** Use the `signrungtx` RPC, which takes the unsigned transaction hex, an array of `{privkey, input_index}` pairs, and an array of spent outputs (needed for sighash computation). The RPC computes `LadderSighash` for each input and produces witness data.
 
+**Diff Witness Signing.** The `signrungtx` RPC supports a `diff_witness` signer format alongside the existing `privkey` (legacy) and `blocks` (new) formats:
+
+```json
+{"input": 1, "diff_witness": {
+    "source_input": 0,
+    "diffs": [
+        {"rung_index": 0, "block_index": 0, "field_index": 1,
+         "field": {"type": "SIGNATURE", "privkey": "cVt..."}}
+    ]
+}}
+```
+
+Diff fields support either `"hex"` (raw replacement data) or `"privkey"` (auto-sign for SIGNATURE fields, auto-derive for PUBKEY fields). The RPC constructs a `LadderWitness` with `witness_ref` set and serializes it.
+
 5. **Broadcast.** Submit via `sendrawtransaction`. The mempool validates the transaction through `IsStandardRungTx()` before acceptance.
 
 ### 1.2 Witness Construction
@@ -25,6 +39,8 @@ A Ladder Script transaction uses version 4 (`CTransaction::RUNG_TX_VERSION = 4`)
 For each input, the witness stack contains a single element: the serialized `LadderWitness`. This witness provides the "unlocking" data -- signatures, preimages, and other witness-only fields -- that pairs with the conditions from the spent output.
 
 The witness structure mirrors the conditions: same number of rungs, same number of blocks per rung, same block types. The evaluator merges conditions and witness by concatenating their fields within each block.
+
+**Diff Witness (Witness Inheritance).** When a transaction spends multiple inputs with identical conditions using the same keys, inputs after the first can use a *diff witness* instead of a full witness. The diff witness sets `n_rungs = 0` in the witness serialization, provides a `source_input` index pointing to an earlier input with a full witness, a list of field-level diffs (typically just fresh signatures), and a fresh coil. At evaluation time, `ResolveWitnessReference()` copies the source's rungs and relays and applies the diffs before proceeding through normal evaluation.
 
 ### 1.3 Validation
 
@@ -194,6 +210,8 @@ The mempool policy function `IsStandardRungTx()` validates v4 transactions befor
 - Maximum 8 blocks per rung.
 - All block types must be known (`IsKnownBlockType()`).
 - All fields must pass `RungField::IsValid()` size/content checks.
+
+Diff witnesses pass mempool standardness checks. The `IsStandardRungTx()` function validates deserialization (which enforces field type restrictions and size limits) and then skips rung/relay validation since those structures are inherited at evaluation time.
 
 ### 6.2 IsStandardRungOutput()
 

@@ -409,13 +409,16 @@ BOOST_AUTO_TEST_CASE(deserialize_rejects_empty)
     BOOST_CHECK(error.find("empty") != std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(deserialize_rejects_zero_rungs)
+BOOST_AUTO_TEST_CASE(deserialize_zero_rungs_enters_diff_witness_mode)
 {
+    // n_rungs == 0 is the diff witness sentinel (not an error).
+    // A truncated diff witness (only the sentinel byte) fails
+    // during deserialization of the input_index.
     std::vector<uint8_t> data{0x00};
     LadderWitness decoded;
     std::string error;
     BOOST_CHECK(!DeserializeLadderWitness(data, decoded, error));
-    BOOST_CHECK(error.find("zero rungs") != std::string::npos);
+    BOOST_CHECK(error.find("deserialization failure") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(deserialize_rejects_unknown_block_type)
@@ -5974,6 +5977,278 @@ BOOST_AUTO_TEST_CASE(multi_block_multi_rung_optimized_roundtrip)
         csv_val |= static_cast<uint32_t>(ndat[i]) << (8 * i);
     }
     BOOST_CHECK_EQUAL(csv_val, 144u);
+}
+
+// ============================================================================
+// DIFF_WITNESS tests
+// ============================================================================
+
+/** Build a simple SIG ladder witness for diff witness testing. */
+static LadderWitness MakeSimpleSigWitness()
+{
+    LadderWitness lw;
+    RungBlock sig_block;
+    sig_block.type = RungBlockType::SIG;
+    sig_block.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+    sig_block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    Rung rung;
+    rung.blocks.push_back(sig_block);
+    lw.rungs.push_back(rung);
+    lw.coil.coil_type = RungCoilType::UNLOCK;
+    lw.coil.attestation = RungAttestationMode::INLINE;
+    lw.coil.scheme = RungScheme::SCHNORR;
+    return lw;
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_basic_roundtrip)
+{
+    // Build a diff witness: no diffs, fresh coil, referencing input 0
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {}};
+    dw.coil.coil_type = RungCoilType::UNLOCK_TO;
+    dw.coil.attestation = RungAttestationMode::INLINE;
+    dw.coil.scheme = RungScheme::SCHNORR;
+    dw.coil.address = {0x00, 0x14, 0xAA, 0xBB}; // some address
+
+    BOOST_CHECK(dw.IsWitnessRef());
+    BOOST_CHECK(!dw.IsEmpty());
+
+    // Serialize and deserialize
+    auto bytes = SerializeLadderWitness(dw);
+    BOOST_CHECK(!bytes.empty());
+    // First byte should be 0x00 (n_rungs sentinel)
+    BOOST_CHECK_EQUAL(bytes[0], 0x00);
+
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK(decoded.IsWitnessRef());
+    BOOST_CHECK_EQUAL(decoded.witness_ref->input_index, 0u);
+    BOOST_CHECK(decoded.witness_ref->diffs.empty());
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(decoded.coil.coil_type),
+                      static_cast<uint8_t>(RungCoilType::UNLOCK_TO));
+    BOOST_CHECK_EQUAL(decoded.coil.address.size(), 4u);
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_with_sig_diff)
+{
+    // Build a diff witness that replaces one signature field
+    auto new_sig = MakeSignature(64);
+    new_sig[0] = 0xFF; // different from source
+
+    WitnessDiff sig_diff;
+    sig_diff.rung_index = 0;
+    sig_diff.block_index = 0;
+    sig_diff.field_index = 1; // signature is second field in SIG block
+    sig_diff.new_field = {RungDataType::SIGNATURE, new_sig};
+
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {sig_diff}};
+    dw.coil.coil_type = RungCoilType::UNLOCK;
+    dw.coil.attestation = RungAttestationMode::INLINE;
+    dw.coil.scheme = RungScheme::SCHNORR;
+
+    // Roundtrip
+    auto bytes = SerializeLadderWitness(dw);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK(decoded.IsWitnessRef());
+    BOOST_CHECK_EQUAL(decoded.witness_ref->diffs.size(), 1u);
+    BOOST_CHECK_EQUAL(decoded.witness_ref->diffs[0].rung_index, 0u);
+    BOOST_CHECK_EQUAL(decoded.witness_ref->diffs[0].block_index, 0u);
+    BOOST_CHECK_EQUAL(decoded.witness_ref->diffs[0].field_index, 1u);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(decoded.witness_ref->diffs[0].new_field.type),
+                      static_cast<uint8_t>(RungDataType::SIGNATURE));
+    BOOST_CHECK_EQUAL(decoded.witness_ref->diffs[0].new_field.data[0], 0xFF);
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_fresh_coil)
+{
+    // Verify that diff witness carries its own coil, not inherited
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {}};
+    dw.coil.coil_type = RungCoilType::COVENANT;
+    dw.coil.attestation = RungAttestationMode::DEFERRED;
+    dw.coil.scheme = RungScheme::FALCON512;
+    dw.coil.address = {0x51, 0x20}; // taproot-style prefix
+    dw.coil.address.insert(dw.coil.address.end(), 32, 0xEE); // 32 bytes key
+
+    auto bytes = SerializeLadderWitness(dw);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(decoded.coil.coil_type),
+                      static_cast<uint8_t>(RungCoilType::COVENANT));
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(decoded.coil.scheme),
+                      static_cast<uint8_t>(RungScheme::FALCON512));
+    BOOST_CHECK_EQUAL(decoded.coil.address.size(), 34u);
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_rejects_condition_only_type)
+{
+    // Diff field types must be witness-side: PUBKEY, SIGNATURE, PREIMAGE, SCHEME
+    // HASH256 is condition-only and should be rejected
+    WitnessDiff bad_diff;
+    bad_diff.rung_index = 0;
+    bad_diff.block_index = 0;
+    bad_diff.field_index = 0;
+    bad_diff.new_field = {RungDataType::HASH256, MakeHash256()};
+
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {bad_diff}};
+    dw.coil.coil_type = RungCoilType::UNLOCK;
+    dw.coil.attestation = RungAttestationMode::INLINE;
+    dw.coil.scheme = RungScheme::SCHNORR;
+
+    auto bytes = SerializeLadderWitness(dw);
+    LadderWitness decoded;
+    std::string error;
+    // Should fail during deserialization because HASH256 is not allowed
+    BOOST_CHECK(!DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK(error.find("not allowed") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_rejects_pubkey_commit_type)
+{
+    // PUBKEY_COMMIT is condition-only — should be rejected in diffs
+    WitnessDiff bad_diff;
+    bad_diff.rung_index = 0;
+    bad_diff.block_index = 0;
+    bad_diff.field_index = 0;
+    bad_diff.new_field = {RungDataType::PUBKEY_COMMIT, MakeHash256()};
+
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {bad_diff}};
+    dw.coil.coil_type = RungCoilType::UNLOCK;
+    dw.coil.attestation = RungAttestationMode::INLINE;
+    dw.coil.scheme = RungScheme::SCHNORR;
+
+    auto bytes = SerializeLadderWitness(dw);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(!DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK(error.find("not allowed") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_allows_scheme_type)
+{
+    // SCHEME should be allowed in diffs (for PQ scheme switching)
+    WitnessDiff scheme_diff;
+    scheme_diff.rung_index = 0;
+    scheme_diff.block_index = 0;
+    scheme_diff.field_index = 0;
+    scheme_diff.new_field = {RungDataType::SCHEME, {static_cast<uint8_t>(RungScheme::FALCON512)}};
+
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {scheme_diff}};
+    dw.coil.coil_type = RungCoilType::UNLOCK;
+    dw.coil.attestation = RungAttestationMode::INLINE;
+    dw.coil.scheme = RungScheme::SCHNORR;
+
+    auto bytes = SerializeLadderWitness(dw);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK(decoded.IsWitnessRef());
+    BOOST_CHECK_EQUAL(decoded.witness_ref->diffs.size(), 1u);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(decoded.witness_ref->diffs[0].new_field.type),
+                      static_cast<uint8_t>(RungDataType::SCHEME));
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_allows_preimage_type)
+{
+    // PREIMAGE should be allowed in diffs
+    WitnessDiff pre_diff;
+    pre_diff.rung_index = 0;
+    pre_diff.block_index = 0;
+    pre_diff.field_index = 0;
+    pre_diff.new_field = {RungDataType::PREIMAGE, std::vector<uint8_t>(32, 0xAA)};
+
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {pre_diff}};
+    dw.coil.coil_type = RungCoilType::UNLOCK;
+    dw.coil.attestation = RungAttestationMode::INLINE;
+    dw.coil.scheme = RungScheme::SCHNORR;
+
+    auto bytes = SerializeLadderWitness(dw);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK(decoded.IsWitnessRef());
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(decoded.witness_ref->diffs[0].new_field.type),
+                      static_cast<uint8_t>(RungDataType::PREIMAGE));
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_compact_wire_size)
+{
+    // Compare wire size: diff witness with 1 sig diff vs full witness
+    LadderWitness full = MakeSimpleSigWitness();
+    auto full_bytes = SerializeLadderWitness(full);
+
+    WitnessDiff sig_diff;
+    sig_diff.rung_index = 0;
+    sig_diff.block_index = 0;
+    sig_diff.field_index = 1;
+    sig_diff.new_field = {RungDataType::SIGNATURE, MakeSignature(64)};
+
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {sig_diff}};
+    dw.coil = full.coil;
+
+    auto diff_bytes = SerializeLadderWitness(dw);
+
+    // Diff witness should be smaller than full witness
+    BOOST_CHECK_LT(diff_bytes.size(), full_bytes.size());
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_multiple_diffs)
+{
+    // Multiple diffs: replace pubkey and signature in a SIG block
+    WitnessDiff pk_diff;
+    pk_diff.rung_index = 0;
+    pk_diff.block_index = 0;
+    pk_diff.field_index = 0;
+    auto new_pk = MakePubkey();
+    new_pk[1] = 0xFF;
+    pk_diff.new_field = {RungDataType::PUBKEY, new_pk};
+
+    WitnessDiff sig_diff;
+    sig_diff.rung_index = 0;
+    sig_diff.block_index = 0;
+    sig_diff.field_index = 1;
+    sig_diff.new_field = {RungDataType::SIGNATURE, MakeSignature(64)};
+
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {pk_diff, sig_diff}};
+    dw.coil.coil_type = RungCoilType::UNLOCK;
+    dw.coil.attestation = RungAttestationMode::INLINE;
+    dw.coil.scheme = RungScheme::SCHNORR;
+
+    auto bytes = SerializeLadderWitness(dw);
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK_EQUAL(decoded.witness_ref->diffs.size(), 2u);
+    BOOST_CHECK_EQUAL(decoded.witness_ref->diffs[0].new_field.data[1], 0xFF);
+}
+
+BOOST_AUTO_TEST_CASE(diff_witness_no_trailing_bytes)
+{
+    // Diff witness should reject trailing bytes after coil
+    LadderWitness dw;
+    dw.witness_ref = WitnessReference{0, {}};
+    dw.coil.coil_type = RungCoilType::UNLOCK;
+    dw.coil.attestation = RungAttestationMode::INLINE;
+    dw.coil.scheme = RungScheme::SCHNORR;
+
+    auto bytes = SerializeLadderWitness(dw);
+    bytes.push_back(0xFF); // extra trailing byte
+
+    LadderWitness decoded;
+    std::string error;
+    BOOST_CHECK(!DeserializeLadderWitness(bytes, decoded, error));
+    BOOST_CHECK(error.find("trailing bytes") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

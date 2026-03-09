@@ -291,8 +291,111 @@ bool DeserializeLadderWitness(const std::vector<uint8_t>& witness_bytes,
     try {
         uint64_t n_rungs = ReadCompactSize(ss);
         if (n_rungs == 0) {
-            error = "ladder witness has zero rungs";
-            return false;
+            // Diff witness mode: rungs/relays inherited from another input
+            uint64_t input_index = ReadCompactSize(ss);
+            if (input_index > 0xFFFFFFFF) {
+                error = "diff witness input_index too large";
+                return false;
+            }
+
+            uint64_t n_diffs = ReadCompactSize(ss);
+            // Cap: total possible fields across all rungs
+            static constexpr size_t MAX_DIFFS = MAX_FIELDS_PER_BLOCK * MAX_BLOCKS_PER_RUNG * MAX_RUNGS;
+            if (n_diffs > MAX_DIFFS) {
+                error = "diff witness too many diffs: " + std::to_string(n_diffs);
+                return false;
+            }
+
+            WitnessReference ref;
+            ref.input_index = static_cast<uint32_t>(input_index);
+            ref.diffs.resize(n_diffs);
+
+            for (uint64_t d = 0; d < n_diffs; ++d) {
+                uint64_t ri = ReadCompactSize(ss);
+                uint64_t bi = ReadCompactSize(ss);
+                uint64_t fi = ReadCompactSize(ss);
+                if (ri > MAX_RUNGS || bi > MAX_BLOCKS_PER_RUNG || fi > MAX_FIELDS_PER_BLOCK) {
+                    error = "diff witness index out of range at diff " + std::to_string(d);
+                    return false;
+                }
+                ref.diffs[d].rung_index = static_cast<uint16_t>(ri);
+                ref.diffs[d].block_index = static_cast<uint16_t>(bi);
+                ref.diffs[d].field_index = static_cast<uint16_t>(fi);
+
+                // Read diff field: type byte + data
+                uint8_t type_byte;
+                ss >> type_byte;
+                if (!IsKnownDataType(type_byte)) {
+                    error = "diff witness unknown data type: 0x" +
+                            HexStr(std::span<const uint8_t>{&type_byte, 1});
+                    return false;
+                }
+                RungDataType dtype = static_cast<RungDataType>(type_byte);
+
+                // Diff fields must be witness-side types (PUBKEY, SIGNATURE, PREIMAGE, SCHEME)
+                if (dtype != RungDataType::PUBKEY &&
+                    dtype != RungDataType::SIGNATURE &&
+                    dtype != RungDataType::PREIMAGE &&
+                    dtype != RungDataType::SCHEME) {
+                    error = "diff witness field type " + DataTypeName(dtype) +
+                            " not allowed (must be PUBKEY, SIGNATURE, PREIMAGE, or SCHEME)";
+                    return false;
+                }
+
+                if (!DeserializeField(ss, ref.diffs[d].new_field, dtype, 0, error)) {
+                    return false;
+                }
+            }
+
+            ladder_out.witness_ref = std::move(ref);
+
+            // Read fresh coil (same code as normal path)
+            uint8_t coil_type_byte, attestation_byte, scheme_byte;
+            ss >> coil_type_byte >> attestation_byte >> scheme_byte;
+            ladder_out.coil.coil_type = static_cast<RungCoilType>(coil_type_byte);
+            ladder_out.coil.attestation = static_cast<RungAttestationMode>(attestation_byte);
+            ladder_out.coil.scheme = static_cast<RungScheme>(scheme_byte);
+
+            // Read coil address
+            uint64_t addr_len = ReadCompactSize(ss);
+            if (addr_len > 520) {
+                error = "coil address too large: " + std::to_string(addr_len);
+                return false;
+            }
+            if (addr_len > 0) {
+                ladder_out.coil.address.resize(addr_len);
+                ss.read(MakeWritableByteSpan(ladder_out.coil.address));
+            }
+
+            // Read coil condition rungs (always CONDITIONS context)
+            uint64_t n_coil_rungs = ReadCompactSize(ss);
+            if (n_coil_rungs > MAX_RUNGS) {
+                error = "too many coil condition rungs: " + std::to_string(n_coil_rungs);
+                return false;
+            }
+            ladder_out.coil.conditions.resize(n_coil_rungs);
+            for (uint64_t cr = 0; cr < n_coil_rungs; ++cr) {
+                uint64_t n_cblocks = ReadCompactSize(ss);
+                if (n_cblocks == 0 || n_cblocks > MAX_BLOCKS_PER_RUNG) {
+                    error = "coil condition rung block count invalid: " + std::to_string(n_cblocks);
+                    return false;
+                }
+                ladder_out.coil.conditions[cr].blocks.resize(n_cblocks);
+                for (uint64_t cb = 0; cb < n_cblocks; ++cb) {
+                    if (!DeserializeBlock(ss, ladder_out.coil.conditions[cr].blocks[cb],
+                                         static_cast<uint8_t>(SerializationContext::CONDITIONS), error)) {
+                        return false;
+                    }
+                }
+            }
+
+            // No relays section — inherited from source
+
+            if (!ss.empty()) {
+                error = "trailing bytes in diff witness";
+                return false;
+            }
+            return true;
         }
         if (n_rungs > MAX_RUNGS) {
             error = "too many rungs: " + std::to_string(n_rungs);
@@ -455,6 +558,41 @@ std::vector<uint8_t> SerializeLadderWitness(const LadderWitness& ladder,
 {
     DataStream ss{};
     uint8_t ctx_val = static_cast<uint8_t>(ctx);
+
+    if (ladder.IsWitnessRef()) {
+        // Diff witness mode
+        WriteCompactSize(ss, 0); // sentinel: n_rungs == 0
+        WriteCompactSize(ss, ladder.witness_ref->input_index);
+        WriteCompactSize(ss, ladder.witness_ref->diffs.size());
+        for (const auto& diff : ladder.witness_ref->diffs) {
+            WriteCompactSize(ss, diff.rung_index);
+            WriteCompactSize(ss, diff.block_index);
+            WriteCompactSize(ss, diff.field_index);
+            // Write field: type byte + data
+            SerializeField(ss, diff.new_field, true);
+        }
+
+        // Write fresh coil (same as normal path)
+        ss << static_cast<uint8_t>(ladder.coil.coil_type);
+        ss << static_cast<uint8_t>(ladder.coil.attestation);
+        ss << static_cast<uint8_t>(ladder.coil.scheme);
+        WriteCompactSize(ss, ladder.coil.address.size());
+        if (!ladder.coil.address.empty()) {
+            ss.write(MakeByteSpan(ladder.coil.address));
+        }
+        WriteCompactSize(ss, ladder.coil.conditions.size());
+        for (const auto& crung : ladder.coil.conditions) {
+            WriteCompactSize(ss, crung.blocks.size());
+            for (const auto& cblock : crung.blocks) {
+                SerializeBlock(ss, cblock, static_cast<uint8_t>(SerializationContext::CONDITIONS));
+            }
+        }
+        // No relays section — inherited from source
+
+        std::vector<uint8_t> result(ss.size());
+        ss.read(MakeWritableByteSpan(result));
+        return result;
+    }
 
     WriteCompactSize(ss, ladder.rungs.size());
     for (const auto& rung : ladder.rungs) {

@@ -122,6 +122,10 @@ in a covenant spend. The enforcement rule is:
 Only NUMERIC fields may be targeted by delta mutations. All other fields must remain
 identical between input and output conditions.
 
+### Diff Witness
+
+A witness that inherits its rung and relay structure from another input's witness within the same transaction, providing only field-level diffs and a fresh coil. Triggered when `n_rungs = 0` in the witness deserialization. The witness-side counterpart to Template Inheritance.
+
 ### Energized
 
 A rung or block that evaluates to SATISFIED. In PLC ladder diagram terminology, current
@@ -411,3 +415,7 @@ for both scriptPubKey conditions (prefixed with 0xc1) and witness data. Key prop
 
 Serialization is handled by `src/rung/serialize.cpp`. Deserialization validates field
 sizes against type constraints and rejects unknown types.
+
+### Witness Reference
+
+The compact wire encoding for a diff witness: a source input index, a list of field-level diffs, and a fresh coil. Resolves at evaluation time by copying the source witness and applying diffs.

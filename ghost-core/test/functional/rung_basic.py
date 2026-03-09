@@ -211,6 +211,10 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         self.test_cosign_negative_no_anchor(node)
         self.test_cosign_10_children(node)
 
+        # DIFF_WITNESS — witness inheritance
+        self.test_diff_witness_spend(node)
+        self.test_diff_witness_negative_self_ref(node)
+
     # =========================================================================
     # Helpers
     # =========================================================================
@@ -5581,6 +5585,122 @@ class LadderScriptBasicTest(BitcoinTestFramework):
         )
         assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result2["hex"])
         self.log.info("  ONE_SHOT (state=1) correctly rejected!")
+
+    def test_diff_witness_spend(self, node):
+        """Scenario 20: DIFF_WITNESS — spend two identical SIG outputs, second uses diff witness."""
+        self.log.info("Scenario 20: Testing diff witness spend...")
+
+        privkey_wif, pubkey_hex = make_keypair()
+        sig_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": pubkey_hex}
+        ]}]}]
+
+        # Create two identical SIG outputs
+        txid1, vout1, amount1, spk1 = self.bootstrap_v4_output(node, sig_conditions)
+        txid2, vout2, amount2, spk2 = self.bootstrap_v4_output(node, sig_conditions)
+        self.log.info(f"  Created v4 outputs: {txid1}:{vout1} and {txid2}:{vout2}")
+
+        total_input = amount1 + amount2
+        output_amount = total_input - Decimal("0.001")
+
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        result = node.createrungtx(
+            [{"txid": txid1, "vout": vout1}, {"txid": txid2, "vout": vout2}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+
+        # Input 0: normal sign
+        # Input 1: diff_witness from input 0, with SIGNATURE diff (different sighash per input)
+        sign_result = node.signrungtx(
+            result["hex"],
+            [
+                {"input": 0, "blocks": [{"type": "SIG", "privkey": privkey_wif}]},
+                {"input": 1, "diff_witness": {
+                    "source_input": 0,
+                    "diffs": [
+                        {"rung_index": 0, "block_index": 0, "field_index": 1,
+                         "field": {"type": "SIGNATURE", "privkey": privkey_wif}},
+                    ],
+                }},
+            ],
+            [
+                {"amount": amount1, "scriptPubKey": spk1},
+                {"amount": amount2, "scriptPubKey": spk2},
+            ]
+        )
+        assert sign_result["complete"], "Diff witness tx should be fully signed"
+
+        spend_txid = node.sendrawtransaction(sign_result["hex"])
+        self.generate(node, 1)
+
+        tx_info = node.getrawtransaction(spend_txid, True)
+        assert tx_info["confirmations"] >= 1
+        self.log.info(f"  Diff witness spend confirmed: {spend_txid}")
+
+        # Verify decoderung shows witness_ref for input 1
+        raw_tx = node.decoderawtransaction(node.getrawtransaction(spend_txid))
+        wit1_hex = raw_tx["vin"][1]["txinwitness"][0]
+        decoded = node.decoderung(wit1_hex)
+        assert decoded["witness_ref"] is True
+        assert_equal(decoded["source_input"], 0)
+        assert_equal(decoded["num_rungs"], 0)
+        assert_equal(len(decoded["diffs"]), 1)
+        assert_equal(decoded["diffs"][0]["rung_index"], 0)
+        assert_equal(decoded["diffs"][0]["block_index"], 0)
+        assert_equal(decoded["diffs"][0]["field_index"], 1)
+        assert_equal(decoded["diffs"][0]["field"]["type"], "SIGNATURE")
+        self.log.info("  Diff witness decoderung verification passed!")
+
+        # Verify wire size savings
+        wit0_hex = raw_tx["vin"][0]["txinwitness"][0]
+        self.log.info(f"  Normal witness: {len(wit0_hex)//2} bytes, Diff witness: {len(wit1_hex)//2} bytes")
+        assert len(wit1_hex) < len(wit0_hex), "Diff witness should be smaller than full witness"
+
+        self.log.info("  Scenario 20 PASSED: Diff witness spend")
+
+    def test_diff_witness_negative_self_ref(self, node):
+        """Scenario 20b: DIFF_WITNESS — self-referencing input rejected at consensus."""
+        self.log.info("Scenario 20b: Testing diff witness self-reference rejection...")
+
+        privkey_wif, pubkey_hex = make_keypair()
+        sig_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": pubkey_hex}
+        ]}]}]
+
+        txid1, vout1, amount1, spk1 = self.bootstrap_v4_output(node, sig_conditions)
+        output_amount = amount1 - Decimal("0.001")
+
+        dest_wif, dest_pubkey = make_keypair()
+        dest_conditions = [{"blocks": [{"type": "SIG", "fields": [
+            {"type": "PUBKEY", "hex": dest_pubkey}
+        ]}]}]
+
+        result = node.createrungtx(
+            [{"txid": txid1, "vout": vout1}],
+            [{"amount": output_amount, "conditions": dest_conditions}]
+        )
+
+        # Input 0 references itself (source_input=0 >= nIn=0) — should fail at consensus
+        sign_result = node.signrungtx(
+            result["hex"],
+            [
+                {"input": 0, "diff_witness": {
+                    "source_input": 0,
+                    "diffs": [],
+                }},
+            ],
+            [{"amount": amount1, "scriptPubKey": spk1}]
+        )
+        assert sign_result["complete"]
+
+        # Should be rejected by consensus (forward-only: source_input >= nIn)
+        assert_raises_rpc_error(-26, None, node.sendrawtransaction, sign_result["hex"])
+        self.log.info("  Self-referencing diff witness correctly rejected!")
+        self.log.info("  Scenario 20b PASSED: Diff witness self-reference rejection")
 
 
 if __name__ == '__main__':

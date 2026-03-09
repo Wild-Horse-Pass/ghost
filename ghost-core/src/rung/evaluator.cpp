@@ -2490,6 +2490,102 @@ static bool MergeConditionsAndWitness(const RungConditions& conditions,
     return true;
 }
 
+/** Resolve a witness reference: copy rungs/relays from the referenced input's
+ *  witness and apply field-level diffs. Coil is already populated (always fresh).
+ *  @param[in,out] witness     The witness with witness_ref set (rungs/relays empty).
+ *                              On success, rungs/relays are populated and witness_ref cleared.
+ *  @param[in]     tx          The spending transaction.
+ *  @param[in]     nIn         Current input index.
+ *  @param[out]    error       Error message on failure.
+ *  @return true on success. */
+static bool ResolveWitnessReference(LadderWitness& witness,
+                                    const CTransaction& tx,
+                                    unsigned int nIn,
+                                    std::string& error)
+{
+    if (!witness.IsWitnessRef()) {
+        error = "witness does not have a witness reference";
+        return false;
+    }
+
+    const auto& ref = *witness.witness_ref;
+
+    // Forward-only: source must be a lower-indexed input (prevents cycles)
+    if (ref.input_index >= nIn) {
+        error = "witness reference must be forward-only: input_index " +
+                std::to_string(ref.input_index) + " >= current " + std::to_string(nIn);
+        return false;
+    }
+
+    // Deserialize the source input's witness
+    const auto& source_wit = tx.vin[ref.input_index].scriptWitness;
+    if (source_wit.stack.empty()) {
+        error = "witness reference source input " + std::to_string(ref.input_index) +
+                " has empty witness";
+        return false;
+    }
+
+    LadderWitness source_ladder;
+    std::string deser_error;
+    if (!DeserializeLadderWitness(source_wit.stack[0], source_ladder, deser_error)) {
+        error = "witness reference source deserialization failed: " + deser_error;
+        return false;
+    }
+
+    // No chaining: source must not itself be a witness reference
+    if (source_ladder.IsWitnessRef()) {
+        error = "witness reference points to another witness reference (no chaining)";
+        return false;
+    }
+
+    // Copy rungs and relays from source
+    witness.rungs = source_ladder.rungs;
+    witness.relays = source_ladder.relays;
+    // Coil is already populated fresh from deserialization — do NOT copy
+
+    // Apply diffs
+    for (size_t d = 0; d < ref.diffs.size(); ++d) {
+        const auto& diff = ref.diffs[d];
+
+        if (diff.rung_index >= witness.rungs.size()) {
+            error = "witness diff rung_index out of range: " +
+                    std::to_string(diff.rung_index) + " at diff " + std::to_string(d);
+            return false;
+        }
+        auto& rung = witness.rungs[diff.rung_index];
+
+        if (diff.block_index >= rung.blocks.size()) {
+            error = "witness diff block_index out of range: " +
+                    std::to_string(diff.block_index) + " at diff " + std::to_string(d);
+            return false;
+        }
+        auto& block = rung.blocks[diff.block_index];
+
+        if (diff.field_index >= block.fields.size()) {
+            error = "witness diff field_index out of range: " +
+                    std::to_string(diff.field_index) + " at diff " + std::to_string(d);
+            return false;
+        }
+
+        // Type must match source field type
+        if (block.fields[diff.field_index].type != diff.new_field.type) {
+            error = "witness diff type mismatch at rung " +
+                    std::to_string(diff.rung_index) + " block " +
+                    std::to_string(diff.block_index) + " field " +
+                    std::to_string(diff.field_index) + ": expected " +
+                    DataTypeName(block.fields[diff.field_index].type) +
+                    ", got " + DataTypeName(diff.new_field.type);
+            return false;
+        }
+
+        block.fields[diff.field_index] = diff.new_field;
+    }
+
+    // Clear witness reference — witness is now fully resolved
+    witness.witness_ref.reset();
+    return true;
+}
+
 bool VerifyRungTx(const CTransaction& tx,
                   unsigned int nIn,
                   const CTxOut& spent_output,
@@ -2518,6 +2614,15 @@ bool VerifyRungTx(const CTransaction& tx,
     if (!DeserializeLadderWitness(witness_bytes, witness_ladder, deser_error)) {
         if (serror) *serror = SCRIPT_ERR_UNKNOWN_ERROR;
         return false;
+    }
+
+    // Resolve witness references if needed (diff witness mode)
+    if (witness_ladder.IsWitnessRef()) {
+        std::string ref_error;
+        if (!ResolveWitnessReference(witness_ladder, tx, nIn, ref_error)) {
+            if (serror) *serror = SCRIPT_ERR_UNKNOWN_ERROR;
+            return false;
+        }
     }
 
     // Try to deserialize spent output scriptPubKey as rung conditions

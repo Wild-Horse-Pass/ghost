@@ -167,6 +167,14 @@ Both sides use the same serialization format (rungs, blocks, fields), but the
 conditions side is strictly a subset -- it defines what must be proven, not the
 proofs themselves.
 
+### What is a diff witness and when should I use one?
+
+A diff witness allows one input's witness to inherit its structure from another input in the same transaction. Instead of serializing a full witness for every input, you provide only the fields that differ (typically just signatures, since each input has a unique sighash). Use diff witnesses when a transaction spends multiple UTXOs with identical or similar conditions using the same keys — batch consolidation, covenant chain spends, and MULTISIG batches all benefit. The wire savings scale with witness complexity: a simple SIG witness saves ~28%, while a 3-of-5 MULTISIG witness saves ~60% per inherited input.
+
+### Can diff witnesses be chained?
+
+No. A diff witness can only reference a full (non-diff) witness. The source input must have a standard witness with `n_rungs > 0`. This prevents circular dependencies and keeps resolution to a single level of indirection. If you need three identical inputs, inputs 1 and 2 can both reference input 0, but input 2 cannot reference input 1 if input 1 is itself a diff witness.
+
 ---
 
 ## Covenants

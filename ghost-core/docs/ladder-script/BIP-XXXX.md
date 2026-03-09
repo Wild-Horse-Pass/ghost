@@ -206,6 +206,35 @@ Template resolution rules:
 - Resolution copies the source conditions and applies diffs in order.
 - The sighash always commits to the **resolved** conditions, not the compact template reference.
 
+#### Diff Witness (Witness Inheritance)
+
+When `n_rungs = 0` in a ladder witness (the input's witness stack element), the witness inherits rungs and relays from another input's witness, with optional field-level diffs and a mandatory fresh coil. This is the witness-side counterpart to template inheritance.
+
+```
+DIFF WITNESS (n_rungs = 0 in witness):
+
+[n_rungs: varint = 0]                    -- signals diff witness mode
+[input_index: varint]                    -- source input to inherit from
+[n_diffs: varint]                        -- number of field-level diffs
+  for each diff:
+    [rung_index: varint]                 -- target rung
+    [block_index: varint]               -- target block within rung
+    [field_index: varint]               -- target field within block
+    [data_type: uint8_t]                -- replacement field type
+    <field data>                        -- encoded per type
+[coil]                                   -- fresh coil (never inherited)
+                                         -- no relays section (inherited from source)
+```
+
+Diff witness resolution rules:
+- `input_index` must be strictly less than the current input index (forward-only, prevents cycles).
+- The source witness must not itself be a diff witness (no chaining).
+- Only witness-side data types are permitted in diffs: PUBKEY, SIGNATURE, PREIMAGE, SCHEME.
+- Each diff's type must match the source field's type (type-safe replacement).
+- The coil is always provided fresh by the spender. Relays are inherited from the source.
+- Resolution copies source rungs/relays, applies diffs, then proceeds through normal evaluation.
+- The sighash is per-input (includes input index), so SIGNATURE fields almost always require a diff.
+
 #### Wire Size Comparison (per block, v2 → v3)
 
 | Scenario | V2 | V3 | Saved |
@@ -216,6 +245,7 @@ Template resolution rules:
 | HTLC conditions | 109 B | 98 B | 10% |
 | HTLC witness | 104 B | 99 B | 5% |
 | Template ref (vs repeated SIG conds) | 41 B | ~3 B | 93% |
+| Diff witness (vs repeated SIG witness) | 107 B | ~77 B | 28% |
 
 Conditions savings are amplified 4× by segwit weight accounting.
 
