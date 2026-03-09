@@ -94,16 +94,6 @@ public:
         ConvertBits<8, 5, true>([&](unsigned char c) { data.push_back(c); }, bytes.begin(), bytes.end());
         return bech32::Encode(bech32::Encoding::BECH32M, "ghost", data);
     }
-
-    std::string operator()(const LadderDestination& ld) const
-    {
-        // Rung address format: rung1<bech32m encoded conditions>
-        const auto& conditions = ld.GetConditions();
-        std::vector<unsigned char> data;
-        data.reserve((conditions.size() * 8 + 4) / 5);
-        ConvertBits<8, 5, true>([&](unsigned char c) { data.push_back(c); }, conditions.begin(), conditions.end());
-        return bech32::Encode(bech32::Encoding::BECH32M, "rung", data);
-    }
 };
 
 CTxDestination DecodeDestination(const std::string& str, const CChainParams& params, std::string& error_str, std::vector<int>* error_locations)
@@ -116,10 +106,8 @@ CTxDestination DecodeDestination(const std::string& str, const CChainParams& par
     bool is_bech32 = (ToLower(str.substr(0, params.Bech32HRP().size())) == params.Bech32HRP());
     // Ghost ID (Silent Payment) addresses use "ghost" prefix regardless of network
     bool is_ghost_id = (str.size() > 6 && str.substr(0, 6) == "ghost1");
-    // Rung (Ladder Script) addresses use "rung" prefix regardless of network
-    bool is_rung = (str.size() > 5 && str.substr(0, 5) == "rung1");
 
-    if (!is_bech32 && !is_ghost_id && !is_rung && DecodeBase58Check(str, data, 21)) {
+    if (!is_bech32 && !is_ghost_id && DecodeBase58Check(str, data, 21)) {
         // base58-encoded Bitcoin addresses.
         // Public-key-hash-addresses have version 0 (or 111 testnet).
         // The data vector contains RIPEMD160(SHA256(pubkey)), where pubkey is the serialized public key.
@@ -146,7 +134,7 @@ CTxDestination DecodeDestination(const std::string& str, const CChainParams& par
             error_str = "Invalid or unsupported Base58-encoded address.";
         }
         return CNoDestination();
-    } else if (!is_bech32 && !is_ghost_id && !is_rung) {
+    } else if (!is_bech32 && !is_ghost_id) {
         // Try Base58 decoding without the checksum, using a much larger max length
         if (!DecodeBase58(str, data, 100)) {
             error_str = "Invalid or unsupported Segwit (Bech32) or Base58 encoding.";
@@ -157,25 +145,6 @@ CTxDestination DecodeDestination(const std::string& str, const CChainParams& par
     }
 
     data.clear();
-
-    // Try Rung address (Ladder Script conditions)
-    if (is_rung) {
-        const auto rung_dec = bech32::Decode(str, bech32::CharLimit::RUNG_ADDRESS);
-        if (rung_dec.encoding == bech32::Encoding::BECH32M && rung_dec.hrp == "rung") {
-            data.reserve((rung_dec.data.size() * 5) / 8);
-            if (ConvertBits<5, 8, false>([&](unsigned char c) { data.push_back(c); }, rung_dec.data.begin(), rung_dec.data.end())) {
-                if (data.size() >= 1) {
-                    return LadderDestination(std::move(data));
-                }
-                error_str = "Empty Rung address conditions";
-                return CNoDestination();
-            }
-            error_str = "Invalid padding in Rung address data section";
-            return CNoDestination();
-        }
-        error_str = "Invalid Rung address encoding";
-        return CNoDestination();
-    }
 
     // Try Ghost ID first (Silent Payment addresses are longer than 90 chars)
     if (str.size() > 6 && str.substr(0, 6) == "ghost1") {

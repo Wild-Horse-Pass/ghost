@@ -38,7 +38,6 @@ enum class Encoding {
 enum CharLimit : size_t {
     BECH32 = 90,            //!< BIP173/350 imposed character limit for Bech32(m) encoded addresses. This guarantees finding up to 4 errors.
     SILENT_PAYMENT = 120,   //!< BIP352 Silent Payment addresses are longer (66 bytes payload = ~118 chars)
-    RUNG_ADDRESS = 500,     //!< Ladder Script rung addresses encode full conditions (variable length)
 };
 
 /** Encode a Bech32 or Bech32m string. If hrp contains uppercase characters, this will cause an

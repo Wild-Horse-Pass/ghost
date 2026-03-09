@@ -8,8 +8,6 @@
 #include <policy/policy.h>
 
 #include <coins.h>
-#include <rung/conditions.h>  // LADDER SCRIPT
-#include <rung/policy.h>  // LADDER SCRIPT
 #include <consensus/amount.h>
 #include <consensus/consensus.h>
 #include <consensus/validation.h>
@@ -103,11 +101,6 @@ bool IsStandardTx(const CTransaction& tx, const std::optional<unsigned>& max_dat
     if (tx.version > TX_MAX_STANDARD_VERSION || tx.version < TX_MIN_STANDARD_VERSION) {
         reason = "version";
         return false;
-    }
-
-    // LADDER SCRIPT: v3 transactions must pass rung policy validation
-    if (tx.version == CTransaction::RUNG_TX_VERSION) {
-        return rung::IsStandardRungTx(tx, reason);
     }
 
     // Extremely large transactions with lots of inputs can cost the network
@@ -230,11 +223,6 @@ bool AreInputsStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
     for (unsigned int i = 0; i < tx.vin.size(); i++) {
         const CTxOut& prev = mapInputs.AccessCoin(tx.vin[i].prevout).out;
 
-        // Rung conditions outputs are validated by the ladder script evaluator, not standard script policy
-        if (rung::IsRungConditionsScript(prev.scriptPubKey)) {
-            continue;
-        }
-
         std::vector<std::vector<unsigned char> > vSolutions;
         TxoutType whichType = Solver(prev.scriptPubKey, vSolutions);
         if (whichType == TxoutType::NONSTANDARD || whichType == TxoutType::WITNESS_UNKNOWN) {
@@ -273,11 +261,6 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
             continue;
 
         const CTxOut &prev = mapInputs.AccessCoin(tx.vin[i].prevout).out;
-
-        // Rung conditions outputs have ladder witness validated by the rung evaluator
-        if (rung::IsRungConditionsScript(prev.scriptPubKey)) {
-            continue;
-        }
 
         // get the scriptPubKey corresponding to this input:
         CScript prevScript = prev.scriptPubKey;

@@ -115,10 +115,6 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Using OP_CODESEPARATOR in non-witness script";
         case SCRIPT_ERR_SIG_FINDANDDELETE:
             return "Signature is found in scriptCode";
-        case SCRIPT_ERR_LADDER_INVALID_WITNESS:
-            return "Invalid ladder witness in RUNG_TX";
-        case SCRIPT_ERR_LADDER_EVAL_FALSE:
-            return "No rung satisfied in ladder witness";
         case SCRIPT_ERR_UNKNOWN_ERROR:
         case SCRIPT_ERR_ERROR_COUNT:
         default: break;

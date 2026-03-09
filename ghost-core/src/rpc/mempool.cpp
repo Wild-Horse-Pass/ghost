@@ -8,7 +8,6 @@
 #include <node/mempool_persist.h>
 
 #include <chainparams.h>
-#include <rung/conditions.h>
 #include <consensus/validation.h>
 #include <core_io.h>
 #include <kernel/mempool_entry.h>
@@ -83,8 +82,6 @@ static RPCHelpMan sendrawtransaction()
             }
 
             for (const auto& out : mtx.vout) {
-                // LADDER SCRIPT: rung conditions outputs use non-standard opcodes but are spendable
-                if (rung::IsRungConditionsScript(out.scriptPubKey)) continue;
                 if((out.scriptPubKey.IsUnspendable() || !out.scriptPubKey.HasValidOps()) && out.nValue > max_burn_amount) {
                     throw JSONRPCTransactionError(TransactionError::MAX_BURN_EXCEEDED);
                 }
@@ -1014,8 +1011,6 @@ static RPCHelpMan submitpackage()
                 }
 
                 for (const auto& out : mtx.vout) {
-                    // LADDER SCRIPT: rung conditions outputs use non-standard opcodes but are spendable
-                    if (rung::IsRungConditionsScript(out.scriptPubKey)) continue;
                     if((out.scriptPubKey.IsUnspendable() || !out.scriptPubKey.HasValidOps()) && out.nValue > max_burn_amount) {
                         throw JSONRPCTransactionError(TransactionError::MAX_BURN_EXCEEDED);
                     }
