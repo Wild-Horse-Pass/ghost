@@ -170,6 +170,17 @@ nav {
   font-size: 14px; padding: 2px 6px; border-radius: 4px; transition: color 0.15s;
 }
 .input-row .del-btn:hover { color: var(--red); }
+.input-row .dw-btn {
+  background: none; border: 1px solid var(--gray-600); color: var(--gray-400); cursor: pointer;
+  font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono);
+  letter-spacing: 0.5px; transition: all 0.15s;
+}
+.input-row .dw-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.input-row .dw-btn.dw-active { border-color: var(--cyan); color: var(--black); background: var(--cyan); }
+.input-row .dw-src-select {
+  background: var(--gray-800); border: 1px solid var(--cyan); color: var(--cyan); font-size: 12px;
+  font-family: var(--font-mono); padding: 2px 6px; border-radius: 4px; width: 50px;
+}
 
 /* ── Canvas: Output / Ladder Diagram ── */
 .output-card {
@@ -929,6 +940,19 @@ function renderPhaseContent() {
     html += `<label>txid</label><input class="txid-input" value="${inp.txid}" onchange="P().inputs[${i}].txid=this.value;updateJSON()">`;
     html += `<label>vout</label><input class="vout-input" type="number" value="${inp.vout}" onchange="P().inputs[${i}].vout=+this.value;updateJSON()">`;
     html += `<label>seq</label><input class="seq-input" value="${inp.sequence}" onchange="P().inputs[${i}].sequence=+this.value;updateJSON()">`;
+    if (i > 0) {
+      const dwActive = inp.diffWitness ? ' dw-active' : '';
+      html += `<button class="dw-btn${dwActive}" onclick="toggleDiffWitness(${i})" title="Toggle diff witness — inherit witness from another input">DW</button>`;
+    }
+    if (inp.diffWitness) {
+      html += `<label style="color:var(--cyan);font-size:11px">src</label>`;
+      html += `<select class="dw-src-select" onchange="P().inputs[${i}].sourceInput=+this.value;updateJSON()">`;
+      for (let s = 0; s < i; s++) {
+        const sel = inp.sourceInput === s ? ' selected' : '';
+        html += `<option value="${s}"${sel}>#${s}</option>`;
+      }
+      html += `</select>`;
+    }
     if (p.inputs.length > 1) html += `<button class="del-btn" onclick="removeInput(${i})">&times;</button>`;
     html += '</div>';
   });
@@ -1106,7 +1130,13 @@ function updateStats() {
 // Input / Output Management
 // ═══════════════════════════════════════════════════════════════════════════
 
-function addInput() { P().inputs.push({ txid: '', vout: 0, sequence: 0xfffffffe }); render(); }
+function addInput() { P().inputs.push({ txid: '', vout: 0, sequence: 0xfffffffe, diffWitness: false, sourceInput: 0 }); render(); }
+function toggleDiffWitness(idx) {
+  const inp = P().inputs[idx];
+  inp.diffWitness = !inp.diffWitness;
+  if (inp.diffWitness && idx === 0) { inp.diffWitness = false; toast('Input 0 cannot be a diff witness (no prior input to inherit from)', 'error'); return; }
+  render();
+}
 function removeInput(i) { P().inputs.splice(i, 1); render(); }
 function addOutput() { P().outputs.push(emptyOutput()); render(); }
 function removeOutput(i) { P().outputs.splice(i, 1); render(); }
@@ -1582,7 +1612,26 @@ function buildPhaseJSON(phase) {
 }
 
 function buildAllPhasesJSON() {
-  if (state.phases.length === 1) return buildPhaseJSON(state.phases[0]);
+  if (state.phases.length === 1) {
+    const result = buildPhaseJSON(state.phases[0]);
+    // Add signrungtx hint with diff witness info
+    const dwHints = state.phases[0].inputs
+      .map((inp, i) => ({ idx: i, dw: inp.diffWitness, src: inp.sourceInput }))
+      .filter(h => h.dw);
+    if (dwHints.length > 0) {
+      result._signrungtx_hint = {
+        note: 'Use diff_witness signer format for these inputs',
+        diff_witness_inputs: dwHints.map(h => ({
+          input: h.idx,
+          diff_witness: { source_input: h.src, diffs: [
+            { rung_index: 0, block_index: 0, field_index: 1,
+              field: { type: 'SIGNATURE', privkey: '<WIF_KEY>' } }
+          ] }
+        }))
+      };
+    }
+    return result;
+  }
   return state.phases.map((p, i) => ({
     phase: i + 1,
     name: p.name,
@@ -1703,6 +1752,10 @@ async function broadcastTx() {
     // For now, just show the hex — signing requires private keys
     const hexPreview = result.hex.slice(0, 40) + '...';
     toast(`Unsigned hex: ${hexPreview}`, 'success');
+    const dwInputs = P().inputs.filter((inp, i) => i > 0 && inp.diffWitness);
+    if (dwInputs.length > 0) {
+      toast(`${dwInputs.length} input(s) use diff witness — signrungtx will use diff_witness signer format`, 'success');
+    }
     toast('Sign with signrungtx RPC to complete', 'success');
 
   } catch (e) {
@@ -2034,6 +2087,21 @@ const TEMPLATES = [
       ], coil: { type: 'UNLOCK_TO', address: 'bc1qrp33g0q5b5698ahp5jnf5yzjmgcem8tlc7us37', rungs: [
         { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '03a2fef1829e0742b89c218c51898d9e7cb9d51201ba2bf9d9e9214ebb6af32708' } }] },
       ]}}],
+    }),
+  },
+  {
+    name: 'Batch Consolidate',
+    color: '#44DDFF',
+    desc: 'Consolidate 3 identical SIG UTXOs — inputs 1 & 2 use diff witness (inherit from input 0)',
+    build: () => ({
+      inputs: [
+        { txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 0, sequence: 0xfffffffe, diffWitness: false, sourceInput: 0 },
+        { txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 1, sequence: 0xfffffffe, diffWitness: true, sourceInput: 0 },
+        { txid: 'aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb', vout: 2, sequence: 0xfffffffe, diffWitness: true, sourceInput: 0 },
+      ],
+      outputs: [{ amount: '2.997', rungs: [
+        { blocks: [{ type: 'SIG', inverted: false, params: { pubkey: '02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc' } }] },
+      ]}],
     }),
   },
 ];
