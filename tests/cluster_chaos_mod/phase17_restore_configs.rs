@@ -43,8 +43,30 @@ async fn restore_01_restore_all_configs() {
 
     println!("\n=== Config Restore: Restoring All Configs From Backup ===");
 
-    // Restore VM2, VM3, VM4 (VM1 was not modified)
-    for name in ["VM2", "VM3", "VM4"] {
+    // Restore VM2, VM3, VM4 (VM1 was not modified).
+    // If a backup exists, restore from it. Otherwise, force-patch the expected
+    // original values — the backup may have been lost due to SSH timeouts in a
+    // prior run, leaving the config in a modified state.
+    let original_values: &[(&str, &[(&str, &str, &str)])] = &[
+        ("VM2", &[
+            ("storage", "archive_mode", "true"),
+            ("storage", "prune_height", "0"),
+            ("reaper", "enabled", "true"),
+            ("reaper", "mode", "strict"),
+            ("policy", "profile", "bitcoin_pure"),
+        ]),
+        ("VM3", &[
+            ("reaper", "enabled", "false"),
+            ("reaper", "mode", "monitor"),
+            ("policy", "profile", "permissive"),
+        ]),
+        ("VM4", &[
+            ("storage", "archive_mode", "true"),
+            ("policy", "profile", "permissive"),
+        ]),
+    ];
+
+    for (name, fields) in original_values {
         let node = config.node_by_name(name).unwrap();
 
         let has_backup = SshController::has_config_backup(node).unwrap_or(false);
@@ -55,7 +77,14 @@ async fn restore_01_restore_all_configs() {
             ));
             println!("  {} config restored from backup", name);
         } else {
-            println!("  {} no backup found (config was not modified)", name);
+            println!("  {} no backup found — force-patching original values", name);
+            for (section, key, value) in *fields {
+                SshController::patch_config_field(node, section, key, value).expect(&format!(
+                    "failed to patch {}.{} on {}",
+                    section, key, name
+                ));
+            }
+            println!("  {} config force-patched to original values", name);
         }
     }
 
