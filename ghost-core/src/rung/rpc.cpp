@@ -188,6 +188,7 @@ static bool ParseBlockType(const std::string& name, RungBlockType& out)
     if (name == "SIG")              { out = RungBlockType::SIG; return true; }
     if (name == "MULTISIG")         { out = RungBlockType::MULTISIG; return true; }
     if (name == "ADAPTOR_SIG")      { out = RungBlockType::ADAPTOR_SIG; return true; }
+    if (name == "MUSIG_THRESHOLD")  { out = RungBlockType::MUSIG_THRESHOLD; return true; }
     // Timelock family
     if (name == "CSV")              { out = RungBlockType::CSV; return true; }
     if (name == "CSV_TIME")         { out = RungBlockType::CSV_TIME; return true; }
@@ -1037,6 +1038,30 @@ static RungBlock BuildWitnessBlock(const UniValue& block_spec,
                 }
                 block.fields.push_back({RungDataType::SIGNATURE, std::vector<uint8_t>(sig_buf, sig_buf + 64)});
             }
+        }
+        break;
+    }
+    case RungBlockType::MUSIG_THRESHOLD: {
+        // MuSig2/FROST aggregate threshold: single aggregate key + signature.
+        // From the node's perspective, identical to single-sig Schnorr.
+        if (block_spec.exists("privkey")) {
+            std::string wif = block_spec["privkey"].get_str();
+            CKey privkey = DecodeSecret(wif);
+            if (!privkey.IsValid()) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid private key");
+            }
+            uint256 sighash;
+            if (!rung::SignatureHashLadder(txdata, mtx, input_idx, SIGHASH_DEFAULT, conditions, sighash)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to compute sighash");
+            }
+            CPubKey pubkey = privkey.GetPubKey();
+            block.fields.push_back({RungDataType::PUBKEY, std::vector<uint8_t>(pubkey.begin(), pubkey.end())});
+            unsigned char sig_buf[64];
+            uint256 aux_rand = GetRandHash();
+            if (!privkey.SignSchnorr(sighash, sig_buf, nullptr, aux_rand)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Schnorr signing failed");
+            }
+            block.fields.push_back({RungDataType::SIGNATURE, std::vector<uint8_t>(sig_buf, sig_buf + 64)});
         }
         break;
     }

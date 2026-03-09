@@ -559,6 +559,65 @@ EvalResult EvalCLTVTimeBlock(const RungBlock& block,
     return EvalResult::SATISFIED;
 }
 
+EvalResult EvalMusigThresholdBlock(const RungBlock& block,
+                                    const BaseSignatureChecker& checker,
+                                    SigVersion sigversion,
+                                    ScriptExecutionData& execdata)
+{
+    // MuSig2/FROST aggregate threshold signature verification.
+    // Conditions: PUBKEY_COMMIT(aggregate_key), NUMERIC(M), NUMERIC(N)
+    // Witness: PUBKEY(aggregate_key), SIGNATURE(aggregate_sig)
+    // On-chain this looks identical to single-sig — one key, one signature.
+    // The FROST/MuSig2 ceremony is entirely off-chain.
+    const RungField* pubkey_commit = FindField(block, RungDataType::PUBKEY_COMMIT);
+    const RungField* pubkey_field = FindField(block, RungDataType::PUBKEY);
+    const RungField* sig_field = FindField(block, RungDataType::SIGNATURE);
+
+    if (!pubkey_field || !sig_field) {
+        return EvalResult::ERROR;
+    }
+
+    // Verify aggregate pubkey matches commitment (if present)
+    if (pubkey_commit) {
+        unsigned char hash[CSHA256::OUTPUT_SIZE];
+        CSHA256().Write(pubkey_field->data.data(), pubkey_field->data.size()).Finalize(hash);
+        if (pubkey_commit->data.size() != 32 ||
+            memcmp(hash, pubkey_commit->data.data(), 32) != 0) {
+            return EvalResult::UNSATISFIED;
+        }
+    }
+
+    // Validate M and N policy fields (if present)
+    auto numerics = FindAllFields(block, RungDataType::NUMERIC);
+    if (numerics.size() >= 2) {
+        int64_t m = ReadNumeric(*numerics[0]);
+        int64_t n = ReadNumeric(*numerics[1]);
+        if (m <= 0 || n <= 0 || m > n) {
+            return EvalResult::ERROR;
+        }
+    }
+
+    // Schnorr-only: aggregate signatures are always Schnorr
+    if (sig_field->data.size() < 64 || sig_field->data.size() > 65) {
+        return EvalResult::ERROR;
+    }
+
+    std::span<const unsigned char> sig_span{sig_field->data.data(), sig_field->data.size()};
+    std::span<const unsigned char> pk_span{pubkey_field->data.data(), pubkey_field->data.size()};
+
+    // Convert compressed pubkey (33 bytes) to x-only (32 bytes)
+    std::vector<unsigned char> xonly;
+    if (pubkey_field->data.size() == 33) {
+        xonly.assign(pubkey_field->data.begin() + 1, pubkey_field->data.end());
+        pk_span = std::span<const unsigned char>{xonly.data(), xonly.size()};
+    }
+
+    if (checker.CheckSchnorrSignature(sig_span, pk_span, sigversion, execdata, nullptr)) {
+        return EvalResult::SATISFIED;
+    }
+    return EvalResult::UNSATISFIED;
+}
+
 EvalResult EvalAdaptorSigBlock(const RungBlock& block,
                                 const BaseSignatureChecker& checker,
                                 SigVersion sigversion,
@@ -2127,6 +2186,9 @@ EvalResult EvalBlock(const RungBlock& block,
         break;
     case RungBlockType::ADAPTOR_SIG:
         raw = EvalAdaptorSigBlock(block, checker, sigversion, execdata);
+        break;
+    case RungBlockType::MUSIG_THRESHOLD:
+        raw = EvalMusigThresholdBlock(block, checker, sigversion, execdata);
         break;
     // Timelock
     case RungBlockType::CSV:

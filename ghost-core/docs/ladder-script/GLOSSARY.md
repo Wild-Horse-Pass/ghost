@@ -31,6 +31,14 @@ expects the fully adapted signature in the witness -- it verifies as a standard 
 signature against the signing key. The adaptor point is committed in the conditions to
 prove the protocol structure.
 
+### Aggregate Signature
+
+A single Schnorr signature produced by a MuSig2 or FROST threshold signing ceremony
+that represents the combined authorization of M-of-N signers. In Ladder Script, the
+MUSIG_THRESHOLD block (0x0004) validates the aggregate signature against the aggregate
+public key using standard Schnorr verification. The threshold ceremony is entirely
+off-chain -- on-chain, the spend is indistinguishable from a single-sig SIG block.
+
 ### AND Logic
 
 The evaluation rule within a single rung. All blocks in a rung must independently
@@ -207,6 +215,14 @@ The witness data for a v4 (RUNG_TX) input. Contains:
 The witness is merged with the conditions (from the spent output's scriptPubKey) before
 evaluation. The merge combines condition fields (locks) with witness fields (keys) into
 a unified structure that the evaluator processes.
+
+### MUSIG_THRESHOLD
+
+A Signature family block type (0x0004) for MuSig2/FROST aggregate threshold signatures.
+Conditions contain a PUBKEY_COMMIT (aggregate key hash) and two NUMERIC fields (threshold
+M and group size N, for policy/display). The witness contains the aggregate PUBKEY and
+aggregate SIGNATURE. On-chain, the spend is indistinguishable from a single-sig SIG
+block (~131 bytes regardless of M or N). Schnorr-only; no post-quantum path.
 
 ### Latch
 

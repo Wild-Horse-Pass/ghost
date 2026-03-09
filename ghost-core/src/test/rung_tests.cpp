@@ -266,7 +266,7 @@ BOOST_AUTO_TEST_CASE(known_type_checks)
     BOOST_CHECK(IsKnownBlockType(0x0641)); // COMPARE
     BOOST_CHECK(IsKnownBlockType(0x0671)); // RATE_LIMIT
     BOOST_CHECK(!IsKnownBlockType(0x0000));
-    BOOST_CHECK(!IsKnownBlockType(0x0004)); // gap
+    BOOST_CHECK(IsKnownBlockType(0x0004)); // MUSIG_THRESHOLD
     BOOST_CHECK(!IsKnownBlockType(0x0507)); // gap in anchor range
     BOOST_CHECK(!IsKnownBlockType(0xFFFF));
 
@@ -6249,6 +6249,236 @@ BOOST_AUTO_TEST_CASE(diff_witness_no_trailing_bytes)
     std::string error;
     BOOST_CHECK(!DeserializeLadderWitness(bytes, decoded, error));
     BOOST_CHECK(error.find("trailing bytes") != std::string::npos);
+}
+
+// ============================================================================
+// MUSIG_THRESHOLD evaluator tests
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(musig_threshold_basic_eval)
+{
+    // Valid aggregate key + signature → SATISFIED
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+
+    auto pk = MakePubkey();
+    auto commit = MakePubkeyCommit(pk);
+
+    RungBlock block;
+    block.type = RungBlockType::MUSIG_THRESHOLD;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});  // M=2
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});  // N=3
+    block.fields.push_back({RungDataType::PUBKEY, pk});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalMusigThresholdBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::SATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_wrong_commitment)
+{
+    // Pubkey doesn't match PUBKEY_COMMIT → UNSATISFIED
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+
+    auto pk = MakePubkey();
+    auto wrong_commit = std::vector<uint8_t>(32, 0xFF);  // wrong hash
+
+    RungBlock block;
+    block.type = RungBlockType::MUSIG_THRESHOLD;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, wrong_commit});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});
+    block.fields.push_back({RungDataType::PUBKEY, pk});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalMusigThresholdBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_wrong_signature)
+{
+    // Checker rejects signature → UNSATISFIED
+    MockSignatureChecker checker;
+    checker.schnorr_result = false;
+
+    auto pk = MakePubkey();
+    auto commit = MakePubkeyCommit(pk);
+
+    RungBlock block;
+    block.type = RungBlockType::MUSIG_THRESHOLD;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});
+    block.fields.push_back({RungDataType::PUBKEY, pk});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalMusigThresholdBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::UNSATISFIED);
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_missing_fields)
+{
+    // Missing pubkey → ERROR
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+
+    RungBlock block;
+    block.type = RungBlockType::MUSIG_THRESHOLD;
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalMusigThresholdBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+
+    // Missing signature → ERROR
+    RungBlock block2;
+    block2.type = RungBlockType::MUSIG_THRESHOLD;
+    block2.fields.push_back({RungDataType::PUBKEY, MakePubkey()});
+
+    BOOST_CHECK(EvalMusigThresholdBlock(block2, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_invalid_mn)
+{
+    // M=0 → ERROR
+    MockSignatureChecker checker;
+    checker.schnorr_result = true;
+
+    auto pk = MakePubkey();
+    auto commit = MakePubkeyCommit(pk);
+
+    RungBlock block;
+    block.type = RungBlockType::MUSIG_THRESHOLD;
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, commit});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(0)});  // M=0
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});  // N=3
+    block.fields.push_back({RungDataType::PUBKEY, pk});
+    block.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    ScriptExecutionData execdata;
+    BOOST_CHECK(EvalMusigThresholdBlock(block, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+
+    // M > N → ERROR
+    RungBlock block2;
+    block2.type = RungBlockType::MUSIG_THRESHOLD;
+    block2.fields.push_back({RungDataType::PUBKEY_COMMIT, commit});
+    block2.fields.push_back({RungDataType::NUMERIC, MakeNumeric(5)});  // M=5
+    block2.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});  // N=3
+    block2.fields.push_back({RungDataType::PUBKEY, pk});
+    block2.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+
+    BOOST_CHECK(EvalMusigThresholdBlock(block2, checker, SigVersion::LADDER, execdata) == EvalResult::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_serialization_roundtrip)
+{
+    // Serialize conditions + witness with implicit layouts, deserialize, compare
+    Rung rung;
+    RungBlock block;
+    block.type = RungBlockType::MUSIG_THRESHOLD;
+    auto pk = MakePubkey();
+    block.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});
+    block.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});
+    rung.blocks.push_back(block);
+
+    RungConditions cond;
+    cond.rungs.push_back(rung);
+    auto cond_bytes = SerializeRungConditions(cond);
+    RungConditions decoded_cond;
+    std::string error;
+    BOOST_CHECK(DeserializeRungConditions(cond_bytes, decoded_cond, error));
+    BOOST_CHECK_EQUAL(decoded_cond.rungs.size(), 1u);
+    BOOST_CHECK_EQUAL(decoded_cond.rungs[0].blocks.size(), 1u);
+    BOOST_CHECK(decoded_cond.rungs[0].blocks[0].type == RungBlockType::MUSIG_THRESHOLD);
+    BOOST_CHECK_EQUAL(decoded_cond.rungs[0].blocks[0].fields.size(), 3u);
+
+    // Witness roundtrip
+    LadderWitness witness;
+    Rung wrung;
+    RungBlock wblock;
+    wblock.type = RungBlockType::MUSIG_THRESHOLD;
+    wblock.fields.push_back({RungDataType::PUBKEY, pk});
+    wblock.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    wrung.blocks.push_back(wblock);
+    witness.rungs.push_back(wrung);
+    witness.coil.coil_type = RungCoilType::UNLOCK;
+
+    auto wit_bytes = SerializeLadderWitness(witness);
+    LadderWitness decoded_wit;
+    BOOST_CHECK(DeserializeLadderWitness(wit_bytes, decoded_wit, error));
+    BOOST_CHECK_EQUAL(decoded_wit.rungs[0].blocks[0].fields.size(), 2u);
+    BOOST_CHECK(decoded_wit.rungs[0].blocks[0].type == RungBlockType::MUSIG_THRESHOLD);
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_micro_header)
+{
+    // Verify micro-header encoding at slot 0x33
+    BOOST_CHECK_EQUAL(MicroHeaderSlot(RungBlockType::MUSIG_THRESHOLD), 0x33);
+    BOOST_CHECK_EQUAL(MICRO_HEADER_TABLE[0x33], 0x0004);
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_policy_standard)
+{
+    // Verify IsBaseBlockType accepts MUSIG_THRESHOLD
+    BOOST_CHECK(IsBaseBlockType(static_cast<uint16_t>(RungBlockType::MUSIG_THRESHOLD)));
+    BOOST_CHECK(IsKnownBlockType(static_cast<uint16_t>(RungBlockType::MUSIG_THRESHOLD)));
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_conditions_no_witness_types)
+{
+    // Verify the implicit layout for conditions doesn't include witness-only types
+    const auto& layout = GetImplicitLayout(RungBlockType::MUSIG_THRESHOLD, 1); // CONDITIONS
+    BOOST_CHECK(layout.count > 0);
+    for (uint8_t i = 0; i < layout.count; ++i) {
+        BOOST_CHECK(layout.fields[i].type != RungDataType::PUBKEY);
+        BOOST_CHECK(layout.fields[i].type != RungDataType::SIGNATURE);
+    }
+    // Witness layout should contain PUBKEY and SIGNATURE
+    const auto& wlayout = GetImplicitLayout(RungBlockType::MUSIG_THRESHOLD, 0); // WITNESS
+    BOOST_CHECK(wlayout.count == 2);
+    BOOST_CHECK(wlayout.fields[0].type == RungDataType::PUBKEY);
+    BOOST_CHECK(wlayout.fields[1].type == RungDataType::SIGNATURE);
+}
+
+BOOST_AUTO_TEST_CASE(musig_threshold_wire_size)
+{
+    // Verify total wire size ~131 bytes for a complete spend
+    // Conditions: micro-header(1) + PUBKEY_COMMIT length(1) + data(32) + varint M(1) + varint N(1) = 36 bytes
+    Rung crung;
+    RungBlock cblock;
+    cblock.type = RungBlockType::MUSIG_THRESHOLD;
+    auto pk = MakePubkey();
+    cblock.fields.push_back({RungDataType::PUBKEY_COMMIT, MakePubkeyCommit(pk)});
+    cblock.fields.push_back({RungDataType::NUMERIC, MakeNumeric(2)});
+    cblock.fields.push_back({RungDataType::NUMERIC, MakeNumeric(3)});
+    crung.blocks.push_back(cblock);
+
+    RungConditions cond;
+    cond.rungs.push_back(crung);
+    auto cond_bytes = SerializeRungConditions(cond);
+
+    // Witness: micro-header(1) + pubkey length(1) + pubkey(33) + sig length(1) + sig(64) = 100 bytes
+    LadderWitness witness;
+    Rung wrung;
+    RungBlock wblock;
+    wblock.type = RungBlockType::MUSIG_THRESHOLD;
+    wblock.fields.push_back({RungDataType::PUBKEY, pk});
+    wblock.fields.push_back({RungDataType::SIGNATURE, MakeSignature(64)});
+    wrung.blocks.push_back(wblock);
+    witness.rungs.push_back(wrung);
+    witness.coil.coil_type = RungCoilType::UNLOCK;
+
+    auto wit_bytes = SerializeLadderWitness(witness);
+
+    // Combined should be well under 200 bytes total
+    size_t total = cond_bytes.size() + wit_bytes.size();
+    BOOST_CHECK(total < 200);
+
+    // Conditions should be much smaller than a 2-of-3 MULTISIG conditions
+    // (which has 3 PUBKEY_COMMIT fields = 3*33 + header overhead ≈ 110+ bytes)
+    BOOST_CHECK(cond_bytes.size() < 60);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

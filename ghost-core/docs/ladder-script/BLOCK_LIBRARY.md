@@ -1,6 +1,6 @@
 # Ladder Script Block Library
 
-Complete reference for all 51 Ladder Script block types. Each block evaluates a single
+Complete reference for all 52 Ladder Script block types. Each block evaluates a single
 spending condition within a rung. Blocks are combined with AND logic within a rung and
 OR logic across rungs (first satisfied rung wins).
 
@@ -229,9 +229,84 @@ for timeout refund paths.
 
 ---
 
+### 4. MUSIG_THRESHOLD (0x0004)
+
+**Family:** Signature
+
+**Purpose:** MuSig2/FROST aggregate threshold signature verification. On-chain, this
+looks identical to a single-sig spend: one aggregate public key and one aggregate
+Schnorr signature, regardless of the threshold M or group size N. The FROST/MuSig2
+key generation and signing ceremony happen entirely off-chain. The block type only
+validates the final aggregate result using standard Schnorr verification.
+
+**Fields:**
+
+| Name | Data Type | Size | Required | Description |
+|------|-----------|------|----------|-------------|
+| PUBKEY_COMMIT | PUBKEY_COMMIT (0x02) | 32 B | Yes (conditions) | SHA-256 commitment to the aggregate public key |
+| NUMERIC (M) | NUMERIC (0x08) | varint | Yes (conditions) | Threshold M (policy/display only, not used in verification) |
+| NUMERIC (N) | NUMERIC (0x08) | varint | Yes (conditions) | Group size N (policy/display only, not used in verification) |
+| PUBKEY | PUBKEY (0x01) | 33 B | Yes (witness) | The aggregate public key (compressed) |
+| SIGNATURE | SIGNATURE (0x06) | 64 B | Yes (witness) | The aggregate Schnorr signature |
+
+**Evaluation logic:**
+
+```
+if PUBKEY absent or SIGNATURE absent:
+    return ERROR
+if PUBKEY_COMMIT present:
+    if SHA256(PUBKEY.data) != PUBKEY_COMMIT.data:
+        return UNSATISFIED
+if two NUMERIC fields present:
+    M = ReadNumeric(NUMERIC[0])
+    N = ReadNumeric(NUMERIC[1])
+    if M <= 0 or N <= 0 or M > N:
+        return ERROR
+if SIGNATURE.size not in [64, 65]:
+    return ERROR
+xonly = strip_prefix_if_33B(PUBKEY)
+return CheckSchnorrSignature(SIGNATURE, xonly, SigVersion::LADDER) ? SATISFIED : UNSATISFIED
+```
+
+**Return values:**
+
+| Condition | Result |
+|-----------|--------|
+| Valid aggregate signature verifies against aggregate PUBKEY | SATISFIED |
+| Signature does not verify or PUBKEY_COMMIT mismatch | UNSATISFIED |
+| Missing required fields, invalid M/N, or wrong signature size | ERROR |
+
+**Context requirements:** BaseSignatureChecker, SigVersion, ScriptExecutionData. No
+RungEvalContext fields needed. Schnorr-only — no PQ path (aggregate signatures
+rely on Schnorr's linear aggregation property).
+
+**Example:**
+
+```json
+{
+  "type": "MUSIG_THRESHOLD",
+  "fields": [
+    { "type": "PUBKEY_COMMIT", "data": "a1b2c3...32_bytes_hex" },
+    { "type": "NUMERIC", "data": "02" },
+    { "type": "NUMERIC", "data": "03" },
+    { "type": "PUBKEY", "data": "02d4f8...33_bytes_hex" },
+    { "type": "SIGNATURE", "data": "e5f6a7...64_bytes_hex" }
+  ]
+}
+```
+
+**Wire size:** ~131 bytes total (conditions ~36B + witness ~100B), constant regardless
+of M and N. Compared to MULTISIG: 2-of-3 saves 43%, 5-of-9 saves 80%, 11-of-15 saves 88%.
+
+**Common patterns:** Any M-of-N threshold custody where privacy is desired (the
+blockchain cannot distinguish MUSIG_THRESHOLD from a single-sig SIG spend). Corporate
+treasury management, multisig wallets, federated protocols.
+
+---
+
 ## Timelock Family
 
-### 4. CSV (0x0101)
+### 5. CSV (0x0101)
 
 **Family:** Timelock
 

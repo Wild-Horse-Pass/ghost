@@ -29,6 +29,7 @@ enum class RungBlockType : uint16_t {
     SIG              = 0x0001, //!< Single signature verification
     MULTISIG         = 0x0002, //!< M-of-N threshold signature
     ADAPTOR_SIG      = 0x0003, //!< Adaptor signature verification
+    MUSIG_THRESHOLD  = 0x0004, //!< MuSig2/FROST aggregate threshold signature
 
     // Timelock family
     CSV              = 0x0101, //!< Relative timelock — block-height (BIP68 sequence)
@@ -122,6 +123,7 @@ inline bool IsKnownBlockType(uint16_t b)
     case RungBlockType::SIG:
     case RungBlockType::MULTISIG:
     case RungBlockType::ADAPTOR_SIG:
+    case RungBlockType::MUSIG_THRESHOLD:
     // Timelock
     case RungBlockType::CSV:
     case RungBlockType::CSV_TIME:
@@ -233,6 +235,7 @@ inline std::string BlockTypeName(RungBlockType type)
     case RungBlockType::SIG:              return "SIG";
     case RungBlockType::MULTISIG:         return "MULTISIG";
     case RungBlockType::ADAPTOR_SIG:      return "ADAPTOR_SIG";
+    case RungBlockType::MUSIG_THRESHOLD:  return "MUSIG_THRESHOLD";
     case RungBlockType::CSV:              return "CSV";
     case RungBlockType::CSV_TIME:         return "CSV_TIME";
     case RungBlockType::CLTV:             return "CLTV";
@@ -502,8 +505,10 @@ inline constexpr uint16_t MICRO_HEADER_TABLE[MICRO_HEADER_SLOTS] = {
     0x0804, // 0x30: OUTPUT_COUNT
     0x0805, // 0x31: RELATIVE_VALUE
     0x0806, // 0x32: ACCUMULATOR
+    // Slot 51: MUSIG_THRESHOLD
+    0x0004, // 0x33: MUSIG_THRESHOLD
     // Remaining slots unused
-    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, // 0x33-0x3A
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, // 0x34-0x3A
     0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, // 0x3B-0x3F
     0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, // 0x40-0x47
     0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, // 0x48-0x4F
@@ -630,6 +635,13 @@ inline constexpr ImplicitFieldLayout CLTV_SIG_CONDITIONS = TIMELOCKED_SIG_CONDIT
 /** EPOCH_GATE conditions: [NUMERIC(varint), NUMERIC(varint)] */
 inline constexpr ImplicitFieldLayout EPOCH_GATE_CONDITIONS = AMOUNT_LOCK_CONDITIONS;
 
+/** MUSIG_THRESHOLD conditions: [PUBKEY_COMMIT(32), NUMERIC(varint M), NUMERIC(varint N)] */
+inline constexpr ImplicitFieldLayout MUSIG_THRESHOLD_CONDITIONS = {3, {
+    {RungDataType::PUBKEY_COMMIT, 32},
+    {RungDataType::NUMERIC, 0},  // threshold M
+    {RungDataType::NUMERIC, 0},  // group size N
+}};
+
 /** ANCHOR_SEAL conditions: [HASH256(32)] */
 inline constexpr ImplicitFieldLayout ANCHOR_SEAL_CONDITIONS = {1, {
     {RungDataType::HASH256, 32},
@@ -693,6 +705,9 @@ inline constexpr ImplicitFieldLayout HASH_SIG_WITNESS = {3, {
     {RungDataType::PREIMAGE, 0},
 }};
 
+/** MUSIG_THRESHOLD witness: [PUBKEY(var), SIGNATURE(var)] */
+inline constexpr ImplicitFieldLayout MUSIG_THRESHOLD_WITNESS = SIG_WITNESS;
+
 /** CLTV_SIG witness: [PUBKEY(var), SIGNATURE(var), NUMERIC(varint)] */
 inline constexpr ImplicitFieldLayout CLTV_SIG_WITNESS = TIMELOCKED_SIG_WITNESS;
 
@@ -705,6 +720,7 @@ inline const ImplicitFieldLayout& GetImplicitLayout(RungBlockType type, uint8_t 
         // CONDITIONS context
         switch (type) {
         case RungBlockType::SIG:              return SIG_CONDITIONS;
+        case RungBlockType::MUSIG_THRESHOLD:  return MUSIG_THRESHOLD_CONDITIONS;
         case RungBlockType::CSV:              return CSV_CONDITIONS;
         case RungBlockType::CSV_TIME:         return CSV_TIME_CONDITIONS;
         case RungBlockType::CLTV:             return CLTV_CONDITIONS;
@@ -727,6 +743,7 @@ inline const ImplicitFieldLayout& GetImplicitLayout(RungBlockType type, uint8_t 
         // WITNESS context
         switch (type) {
         case RungBlockType::SIG:              return SIG_WITNESS;
+        case RungBlockType::MUSIG_THRESHOLD:  return MUSIG_THRESHOLD_WITNESS;
         case RungBlockType::CSV:              return CSV_WITNESS;
         case RungBlockType::CSV_TIME:         return CSV_WITNESS;
         case RungBlockType::CLTV:             return CSV_WITNESS;

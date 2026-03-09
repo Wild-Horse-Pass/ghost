@@ -119,7 +119,7 @@ The micro-header lookup table maps 128 slot indices to block type values. All 51
 | 0x10 | ACCUMULATOR | 0x22 | DEAD_MAN | | |
 | 0x11 | ANCHOR_OPERATOR | 0x23 | COUNTER_GATE | | |
 
-Slots `0x33`–`0x7F` are reserved for future block types. Unknown micro-header slots are rejected during deserialization.
+Slot `0x33` is assigned to MUSIG_THRESHOLD. Slots `0x34`–`0x7F` are reserved for future block types. Unknown micro-header slots are rejected during deserialization.
 
 A micro-header is used when all three conditions are met:
 1. The block type has an assigned micro-header slot.
@@ -286,6 +286,7 @@ These block types cover the fundamental spending conditions equivalent to existi
 | `0x0001` | SIG | PUBKEY + SIGNATURE | Single signature verification. Supports Schnorr (BIP-340), ECDSA, and post-quantum schemes via SCHEME field. If a PUBKEY_COMMIT field is present, the PUBKEY must hash to it (commit-reveal). |
 | `0x0002` | MULTISIG | NUMERIC(threshold) + N*(PUBKEY + SIGNATURE) | M-of-N threshold signature. First NUMERIC field is the threshold M. Exactly M valid signatures required from the N provided public keys. |
 | `0x0003` | ADAPTOR_SIG | PUBKEY(signer) + PUBKEY(adaptor point) + SIGNATURE | Adaptor signature verification. The second PUBKEY is the adaptor point T. Verification checks that the signature is valid under the combined challenge H(R+T \|\| P \|\| m). Enables atomic swaps and payment channel protocols. |
+| `0x0004` | MUSIG_THRESHOLD | PUBKEY_COMMIT + NUMERIC(M) + NUMERIC(N) + PUBKEY + SIGNATURE | MuSig2/FROST aggregate threshold signature. On-chain: single aggregate key + single Schnorr signature (~131B total, constant regardless of M/N). M and N are policy/display only. Schnorr-only (no PQ path). |
 
 **Timelock Family (0x0100-0x01FF):**
 

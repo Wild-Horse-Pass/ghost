@@ -17,6 +17,7 @@ bool IsBaseBlockType(uint16_t block_type)
     case RungBlockType::SIG:
     case RungBlockType::MULTISIG:
     case RungBlockType::ADAPTOR_SIG:
+    case RungBlockType::MUSIG_THRESHOLD:
     case RungBlockType::CSV:
     case RungBlockType::CSV_TIME:
     case RungBlockType::CLTV:

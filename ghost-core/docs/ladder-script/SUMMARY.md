@@ -5,7 +5,7 @@ Ladder Script is a typed, structured transaction format for Bitcoin that replace
 ## Key Innovations
 
 - **Typed data model.** Nine declared data types (PUBKEY, HASH256, SIGNATURE, NUMERIC, SCHEME, etc.) with enforced size bounds replace untyped stack elements. No arbitrary data pushes are possible.
-- **Named block architecture.** 51 block types across nine families replace opcode sequences. New capabilities are added as block types, not opcodes, using the same wire format.
+- **Named block architecture.** 52 block types across nine families replace opcode sequences. New capabilities are added as block types, not opcodes, using the same wire format.
 - **Declarative evaluation.** Conditions are stated, not computed. Static analysis requires only parsing, not execution simulation.
 - **Native post-quantum support.** The SCHEME field routes SIG blocks to FALCON-512/1024, Dilithium3, or SPHINCS+ verification. PUBKEY_COMMIT reduces 897-byte PQ keys to 32-byte UTXO commitments.
 - **Covenant recursion.** Six recursion block types (RECURSE_SAME through RECURSE_DECAY) enable perpetual covenants, state machines, countdowns, UTXO tree splitting, and progressive relaxation.
@@ -15,7 +15,7 @@ Ladder Script is a typed, structured transaction format for Bitcoin that replace
 
 | Family | Range | Block Types | Purpose |
 |--------|-------|-------------|---------|
-| Signature | 0x0001--0x00FF | SIG, MULTISIG, ADAPTOR_SIG | Identity verification |
+| Signature | 0x0001--0x00FF | SIG, MULTISIG, ADAPTOR_SIG, MUSIG_THRESHOLD | Identity verification |
 | Timelock | 0x0100--0x01FF | CSV, CSV_TIME, CLTV, CLTV_TIME | Temporal constraints |
 | Hash | 0x0200--0x02FF | HASH_PREIMAGE, HASH160_PREIMAGE, TAGGED_HASH | Knowledge proofs |
 | Covenant | 0x0300--0x03FF | CTV, VAULT_LOCK, AMOUNT_LOCK | Output constraints |
@@ -35,4 +35,4 @@ Ladder Script supports four post-quantum signature schemes (FALCON-512, FALCON-1
 
 ## Implementation Status
 
-Ladder Script is implemented in the `src/rung/` directory of ghost-core (Bitcoin Ghost's fork of Bitcoin Core). The implementation comprises 10 source files: type definitions, serialization, conditions, evaluation for all block types, sighash computation, PQ verification, adaptor signatures, aggregate proofs, and policy enforcement. The wire format supports two inheritance mechanisms: template inheritance (conditions-side, §3.5) and diff witness (witness-side, §3.6), which together reduce wire overhead by up to 93% for repeated conditions and 28%+ for repeated witnesses in multi-input transactions. The test suite includes 278 unit tests (`src/test/rung_tests.cpp`) and 117 functional test scenarios (`test/functional/rung_basic.py`) covering serialization round-trips, field validation, all block evaluators, PQ signature verification, covenant evaluation, diff witness resolution, and full transaction verification through the node's mempool acceptance path.
+Ladder Script is implemented in the `src/rung/` directory of ghost-core (Bitcoin Ghost's fork of Bitcoin Core). The implementation comprises 10 source files: type definitions, serialization, conditions, evaluation for all block types, sighash computation, PQ verification, adaptor signatures, aggregate proofs, and policy enforcement. The wire format supports two inheritance mechanisms: template inheritance (conditions-side, §3.5) and diff witness (witness-side, §3.6), which together reduce wire overhead by up to 93% for repeated conditions and 28%+ for repeated witnesses in multi-input transactions. The test suite includes 288 unit tests (`src/test/rung_tests.cpp`) and 117 functional test scenarios (`test/functional/rung_basic.py`) covering serialization round-trips, field validation, all block evaluators, PQ signature verification, covenant evaluation, diff witness resolution, and full transaction verification through the node's mempool acceptance path.
