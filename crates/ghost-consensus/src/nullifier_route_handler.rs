@@ -1528,9 +1528,9 @@ impl NullifierRouteHandler {
                 let mut votes = self.votes.write();
                 let state = votes
                     .entry(height)
-                    .or_insert_with(|| CheckpointVoteState::new(root));
+                    .or_insert_with(|| CheckpointVoteState::new(canonical_root));
                 state.finalized = true;
-                state.checkpoint_hash = root;
+                state.checkpoint_hash = canonical_root;
             }
         }
 
