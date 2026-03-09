@@ -1509,6 +1509,20 @@ impl NullifierRouteHandler {
                 block_data: serde_json::to_vec(block).unwrap_or_default(),
             };
             self.db.upsert_l2_checkpoint(&record)?;
+
+            // Mark this height as finalized in vote state so late-arriving proposals
+            // cannot supersede it. Without this, a primary proposal arriving after
+            // tree sync can reset the vote state (primary-supersedes-fallback), and
+            // if no new blocks arrive to trigger re-voting, the checkpoint is left
+            // in limbo — causing permanent root divergence.
+            {
+                let mut votes = self.votes.write();
+                let state = votes
+                    .entry(height)
+                    .or_insert_with(|| CheckpointVoteState::new(root));
+                state.finalized = true;
+                state.checkpoint_hash = root;
+            }
         }
 
         // Update checkpoint base root to the last replayed checkpoint's root
@@ -2366,6 +2380,160 @@ mod tests {
             root_b, root_after_a,
             "Synced peer's root should match source peer"
         );
+    }
+
+    /// Regression: tree sync marks heights finalized so primary-supersedes-fallback
+    /// cannot reset vote state for already-synced checkpoints. Without this guard,
+    /// a late primary proposal wipes votes, and if no new blocks arrive, the
+    /// checkpoint is left in limbo causing permanent root divergence.
+    #[test]
+    fn test_tree_sync_blocks_supersede() {
+        use ghost_common::identity::NodeIdentity;
+
+        // === Peer A: build and finalize a checkpoint ===
+        let identity_a = NodeIdentity::generate();
+        let node_id_a = identity_a.node_id();
+
+        let db_a = Arc::new(Database::in_memory().expect("in-memory db"));
+        let config_a = EpochManagerConfig {
+            epoch_length: 100,
+            transition_window: 10,
+            tree_depth: 4,
+            max_valid_roots: 16,
+        };
+        let epoch_mgr_a = Arc::new(EpochManager::new(db_a.clone(), config_a));
+        epoch_mgr_a.initialize_genesis().unwrap();
+        let handler_a =
+            NullifierRouteHandler::with_defaults(node_id_a, epoch_mgr_a.clone(), db_a.clone());
+        epoch_mgr_a.update_active_nodes(vec![node_id_a]);
+        handler_a.set_sign_fn(Arc::new(move |msg: &[u8]| identity_a.sign(msg)));
+
+        let root_a = epoch_mgr_a.current_root().unwrap();
+        epoch_mgr_a.add_valid_root(root_a, 0).unwrap();
+
+        // Inject a tx so the checkpoint has content
+        {
+            let mut pool = handler_a.confirmed_pool.write();
+            pool.push(L2Transaction {
+                epoch: 0,
+                nullifier: [0x01; 32],
+                change_commitment: [0x10; 32],
+                recipient_commitment: [0x20; 32],
+                commitment_root: root_a,
+                proof: vec![],
+                encrypted_change: vec![],
+                encrypted_recipient: vec![],
+                timestamp: 0,
+            });
+        }
+
+        // Finalize on A
+        let proposal = handler_a.propose_checkpoint().unwrap().unwrap();
+        let hash = proposal.checkpoint_hash();
+        {
+            let mut votes = handler_a.votes.write();
+            let state = votes
+                .entry(proposal.height)
+                .or_insert_with(|| CheckpointVoteState::new(hash));
+            state.proposal = Some(proposal.clone());
+        }
+        let vote = L2CheckpointVoteMessage {
+            height: 1,
+            checkpoint_hash: hash,
+            voter: node_id_a,
+            approve: true,
+            signature: [0u8; 64],
+            timestamp: 0,
+        };
+        handler_a.handle_checkpoint_vote(&vote).unwrap();
+
+        // === Peer B: sync from A, then receive a late primary proposal ===
+        let identity_b = NodeIdentity::generate();
+        let node_id_b = identity_b.node_id();
+        let db_b = Arc::new(Database::in_memory().expect("in-memory db"));
+        let config_b = EpochManagerConfig {
+            epoch_length: 100,
+            transition_window: 10,
+            tree_depth: 4,
+            max_valid_roots: 16,
+        };
+        let epoch_mgr_b = Arc::new(EpochManager::new(db_b.clone(), config_b));
+        epoch_mgr_b.initialize_genesis().unwrap();
+        let handler_b = NullifierRouteHandler::with_defaults(
+            node_id_b,
+            epoch_mgr_b.clone(),
+            db_b.clone(),
+        );
+        handler_b.set_sign_fn(Arc::new(move |msg: &[u8]| identity_b.sign(msg)));
+        // B knows about A so it can verify signatures
+        epoch_mgr_b.update_active_nodes(vec![node_id_a, node_id_b]);
+
+        // B syncs from A
+        let request = L2TreeSyncRequest {
+            requesting_node: node_id_b,
+            from_height: 0,
+            timestamp: 0,
+        };
+        let response = handler_a
+            .handle_tree_sync_request(&request)
+            .unwrap()
+            .expect("Should produce sync response");
+        handler_b.handle_tree_sync_response(&response).unwrap();
+
+        // Verify B's root matches A
+        let root_b = epoch_mgr_b.current_root().unwrap();
+        let root_after_a = epoch_mgr_a.current_root().unwrap();
+        assert_eq!(root_b, root_after_a, "B should match A after sync");
+
+        // Verify height 1 is marked finalized in B's vote state
+        {
+            let votes = handler_b.votes.read();
+            let state = votes.get(&1).expect("Vote state should exist for height 1");
+            assert!(
+                state.finalized,
+                "Tree sync should mark replayed heights as finalized"
+            );
+        }
+
+        // Now simulate a late primary proposal arriving at height 1 with a different hash.
+        // Before the fix, this would reset vote state and cause divergence.
+        let late_proposal = L2CheckpointBlockMessage {
+            height: 1,
+            epoch: 0,
+            prev_commitment_root: root_a,
+            new_commitment_root: [0xFF; 32], // Different root
+            transactions: vec![],
+            shield_commitments: vec![],
+            active_node_count: 2,
+            proposer: node_id_b, // B is primary for this height
+            proposer_signature: [0u8; 64],
+            timestamp: 0,
+            epoch_transition: None,
+        };
+
+        // This should NOT reset the vote state because height 1 is already finalized
+        let vote_result = handler_b.handle_checkpoint_proposal(&late_proposal).unwrap();
+
+        // Verify vote state is still finalized with the synced hash (not reset)
+        {
+            let votes = handler_b.votes.read();
+            let state = votes.get(&1).unwrap();
+            assert!(
+                state.finalized,
+                "Vote state should remain finalized after late proposal"
+            );
+        }
+
+        // B's root should still match A's
+        let root_b_after = epoch_mgr_b.current_root().unwrap();
+        assert_eq!(
+            root_b_after, root_after_a,
+            "B's root must not change after late supersede attempt"
+        );
+
+        // The late proposal should not produce a vote (already finalized returns early)
+        // or if it does, the finalized flag should block supersede
+        let _ = vote_result; // Result doesn't matter as long as state is preserved
     }
 
     /// Test that a transfer with an invalid (wrong) commitment root is rejected
