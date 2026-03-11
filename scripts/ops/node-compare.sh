@@ -279,12 +279,13 @@ for i in "${!VM_IPS[@]}"; do
     if [[ "$val" == "?" ]]; then
         section+="${VM_NAMES[$i]}: ${RED}?${RESET}"
         has_issue=true
-    elif (( max_l2 > 0 )) && (( max_l2 - val > 1 )); then
+    elif (( max_l2 > 0 )) && (( max_l2 - val > 5 )); then
         section+="${VM_NAMES[$i]}: ${RED}${val}${RESET} ${YELLOW}⚠ BEHIND${RESET}"
         has_issue=true
-    elif (( max_l2 > 0 )) && (( max_l2 - val == 1 )); then
-        # 1-block delta is normal transient jitter with 10s checkpoint intervals
-        section+="${VM_NAMES[$i]}: ${val}"
+    elif (( max_l2 > 0 )) && (( max_l2 - val > 1 )); then
+        # 2-5 block delta is normal jitter with ~5s checkpoint intervals
+        section+="${VM_NAMES[$i]}: ${YELLOW}${val}${RESET}"
+        has_issue=true
     else
         section+="${VM_NAMES[$i]}: ${val}"
     fi
@@ -297,11 +298,12 @@ if $has_issue; then
         if [[ "$val" == "?" ]]; then
             section+="    ${RED}→ WARNING: ${VM_NAMES[$i]} L2 height unavailable${RESET}\n"
             (( WARNINGS++ ))
-        elif (( max_l2 > 0 )) && (( max_l2 - val > 1 )); then
+        elif (( max_l2 > 0 )) && (( max_l2 - val > 5 )); then
             section+="    ${RED}→ CRITICAL: ${VM_NAMES[$i]} is $((max_l2 - val)) L2 blocks behind${RESET}\n"
             (( CRITICAL++ ))
-        elif (( max_l2 > 0 )) && (( max_l2 - val == 1 )); then
-            : # 1-block delta is normal jitter, not a warning
+        elif (( max_l2 > 0 )) && (( max_l2 - val > 1 )); then
+            section+="    ${YELLOW}→ WARNING: ${VM_NAMES[$i]} is $((max_l2 - val)) L2 blocks behind (normal jitter)${RESET}\n"
+            (( WARNINGS++ ))
         fi
     done
 else
@@ -351,14 +353,16 @@ if [[ ${#tree_roots_known[@]} -ge 2 ]]; then
     fi
 fi
 
-# Check finalization stall: notes exist but no recent finalizations
+# Check finalization stall: only warn if tree root diverged AND no recent finalizations
+# (0 recent finalizations with roots_match=true just means no L2 traffic — not a stall)
 for i in "${!VM_IPS[@]}"; do
     nc="${R_NOTE_COUNT[$i]}"
     rf="${R_RECENT_FINAL[$i]}"
+    rm_val="${R_ROOTS_MATCH[$i]}"
     if [[ "$nc" =~ ^[0-9]+$ ]] && [[ "$rf" =~ ^[0-9]+$ ]]; then
-        if (( nc > 0 )) && (( rf == 0 )); then
+        if (( nc > 0 )) && (( rf == 0 )) && [[ "$rm_val" == "false" ]]; then
             has_issue=true
-            section+="    ${YELLOW}→ WARNING: ${VM_NAMES[$i]} has $nc notes but 0 recent finalizations (stall)${RESET}\n"
+            section+="    ${YELLOW}→ WARNING: ${VM_NAMES[$i]} has $nc notes, 0 recent finalizations, and tree root mismatch (stall)${RESET}\n"
             (( WARNINGS++ ))
         fi
     fi

@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 31;
+const SCHEMA_VERSION: u32 = 32;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -87,6 +87,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (29, migrate_v29),
         (30, migrate_v30),
         (31, migrate_v31),
+        (32, migrate_v32),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1760,6 +1761,25 @@ fn migrate_v31(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added pending_l2_shields staging table for checkpoint divergence fix");
+    Ok(())
+}
+
+/// v32: Add confirmed_pool_staging table for crash recovery of verified transactions.
+/// Without this, the confirmed_pool (verified ZK transactions awaiting checkpoint inclusion)
+/// is lost on restart, causing fund-freeze until the sender resubmits.
+fn migrate_v32(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v32: Add confirmed_pool_staging table");
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS confirmed_pool_staging (
+            nullifier BLOB PRIMARY KEY,
+            tx_data BLOB NOT NULL,
+            added_at INTEGER NOT NULL
+        );",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added confirmed_pool_staging table for crash recovery of verified transactions");
     Ok(())
 }
 

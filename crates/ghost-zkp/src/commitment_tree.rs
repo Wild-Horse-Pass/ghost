@@ -102,12 +102,23 @@ impl CommitmentTree {
         self.leaves.len()
     }
 
-    /// Insert a commitment at a specific index
-    pub fn insert(&mut self, index: u64, commitment: [u8; 32]) {
-        self.leaves.insert(index, commitment);
+    /// Insert a commitment at a specific index.
+    /// Uses check-before-overwrite to match the DB's INSERT OR IGNORE semantics:
+    /// if a leaf already exists at this index, it is NOT overwritten.
+    /// Returns true if the leaf was inserted, false if it already existed.
+    pub fn insert(&mut self, index: u64, commitment: [u8; 32]) -> bool {
+        use std::collections::hash_map::Entry;
+        let inserted = match self.leaves.entry(index) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(e) => {
+                e.insert(commitment);
+                true
+            }
+        };
         if index >= self.next_index {
             self.next_index = index + 1;
         }
+        inserted
     }
 
     /// Insert a commitment computed from value and blinding

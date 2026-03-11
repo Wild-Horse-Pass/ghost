@@ -6421,9 +6421,11 @@ impl Database {
             }
 
             conn.execute_batch(
-                "INSERT OR IGNORE INTO l2_nullifiers (nullifier, epoch, block_height)
+                "BEGIN;
+                 INSERT OR IGNORE INTO l2_nullifiers (nullifier, epoch, block_height)
                  SELECT nullifier, epoch, spent_at FROM pending_nullifiers;
-                 DELETE FROM pending_nullifiers;",
+                 DELETE FROM pending_nullifiers;
+                 COMMIT;",
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -6510,6 +6512,90 @@ impl Database {
                 .map(|idx| Box::new(*idx as i64) as Box<dyn rusqlite::types::ToSql>)
                 .collect();
             conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    // =========================================================================
+    // CONFIRMED POOL STAGING (crash recovery for verified L2 transactions)
+    // =========================================================================
+
+    /// Insert a confirmed transaction into the staging table.
+    /// Called when a ZK-verified transaction is added to the confirmed pool.
+    pub fn insert_confirmed_pool_tx(
+        &self,
+        nullifier: &[u8; 32],
+        tx_data: &[u8],
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO confirmed_pool_staging (nullifier, tx_data, added_at)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    nullifier.as_slice(),
+                    tx_data,
+                    chrono::Utc::now().timestamp()
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Load all confirmed pool transactions from staging (for restart recovery).
+    pub fn load_confirmed_pool_staging(&self) -> GhostResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT nullifier, tx_data FROM confirmed_pool_staging
+                     ORDER BY added_at ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    let nullifier: Vec<u8> = row.get(0)?;
+                    let tx_data: Vec<u8> = row.get(1)?;
+                    Ok((nullifier, tx_data))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut result = Vec::new();
+            for row in rows {
+                result.push(row.map_err(|e| GhostError::Database(e.to_string()))?);
+            }
+            Ok(result)
+        })
+    }
+
+    /// Delete finalized transactions from the confirmed pool staging table.
+    /// Called during finalize_checkpoint() after transactions are BFT-confirmed.
+    pub fn delete_confirmed_pool_txs(&self, nullifiers: &[[u8; 32]]) -> GhostResult<()> {
+        if nullifiers.is_empty() {
+            return Ok(());
+        }
+        self.with_connection(|conn| {
+            let placeholders: Vec<String> =
+                nullifiers.iter().map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "DELETE FROM confirmed_pool_staging WHERE nullifier IN ({})",
+                placeholders.join(",")
+            );
+            let params: Vec<Box<dyn rusqlite::types::ToSql>> = nullifiers
+                .iter()
+                .map(|n| Box::new(n.to_vec()) as Box<dyn rusqlite::types::ToSql>)
+                .collect();
+            conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Clear the entire confirmed pool staging table.
+    pub fn clear_confirmed_pool_staging(&self) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute("DELETE FROM confirmed_pool_staging", [])
                 .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
         })

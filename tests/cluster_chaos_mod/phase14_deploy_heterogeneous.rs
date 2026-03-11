@@ -97,13 +97,13 @@ async fn deploy_02_vm2_pruned_permissive() {
         .expect("failed to patch prune_height on VM2");
 
     // policy = permissive
-    SshController::patch_config_field(vm2, "policy", "profile", r#""permissive""#)
+    SshController::patch_config_field(vm2, "policy", "profile", "permissive")
         .expect("failed to patch policy on VM2");
 
     // reaper.enabled = false, mode = monitor
     SshController::patch_config_field(vm2, "reaper", "enabled", "false")
         .expect("failed to patch reaper enabled on VM2");
-    SshController::patch_config_field(vm2, "reaper", "mode", r#""monitor""#)
+    SshController::patch_config_field(vm2, "reaper", "mode", "monitor")
         .expect("failed to patch reaper mode on VM2");
 
     // Verify patches applied
@@ -139,13 +139,13 @@ async fn deploy_03_vm3_archive_fullopen_reaper() {
         .expect("failed to patch archive_mode on VM3");
 
     // policy = full_open
-    SshController::patch_config_field(vm3, "policy", "profile", r#""full_open""#)
+    SshController::patch_config_field(vm3, "policy", "profile", "full_open")
         .expect("failed to patch policy on VM3");
 
     // reaper.enabled = true, mode = strict
     SshController::patch_config_field(vm3, "reaper", "enabled", "true")
         .expect("failed to patch reaper enabled on VM3");
-    SshController::patch_config_field(vm3, "reaper", "mode", r#""strict""#)
+    SshController::patch_config_field(vm3, "reaper", "mode", "strict")
         .expect("failed to patch reaper mode on VM3");
 
     // Verify
@@ -175,7 +175,7 @@ async fn deploy_04_vm4_nonarchive_pure() {
         .expect("failed to patch archive_mode on VM4");
 
     // policy = bitcoin_pure
-    SshController::patch_config_field(vm4, "policy", "profile", r#""bitcoin_pure""#)
+    SshController::patch_config_field(vm4, "policy", "profile", "bitcoin_pure")
         .expect("failed to patch policy on VM4");
 
     // reaper stays disabled (already false on VM4)
@@ -202,8 +202,13 @@ async fn deploy_05_restart_modified_services() {
     println!("\n=== Heterogeneous Deploy: Restarting Modified Services ===");
 
     // Restart VM2, VM3, VM4 (VM1 unchanged, skip to avoid genesis disruption)
+    // Use reset-failed first in case a prior test left systemd in a bad state
     for name in ["VM2", "VM3", "VM4"] {
         let node = config.node_by_name(name).unwrap();
+        let _ = SshController::run_raw(
+            node,
+            &format!("sudo systemctl reset-failed {}", config.service_name),
+        );
         SshController::restart_service(node, config.service_name).expect(&format!(
             "failed to restart {} service",
             name
@@ -215,13 +220,25 @@ async fn deploy_05_restart_modified_services() {
     println!("  Waiting for nodes to become healthy...");
     for name in ["VM2", "VM3", "VM4"] {
         let node = config.node_by_name(name).unwrap();
-        assert!(
-            client
-                .wait_for_node_healthy(node.ip, Duration::from_secs(120))
-                .await,
-            "{} did not become healthy after config change",
-            name
-        );
+        if !client
+            .wait_for_node_healthy(node.ip, Duration::from_secs(120))
+            .await
+        {
+            // Retry once: reset-failed and force restart
+            println!("  {} not healthy, retrying with reset-failed...", name);
+            let _ = SshController::run_raw(
+                node,
+                &format!("sudo systemctl reset-failed {}", config.service_name),
+            );
+            let _ = SshController::restart_service(node, config.service_name);
+            assert!(
+                client
+                    .wait_for_node_healthy(node.ip, Duration::from_secs(120))
+                    .await,
+                "{} did not become healthy after config change (even after retry)",
+                name
+            );
+        }
         println!("  {} healthy", name);
     }
 

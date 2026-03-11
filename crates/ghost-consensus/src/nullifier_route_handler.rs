@@ -267,6 +267,62 @@ impl NullifierRouteHandler {
         Ok(())
     }
 
+    /// Restore confirmed pool from the staging table after a restart.
+    /// Transactions that were ZK-verified and added to confirmed_pool before
+    /// the crash are recovered, preventing fund-freeze.
+    /// Skips transactions whose nullifiers are already spent (they were finalized
+    /// in a checkpoint before the crash but the staging table wasn't cleaned up).
+    pub fn restore_confirmed_pool(&self) -> GhostResult<()> {
+        let rows = self.db.load_confirmed_pool_staging()?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut pool = self.confirmed_pool.write();
+        let mut nullifiers = self.confirmed_nullifiers.write();
+        let mut restored = 0u64;
+        let mut skipped_spent = 0u64;
+        for (nullifier_vec, tx_data) in &rows {
+            if let Ok(tx) = serde_json::from_slice::<L2Transaction>(tx_data) {
+                let nullifier: [u8; 32] = match nullifier_vec.as_slice().try_into() {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+                // Skip if this nullifier was already finalized in a prior checkpoint.
+                // This happens when we crash after checkpoint persist but before
+                // staging table cleanup.
+                if self.epoch_manager.is_nullifier_spent(&nullifier) {
+                    skipped_spent += 1;
+                    continue;
+                }
+                if nullifiers.insert(nullifier) {
+                    pool.push(tx);
+                    restored += 1;
+                }
+            } else {
+                warn!("Skipping undeserializable confirmed_pool_staging row");
+            }
+        }
+        // Clean up stale entries from staging
+        if skipped_spent > 0 {
+            if let Err(e) = self.db.clear_confirmed_pool_staging() {
+                warn!(error = %e, "Failed to clear stale confirmed_pool_staging entries");
+            } else {
+                // Re-persist only the live ones
+                for tx in pool.iter() {
+                    if let Ok(tx_bytes) = serde_json::to_vec(tx) {
+                        let _ = self.db.insert_confirmed_pool_tx(&tx.nullifier, &tx_bytes);
+                    }
+                }
+            }
+        }
+        info!(
+            restored,
+            skipped_already_spent = skipped_spent,
+            "Restored confirmed pool from DB after restart"
+        );
+        Ok(())
+    }
+
     /// Set the verifier (after MPC params are loaded)
     pub fn set_verifier(&self, verifier: Arc<GhostNoteVerifier>) {
         *self.verifier.write() = Some(verifier);
@@ -387,11 +443,16 @@ impl NullifierRouteHandler {
             return Err(GhostError::InvalidInput("Nullifier race".into()));
         }
 
-        // Add to confirmed pool
+        // Add to confirmed pool + persist to staging table for crash recovery
         {
             let mut pool = self.confirmed_pool.write();
             pool.push(tx.clone());
             self.confirmed_nullifiers.write().insert(tx.nullifier);
+        }
+        if let Ok(tx_bytes) = serde_json::to_vec(tx) {
+            if let Err(e) = self.db.insert_confirmed_pool_tx(&tx.nullifier, &tx_bytes) {
+                warn!(error = %e, "Failed to persist confirmed tx to staging (non-fatal)");
+            }
         }
 
         // Signed confirmation
@@ -720,6 +781,12 @@ impl NullifierRouteHandler {
             let mut nullifiers = self.confirmed_nullifiers.write();
             if nullifiers.insert(tx.nullifier) {
                 self.confirmed_pool.write().push(tx.clone());
+                // Persist to staging table for crash recovery
+                if let Ok(tx_bytes) = serde_json::to_vec(tx) {
+                    if let Err(e) = self.db.insert_confirmed_pool_tx(&tx.nullifier, &tx_bytes) {
+                        warn!(error = %e, "Failed to persist confirmed tx to staging (non-fatal)");
+                    }
+                }
             }
         }
 
@@ -1198,53 +1265,10 @@ impl NullifierRouteHandler {
             }
         }
 
-        // Clear cached proposal — height has advanced, next cycle builds a fresh proposal
-        *self.cached_proposal.write() = None;
-
-        // Remove finalized data from in-memory pools.
-        // Since we clone (not drain) in propose_checkpoint(), data remains in the pools
-        // until finalized here. This ensures nothing is lost if a proposal fails quorum.
-        if let Some(block) = proposal {
-            // Remove finalized shield commitments from pending_shields and staging table
-            if !block.shield_commitments.is_empty() {
-                let finalized_indices: Vec<u64> = block
-                    .shield_commitments
-                    .iter()
-                    .map(|sc| sc.note_index)
-                    .collect();
-                let finalized_set: HashSet<u64> =
-                    finalized_indices.iter().copied().collect();
-                self.pending_shields
-                    .write()
-                    .retain(|sc| !finalized_set.contains(&sc.note_index));
-                if let Err(e) = self.db.delete_pending_shields(&finalized_indices) {
-                    warn!(
-                        height,
-                        error = %e,
-                        "Failed to delete finalized shields from staging table (non-fatal)"
-                    );
-                }
-            }
-
-            // Remove finalized transactions from confirmed_pool
-            if !block.transactions.is_empty() {
-                let finalized_nullifiers: HashSet<[u8; 32]> = block
-                    .transactions
-                    .iter()
-                    .map(|tx| tx.nullifier)
-                    .collect();
-                {
-                    let mut pool = self.confirmed_pool.write();
-                    pool.retain(|tx| !finalized_nullifiers.contains(&tx.nullifier));
-                }
-                {
-                    let mut nullifiers = self.confirmed_nullifiers.write();
-                    for n in &finalized_nullifiers {
-                        nullifiers.remove(n);
-                    }
-                }
-            }
-        }
+        // --- PHASE 1: Compute canonical root and persist checkpoint to DB ---
+        // DB persist happens BEFORE in-memory cleanup. If we crash after persist,
+        // state is consistent (tree rebuilt from l2_notes, checkpoint recorded).
+        // If we crash before persist, confirmed_pool is restored from staging (C-3).
 
         // Register new valid root from local tree state
         let local_root = self.epoch_manager.current_root()?;
@@ -1302,6 +1326,65 @@ impl NullifierRouteHandler {
         if atomic_ok {
             if let Err(e) = self.db.confirm_pending_nullifiers() {
                 warn!(height, error = %e, "Failed to clear pending_nullifiers write-ahead log (non-fatal, will be cleared on next checkpoint)");
+            }
+        }
+
+        // --- PHASE 2: Clean up in-memory pools (safe to lose on crash — pools restored from staging) ---
+
+        // Clear cached proposal — height has advanced, next cycle builds a fresh proposal
+        *self.cached_proposal.write() = None;
+
+        // Remove finalized data from in-memory pools.
+        // Since we clone (not drain) in propose_checkpoint(), data remains in the pools
+        // until finalized here. This ensures nothing is lost if a proposal fails quorum.
+        if let Some(block) = proposal {
+            // Remove finalized shield commitments from pending_shields and staging table
+            if !block.shield_commitments.is_empty() {
+                let finalized_indices: Vec<u64> = block
+                    .shield_commitments
+                    .iter()
+                    .map(|sc| sc.note_index)
+                    .collect();
+                let finalized_set: HashSet<u64> =
+                    finalized_indices.iter().copied().collect();
+                self.pending_shields
+                    .write()
+                    .retain(|sc| !finalized_set.contains(&sc.note_index));
+                if let Err(e) = self.db.delete_pending_shields(&finalized_indices) {
+                    warn!(
+                        height,
+                        error = %e,
+                        "Failed to delete finalized shields from staging table (non-fatal)"
+                    );
+                }
+            }
+
+            // Remove finalized transactions from confirmed_pool + staging table
+            if !block.transactions.is_empty() {
+                let finalized_nullifiers: HashSet<[u8; 32]> = block
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.nullifier)
+                    .collect();
+                {
+                    let mut pool = self.confirmed_pool.write();
+                    pool.retain(|tx| !finalized_nullifiers.contains(&tx.nullifier));
+                }
+                {
+                    let mut nullifiers = self.confirmed_nullifiers.write();
+                    for n in &finalized_nullifiers {
+                        nullifiers.remove(n);
+                    }
+                }
+                // Remove from DB staging table
+                let nullifier_vec: Vec<[u8; 32]> = finalized_nullifiers.into_iter().collect();
+                if let Err(e) = self.db.delete_confirmed_pool_txs(&nullifier_vec) {
+                    warn!(
+                        height,
+                        error = %e,
+                        "Failed to delete finalized txs from staging table (non-fatal)"
+                    );
+                }
             }
         }
 
@@ -1409,13 +1492,16 @@ impl NullifierRouteHandler {
             }
         }
 
-        let current_root = self.epoch_manager.current_root()?;
+        // Use checkpoint_base_root (last finalized canonical root) instead of current_root()
+        // which includes pending shields. This gives the requesting node a stable target
+        // to verify against after replaying the checkpoints.
+        let canonical_root = *self.checkpoint_base_root.read();
 
         let response = L2TreeSyncResponse {
             responding_node: self.our_id,
             checkpoints: checkpoint_blocks,
             current_epoch: self.epoch_manager.current_epoch(),
-            commitment_root: current_root,
+            commitment_root: canonical_root,
             has_more,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         };

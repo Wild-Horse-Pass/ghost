@@ -287,10 +287,39 @@ impl EpochManager {
         }
         *self.valid_roots.write() = root_deque;
 
-        // Load latest checkpoint height
+        // Load latest checkpoint height and verify tree integrity
         if let Some(checkpoint) = self.db.get_latest_l2_checkpoint()? {
             *self.current_height.write() = checkpoint.height;
             info!(height = checkpoint.height, "Restored checkpoint height");
+
+            // M-2: Startup integrity check — verify the rebuilt tree's root is consistent
+            // with the latest checkpoint. If they differ, the tree may have phantom notes
+            // or be missing notes. Log an error but don't panic — tree sync will fix it.
+            let tree_root = self.commitment_tree.read()
+                .root()
+                .unwrap_or([0u8; 32]);
+            if tree_root != checkpoint.commitment_root {
+                // Check if the tree root is in the valid_roots window (it may differ from
+                // the checkpoint root if there are pending shields that aren't checkpointed)
+                let in_valid = self.valid_roots.read().iter().any(|r| *r == tree_root);
+                if !in_valid {
+                    warn!(
+                        tree_root = %hex::encode(&tree_root[..8]),
+                        checkpoint_root = %hex::encode(&checkpoint.commitment_root[..8]),
+                        checkpoint_height = checkpoint.height,
+                        "INTEGRITY: Tree root does not match any known valid root after startup rebuild. \
+                         This node will request tree sync from peers to converge."
+                    );
+                } else {
+                    info!(
+                        tree_root = %hex::encode(&tree_root[..8]),
+                        checkpoint_root = %hex::encode(&checkpoint.commitment_root[..8]),
+                        "Tree root differs from checkpoint root but is in valid_roots window (pending shields)"
+                    );
+                }
+            } else {
+                info!("Startup integrity check: tree root matches latest checkpoint");
+            }
         }
 
         Ok(())

@@ -9,6 +9,11 @@ use super::config::{ClusterConfig, NodeInfo};
 pub struct SshController;
 
 impl SshController {
+    /// Run an arbitrary command on a remote node via SSH (public).
+    pub fn run_raw(node: &NodeInfo, cmd: &str) -> Result<String, String> {
+        Self::run(node, cmd)
+    }
+
     /// Run a command on a remote node via SSH.
     fn run(node: &NodeInfo, cmd: &str) -> Result<String, String> {
         let output = Command::new("ssh")
@@ -223,9 +228,18 @@ impl SshController {
         key: &str,
         value: &str,
     ) -> Result<String, String> {
+        // TOML requires string values to be quoted. Booleans (true/false) and
+        // numbers are written bare. Anything else gets double-quoted.
+        let is_bool = value == "true" || value == "false";
+        let is_number = value.parse::<f64>().is_ok();
+        let toml_value = if is_bool || is_number {
+            value.to_string()
+        } else {
+            format!(r#""{}""#, value)
+        };
         println!(
             "  [SSH] Patching {}.{} = {} on {}",
-            section, key, value, node.name
+            section, key, toml_value, node.name
         );
         // Section-aware sed: only modify lines between [section] and the next [
         Self::run(
@@ -235,7 +249,7 @@ impl SshController {
                 section,
                 key,
                 key,
-                value,
+                toml_value,
                 Self::CONFIG_PATH
             ),
         )

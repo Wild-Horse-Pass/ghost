@@ -1302,6 +1302,8 @@ main() {
         phase0_preflight || { overall_result=1; log "Aborting: pre-flight failed"; }
 
         if [[ $overall_result -eq 0 ]]; then
+            log "Waiting 30s between Phase 0 and Phase 1 (rate limit cooldown)..."
+            sleep 30
             phase1_chaos || { overall_result=1; log "Aborting: chaos tests failed"; }
         fi
 

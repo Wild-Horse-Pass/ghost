@@ -1357,6 +1357,13 @@ async fn main() -> Result<()> {
             warn!(error = %e, "Failed to restore pending shields from DB");
         }
 
+        // Restore confirmed pool (ZK-verified transactions awaiting checkpoint).
+        // Without this, transactions verified before the crash would be lost,
+        // causing fund-freeze until the sender resubmits.
+        if let Err(e) = nullifier_handler.restore_confirmed_pool() {
+            warn!(error = %e, "Failed to restore confirmed pool from DB");
+        }
+
         // Set checkpoint base root from latest persisted checkpoint
         if let Ok(Some(cp)) = db.get_latest_l2_checkpoint() {
             nullifier_handler.set_checkpoint_base_root(cp.commitment_root);
@@ -1458,11 +1465,24 @@ async fn main() -> Result<()> {
 
         info!("L2 nullifier route handler registered (verifier initializing in background...)");
 
+        // C-1: Request tree sync on startup after peers connect.
+        // This ensures a restarted node catches up on any checkpoints it missed
+        // while offline, rather than waiting for the next reactive tree sync trigger.
+        let handler_for_startup_sync = Arc::clone(&nullifier_handler);
+        tokio::spawn(async move {
+            // Wait for mesh connections to establish
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            info!("Requesting startup tree sync from peers...");
+            if let Err(e) = handler_for_startup_sync.request_tree_sync() {
+                tracing::warn!(error = %e, "Startup tree sync request failed");
+            }
+        });
+
         // Spawn checkpoint proposal loop (every 10s)
         let handler_for_proposals = Arc::clone(&nullifier_handler);
         tokio::spawn(async move {
-            // Wait for initial setup
-            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            // Wait for initial setup (25s to allow startup tree sync to complete first)
+            tokio::time::sleep(std::time::Duration::from_secs(25)).await;
             info!("L2 checkpoint proposer starting (10s interval)");
 
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
