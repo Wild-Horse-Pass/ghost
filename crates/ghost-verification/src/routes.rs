@@ -1339,6 +1339,7 @@ async fn api_node_status_handler(State(state): State<Arc<VerificationState>>) ->
         "online": health.healthy,
         "node_id": health.node_id,
         "version": health.version,
+        "network": "signet",
         "sync_height": health.block_height,
         "block_height": health.block_height,
         "round_id": health.round_id,
@@ -2213,6 +2214,7 @@ async fn api_l2_tree_state_handler(
     };
 
     let recent_finalizations = db.count_recent_l2_finalizations(100).unwrap_or(0);
+    let active_finalizations = db.count_recent_active_l2_finalizations(100).unwrap_or(0);
 
     let tree_root_hex = hex::encode(info.tree_root);
     let roots_match = tree_root_hex == checkpoint_root;
@@ -2225,6 +2227,7 @@ async fn api_l2_tree_state_handler(
         "checkpoint_tx_count": checkpoint_tx_count,
         "note_count": info.note_count,
         "recent_finalizations": recent_finalizations,
+        "active_finalizations": active_finalizations,
         "roots_match": roots_match
     }))
 }
@@ -3596,6 +3599,7 @@ async fn api_config_ghost_mode_handler(
     let config = state.dashboard_config.read();
     Json(serde_json::json!({
         "enabled": config.ghost_mode,
+        "ghost_mode": config.ghost_mode,
         "rpc_synced": rpc_state.is_some(),
         "message": "Ghost mode configuration"
     }))
@@ -3641,6 +3645,7 @@ async fn api_config_reaper_handler(
     let config = state.dashboard_config.read();
     Json(serde_json::json!({
         "enabled": config.reaper,
+        "mode": if config.reaper { "strict" } else { "disabled" },
         "message": "Reaper mode configuration"
     }))
 }

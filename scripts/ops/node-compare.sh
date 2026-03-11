@@ -131,7 +131,7 @@ collect_node() {
     # Ghost mode from /api/v1/config/ghost_mode
     local ghost_mode
     ghost_mode=$(curl -sf --connect-timeout 3 "$base/api/v1/config/ghost_mode" 2>/dev/null \
-        | jq -r '.ghost_mode // .mode // "?"' 2>/dev/null) || ghost_mode="?"
+        | jq -r 'if .ghost_mode != null then .ghost_mode else "?" end' 2>/dev/null) || ghost_mode="?"
     [[ -z "$ghost_mode" ]] && ghost_mode="?"
     echo "ghost_mode=$ghost_mode" >> "$out"
 

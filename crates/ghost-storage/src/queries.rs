@@ -6832,9 +6832,25 @@ impl Database {
         })
     }
 
-    /// Count recent L2 checkpoints with tx_count > 0 (finalizations)
+    /// Count all recent L2 checkpoints (consensus rounds finalized).
     /// Looks back `lookback` checkpoints from the maximum height.
     pub fn count_recent_l2_finalizations(&self, lookback: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM l2_checkpoints
+                     WHERE height > (SELECT COALESCE(MAX(height), 0) - ?1 FROM l2_checkpoints)",
+                    params![lookback as i64],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u64)
+        })
+    }
+
+    /// Count recent L2 checkpoints with tx_count > 0 (active finalizations with L2 activity).
+    /// Looks back `lookback` checkpoints from the maximum height.
+    pub fn count_recent_active_l2_finalizations(&self, lookback: u64) -> GhostResult<u64> {
         self.with_connection(|conn| {
             let count: i64 = conn
                 .query_row(

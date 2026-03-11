@@ -1426,30 +1426,46 @@ async fn main() -> Result<()> {
                             "attestation_count": nullifiers.len(),
                             "included_tx_ids": nullifiers.iter().map(hex::encode).collect::<Vec<_>>(),
                         });
-                        match client
-                            .post("http://127.0.0.1:8800/api/v1/l2/finalize")
-                            .json(&body)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) if resp.status().is_success() => {
-                                tracing::debug!(height, "Ghost-pay finalization notified");
+                        // Retry up to 3 times with exponential backoff
+                        let mut last_err = String::new();
+                        for attempt in 0..3u32 {
+                            if attempt > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    500 * 2u64.pow(attempt - 1),
+                                ))
+                                .await;
                             }
-                            Ok(resp) => {
-                                tracing::warn!(
-                                    height,
-                                    status = %resp.status(),
-                                    "Ghost-pay finalization returned non-success"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    height,
-                                    error = %e,
-                                    "Failed to notify ghost-pay of finalization"
-                                );
+                            match client
+                                .post("http://127.0.0.1:8800/api/v1/l2/finalize")
+                                .json(&body)
+                                .send()
+                                .await
+                            {
+                                Ok(resp) if resp.status().is_success() => {
+                                    if attempt > 0 {
+                                        tracing::info!(
+                                            height,
+                                            attempt = attempt + 1,
+                                            "Ghost-pay finalization notified (after retry)"
+                                        );
+                                    } else {
+                                        tracing::debug!(height, "Ghost-pay finalization notified");
+                                    }
+                                    return;
+                                }
+                                Ok(resp) => {
+                                    last_err = format!("HTTP {}", resp.status());
+                                }
+                                Err(e) => {
+                                    last_err = e.to_string();
+                                }
                             }
                         }
+                        tracing::error!(
+                            height,
+                            error = %last_err,
+                            "Failed to notify ghost-pay of finalization after 3 attempts"
+                        );
                     });
                 });
             nullifier_handler.set_finalize_fn(finalize_fn);

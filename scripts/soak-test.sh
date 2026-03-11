@@ -907,10 +907,10 @@ phase2_soak() {
         if (( iter % 4 == 0 )); then
             log "  ${BLUE}── Bi-hourly checks ──${RESET}"
 
-            # f. Wraith simulation
+            # f. Wraith simulation (ghost-pay endpoint, not ghost-pool)
             log "  Triggering wraith simulation on VM1..."
             local wraith_resp
-            wraith_resp=$(pool_api 0 "/api/v1/admin/simulate-wraith-session")
+            wraith_resp=$(pay_api 0 "/api/v1/admin/simulate-wraith-session" "POST")
             if [[ -n "$wraith_resp" ]]; then
                 log "    Wraith simulation: ${GREEN}triggered${RESET}"
                 log_event "wraith-sim" "iteration=$iter" "triggered"
@@ -919,10 +919,10 @@ phase2_soak() {
                 log_event "wraith-sim" "iteration=$iter" "no-response"
             fi
 
-            # g. L2 activity simulation
+            # g. L2 activity simulation (ghost-pay endpoint, not ghost-pool)
             log "  Triggering L2 activity simulation on VM1..."
             local l2_resp
-            l2_resp=$(pool_api 0 "/api/v1/admin/simulate-l2-activity")
+            l2_resp=$(pay_api 0 "/api/v1/admin/simulate-l2-activity" "POST")
             if [[ -n "$l2_resp" ]]; then
                 log_event "l2-activity-sim" "iteration=$iter" "triggered"
             else
@@ -932,7 +932,7 @@ phase2_soak() {
             # h. Fee pipeline verification
             log "  Verifying fee pipeline on VM1..."
             local fee_resp
-            fee_resp=$(pool_api 0 "/api/v1/admin/verify-fee-pipeline")
+            fee_resp=$(pay_api 0 "/api/v1/admin/verify-fee-pipeline" "POST")
             if [[ -n "$fee_resp" ]]; then
                 log_event "fee-pipeline" "iteration=$iter" "ok"
             else
