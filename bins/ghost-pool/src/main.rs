@@ -118,12 +118,8 @@ impl CachedGspHandler {
         // Background task polls GSP info every 30s
         tokio::spawn(async move {
             let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5));
-            // C-04: Only accept invalid certs for loopback addresses (self-signed localhost)
-            let client = if is_loopback {
-                client.danger_accept_invalid_certs(true)
-            } else {
-                client
-            };
+            // H-4: No TLS cert bypass — loopback should use plain HTTP, not HTTPS with invalid certs
+            let client = client;
             let client = client.build().unwrap_or_default();
             loop {
                 match client.get(format!("{}/api/v1/info", gsp_url)).send().await {
@@ -2859,6 +2855,7 @@ async fn main() -> Result<()> {
         .with_glyph_registered_relay(glyph_registered_relay_fn);
 
     // Configure internal API authentication (AUTH4-1 security fix)
+    let is_mainnet_auth = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
     if let Some(ref secret_hex) = config.network.internal_api_secret {
         match ghost_verification::InternalAuth::from_hex(secret_hex) {
             Ok(auth) => {
@@ -2866,12 +2863,18 @@ async fn main() -> Result<()> {
                 verification_state = verification_state.with_internal_auth(auth);
             }
             Err(e) => {
-                error!(
-                    "Invalid internal_api_secret: {} - internal endpoints will be UNPROTECTED",
-                    e
-                );
+                // H-2: Malformed secret is always fatal — operator intended to configure auth
+                return Err(anyhow::anyhow!(
+                    "Invalid internal_api_secret: {} — fix or remove the config entry", e
+                ));
             }
         }
+    } else if is_mainnet_auth {
+        // C-1: Mainnet MUST have internal API authentication
+        return Err(anyhow::anyhow!(
+            "FATAL: network.internal_api_secret is required on mainnet. \
+             Generate one with: openssl rand -hex 32"
+        ));
     } else {
         warn!(
             "AUTH4-1 WARNING: network.internal_api_secret not configured! \

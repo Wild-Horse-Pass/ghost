@@ -117,7 +117,7 @@ struct Args {
     rpc_password: Option<String>,
 
     /// Network (mainnet, testnet, signet, regtest)
-    #[arg(long, default_value = "regtest")]
+    #[arg(long, default_value = "signet")]
     network: String,
 
     /// Log level
@@ -4445,7 +4445,11 @@ async fn run_session_coordinator(state: Arc<AppState>) {
 
                 "confirming_phase1" => {
                     // Check if Phase 1 is confirmed on-chain
-                    const REQUIRED_CONFIRMATIONS: u32 = 1; // 1 confirmation for mixing
+                    // C-3: 3 confirmations on mainnet for mixing security, 1 elsewhere
+                    let required_confirmations: u32 = match state.network {
+                        Network::Bitcoin => 3,
+                        _ => 1,
+                    };
 
                     // Get phase 1 txid
                     let phase1_txid = {
@@ -4461,7 +4465,7 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                     .get("confirmations")
                                     .and_then(|v| v.as_i64())
                                     .unwrap_or(0);
-                                if confirmations >= REQUIRED_CONFIRMATIONS as i64 {
+                                if confirmations >= required_confirmations as i64 {
                                     // Get the block height where it was confirmed
                                     // H-21: Safe block height conversion with bounds checking
                                     let raw_height = tx_info
@@ -4504,7 +4508,7 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                         session_id = %session_id,
                                         txid = %txid,
                                         confirmations = confirmations,
-                                        required = REQUIRED_CONFIRMATIONS,
+                                        required = required_confirmations,
                                         "Waiting for more confirmations"
                                     );
                                 }
@@ -4661,7 +4665,11 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                         };
 
                         if let Some(txid) = phase2_txid {
-                            const REQUIRED_CONFIRMATIONS: u32 = 1;
+                            // C-3: 3 confirmations on mainnet for mixing security, 1 elsewhere
+                            let required_confirmations: u32 = match state.network {
+                                Network::Bitcoin => 3,
+                                _ => 1,
+                            };
 
                             match state.rpc.get_raw_transaction(&txid.to_string(), true).await {
                                 Ok(tx_info) => {
@@ -4670,7 +4678,7 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                         .and_then(|v| v.as_i64())
                                         .unwrap_or(0);
 
-                                    if confirmations >= REQUIRED_CONFIRMATIONS as i64 {
+                                    if confirmations >= required_confirmations as i64 {
                                         // H-21: Safe block height conversion with bounds checking
                                         let raw_height = tx_info
                                             .get("blockheight")
@@ -4706,7 +4714,7 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                             session_id = %session_id,
                                             txid = %txid,
                                             confirmations = confirmations,
-                                            required = REQUIRED_CONFIRMATIONS,
+                                            required = required_confirmations,
                                             "Waiting for Phase 2 confirmations"
                                         );
                                     }
@@ -5226,12 +5234,16 @@ async fn simulate_l2_activity(
     // Step 2: Shield a note (100,000 sats with random blinding)
     let spending_key: [u8; 32] = {
         let mut buf = [0u8; 32];
-        getrandom::getrandom(&mut buf).unwrap();
+        if getrandom::getrandom(&mut buf).is_err() {
+            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+        }
         buf
     };
     let blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
-        getrandom::getrandom(&mut buf).unwrap();
+        if getrandom::getrandom(&mut buf).is_err() {
+            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+        }
         buf
     };
     let note_value: u64 = 100_000;
@@ -5317,12 +5329,16 @@ async fn simulate_l2_activity(
     let transfer_amount: u64 = 50_000;
     let change_blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
-        getrandom::getrandom(&mut buf).unwrap();
+        if getrandom::getrandom(&mut buf).is_err() {
+            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+        }
         buf
     };
     let recipient_blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
-        getrandom::getrandom(&mut buf).unwrap();
+        if getrandom::getrandom(&mut buf).is_err() {
+            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+        }
         buf
     };
 
@@ -5837,7 +5853,7 @@ async fn run_wraith_simulation(
             // Generate a valid x-only pubkey as the message (used as intermediate output key)
             let secp = secp256k1::Secp256k1::new();
             let mut key_bytes = [0u8; 32];
-            getrandom::getrandom(&mut key_bytes).unwrap();
+            getrandom::getrandom(&mut key_bytes).map_err(|e| format!("getrandom failed: {e}"))?;
             // Ensure valid secret key (non-zero, within curve order)
             key_bytes[0] = key_bytes[0].max(1);
             let mut sk = secp256k1::SecretKey::from_slice(&key_bytes)

@@ -147,7 +147,7 @@ struct Cli {
     data_dir: Option<PathBuf>,
 
     /// Network (mainnet, testnet, signet, regtest)
-    #[arg(long, default_value = "regtest")]
+    #[arg(long, default_value = "signet")]
     network: String,
 
     /// GSP URL to connect to

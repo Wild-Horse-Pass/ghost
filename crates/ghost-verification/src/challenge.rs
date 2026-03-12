@@ -833,10 +833,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_nonce_cache_cleanup() {
-        // Use TTL of 1 second and wait for it to expire
-        // Note: timestamps are in seconds, so we need to wait > TTL seconds
-        // Use 3 second wait to be safe under parallel test load and timing edge cases
-        let cache = NonceCache::with_ttl(1);
+        // Use TTL of 2 seconds and wait well past expiry.
+        // Timestamps are second-granularity so a nonce issued late in a second
+        // can survive up to (TTL + 1) wall-clock seconds. 5s sleep gives 2s margin.
+        let cache = NonceCache::with_ttl(2);
 
         // Generate a nonce
         let nonce = cache.generate_nonce().unwrap();
@@ -844,9 +844,8 @@ mod tests {
         // Verify it's valid initially
         assert!(cache.is_valid(&nonce));
 
-        // Wait for expiry - use 3 seconds to handle edge cases where nonce is
-        // generated late in a second boundary (1s TTL + 2s margin)
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        // Wait for expiry
+        std::thread::sleep(std::time::Duration::from_secs(5));
 
         // Should be expired
         assert!(!cache.is_valid(&nonce));

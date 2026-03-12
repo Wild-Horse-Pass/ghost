@@ -74,7 +74,7 @@ struct Args {
     data_dir: Option<PathBuf>,
 
     /// Network (mainnet, testnet, signet, regtest)
-    #[arg(long, global = true, default_value = "regtest")]
+    #[arg(long, global = true, default_value = "signet")]
     network: String,
 
     /// GSP URL to connect to
