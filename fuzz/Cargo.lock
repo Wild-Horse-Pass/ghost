@@ -1720,13 +1720,18 @@ name = "ghost-fuzz"
 version = "0.1.0"
 dependencies = [
  "arbitrary",
+ "bitcoin",
+ "chrono",
  "ghost-common",
  "ghost-consensus",
  "ghost-gsp-proto",
+ "ghost-locks",
  "ghost-pool",
+ "ghost-reconciliation",
  "ghost-zkp",
  "libfuzzer-sys",
  "serde_json",
+ "wraith-protocol",
 ]
 
 [[package]]
@@ -5209,6 +5214,27 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "wraith-protocol"
+version = "1.8.0"
+dependencies = [
+ "bitcoin",
+ "getrandom 0.2.17",
+ "ghost-common",
+ "hex",
+ "parking_lot",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]

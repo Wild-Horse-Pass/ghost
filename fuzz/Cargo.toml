@@ -39,7 +39,12 @@ ghost-consensus = { path = "../crates/ghost-consensus" }
 ghost-common = { path = "../crates/ghost-common" }
 ghost-zkp = { path = "../crates/ghost-zkp" }
 ghost-gsp-proto = { path = "../crates/ghost-gsp-proto" }
+ghost-reconciliation = { path = "../crates/ghost-reconciliation" }
+ghost-locks = { path = "../crates/ghost-locks" }
+wraith-protocol = { path = "../crates/wraith-protocol" }
 serde_json = "1"
+chrono = "0.4"
+bitcoin = { version = "0.32", features = ["serde"] }
 
 [workspace]
 members = ["."]
@@ -90,6 +95,34 @@ bench = false
 [[bin]]
 name = "fuzz_checkpoint_voting"
 path = "fuzz_targets/fuzz_checkpoint_voting.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_p2p_payloads"
+path = "fuzz_targets/fuzz_p2p_payloads.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fee_distribution"
+path = "fuzz_targets/fuzz_fee_distribution.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ghost_locks"
+path = "fuzz_targets/fuzz_ghost_locks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_wraith_blind"
+path = "fuzz_targets/fuzz_wraith_blind.rs"
 test = false
 doc = false
 bench = false

@@ -194,17 +194,22 @@ pub fn distribute_to_nodes(
         return Vec::new();
     }
 
-    let total_shares: i32 = nodes.iter().map(|(_, _, s)| *s).sum();
+    // Filter out nodes with non-positive shares (negative shares would cause
+    // overflow when cast to u128 for weighted distribution arithmetic)
+    let qualified: Vec<&(String, String, i32)> = nodes.iter().filter(|(_, _, s)| *s > 0).collect();
+
+    // Use i64 to avoid overflow when summing i32 shares
+    let total_shares: i64 = qualified.iter().map(|(_, _, s)| *s as i64).sum();
     if total_shares <= 0 {
         return Vec::new();
     }
 
     // Weighted distribution with exact remainder handling
-    let mut payouts: Vec<(String, String, u64)> = Vec::with_capacity(nodes.len());
+    let mut payouts: Vec<(String, String, u64)> = Vec::with_capacity(qualified.len());
     let mut distributed = 0u64;
 
-    for (i, (node_id, address, shares)) in nodes.iter().enumerate() {
-        let payout = if i == nodes.len() - 1 {
+    for (i, (node_id, address, shares)) in qualified.iter().enumerate() {
+        let payout = if i == qualified.len() - 1 {
             // Last node gets the remainder (prevents rounding loss)
             pool.saturating_sub(distributed)
         } else {
