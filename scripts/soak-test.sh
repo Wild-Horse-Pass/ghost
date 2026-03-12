@@ -733,6 +733,349 @@ inject_shields() {
     fi
 }
 
+# ── Ghost-Pay Authenticated API ──────────────────────────────────
+#
+# Ghost-pay uses a different HMAC scheme from ghost-pool:
+#   HMAC-SHA256(secret_string_bytes, timestamp_string || body_bytes)
+# The secret is used as raw string (not hex-decoded).
+
+pay_hmac_sign() {
+    # Compute HMAC-SHA256 for ghost-pay authenticated endpoints.
+    # $1 = secret (raw string, e.g. hex chars used as-is)
+    # $2 = unix timestamp (decimal string)
+    # $3 = request body
+    local secret="$1" timestamp="$2" body="$3"
+    echo -n "${timestamp}${body}" | openssl dgst -sha256 -hmac "$secret" -binary | xxd -p -c 256
+}
+
+pay_api_auth() {
+    # Make an authenticated POST to a ghost-pay endpoint.
+    # $1 = vm_idx, $2 = path, $3 = JSON body
+    local vm_idx="$1" path="$2" body="$3"
+    local secret="${VM_PAY_SECRETS[$vm_idx]}"
+    local timestamp
+    timestamp=$(date +%s)
+    local sig
+    sig=$(pay_hmac_sign "$secret" "$timestamp" "$body")
+
+    # Try direct curl first (use -s not -sf so we get error JSON back)
+    local result
+    result=$(curl -s --connect-timeout 5 --max-time 15 \
+        -X POST -H 'Content-Type: application/json' \
+        -H "X-Ghost-Signature: $sig" \
+        -H "X-Ghost-Timestamp: $timestamp" \
+        -d "$body" \
+        "http://${VM_IPS[$vm_idx]}:${PAY_PORT}${path}" 2>/dev/null)
+
+    # SSH fallback: write body to a temp file on the remote to avoid shell escaping issues
+    if [[ -z "$result" ]]; then
+        timestamp=$(date +%s)
+        sig=$(pay_hmac_sign "$secret" "$timestamp" "$body")
+        local remote_tmp="/tmp/ghost-soak-body-$$.json"
+        echo -n "$body" | ssh $SSH_OPTS "root@${VM_IPS[$vm_idx]}" "cat > $remote_tmp" 2>/dev/null
+        result=$(ssh_cmd "$vm_idx" "curl -sf -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'X-Ghost-Signature: $sig' \
+            -H 'X-Ghost-Timestamp: $timestamp' \
+            -d @$remote_tmp \
+            http://localhost:${PAY_PORT}${path}; rm -f $remote_tmp" 2>/dev/null)
+    fi
+    echo "$result"
+}
+
+# ── L2 Transaction Testing ──────────────────────────────────────
+#
+# Real L2 operations via ghost-pay authenticated endpoints:
+# 1. Shield balance — creates confidential note (no ZK proof needed)
+# 2. L2 payment — instant off-chain transfer
+# 3. Admin simulation — triggers full confidential transfer + wraith cycles
+#
+# Note: Confidential transfer/consolidate/unshield require valid Groth16
+# proofs that can't be generated from bash. We use admin simulation
+# endpoints (localhost-only) to exercise those full code paths.
+
+l2_shield_balance() {
+    # Shield a small balance on a specific VM.
+    # Creates a real confidential commitment that flows through the checkpoint pipeline.
+    local iteration="$1" vm_idx="$2"
+    local amount=$((1000 + RANDOM % 9000))  # 1000-9999 sats
+
+    # Generate BLS12-381 field-safe 32-byte values (< scalar field modulus ~2^255).
+    # blstrs treats bytes as LITTLE-ENDIAN, so zero the LAST 8 bytes to stay under modulus.
+    local blinding_hex owner_pubkey
+    blinding_hex="$(openssl rand -hex 24)0000000000000000"
+    owner_pubkey="$(openssl rand -hex 24)0000000000000000"
+
+    local body
+    body=$(printf '{"amount_sats":%d,"blinding_hex":"%s","owner_pubkey":"%s"}' \
+        "$amount" "$blinding_hex" "$owner_pubkey")
+
+    local result
+    result=$(pay_api_auth "$vm_idx" "/api/v1/confidential/shield" "$body")
+
+    if [[ -n "$result" ]] && ! echo "$result" | jq -e '.error' >/dev/null 2>&1; then
+        log "    Shield $amount sats on $(vm_label $vm_idx): ${GREEN}OK${RESET}"
+        log_event "l2-shield" "iteration=$iteration,vm=${VM_NAMES[$vm_idx]},amount=$amount" "ok"
+        return 0
+    else
+        local err
+        err=$(echo "$result" | jq -r '.error // .message // empty' 2>/dev/null)
+        log "    Shield on $(vm_label $vm_idx): ${YELLOW}${err:-no response}${RESET}"
+        log_event "l2-shield" "iteration=$iteration,vm=${VM_NAMES[$vm_idx]}" "fail:${err:-timeout}"
+        return 1
+    fi
+}
+
+l2_send_payment() {
+    # Send an L2 instant payment from one VM to a random Ghost ID.
+    local iteration="$1" vm_idx="$2"
+    local amount=$((546 + RANDOM % 5000))  # Above dust threshold
+
+    # Use a deterministic recipient ghost ID (won't resolve, but exercises the code path)
+    local recipient="ghost_soak_test_$(printf '%04d' "$iteration")"
+
+    local body
+    body=$(printf '{"recipient":"%s","amount_sats":%d,"memo":"soak-iter-%d"}' \
+        "$recipient" "$amount" "$iteration")
+
+    local result
+    result=$(pay_api_auth "$vm_idx" "/api/v1/payments/send" "$body")
+
+    if [[ -n "$result" ]]; then
+        local status
+        status=$(echo "$result" | jq -r '.status // .error // empty' 2>/dev/null)
+        log "    L2 payment $amount sats via $(vm_label $vm_idx): ${status:-sent}"
+        log_event "l2-payment" "iteration=$iteration,vm=${VM_NAMES[$vm_idx]},amount=$amount" "${status:-ok}"
+    else
+        log "    L2 payment via $(vm_label $vm_idx): ${YELLOW}no response${RESET}"
+        log_event "l2-payment" "iteration=$iteration,vm=${VM_NAMES[$vm_idx]}" "no-response"
+    fi
+}
+
+l2_simulate_full_cycle() {
+    # Trigger admin simulation endpoints via SSH (localhost-only).
+    # These exercise the full confidential transfer + wraith pipelines
+    # including ZK proof verification.
+    local iteration="$1" vm_idx="$2"
+
+    # Simulate L2 activity (confidential transfers, consolidations)
+    # Admin endpoints are localhost-only, must use SSH
+    local l2_resp
+    l2_resp=$(ssh_cmd "$vm_idx" "curl -sf --max-time 30 -X POST http://localhost:${PAY_PORT}/api/v1/admin/simulate-l2-activity" 2>/dev/null)
+    if [[ -n "$l2_resp" ]]; then
+        log "    L2 simulation on $(vm_label $vm_idx): ${GREEN}triggered${RESET}"
+        log_event "l2-simulate" "iteration=$iteration,vm=${VM_NAMES[$vm_idx]}" "ok"
+    else
+        log "    L2 simulation on $(vm_label $vm_idx): ${YELLOW}no response${RESET}"
+        log_event "l2-simulate" "iteration=$iteration,vm=${VM_NAMES[$vm_idx]}" "fail"
+    fi
+}
+
+run_l2_transaction_cycle() {
+    # Full L2 transaction test cycle: shield → payment → simulate → verify
+    local iteration="$1"
+    log "  ${BLUE}── L2 Transaction Cycle ──${RESET}"
+
+    # Pick a random VM for this iteration
+    local vm_idx=$((RANDOM % VM_COUNT))
+
+    # 1. Shield balance on the selected VM
+    l2_shield_balance "$iteration" "$vm_idx"
+
+    # 2. Send L2 payment from a different VM
+    local pay_vm=$(( (vm_idx + 1) % VM_COUNT ))
+    l2_send_payment "$iteration" "$pay_vm"
+
+    # 3. Every 3rd iteration, trigger full simulation (expensive)
+    if (( iteration % 3 == 0 )); then
+        l2_simulate_full_cycle "$iteration" "$vm_idx"
+    fi
+
+    # 4. Check confidential note counts across VMs (try direct, SSH fallback)
+    local note_counts=()
+    for i in $(seq 0 $((VM_COUNT - 1))); do
+        local tree_json notes
+        tree_json=$(curl -sf --connect-timeout 5 --max-time 10 \
+            "http://${VM_IPS[$i]}:${PAY_PORT}/api/v1/confidential/tree" 2>/dev/null)
+        if [[ -z "$tree_json" ]]; then
+            tree_json=$(ssh_cmd "$i" "curl -sf http://localhost:${PAY_PORT}/api/v1/confidential/tree" 2>/dev/null)
+        fi
+        notes=$(echo "$tree_json" | jq -r '.note_count // "?"' 2>/dev/null)
+        note_counts+=("${notes:-?}")
+    done
+    log "    Confidential note counts: ${note_counts[*]}"
+    log_event "l2-notes" "iteration=$iteration,counts=${note_counts[*]}" "ok"
+}
+
+# ── Edge Case: Crash Recovery Testing ────────────────────────────
+#
+# Tests kill -9 (SIGKILL) during critical operations, then verifies
+# crash recovery via WAL tables (confirmed_pool_staging, pending_l2_shields,
+# pending_nullifiers).
+
+inject_kill9_ghost_pool() {
+    # SIGKILL ghost-pool mid-operation, verify crash recovery
+    local vm_idx="$1" label="$2"
+    log "${YELLOW}  INJECT: $label — SIGKILL ghost-pool on $(vm_label $vm_idx)${RESET}"
+    log_event "fault-inject" "$label" "start"
+
+    # Record pre-crash state
+    local pre_notes
+    pre_notes=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM l2_notes;'" 2>/dev/null)
+    local pre_staging
+    pre_staging=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM confirmed_pool_staging;'" 2>/dev/null)
+
+    # SIGKILL (not SIGTERM — no graceful shutdown)
+    ssh_cmd "$vm_idx" "kill -9 \$(pgrep -f '/opt/ghost/bin/ghost-pool') 2>/dev/null; true"
+    sleep 2
+
+    # Verify it's dead
+    local pid_check
+    pid_check=$(ssh_cmd "$vm_idx" "pgrep -f '/opt/ghost/bin/ghost-pool'" 2>/dev/null)
+    if [[ -n "$pid_check" ]]; then
+        log "  ${RED}Process survived SIGKILL!${RESET}"
+    fi
+
+    # Restart via systemd
+    ssh_cmd "$vm_idx" "systemctl start ghost-pool"
+    sleep 15  # allow recovery + tree rebuild
+
+    # Verify recovery
+    local post_notes
+    post_notes=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM l2_notes;'" 2>/dev/null)
+    local post_staging
+    post_staging=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM confirmed_pool_staging;'" 2>/dev/null)
+    local health
+    health=$(pool_api "$vm_idx" "/health" 2>/dev/null)
+
+    if [[ -n "$health" ]]; then
+        log "  ${GREEN}RECOVERED${RESET}: ghost-pool on $(vm_label $vm_idx) (notes: $pre_notes→$post_notes, staging: $pre_staging→$post_staging)"
+        log_event "fault-inject" "$label" "recovered,notes_before=$pre_notes,notes_after=$post_notes"
+    else
+        log "  ${RED}NOT RECOVERED${RESET}: ghost-pool on $(vm_label $vm_idx)"
+        log_event "fault-inject" "$label" "not-recovered"
+    fi
+
+    # Verify tree integrity after crash recovery
+    local tree_state
+    tree_state=$(pool_api "$vm_idx" "/api/v1/l2/tree-state" 2>/dev/null)
+    if [[ -n "$tree_state" ]]; then
+        local roots_match
+        roots_match=$(echo "$tree_state" | jq -r '.roots_match' 2>/dev/null)
+        if [[ "$roots_match" == "true" ]]; then
+            log "  ${GREEN}Tree integrity OK${RESET} after crash recovery"
+        else
+            log "  ${YELLOW}Tree roots diverged after crash (pending shields expected)${RESET}"
+        fi
+    fi
+}
+
+inject_kill9_ghost_pay() {
+    # SIGKILL ghost-pay mid-operation, verify crash recovery
+    local vm_idx="$1" label="$2"
+    log "${YELLOW}  INJECT: $label — SIGKILL ghost-pay on $(vm_label $vm_idx)${RESET}"
+    log_event "fault-inject" "$label" "start"
+
+    # Record pre-crash state
+    local pre_notes
+    pre_notes=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost-pay/ghost-pay.db 'SELECT COUNT(*) FROM confidential_notes;'" 2>/dev/null)
+
+    # SIGKILL
+    ssh_cmd "$vm_idx" "kill -9 \$(pgrep -f '/opt/ghost/bin/ghost-pay') 2>/dev/null; true"
+    sleep 2
+
+    # Restart
+    ssh_cmd "$vm_idx" "systemctl start ghost-pay"
+    sleep 10
+
+    # Verify recovery
+    local post_notes
+    post_notes=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost-pay/ghost-pay.db 'SELECT COUNT(*) FROM confidential_notes;'" 2>/dev/null)
+    local health
+    health=$(ssh_cmd "$vm_idx" "curl -sf http://localhost:${PAY_PORT}/health" 2>/dev/null)
+
+    if [[ -n "$health" ]]; then
+        log "  ${GREEN}RECOVERED${RESET}: ghost-pay on $(vm_label $vm_idx) (notes: $pre_notes→$post_notes)"
+        log_event "fault-inject" "$label" "recovered"
+    else
+        log "  ${RED}NOT RECOVERED${RESET}: ghost-pay on $(vm_label $vm_idx)"
+        log_event "fault-inject" "$label" "not-recovered"
+    fi
+}
+
+inject_kill9_mid_finalization() {
+    # Wait for a checkpoint finalization, then SIGKILL ghost-pool mid-operation.
+    # This is the most dangerous edge case: interrupted atomic persist.
+    local vm_idx="$1" label="$2"
+    log "${YELLOW}  INJECT: $label — waiting for finalization then SIGKILL on $(vm_label $vm_idx)${RESET}"
+    log_event "fault-inject" "$label" "start"
+
+    # Watch for "finalize" in logs, then immediately kill
+    # Timeout after 120s if no finalization occurs (checkpoints are ~60s apart)
+    ssh_cmd "$vm_idx" "
+        timeout 120 bash -c '
+            journalctl -u ghost-pool -f --since now 2>/dev/null | while read -r line; do
+                if echo \"\$line\" | grep -qi \"finalize_checkpoint\\|checkpoint finalized\"; then
+                    kill -9 \$(pgrep -f /opt/ghost/bin/ghost-pool) 2>/dev/null
+                    break
+                fi
+            done
+        '
+    " 2>/dev/null
+
+    sleep 3
+
+    # Restart and verify
+    ssh_cmd "$vm_idx" "systemctl start ghost-pool"
+    sleep 20  # extra time for crash recovery from mid-finalization
+
+    # Check crash recovery tables
+    local staging_count pending_shields pending_nullifiers
+    staging_count=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM confirmed_pool_staging;'" 2>/dev/null)
+    pending_shields=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM pending_l2_shields;'" 2>/dev/null)
+    pending_nullifiers=$(ssh_cmd "$vm_idx" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM pending_nullifiers;'" 2>/dev/null)
+
+    local health
+    health=$(pool_api "$vm_idx" "/health" 2>/dev/null)
+
+    if [[ -n "$health" ]]; then
+        log "  ${GREEN}RECOVERED${RESET}: ghost-pool after mid-finalization kill"
+        log "    staging=$staging_count, pending_shields=$pending_shields, pending_nullifiers=$pending_nullifiers"
+        log_event "fault-inject" "$label" "recovered,staging=$staging_count,shields=$pending_shields,nullifiers=$pending_nullifiers"
+    else
+        log "  ${RED}NOT RECOVERED${RESET}: ghost-pool after mid-finalization kill on $(vm_label $vm_idx)"
+        log_event "fault-inject" "$label" "not-recovered"
+    fi
+
+    # Verify tree convergence across all VMs after 30s
+    sleep 30
+    check_tree_consistency 0
+}
+
+verify_crash_recovery_tables() {
+    # Post-soak check: all crash recovery tables should be clean
+    local iteration="$1"
+    log "  Iteration $iteration: Checking crash recovery table cleanliness..."
+    local any_stale=false
+    for i in $(seq 0 $((VM_COUNT - 1))); do
+        local staging pending_shields pending_null
+        staging=$(ssh_cmd "$i" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM confirmed_pool_staging;'" 2>/dev/null)
+        pending_shields=$(ssh_cmd "$i" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM pending_l2_shields;'" 2>/dev/null)
+        pending_null=$(ssh_cmd "$i" "sqlite3 /home/ghost/.ghost/ghost.db \"SELECT COUNT(*) FROM pending_nullifiers WHERE created_at < datetime('now', '-10 minutes');\"" 2>/dev/null)
+
+        if [[ "${staging:-0}" -gt 0 || "${pending_shields:-0}" -gt 0 || "${pending_null:-0}" -gt 0 ]]; then
+            log "    ${YELLOW}$(vm_label $i): staging=$staging, pending_shields=$pending_shields, stale_nullifiers=$pending_null${RESET}"
+            any_stale=true
+        fi
+    done
+    if ! $any_stale; then
+        log "    All crash recovery tables clean"
+        log_event "crash-recovery-tables" "iteration=$iteration" "clean"
+    else
+        log_event "crash-recovery-tables" "iteration=$iteration" "stale"
+    fi
+}
+
 # ── Failure Injection ────────────────────────────────────────────────
 
 inject_kill_service() {
@@ -867,14 +1210,21 @@ phase2_soak() {
     log "Logs: $LOG_DIR"
 
     # Pre-compute failure injection schedule (elapsed seconds from start)
+    local inject_hour_1=$((1 * 3600))
     local inject_hour_2=$((2 * 3600))
+    local inject_hour_4=$((4 * 3600))
     local inject_hour_5=$((5 * 3600))
+    local inject_hour_7=$((7 * 3600))
     local inject_hour_8=$((8 * 3600))
+    local inject_hour_10=$((10 * 3600))
     local inject_hour_11=$((11 * 3600))
+    local inject_hour_13=$((13 * 3600))
     local inject_hour_14=$((14 * 3600))
+    local inject_hour_16=$((16 * 3600))
     local inject_hour_17=$((17 * 3600))
-    local injected_2=false injected_5=false injected_8=false
-    local injected_11=false injected_14=false injected_17=false
+    local injected_1=false injected_2=false injected_4=false injected_5=false
+    local injected_7=false injected_8=false injected_10=false injected_11=false
+    local injected_13=false injected_14=false injected_16=false injected_17=false
 
     for iter in $(seq 1 "$total_iterations"); do
         local elapsed=$(( $(date +%s) - start_epoch ))
@@ -894,20 +1244,23 @@ phase2_soak() {
         # d. Dashboard endpoint sweep
         run_dashboard_test "$iter"
 
-        # e. L2 transaction test
+        # e. L2 endpoint availability
         run_l2_test "$iter"
 
         # f. Shield injection (1 per iteration, sent to all VMs → note count grows)
         inject_shields "$iter" 1
 
-        # g. Commitment tree consistency
+        # g. L2 Transaction Cycle (shield + payment + simulation via ghost-pay)
+        run_l2_transaction_cycle "$iter"
+
+        # h. Commitment tree consistency
         check_tree_consistency "$iter"
 
         # Every 2 hours (every 4th iteration at 30-min intervals)
         if (( iter % 4 == 0 )); then
             log "  ${BLUE}── Bi-hourly checks ──${RESET}"
 
-            # f. Wraith simulation (ghost-pay endpoint, not ghost-pool)
+            # Wraith simulation (ghost-pay endpoint, not ghost-pool)
             log "  Triggering wraith simulation on VM1..."
             local wraith_resp
             wraith_resp=$(pay_api 0 "/api/v1/admin/simulate-wraith-session" "POST")
@@ -919,7 +1272,7 @@ phase2_soak() {
                 log_event "wraith-sim" "iteration=$iter" "no-response"
             fi
 
-            # g. L2 activity simulation (ghost-pay endpoint, not ghost-pool)
+            # L2 activity simulation (ghost-pay endpoint, not ghost-pool)
             log "  Triggering L2 activity simulation on VM1..."
             local l2_resp
             l2_resp=$(pay_api 0 "/api/v1/admin/simulate-l2-activity" "POST")
@@ -929,7 +1282,7 @@ phase2_soak() {
                 log_event "l2-activity-sim" "iteration=$iter" "no-response"
             fi
 
-            # h. Fee pipeline verification
+            # Fee pipeline verification
             log "  Verifying fee pipeline on VM1..."
             local fee_resp
             fee_resp=$(pay_api 0 "/api/v1/admin/verify-fee-pipeline" "POST")
@@ -939,45 +1292,98 @@ phase2_soak() {
                 log_event "fee-pipeline" "iteration=$iter" "no-response"
             fi
 
-            # i. L2 epoch fee consistency
+            # L2 epoch fee consistency
             check_l2_consistency "$iter"
 
-            # j. Stale nullifiers
+            # Crash recovery table cleanliness
+            verify_crash_recovery_tables "$iter"
+
+            # Stale nullifiers
             check_stale_nullifiers "$iter"
         fi
 
         # ── Failure injection schedule ───────────────────────────
+        #
+        # Interleaves graceful kills, SIGKILL crashes, mid-finalization kills,
+        # network partitions, and rolling restarts. L2 transaction cycles
+        # continue between injections to verify convergence under stress.
         elapsed=$(( $(date +%s) - start_epoch ))
 
+        # Hour 1: SIGKILL ghost-pay on VM2 (crash recovery test)
+        if ! $injected_1 && (( elapsed >= inject_hour_1 )); then
+            injected_1=true
+            inject_kill9_ghost_pay 1 "Hour-1: VM2 ghost-pay SIGKILL"
+        fi
+
+        # Hour 2: Graceful kill ghost-pool on VM3 for 5 min
         if ! $injected_2 && (( elapsed >= inject_hour_2 )); then
             injected_2=true
             inject_kill_service 2 "ghost-pool" 300 "Hour-2: VM3 ghost-pool kill 5min"
         fi
 
+        # Hour 4: SIGKILL ghost-pool on VM1 mid-finalization (most dangerous edge case)
+        if ! $injected_4 && (( elapsed >= inject_hour_4 )); then
+            injected_4=true
+            inject_kill9_mid_finalization 0 "Hour-4: VM1 SIGKILL mid-finalization"
+        fi
+
+        # Hour 5: Graceful kill ghost-pay on VM2 for 10 min
         if ! $injected_5 && (( elapsed >= inject_hour_5 )); then
             injected_5=true
             inject_kill_service 1 "ghost-pay" 600 "Hour-5: VM2 ghost-pay kill 10min"
         fi
 
+        # Hour 7: SIGKILL ghost-pool on VM4 (crash recovery without mid-finalization)
+        if ! $injected_7 && (( elapsed >= inject_hour_7 )); then
+            injected_7=true
+            inject_kill9_ghost_pool 3 "Hour-7: VM4 ghost-pool SIGKILL"
+        fi
+
+        # Hour 8: Network partition VM4 for 5 min
         if ! $injected_8 && (( elapsed >= inject_hour_8 )); then
             injected_8=true
             inject_network_partition 3 300 "Hour-8: VM4 network partition 5min"
         fi
 
+        # Hour 10: SIGKILL ghost-pay on VM3 while L2 shield in flight
+        if ! $injected_10 && (( elapsed >= inject_hour_10 )); then
+            injected_10=true
+            log "${YELLOW}  INJECT: Hour-10 — shield + SIGKILL ghost-pay on VM3${RESET}"
+            l2_shield_balance "$iter" 2 &
+            sleep 1
+            inject_kill9_ghost_pay 2 "Hour-10: VM3 ghost-pay SIGKILL mid-shield"
+        fi
+
+        # Hour 11: Kill VM3 mid-wraith session
         if ! $injected_11 && (( elapsed >= inject_hour_11 )); then
             injected_11=true
-            # Kill VM3 mid-wraith
             log "${YELLOW}  INJECT: Hour-11 — triggering wraith then killing VM3 mid-session${RESET}"
             pool_api 0 "/api/v1/admin/simulate-wraith-session" &
             sleep 2
             inject_kill_service 2 "ghost-pool" 60 "Hour-11: VM3 kill mid-wraith"
         fi
 
+        # Hour 13: SIGKILL ghost-pool mid-finalization on VM3 (second mid-finalization test)
+        if ! $injected_13 && (( elapsed >= inject_hour_13 )); then
+            injected_13=true
+            inject_kill9_mid_finalization 2 "Hour-13: VM3 SIGKILL mid-finalization"
+        fi
+
+        # Hour 14: Rolling restart all VMs
         if ! $injected_14 && (( elapsed >= inject_hour_14 )); then
             injected_14=true
             inject_rolling_restart "Hour-14: Rolling restart all VMs"
         fi
 
+        # Hour 16: SIGKILL both ghost-pool AND ghost-pay on VM2 simultaneously
+        if ! $injected_16 && (( elapsed >= inject_hour_16 )); then
+            injected_16=true
+            log "${YELLOW}  INJECT: Hour-16 — dual SIGKILL ghost-pool+ghost-pay on VM2${RESET}"
+            inject_kill9_ghost_pool 1 "Hour-16: VM2 ghost-pool SIGKILL"
+            inject_kill9_ghost_pay 1 "Hour-16: VM2 ghost-pay SIGKILL"
+        fi
+
+        # Hour 17: VM2+VM3 dual graceful kill for 2 min (quorum loss)
         if ! $injected_17 && (( elapsed >= inject_hour_17 )); then
             injected_17=true
             inject_dual_kill 1 2 120 "Hour-17: VM2+VM3 dual kill 2min (quorum loss)"
@@ -1176,6 +1582,58 @@ phase3_validation() {
             log "  ${YELLOW}$(vm_label $i): $stale stale nullifiers${RESET}"
         else
             log "  $(vm_label $i): no stale nullifiers"
+        fi
+    done
+
+    # Crash recovery tables must be clean after soak
+    log "Crash recovery table cleanliness..."
+    for i in $(seq 0 $((VM_COUNT - 1))); do
+        local staging pending_shields
+        staging=$(ssh_cmd "$i" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM confirmed_pool_staging;'" 2>/dev/null)
+        pending_shields=$(ssh_cmd "$i" "sqlite3 /home/ghost/.ghost/ghost.db 'SELECT COUNT(*) FROM pending_l2_shields;'" 2>/dev/null)
+        if [[ "${staging:-0}" -gt 0 ]]; then
+            log "  ${RED}$(vm_label $i): $staging rows in confirmed_pool_staging (should be 0)${RESET}"
+            ((failures++))
+        fi
+        if [[ "${pending_shields:-0}" -gt 0 ]]; then
+            log "  ${YELLOW}$(vm_label $i): $pending_shields rows in pending_l2_shields (may be pending)${RESET}"
+        fi
+        log "  $(vm_label $i): staging=$staging, pending_shields=$pending_shields"
+    done
+
+    # Ghost-pay confidential note consistency
+    log "Ghost-pay confidential note consistency..."
+    local pay_note_counts=()
+    for i in $(seq 0 $((VM_COUNT - 1))); do
+        local pnc
+        pnc=$(ssh_cmd "$i" "sqlite3 /home/ghost/.ghost/ghost-pay/ghost-pay.db 'SELECT COUNT(*) FROM confidential_notes;'" 2>/dev/null)
+        pay_note_counts+=("${pnc:-?}")
+        log "  $(vm_label $i): $pnc confidential notes"
+    done
+
+    # Ghost-pay health
+    log "Ghost-pay health check..."
+    for i in $(seq 0 $((VM_COUNT - 1))); do
+        local pay_health
+        pay_health=$(ssh_cmd "$i" "curl -sf http://localhost:${PAY_PORT}/health" 2>/dev/null)
+        if [[ -n "$pay_health" ]]; then
+            check_ok "ghost-pay on $(vm_label $i)" "ok"
+        else
+            check_ok "ghost-pay on $(vm_label $i)" "unreachable"
+            ((failures++))
+        fi
+    done
+
+    # Ghost-pay DB integrity
+    log "Ghost-pay DB integrity..."
+    for i in $(seq 0 $((VM_COUNT - 1))); do
+        local pay_integrity
+        pay_integrity=$(ssh_cmd "$i" "sqlite3 /home/ghost/.ghost/ghost-pay/ghost-pay.db 'PRAGMA integrity_check;'" 2>/dev/null)
+        if [[ "$pay_integrity" == "ok" ]]; then
+            check_ok "ghost-pay DB integrity on $(vm_label $i)" "ok"
+        else
+            check_ok "ghost-pay DB integrity on $(vm_label $i)" "failed"
+            ((failures++))
         fi
     done
 

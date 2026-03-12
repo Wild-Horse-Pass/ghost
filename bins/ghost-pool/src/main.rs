@@ -1512,6 +1512,12 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
+                // Self-healing: detect stale checkpoint pipeline and trigger tree sync.
+                // This covers the case where votes arrived without proposal data and
+                // the node couldn't finalize — without this, the pipeline stays stuck
+                // until manual restart.
+                handler_for_proposals.check_and_heal_stale_pipeline();
+
                 match handler_for_proposals.propose_checkpoint() {
                     Ok(Some(proposal)) => {
                         if let Err(e) = handler_for_proposals.propose_and_broadcast(&proposal) {

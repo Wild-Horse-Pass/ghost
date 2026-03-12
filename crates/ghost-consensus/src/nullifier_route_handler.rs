@@ -1215,13 +1215,17 @@ impl NullifierRouteHandler {
             if proposal.is_none() {
                 warn!(
                     height,
-                    "Checkpoint reached quorum but proposal data missing — skipping finalization. \
-                     This node will catch up via tree sync."
+                    "Checkpoint reached quorum but proposal data missing — requesting tree sync"
                 );
                 // Unmark as finalized so tree sync can replay this height
                 let mut votes = self.votes.write();
                 if let Some(state) = votes.get_mut(&height) {
                     state.finalized = false;
+                }
+                // Self-heal: the proposer that finalized has the checkpoint data.
+                // Request tree sync so we can replay it locally.
+                if let Err(e) = self.request_tree_sync() {
+                    warn!(error = %e, "Failed to request tree sync after quorum-without-proposal");
                 }
                 return Ok(false);
             }
@@ -1671,6 +1675,33 @@ impl NullifierRouteHandler {
     /// Check if verifier is ready
     pub fn has_verifier(&self) -> bool {
         self.verifier.read().is_some()
+    }
+
+    /// Check if checkpoint pipeline is stuck and attempt self-healing.
+    ///
+    /// Called from the proposal loop. If no finalization has occurred in
+    /// STALE_CHECKPOINT_SECS, proactively request tree sync from peers.
+    /// This handles the case where votes arrived without proposal data
+    /// and the initial tree sync request (from handle_checkpoint_vote)
+    /// was rate-limited or lost.
+    pub fn check_and_heal_stale_pipeline(&self) -> bool {
+        const STALE_CHECKPOINT_SECS: u64 = 120;
+
+        let elapsed = self.last_checkpoint_time.read().elapsed();
+        if elapsed.as_secs() > STALE_CHECKPOINT_SECS {
+            warn!(
+                stale_secs = elapsed.as_secs(),
+                "Checkpoint pipeline stale — requesting tree sync for self-healing"
+            );
+            if let Err(e) = self.request_tree_sync() {
+                warn!(error = %e, "Stale pipeline tree sync request failed");
+            }
+            // Also clear cached proposal so we don't keep re-proposing stale data
+            *self.cached_proposal.write() = None;
+            true
+        } else {
+            false
+        }
     }
 }
 
