@@ -396,6 +396,23 @@ impl TemplateProcessor {
             Ok(Some((hash, json))) => {
                 match serde_json::from_str::<PayoutProposal>(&json) {
                     Ok(proposal) => {
+                        // Skip stale proposals: if the proposal timestamp is more than
+                        // 120 seconds old, it's from a previous run and will fail M-07's
+                        // height check anyway. Skipping avoids H-04 fee cap warnings.
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        if proposal.timestamp > 0 && now > proposal.timestamp + 120 {
+                            info!(
+                                proposal_age_secs = now - proposal.timestamp,
+                                proposal_height = proposal.block_height,
+                                "Skipping stale payout proposal from database (>120s old)"
+                            );
+                            db.clear_approved_payout().ok();
+                            return;
+                        }
+
                         // Restore into in-memory cache
                         let proposal_hash = proposal.proposal_hash;
 

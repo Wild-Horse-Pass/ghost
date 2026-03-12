@@ -7469,11 +7469,11 @@ async fn l2_finalize_handler(
             })?;
     }
 
-    // Verify state root consistency
-    {
+    // Verify state root consistency (only when transfers were applied)
+    if !included_ids.is_empty() {
         let tree = state.balance_tree.read();
         let current_root = tree.root().unwrap_or([0u8; 32]);
-        if current_root != state_root_bytes && !included_ids.is_empty() {
+        if current_root != state_root_bytes {
             warn!(
                 height,
                 expected = hex::encode(state_root_bytes),

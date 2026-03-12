@@ -6,7 +6,7 @@
 //! - Applying payments and computing state transitions
 //! - Generating witness data for ZK proofs
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use blstrs::Scalar as Fr;
 
@@ -18,28 +18,58 @@ use crate::types::{MerkleProof, PaymentTransitionWitness};
 ///
 /// Efficiently stores and updates account balances with merkle proof generation.
 /// Uses a sparse representation - only non-zero leaves are stored.
+/// Precomputes empty subtree hashes and uses BTreeMap range queries to skip
+/// empty subtrees, reducing root() from O(2^depth) to O(leaves * depth).
 #[derive(Debug, Clone)]
 pub struct BalanceTree {
     /// Tree depth (supports 2^depth accounts)
     depth: usize,
-    /// Leaf values: index -> balance
-    leaves: HashMap<u64, u64>,
+    /// Leaf values: index -> balance (BTreeMap for efficient range queries)
+    leaves: BTreeMap<u64, u64>,
+    /// Precomputed hash for an empty subtree at each level
+    /// empty_hashes[0] = hash_leaf(0), empty_hashes[i] = hash_pair(empty_hashes[i-1], empty_hashes[i-1])
+    empty_hashes: Vec<[u8; 32]>,
 }
 
 impl BalanceTree {
+    /// Precompute empty subtree hashes for each level
+    fn compute_empty_hashes(depth: usize) -> Vec<[u8; 32]> {
+        let mut empty = Vec::with_capacity(depth + 1);
+        // Level 0: hash of zero balance
+        let balance_field = Fr::from(0u64);
+        let domain_sep = Fr::from(0x4c454146u64);
+        let leaf_hash = field_to_bytes(mimc_hash_native(balance_field, domain_sep));
+        empty.push(leaf_hash);
+
+        // Each higher level: hash_pair(empty[level-1], empty[level-1])
+        for _ in 1..=depth {
+            let prev = empty.last().unwrap();
+            let left_field = bytes_to_field::<Fr>(prev).expect("empty hash must be valid field");
+            let right_field = left_field;
+            let pair_hash = field_to_bytes(mimc_hash_native(left_field, right_field));
+            empty.push(pair_hash);
+        }
+        empty
+    }
+
     /// Create a new empty balance tree
     pub fn new(depth: usize) -> Self {
+        let empty_hashes = Self::compute_empty_hashes(depth);
         Self {
             depth,
-            leaves: HashMap::new(),
+            leaves: BTreeMap::new(),
+            empty_hashes,
         }
     }
 
     /// Create a tree from existing balances
     pub fn from_balances(depth: usize, balances: HashMap<u64, u64>) -> Self {
+        let empty_hashes = Self::compute_empty_hashes(depth);
+        let leaves: BTreeMap<u64, u64> = balances.into_iter().filter(|(_, v)| *v != 0).collect();
         Self {
             depth,
-            leaves: balances,
+            leaves,
+            empty_hashes,
         }
     }
 
@@ -148,20 +178,40 @@ impl BalanceTree {
         ))
     }
 
+    /// Check if any non-zero leaf exists in the subtree rooted at (level, index).
+    /// The subtree covers leaf indices [index * 2^level, (index+1) * 2^level).
+    fn has_leaves_in_subtree(&self, level: usize, index: u64) -> bool {
+        let start = index << level;
+        // Guard against overflow for large level values
+        let end = match (index + 1).checked_shl(level as u32) {
+            Some(e) => e,
+            None => return !self.leaves.is_empty(), // subtree covers entire range
+        };
+        // BTreeMap range query: O(log n) to check if any key exists in range
+        self.leaves.range(start..end).next().is_some()
+    }
+
     /// Get hash of a node at a given level and index
     ///
     /// Level 0 = leaves, Level depth = root
+    /// Uses precomputed empty subtree hashes to skip empty regions,
+    /// reducing complexity from O(2^depth) to O(leaves * depth).
     fn get_node_hash(&self, level: usize, index: u64) -> ZkResult<[u8; 32]> {
         if level == 0 {
             // Leaf node: hash the balance
             let balance = self.get_balance(index);
-            Ok(self.hash_leaf(balance))
-        } else {
-            // Internal node: hash children
-            let left = self.get_node_hash(level - 1, index * 2)?;
-            let right = self.get_node_hash(level - 1, index * 2 + 1)?;
-            self.hash_pair(&left, &right)
+            return Ok(self.hash_leaf(balance));
         }
+
+        // If this entire subtree has no non-zero leaves, return precomputed empty hash
+        if !self.has_leaves_in_subtree(level, index) {
+            return Ok(self.empty_hashes[level]);
+        }
+
+        // Internal node with at least one non-zero descendant: hash children
+        let left = self.get_node_hash(level - 1, index * 2)?;
+        let right = self.get_node_hash(level - 1, index * 2 + 1)?;
+        self.hash_pair(&left, &right)
     }
 
     /// Hash a leaf (balance value)
@@ -197,7 +247,7 @@ impl BalanceTree {
     }
 
     /// Get all leaf balances (index → balance)
-    pub fn balances(&self) -> &HashMap<u64, u64> {
+    pub fn balances(&self) -> &BTreeMap<u64, u64> {
         &self.leaves
     }
 
@@ -276,6 +326,7 @@ impl BalanceTreeBuilder {
 
     /// Build the tree
     pub fn build(self) -> BalanceTree {
+        // Convert HashMap to the internal BTreeMap via from_balances
         BalanceTree::from_balances(self.depth, self.balances)
     }
 }
@@ -518,6 +569,176 @@ mod tests {
         // Witness correct
         assert_eq!(witness.sender_balance_before, 1000);
         assert_eq!(witness.recipient_balance_before, 500);
+    }
+
+    /// Brute-force root computation without the sparse optimization.
+    /// Visits every node in the tree — O(2^depth). Used as reference.
+    fn brute_force_root(tree: &BalanceTree) -> [u8; 32] {
+        fn get_hash(tree: &BalanceTree, level: usize, index: u64) -> [u8; 32] {
+            if level == 0 {
+                let balance = tree.get_balance(index);
+                tree.hash_leaf(balance)
+            } else {
+                let left = get_hash(tree, level - 1, index * 2);
+                let right = get_hash(tree, level - 1, index * 2 + 1);
+                tree.hash_pair(&left, &right).unwrap()
+            }
+        }
+        get_hash(tree, tree.depth(), 0)
+    }
+
+    #[test]
+    fn test_depth20_empty_tree_matches_brute_force() {
+        // Depth 8 brute force is feasible (2^8 = 256 leaves)
+        // Verify optimized root matches brute force for empty tree
+        let tree = BalanceTree::new(8);
+        let optimized = tree.root().unwrap();
+        let reference = brute_force_root(&tree);
+        assert_eq!(optimized, reference, "Empty tree root mismatch at depth 8");
+    }
+
+    #[test]
+    fn test_depth8_single_leaf_matches_brute_force() {
+        let mut tree = BalanceTree::new(8);
+        tree.set_balance(42, 1_000_000);
+        let optimized = tree.root().unwrap();
+        let reference = brute_force_root(&tree);
+        assert_eq!(optimized, reference, "Single leaf root mismatch");
+    }
+
+    #[test]
+    fn test_depth8_many_leaves_matches_brute_force() {
+        let mut tree = BalanceTree::new(8);
+        // Scatter 50 leaves across the 256-leaf address space
+        for i in 0..50 {
+            tree.set_balance(i * 5, (i + 1) * 100);
+        }
+        let optimized = tree.root().unwrap();
+        let reference = brute_force_root(&tree);
+        assert_eq!(
+            optimized, reference,
+            "50-leaf root mismatch at depth 8"
+        );
+    }
+
+    #[test]
+    fn test_depth8_payments_match_brute_force() {
+        let mut tree = BalanceTree::new(8);
+        // Set up 20 accounts with balances
+        for i in 0..20 {
+            tree.set_balance(i * 12, 10_000);
+        }
+
+        // Apply 15 payments and verify root after each
+        for i in 0..15 {
+            let sender = i * 12;
+            let recipient = ((i + 1) % 20) * 12;
+            tree.apply_payment(sender, recipient, 100).unwrap();
+            let optimized = tree.root().unwrap();
+            let reference = brute_force_root(&tree);
+            assert_eq!(
+                optimized, reference,
+                "Root mismatch after payment {} (sender={}, recipient={})",
+                i, sender, recipient
+            );
+        }
+    }
+
+    #[test]
+    fn test_depth8_leaf_removal_matches_brute_force() {
+        let mut tree = BalanceTree::new(8);
+        // Add leaves then remove some (balance -> 0)
+        for i in 0..30 {
+            tree.set_balance(i * 8, 5000);
+        }
+        let root_before = tree.root().unwrap();
+
+        // Remove half the leaves
+        for i in 0..15 {
+            tree.set_balance(i * 8, 0);
+        }
+        let optimized = tree.root().unwrap();
+        let reference = brute_force_root(&tree);
+        assert_eq!(optimized, reference, "Root mismatch after leaf removal");
+        assert_ne!(root_before, optimized, "Root should change after removals");
+    }
+
+    #[test]
+    fn test_depth20_sparse_root_deterministic() {
+        // Depth 20 with sparse leaves — verifies the optimization doesn't
+        // blow up at production depth. Can't brute-force compare (2^20 nodes)
+        // but can verify determinism and that mutations change the root.
+        let mut tree = BalanceTree::new(20);
+
+        let empty_root = tree.root().unwrap();
+
+        // Add 200 accounts spread across the address space
+        for i in 0u64..200 {
+            tree.set_balance(i * 5000, (i + 1) * 1000);
+        }
+        let root_200 = tree.root().unwrap();
+        assert_ne!(empty_root, root_200, "Root should differ from empty");
+
+        // Same tree built differently should give same root
+        let mut tree2 = BalanceTree::new(20);
+        for i in (0u64..200).rev() {
+            tree2.set_balance(i * 5000, (i + 1) * 1000);
+        }
+        assert_eq!(root_200, tree2.root().unwrap(), "Insertion order shouldn't matter");
+
+        // Apply payments and verify root changes
+        let mut prev_root = root_200;
+        for i in 0..50 {
+            let sender = i * 5000;
+            let recipient = ((i + 1) % 200) * 5000;
+            tree.apply_payment(sender, recipient, 100).unwrap();
+            let new_root = tree.root().unwrap();
+            assert_ne!(prev_root, new_root, "Root should change after payment {}", i);
+            prev_root = new_root;
+        }
+    }
+
+    #[test]
+    fn test_depth20_proof_verification_with_sparse_tree() {
+        let mut tree = BalanceTree::new(20);
+
+        // Add 100 accounts at various positions including high indices
+        let indices: Vec<u64> = (0..100).map(|i| i * 10_000).collect();
+        for &idx in &indices {
+            tree.set_balance(idx, 50_000);
+        }
+
+        // Verify proofs for a sample of accounts
+        let root = tree.root().unwrap();
+        for &idx in indices.iter().step_by(10) {
+            let proof = tree.get_proof(idx).unwrap();
+            let leaf_hash = tree.hash_leaf(50_000);
+            let computed = proof.compute_root(leaf_hash).unwrap();
+            assert_eq!(computed, root, "Proof failed for index {}", idx);
+        }
+
+        // Verify proof for an empty leaf
+        let proof = tree.get_proof(999).unwrap();
+        let leaf_hash = tree.hash_leaf(0);
+        let computed = proof.compute_root(leaf_hash).unwrap();
+        assert_eq!(computed, root, "Proof failed for empty leaf");
+    }
+
+    #[test]
+    fn test_depth8_adjacent_leaves_matches_brute_force() {
+        // Adjacent leaves share many internal nodes — tests the boundary
+        // between populated and empty subtrees
+        let mut tree = BalanceTree::new(8);
+        tree.set_balance(0, 100);
+        tree.set_balance(1, 200);
+        tree.set_balance(2, 300);
+        tree.set_balance(3, 400);
+        tree.set_balance(254, 500);
+        tree.set_balance(255, 600);
+
+        let optimized = tree.root().unwrap();
+        let reference = brute_force_root(&tree);
+        assert_eq!(optimized, reference, "Adjacent leaf root mismatch");
     }
 
     #[test]
