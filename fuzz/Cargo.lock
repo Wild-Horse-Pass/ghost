@@ -1730,6 +1730,7 @@ dependencies = [
  "ghost-reconciliation",
  "ghost-zkp",
  "libfuzzer-sys",
+ "serde",
  "serde_json",
  "wraith-protocol",
 ]
