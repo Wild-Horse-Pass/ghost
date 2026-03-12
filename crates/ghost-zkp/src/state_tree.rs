@@ -135,6 +135,14 @@ impl BalanceTree {
         recipient_index: u64,
         amount: u64,
     ) -> ZkResult<PaymentTransitionWitness> {
+        // Reject self-payment: using stale recipient_balance_before after
+        // updating sender would inflate the balance when sender == recipient
+        if sender_index == recipient_index {
+            return Err(ZkError::InvalidParams(
+                "sender and recipient must be different accounts".into(),
+            ));
+        }
+
         // Get current balances
         let sender_balance_before = self.get_balance(sender_index);
         let recipient_balance_before = self.get_balance(recipient_index);
@@ -253,7 +261,7 @@ impl BalanceTree {
 
     /// Get total balance across all accounts
     pub fn total_balance(&self) -> u64 {
-        self.leaves.values().sum()
+        self.leaves.values().fold(0u64, |acc, &v| acc.saturating_add(v))
     }
 
     /// Clone the tree and apply a payment, returning the witness and new tree

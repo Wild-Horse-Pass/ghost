@@ -37,6 +37,9 @@ arbitrary = { version = "1", features = ["derive"] }
 ghost-pool = { path = "../bins/ghost-pool" }
 ghost-consensus = { path = "../crates/ghost-consensus" }
 ghost-common = { path = "../crates/ghost-common" }
+ghost-zkp = { path = "../crates/ghost-zkp" }
+ghost-gsp-proto = { path = "../crates/ghost-gsp-proto" }
+serde_json = "1"
 
 [workspace]
 members = ["."]
@@ -66,6 +69,27 @@ bench = false
 [[bin]]
 name = "fuzz_validation"
 path = "fuzz_targets/fuzz_validation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_balance_tree"
+path = "fuzz_targets/fuzz_balance_tree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_gsp_messages"
+path = "fuzz_targets/fuzz_gsp_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_checkpoint_voting"
+path = "fuzz_targets/fuzz_checkpoint_voting.rs"
 test = false
 doc = false
 bench = false
