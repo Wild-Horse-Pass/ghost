@@ -67,3 +67,7 @@ docs/RECOVERY_RUNBOOK.md
 
 # Soak test logs (ephemeral run data)
 soak-logs/
+
+# Fuzz corpus and artifacts (machine-generated, ~100MB)
+fuzz/corpus/
+fuzz/artifacts/
