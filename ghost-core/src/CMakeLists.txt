@@ -418,9 +418,6 @@ if(BUILD_UTIL)
 endif()
 
 
-if(BUILD_GUI)
-  add_subdirectory(qt)
-endif()
 
 
 if(BUILD_KERNEL_LIB)

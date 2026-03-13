@@ -309,6 +309,46 @@ impl GhostClient {
         self.call("createrawtransaction", (inputs, outputs)).await
     }
 
+    /// List unspent transaction outputs
+    pub async fn list_unspent(
+        &mut self,
+        min_conf: u32,
+        max_conf: u32,
+    ) -> Result<Vec<serde_json::Value>, NetworkError> {
+        self.call("listunspent", (min_conf, max_conf)).await
+    }
+
+    /// Lock or unlock an unspent output
+    pub async fn lock_unspent(
+        &mut self,
+        unlock: bool,
+        outputs: Vec<serde_json::Value>,
+    ) -> Result<bool, NetworkError> {
+        self.call("lockunspent", (unlock, outputs)).await
+    }
+
+    /// List locked unspent outputs
+    pub async fn list_lock_unspent(&mut self) -> Result<Vec<serde_json::Value>, NetworkError> {
+        self.call("listlockunspent", ()).await
+    }
+
+    /// Fund a raw transaction (adds inputs + change)
+    pub async fn fund_raw_transaction(
+        &mut self,
+        hex: &str,
+        options: serde_json::Value,
+    ) -> Result<serde_json::Value, NetworkError> {
+        self.call("fundrawtransaction", (hex, options)).await
+    }
+
+    /// Sign a raw transaction with wallet keys
+    pub async fn sign_raw_transaction_with_wallet(
+        &mut self,
+        hex: &str,
+    ) -> Result<serde_json::Value, NetworkError> {
+        self.call("signrawtransactionwithwallet", (hex,)).await
+    }
+
     // ========================================
     // Wraith Protocol Methods
     // ========================================
@@ -489,6 +529,134 @@ impl GhostClient {
 
         let result: HashResult = self.call("generatejumplockhash", ()).await?;
         Ok((result.hash, result.preimage))
+    }
+
+    // ========================================
+    // Utility Methods
+    // ========================================
+
+    /// Sign a message with an address's private key
+    pub async fn sign_message(
+        &mut self,
+        address: &str,
+        message: &str,
+    ) -> Result<String, NetworkError> {
+        self.call("signmessage", (address, message)).await
+    }
+
+    /// Verify a signed message
+    pub async fn verify_message(
+        &mut self,
+        address: &str,
+        signature: &str,
+        message: &str,
+    ) -> Result<bool, NetworkError> {
+        self.call("verifymessage", (address, signature, message)).await
+    }
+
+    /// List address labels
+    pub async fn list_labels(&mut self) -> Result<Vec<String>, NetworkError> {
+        self.call("listlabels", ()).await
+    }
+
+    /// Get addresses by label
+    pub async fn get_addresses_by_label(
+        &mut self,
+        label: &str,
+    ) -> Result<serde_json::Value, NetworkError> {
+        self.call("getaddressesbylabel", (label,)).await
+    }
+
+    /// Set label for an address
+    pub async fn set_label(&mut self, address: &str, label: &str) -> Result<(), NetworkError> {
+        let _: serde_json::Value = self.call("setlabel", (address, label)).await?;
+        Ok(())
+    }
+
+    /// List received by address (with labels)
+    pub async fn list_received_by_address(
+        &mut self,
+        min_conf: u32,
+        include_empty: bool,
+    ) -> Result<Vec<serde_json::Value>, NetworkError> {
+        self.call("listreceivedbyaddress", (min_conf, include_empty)).await
+    }
+
+    // ========================================
+    // PSBT Methods
+    // ========================================
+
+    /// Decode a PSBT
+    pub async fn decode_psbt(&mut self, psbt: &str) -> Result<serde_json::Value, NetworkError> {
+        self.call("decodepsbt", (psbt,)).await
+    }
+
+    /// Analyze a PSBT
+    pub async fn analyze_psbt(&mut self, psbt: &str) -> Result<serde_json::Value, NetworkError> {
+        self.call("analyzepsbt", (psbt,)).await
+    }
+
+    /// Process (sign) a PSBT with wallet keys
+    pub async fn wallet_process_psbt(
+        &mut self,
+        psbt: &str,
+    ) -> Result<serde_json::Value, NetworkError> {
+        self.call("walletprocesspsbt", (psbt,)).await
+    }
+
+    /// Combine multiple PSBTs
+    pub async fn combine_psbt(
+        &mut self,
+        psbts: Vec<String>,
+    ) -> Result<String, NetworkError> {
+        self.call("combinepsbt", (psbts,)).await
+    }
+
+    /// Finalize a PSBT
+    pub async fn finalize_psbt(
+        &mut self,
+        psbt: &str,
+    ) -> Result<serde_json::Value, NetworkError> {
+        self.call("finalizepsbt", (psbt,)).await
+    }
+
+    /// Create a PSBT
+    pub async fn create_psbt(
+        &mut self,
+        inputs: Vec<serde_json::Value>,
+        outputs: serde_json::Value,
+    ) -> Result<String, NetworkError> {
+        self.call("createpsbt", (inputs, outputs)).await
+    }
+
+    /// Convert a raw transaction to a PSBT
+    pub async fn convert_to_psbt(&mut self, hex: &str) -> Result<String, NetworkError> {
+        self.call("converttopsbt", (hex,)).await
+    }
+
+    /// Create a funded PSBT (wallet creates and funds it)
+    pub async fn wallet_create_funded_psbt(
+        &mut self,
+        inputs: Vec<serde_json::Value>,
+        outputs: serde_json::Value,
+        options: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, NetworkError> {
+        match options {
+            Some(opts) => self.call("walletcreatefundedpsbt", (inputs, outputs, 0, opts)).await,
+            None => self.call("walletcreatefundedpsbt", (inputs, outputs)).await,
+        }
+    }
+
+    /// Change the wallet passphrase
+    pub async fn wallet_passphrase_change(
+        &mut self,
+        old_passphrase: &str,
+        new_passphrase: &str,
+    ) -> Result<(), NetworkError> {
+        let _: serde_json::Value = self
+            .call("walletpassphrasechange", (old_passphrase, new_passphrase))
+            .await?;
+        Ok(())
     }
 
     // ========================================

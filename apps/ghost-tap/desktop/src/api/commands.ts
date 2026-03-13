@@ -23,6 +23,26 @@ export interface ConnectionStatus {
   connected: boolean;
 }
 
+export interface NodeInfo {
+  connection_mode: "light" | "fullnode";
+  ghostd_connected: boolean;
+  ghost_pay_connected: boolean;
+  block_height: number;
+  header_count: number;
+  sync_progress: number;
+  initial_block_download: boolean;
+  network: string;
+  peer_count: number;
+  node_version: string;
+}
+
+export interface ConnectionTestResult {
+  ghostd_ok: boolean;
+  ghostd_error: string | null;
+  ghost_pay_ok: boolean;
+  ghost_pay_error: string | null;
+}
+
 export interface UnsignedTxResponse {
   inputs_count: number;
   outputs_count: number;
@@ -222,8 +242,24 @@ export async function setRpcConfig(
   return invoke("set_rpc_config", { host, port, user, pass });
 }
 
+export async function setGhostPayConfig(
+  host: string,
+  port: number,
+  apiSecret?: string,
+): Promise<void> {
+  return invoke("set_ghost_pay_config", { host, port, apiSecret });
+}
+
 export async function getConnectionStatus(): Promise<ConnectionStatus> {
   return invoke("get_connection_status");
+}
+
+export async function getNodeInfo(): Promise<NodeInfo> {
+  return invoke("get_node_info");
+}
+
+export async function testConnection(): Promise<ConnectionTestResult> {
+  return invoke("test_connection");
 }
 
 export async function syncConnection(): Promise<void> {
@@ -364,6 +400,200 @@ export function getGlyphPalette(): Promise<PaletteColor[]> {
 
 export async function validateGlyphPixels(pixels: number[]): Promise<boolean> {
   return invoke("validate_glyph_pixels", { pixels });
+}
+
+// --- Address Book ---
+
+export interface AddressEntry {
+  address: string;
+  label: string;
+  amount: number;
+  confirmations: number;
+}
+
+export async function listAddressLabels(): Promise<string[]> {
+  return invoke("list_address_labels");
+}
+
+export async function getAddressesForLabel(label: string): Promise<string[]> {
+  return invoke("get_addresses_for_label", { label });
+}
+
+export async function setAddressLabel(address: string, label: string): Promise<void> {
+  return invoke("set_address_label", { address, label });
+}
+
+export async function validateAddressInfo(address: string): Promise<any> {
+  return invoke("validate_address_info", { address });
+}
+
+export async function listReceivedAddresses(): Promise<AddressEntry[]> {
+  return invoke("list_received_addresses");
+}
+
+// --- Sign/Verify ---
+
+export async function signMessage(address: string, message: string): Promise<string> {
+  return invoke("sign_message", { address, message });
+}
+
+export async function verifyMessage(address: string, signature: string, message: string): Promise<boolean> {
+  return invoke("verify_message", { address, signature, message });
+}
+
+// --- PSBT ---
+
+export async function decodePsbt(psbt: string): Promise<any> {
+  return invoke("decode_psbt", { psbt });
+}
+
+export async function analyzePsbt(psbt: string): Promise<any> {
+  return invoke("analyze_psbt", { psbt });
+}
+
+export async function signPsbt(psbt: string): Promise<any> {
+  return invoke("sign_psbt", { psbt });
+}
+
+export async function combinePsbts(psbts: string[]): Promise<string> {
+  return invoke("combine_psbts", { psbts });
+}
+
+export async function finalizePsbt(psbt: string): Promise<any> {
+  return invoke("finalize_psbt", { psbt });
+}
+
+export async function broadcastPsbt(psbt: string): Promise<string> {
+  return invoke("broadcast_psbt", { psbt });
+}
+
+// --- Coin Control ---
+
+export async function listUnspent(): Promise<any[]> {
+  return invoke("list_unspent");
+}
+
+export async function lockUnspentOutput(txid: string, vout: number, lock: boolean): Promise<boolean> {
+  return invoke("lock_unspent_output", { txid, vout, lock });
+}
+
+export async function listLockedOutputs(): Promise<any[]> {
+  return invoke("list_locked_outputs");
+}
+
+export async function sendWithInputs(
+  inputs: any[],
+  address: string,
+  amount: number,
+  feeRate?: number,
+): Promise<string> {
+  return invoke("send_with_inputs", { inputs, address, amount, feeRate });
+}
+
+// --- Node Wallet ---
+
+export async function nodeEncryptWallet(passphrase: string): Promise<void> {
+  return invoke("node_encrypt_wallet", { passphrase });
+}
+
+export async function nodeUnlockWallet(passphrase: string, timeout: number): Promise<void> {
+  return invoke("node_unlock_wallet", { passphrase, timeout });
+}
+
+export async function nodeLockWallet(): Promise<void> {
+  return invoke("node_lock_wallet");
+}
+
+export async function nodeChangePassphrase(oldPassphrase: string, newPassphrase: string): Promise<void> {
+  return invoke("node_change_passphrase", { oldPassphrase, newPassphrase });
+}
+
+export async function getNodeWalletInfo(): Promise<any> {
+  return invoke("get_node_wallet_info");
+}
+
+// --- RPC Console ---
+
+export async function executeRpc(method: string, paramsJson: string): Promise<any> {
+  return invoke("execute_rpc", { method, paramsJson });
+}
+
+// --- L2 Balance ---
+
+export async function l2Balance(): Promise<{ confirmed: number; pending: number }> {
+  return invoke("l2_balance");
+}
+
+// --- Ghost Locks ---
+
+export interface LockInfo {
+  id: string;
+  denomination: string;
+  amount_sats: number;
+  state: string;
+  created_at: number;
+  timelock_tier: string;
+  jump_risk: string;
+  needs_jump: boolean;
+  address: string;
+  output_pubkey: string;
+  recovery_height: number;
+  blocks_until_jump: number;
+}
+
+export interface WraithSessionInfo {
+  id: string;
+  tier: string;
+  denomination: string;
+  state: string;
+  participants: number;
+  fill_percentage: number;
+}
+
+export interface GhostIdInfo {
+  ghost_id: string;
+  scan_pubkey: string;
+  spend_pubkey: string;
+}
+
+export async function listLocks(): Promise<LockInfo[]> {
+  return invoke("list_locks");
+}
+export async function getLock(lockId: string): Promise<LockInfo> {
+  return invoke("get_lock", { lockId });
+}
+export async function createLock(amountSats: number, timelockTier?: string): Promise<any> {
+  return invoke("create_lock", { amountSats, timelockTier });
+}
+export async function jumpLock(lockId: string): Promise<any> {
+  return invoke("jump_lock", { lockId });
+}
+export async function reconcileLock(lockId: string, destination: string, settlementClass?: string): Promise<any> {
+  return invoke("reconcile_lock", { lockId, destination, settlementClass });
+}
+export async function listWraithSessions(): Promise<WraithSessionInfo[]> {
+  return invoke("list_wraith_sessions");
+}
+export async function getWraithSession(sessionId: string): Promise<WraithSessionInfo> {
+  return invoke("get_wraith_session", { sessionId });
+}
+export async function joinWraithSession(tier: string, denomination: string, lockId?: string): Promise<any> {
+  return invoke("join_wraith_session", { tier, denomination, lockId });
+}
+export async function submitWraithInput(sessionId: string, ghostId: string, txid: string, vout: number, amount: number, scriptPubkey: string): Promise<any> {
+  return invoke("submit_wraith_input", { sessionId, ghostId, txid, vout, amount, scriptPubkey });
+}
+export async function getGhostId(): Promise<GhostIdInfo> {
+  return invoke("get_ghost_id");
+}
+export async function generateGhostId(): Promise<any> {
+  return invoke("generate_ghost_id");
+}
+export async function sendL2Payment(recipient: string, amountSats: number, memo?: string): Promise<any> {
+  return invoke("send_l2_payment", { recipient, amountSats, memo });
+}
+export async function listWithdrawals(): Promise<any[]> {
+  return invoke("list_withdrawals");
 }
 
 // --- Helpers ---

@@ -2,10 +2,12 @@ import { useEffect, useState, useCallback } from "react";
 import {
   computeDashboard,
   getBalance,
+  l2Balance,
   formatGhost,
   type DashboardSummary,
   type BalanceResponse,
 } from "../api/commands";
+import { useConnection } from "../contexts/ConnectionContext";
 import { useToast } from "../components/ToastProvider";
 
 type Period = "today" | "week" | "month" | "all";
@@ -28,9 +30,11 @@ const REFRESH_INTERVAL = 30_000; // 30 seconds
 
 export default function Dashboard() {
   const { toast } = useToast();
+  const { mode, nodeInfo, isGhostPayConnected } = useConnection();
   const [period, setPeriod] = useState<Period>("month");
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [balance, setBalance] = useState<BalanceResponse | null>(null);
+  const [l2Bal, setL2Bal] = useState<{ confirmed: number; pending: number } | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const refresh = useCallback(async () => {
@@ -42,11 +46,20 @@ export default function Dashboard() {
       ]);
       setSummary(s);
       setBalance(b);
+      // Try to fetch L2 balance in fullnode mode
+      if (mode === "fullnode") {
+        try {
+          const l2 = await l2Balance();
+          setL2Bal(l2);
+        } catch {
+          setL2Bal(null);
+        }
+      }
       setLastUpdated(new Date());
     } catch (e: unknown) {
       toast(String(e), "error");
     }
-  }, [period, toast]);
+  }, [period, toast, mode]);
 
   useEffect(() => {
     refresh();
@@ -76,18 +89,78 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {balance && (
+      {mode === "fullnode" && nodeInfo && (
         <div className="card" style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>
-            Wallet Balance
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>Node Status</div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 16px", fontSize: 13 }}>
+                <span style={{ color: "var(--text-muted)" }}>Block Height</span>
+                <span className="mono">{nodeInfo.block_height.toLocaleString()}</span>
+                <span style={{ color: "var(--text-muted)" }}>Network</span>
+                <span>{nodeInfo.network}</span>
+                <span style={{ color: "var(--text-muted)" }}>Peers</span>
+                <span>{nodeInfo.peer_count}</span>
+                {nodeInfo.initial_block_download && (
+                  <>
+                    <span style={{ color: "var(--text-muted)" }}>Sync Progress</span>
+                    <span style={{ color: "var(--warning)" }}>
+                      {(nodeInfo.sync_progress * 100).toFixed(1)}%
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>L2 Status</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: isGhostPayConnected ? "var(--success)" : "var(--danger)",
+                  }}
+                />
+                <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                  Ghost Pay {isGhostPayConnected ? "Connected" : "Disconnected"}
+                </span>
+              </div>
+            </div>
           </div>
-          <div style={{ fontSize: 32, fontWeight: 700 }}>
-            {formatGhost(balance.confirmed)}{" "}
-            <span style={{ fontSize: 16, color: "var(--text-muted)" }}>GHOST</span>
+        </div>
+      )}
+
+      {balance && (
+        <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
+          <div className="card" style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>
+              {mode === "fullnode" ? "L1 Balance" : "Wallet Balance"}
+            </div>
+            <div style={{ fontSize: 32, fontWeight: 700 }}>
+              {formatGhost(balance.confirmed)}{" "}
+              <span style={{ fontSize: 16, color: "var(--text-muted)" }}>GHOST</span>
+            </div>
+            {balance.pending > 0 && (
+              <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
+                +{formatGhost(balance.pending)} pending
+              </div>
+            )}
           </div>
-          {balance.pending > 0 && (
-            <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
-              +{formatGhost(balance.pending)} pending
+          {mode === "fullnode" && l2Bal && (
+            <div className="card" style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>
+                L2 Balance
+              </div>
+              <div style={{ fontSize: 32, fontWeight: 700 }}>
+                {formatGhost(l2Bal.confirmed)}{" "}
+                <span style={{ fontSize: 16, color: "var(--text-muted)" }}>GHOST</span>
+              </div>
+              {l2Bal.pending > 0 && (
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
+                  +{formatGhost(l2Bal.pending)} pending
+                </div>
+              )}
             </div>
           )}
         </div>

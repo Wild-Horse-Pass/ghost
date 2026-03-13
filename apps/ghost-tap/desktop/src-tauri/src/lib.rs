@@ -41,7 +41,10 @@ pub fn run() {
             // Connection
             commands::connection::set_connection_mode,
             commands::connection::set_rpc_config,
+            commands::connection::set_ghost_pay_config,
             commands::connection::get_connection_status,
+            commands::connection::get_node_info,
+            commands::connection::test_connection,
             commands::connection::sync,
             // Merchant
             commands::merchant::compute_dashboard,
@@ -74,6 +77,54 @@ pub fn run() {
             commands::l2::l2_unshield,
             commands::l2::l2_shield,
             commands::l2::l2_sync_status,
+            // Ghost Locks
+            commands::locks::list_locks,
+            commands::locks::get_lock,
+            commands::locks::create_lock,
+            commands::locks::jump_lock,
+            commands::locks::reconcile_lock,
+            // Wraith Sessions
+            commands::locks::list_wraith_sessions,
+            commands::locks::get_wraith_session,
+            commands::locks::join_wraith_session,
+            commands::locks::submit_wraith_input,
+            // Ghost ID
+            commands::locks::get_ghost_id,
+            commands::locks::generate_ghost_id,
+            // L2 Payments
+            commands::locks::send_l2_payment,
+            // Withdrawals
+            commands::locks::list_withdrawals,
+            commands::locks::get_withdrawal,
+            // Address Book
+            commands::addressbook::list_address_labels,
+            commands::addressbook::get_addresses_for_label,
+            commands::addressbook::set_address_label,
+            commands::addressbook::validate_address_info,
+            commands::addressbook::list_received_addresses,
+            // Signing
+            commands::signing::sign_message,
+            commands::signing::verify_message,
+            // PSBT
+            commands::psbt::decode_psbt,
+            commands::psbt::analyze_psbt,
+            commands::psbt::sign_psbt,
+            commands::psbt::combine_psbts,
+            commands::psbt::finalize_psbt,
+            commands::psbt::broadcast_psbt,
+            // Coin Control
+            commands::coincontrol::list_unspent,
+            commands::coincontrol::lock_unspent_output,
+            commands::coincontrol::list_locked_outputs,
+            commands::coincontrol::send_with_inputs,
+            // RPC Console
+            commands::rpc_console::execute_rpc,
+            // Node Wallet
+            commands::node_wallet::node_encrypt_wallet,
+            commands::node_wallet::node_unlock_wallet,
+            commands::node_wallet::node_lock_wallet,
+            commands::node_wallet::node_change_passphrase,
+            commands::node_wallet::get_node_wallet_info,
         ])
         .run(tauri::generate_context!())
         .expect("error running GhostTap Desktop");

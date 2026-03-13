@@ -173,16 +173,26 @@ pub struct GhostTxOutput {
 pub struct BlockchainInfo {
     /// Current block height
     pub blocks: u64,
+    /// Header count (may be ahead of blocks during sync)
+    #[serde(default)]
+    pub headers: u64,
     /// Best block hash
     pub bestblockhash: String,
     /// Current difficulty
     pub difficulty: f64,
     /// Network hashrate
     pub networkhashps: f64,
+    /// Verification progress 0.0 – 1.0
+    #[serde(default = "default_progress")]
+    pub verificationprogress: f64,
     /// Whether initial block download is complete
     pub initialblockdownload: bool,
     /// Chain name (main, test, regtest)
     pub chain: String,
+}
+
+fn default_progress() -> f64 {
+    1.0
 }
 
 /// Address balance info

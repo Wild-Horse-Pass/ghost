@@ -49,7 +49,6 @@ members = [
     "crates/ghost-light-wallet",
     # Light Wallet Binaries (connect to GSP)
     "bins/ghost-light-wallet-cli",
-    "bins/ghost-light-wallet-tui",
     # Node Binaries
     "bins/ghost-pool",
     "bins/translator",

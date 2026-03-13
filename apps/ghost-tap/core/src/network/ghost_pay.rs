@@ -569,6 +569,303 @@ impl GhostPayClient {
 
         Err(last_err.unwrap_or_else(|| NetworkError::RequestFailed("Max retries exceeded".into())))
     }
+
+    // =========================================================================
+    // Ghost Lock Endpoints
+    // =========================================================================
+
+    /// List all locks.
+    pub async fn list_locks(&self) -> Result<Vec<LockInfo>, NetworkError> {
+        let url = format!("{}/api/v1/locks", self.config.base_url);
+        self.get_with_retry(&url).await
+    }
+
+    /// Get a specific lock by ID.
+    pub async fn get_lock(&self, lock_id: &str) -> Result<LockInfo, NetworkError> {
+        let url = format!("{}/api/v1/locks/{}", self.config.base_url, encode_path_segment(lock_id));
+        self.get_with_retry(&url).await
+    }
+
+    /// Create a new ghost lock.
+    pub async fn create_lock(&self, req: &CreateLockRequest) -> Result<CreateLockResponse, NetworkError> {
+        let url = format!("{}/api/v1/locks/create", self.config.base_url);
+        self.post_authenticated(&url, req).await
+    }
+
+    /// Initiate a key rotation jump on a lock.
+    pub async fn jump_lock(&self, lock_id: &str) -> Result<SuccessResponse, NetworkError> {
+        let url = format!("{}/api/v1/locks/{}/jump", self.config.base_url, encode_path_segment(lock_id));
+        self.post_authenticated(&url, &serde_json::json!({})).await
+    }
+
+    /// Reconcile (settle) a lock to L1.
+    pub async fn reconcile_lock(&self, lock_id: &str, req: &ReconcileRequest) -> Result<ReconcileResponse, NetworkError> {
+        let url = format!("{}/api/v1/locks/{}/reconcile", self.config.base_url, encode_path_segment(lock_id));
+        self.post_authenticated(&url, req).await
+    }
+
+    // =========================================================================
+    // Wraith Session Endpoints
+    // =========================================================================
+
+    /// List active wraith sessions.
+    pub async fn list_wraith_sessions(&self) -> Result<Vec<WraithSessionInfo>, NetworkError> {
+        let url = format!("{}/api/v1/wraith/sessions", self.config.base_url);
+        self.get_with_retry(&url).await
+    }
+
+    /// Get a specific wraith session.
+    pub async fn get_wraith_session(&self, session_id: &str) -> Result<WraithSessionInfo, NetworkError> {
+        let url = format!("{}/api/v1/wraith/sessions/{}", self.config.base_url, encode_path_segment(session_id));
+        self.get_with_retry(&url).await
+    }
+
+    /// Join a wraith session.
+    pub async fn join_wraith(&self, req: &JoinWraithRequest) -> Result<JoinWraithResponse, NetworkError> {
+        let url = format!("{}/api/v1/wraith/join", self.config.base_url);
+        self.post_authenticated(&url, req).await
+    }
+
+    /// Submit a UTXO input to a wraith session.
+    pub async fn submit_wraith_input(&self, req: &WraithSubmitInputRequest) -> Result<SuccessResponse, NetworkError> {
+        let url = format!("{}/api/v1/wraith/submit-input", self.config.base_url);
+        self.post_authenticated(&url, req).await
+    }
+
+    // =========================================================================
+    // Ghost ID Endpoints
+    // =========================================================================
+
+    /// Get the current Ghost ID.
+    pub async fn get_ghost_id(&self) -> Result<GhostIdInfo, NetworkError> {
+        let url = format!("{}/api/v1/keys/ghost-id", self.config.base_url);
+        self.get_with_retry(&url).await
+    }
+
+    /// Generate a new Ghost ID.
+    pub async fn generate_ghost_id(&self) -> Result<GenerateGhostIdResponse, NetworkError> {
+        let url = format!("{}/api/v1/keys/generate", self.config.base_url);
+        self.post_authenticated(&url, &serde_json::json!({})).await
+    }
+
+    /// Export ghost keys.
+    pub async fn export_ghost_keys(&self) -> Result<GhostIdInfo, NetworkError> {
+        let url = format!("{}/api/v1/keys/export", self.config.base_url);
+        self.get_with_retry(&url).await  // This uses auth via get, but the endpoint may require it
+    }
+
+    // =========================================================================
+    // L2 Payment Endpoints
+    // =========================================================================
+
+    /// Send an L2 payment.
+    pub async fn send_l2_payment(&self, req: &SendL2PaymentRequest) -> Result<SuccessResponse, NetworkError> {
+        let url = format!("{}/api/v1/payments/send", self.config.base_url);
+        self.post_authenticated(&url, req).await
+    }
+
+    // =========================================================================
+    // Withdrawal Endpoints
+    // =========================================================================
+
+    /// List all withdrawal requests.
+    pub async fn list_withdrawals(&self) -> Result<Vec<WithdrawalInfo>, NetworkError> {
+        let url = format!("{}/api/v1/withdrawals", self.config.base_url);
+        self.get_with_retry(&url).await
+    }
+
+    /// Get a specific withdrawal.
+    pub async fn get_withdrawal(&self, id: u64) -> Result<WithdrawalInfo, NetworkError> {
+        let url = format!("{}/api/v1/withdrawals/{}", self.config.base_url, id);
+        self.get_with_retry(&url).await
+    }
+}
+
+// =============================================================================
+// Ghost Lock Types
+// =============================================================================
+
+/// Lock info from GET /api/v1/locks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockInfo {
+    pub id: String,
+    pub denomination: String,
+    pub amount_sats: u64,
+    pub state: String,
+    pub created_at: u64,
+    #[serde(default)]
+    pub timelock_tier: String,
+    #[serde(default)]
+    pub jump_risk: String,
+    #[serde(default)]
+    pub needs_jump: bool,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub output_pubkey: String,
+    #[serde(default)]
+    pub recovery_height: u32,
+    #[serde(default)]
+    pub blocks_until_jump: u32,
+}
+
+/// Request to create a lock
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateLockRequest {
+    pub amount_sats: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timelock_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Response from lock creation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateLockResponse {
+    pub success: bool,
+    pub lock: LockInfo,
+}
+
+/// Request to reconcile (settle) a lock to L1
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconcileRequest {
+    pub destination_address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settlement_class: Option<String>,
+}
+
+/// Response from lock reconciliation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconcileResponse {
+    pub success: bool,
+    #[serde(default)]
+    pub settlement_amount: u64,
+    #[serde(default)]
+    pub settlement_fee: u64,
+    #[serde(default)]
+    pub settlement_class: String,
+    #[serde(default)]
+    pub destination_address: String,
+    #[serde(default)]
+    pub message: String,
+}
+
+/// Generic success response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuccessResponse {
+    pub success: bool,
+    #[serde(default)]
+    pub message: String,
+}
+
+// =============================================================================
+// Wraith Session Types
+// =============================================================================
+
+/// Wraith session info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WraithSessionInfo {
+    pub id: String,
+    #[serde(default)]
+    pub tier: String,
+    #[serde(default)]
+    pub denomination: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub participants: u32,
+    #[serde(default)]
+    pub fill_percentage: f64,
+    #[serde(default)]
+    pub auto_sign: bool,
+}
+
+/// Request to join a wraith session
+#[derive(Debug, Clone, Serialize)]
+pub struct JoinWraithRequest {
+    pub tier: String,
+    pub denomination: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_id: Option<String>,
+}
+
+/// Response from joining a wraith session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinWraithResponse {
+    pub success: bool,
+    pub session_id: String,
+    #[serde(default)]
+    pub participants: u32,
+    #[serde(default)]
+    pub fill_percentage: f64,
+}
+
+/// Request to submit a UTXO input
+#[derive(Debug, Clone, Serialize)]
+pub struct WraithSubmitInputRequest {
+    pub session_id: String,
+    pub ghost_id: String,
+    pub txid: String,
+    pub vout: u32,
+    pub amount: u64,
+    pub script_pubkey: String,
+}
+
+// =============================================================================
+// Ghost ID Types
+// =============================================================================
+
+/// Ghost ID info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhostIdInfo {
+    pub ghost_id: String,
+    #[serde(default)]
+    pub scan_pubkey: String,
+    #[serde(default)]
+    pub spend_pubkey: String,
+}
+
+/// Response from generating a ghost ID
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateGhostIdResponse {
+    pub success: bool,
+    #[serde(default)]
+    pub ghost_id: String,
+}
+
+// =============================================================================
+// L2 Payment Types
+// =============================================================================
+
+/// Request to send an L2 payment
+#[derive(Debug, Clone, Serialize)]
+pub struct SendL2PaymentRequest {
+    pub recipient: String,
+    pub amount_sats: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memo: Option<String>,
+}
+
+// =============================================================================
+// Withdrawal Types
+// =============================================================================
+
+/// Withdrawal request info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawalInfo {
+    pub id: u64,
+    pub lock_id: String,
+    pub destination_address: String,
+    pub amount_sats: u64,
+    #[serde(default)]
+    pub fee_sats: u64,
+    pub status: String,
+    #[serde(default)]
+    pub batch_id: Option<String>,
+    #[serde(default)]
+    pub l1_txid: Option<String>,
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 #[cfg(test)]

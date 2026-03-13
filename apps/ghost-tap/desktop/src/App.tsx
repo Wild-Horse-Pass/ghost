@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { hasWallet, hasPin, loadWallet, verifyPin } from "./api/commands";
+import { ConnectionProvider } from "./contexts/ConnectionContext";
 import ToastProvider from "./components/ToastProvider";
 import PinEntry from "./components/PinEntry";
 import Layout from "./components/Layout";
@@ -16,6 +17,15 @@ import Export from "./pages/Export";
 import WraithWash from "./pages/WraithWash";
 import GlyphDesigner from "./pages/GlyphDesigner";
 import Settings from "./pages/Settings";
+import AddressBook from "./pages/AddressBook";
+import SignVerify from "./pages/SignVerify";
+import PSBTPage from "./pages/PSBT";
+import CoinControl from "./pages/CoinControl";
+import GhostLocks from "./pages/GhostLocks";
+import CreateLock from "./pages/CreateLock";
+import WithdrawWizard from "./pages/WithdrawWizard";
+import SendL2 from "./pages/SendL2";
+import GhostIdWizard from "./pages/GhostIdWizard";
 
 type AppState = "loading" | "setup" | "pin" | "ready";
 
@@ -24,6 +34,13 @@ function AppRoutes() {
   const [pinError, setPinError] = useState("");
 
   useEffect(() => {
+    // Browser preview mode — skip Tauri commands that don't exist outside the native shell
+    const isBrowser = !(window as any).__TAURI_INTERNALS__;
+    if (isBrowser) {
+      setAppState("ready");
+      return;
+    }
+
     (async () => {
       const walletExists = await hasWallet();
       if (!walletExists) {
@@ -118,6 +135,15 @@ function AppRoutes() {
         <Route path="/invoices" element={<Invoices />} />
         <Route path="/receipts" element={<Receipts />} />
         <Route path="/export" element={<Export />} />
+        <Route path="/address-book" element={<AddressBook />} />
+        <Route path="/coin-control" element={<CoinControl />} />
+        <Route path="/psbt" element={<PSBTPage />} />
+        <Route path="/sign-verify" element={<SignVerify />} />
+        <Route path="/ghost-locks" element={<GhostLocks />} />
+        <Route path="/create-lock" element={<CreateLock />} />
+        <Route path="/withdraw" element={<WithdrawWizard />} />
+        <Route path="/send-l2" element={<SendL2 />} />
+        <Route path="/ghost-id" element={<GhostIdWizard />} />
         <Route path="/wraith" element={<WraithWash />} />
         <Route path="/glyph" element={<GlyphDesigner />} />
         <Route path="/settings" element={<Settings />} />
@@ -138,9 +164,11 @@ function AppRoutes() {
 export default function App() {
   return (
     <ToastProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <ConnectionProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </ConnectionProvider>
     </ToastProvider>
   );
 }
