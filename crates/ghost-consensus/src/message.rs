@@ -1508,6 +1508,43 @@ pub struct L2TreeSyncResponse {
     pub timestamp: u64,
 }
 
+/// L2: Note gap request — sent when tree sync replay didn't fix root mismatch.
+/// Asks peer for specific notes we're missing (SIGKILL recovery / fresh node bootstrap).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2NoteGapRequest {
+    /// Requesting node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub requesting_node: NodeId,
+    /// Our note count (peer compares to theirs)
+    pub our_note_count: u64,
+    /// Our note indices (peer diffs against theirs to find missing)
+    pub our_note_indices: Vec<u64>,
+    /// Only send missing notes with index >= from_index (pagination cursor)
+    #[serde(default)]
+    pub from_index: u64,
+    /// Timestamp
+    pub timestamp: u64,
+}
+
+/// L2: Note gap response — peer responds with a batch of notes we're missing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2NoteGapResponse {
+    /// Responding node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub responding_node: NodeId,
+    /// Batch of notes the requester is missing (max 100 per response)
+    pub missing_notes: Vec<ShieldCommitment>,
+    /// Peer's total note count
+    pub their_note_count: u64,
+    /// Peer's current commitment root for verification
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub commitment_root: [u8; 32],
+    /// Whether there are more missing notes beyond this batch
+    pub has_more: bool,
+    /// Timestamp
+    pub timestamp: u64,
+}
+
 // =============================================================================
 // GhostGlyph Messages
 // =============================================================================

@@ -3743,6 +3743,7 @@ async fn main() -> Result<()> {
                                 uptime = result.uptime_deleted,
                                 challenges = result.challenges_deleted.total(),
                                 verifications = result.verifications_deleted,
+                                checkpoints = result.checkpoints_pruned,
                                 db_size_mb = result.db_size_bytes / (1024 * 1024),
                                 "Database maintenance complete"
                             );

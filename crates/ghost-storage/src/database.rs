@@ -1107,6 +1107,7 @@ impl Database {
         let uptime_deleted = self.prune_old_uptime_samples(config.keep_uptime_sample_days)?;
         let challenges_deleted = self.prune_old_challenges(config.keep_challenge_days)?;
         let verifications_deleted = self.prune_old_verifications(config.keep_verification_days)?;
+        let checkpoints_pruned = self.prune_old_l2_checkpoints(config.keep_checkpoint_days)?;
 
         // Checkpoint WAL
         self.checkpoint()?;
@@ -1118,7 +1119,8 @@ impl Database {
             + votes_deleted
             + uptime_deleted
             + challenges_deleted.total()
-            + verifications_deleted;
+            + verifications_deleted
+            + checkpoints_pruned;
         if total_deleted > 1000 || config.force_optimize {
             self.optimize()?;
         }
@@ -1133,6 +1135,7 @@ impl Database {
             uptime_deleted,
             challenges_deleted = challenges_deleted.total(),
             verifications_deleted,
+            checkpoints_pruned,
             db_size_mb = stats.size_mb(),
             "Database maintenance complete"
         );
@@ -1145,7 +1148,37 @@ impl Database {
             uptime_deleted,
             challenges_deleted,
             verifications_deleted,
+            checkpoints_pruned,
             db_size_bytes: stats.size_bytes,
+        })
+    }
+
+    /// Prune old L2 checkpoint block_data beyond the retention window.
+    ///
+    /// Clears the block_data blob (which contains the full serialized checkpoint)
+    /// for checkpoints older than keep_days, keeping the height/epoch/root metadata
+    /// intact for historical reference. This prevents unbounded DB growth from
+    /// accumulated checkpoint payloads.
+    pub fn prune_old_l2_checkpoints(&self, keep_days: u32) -> GhostResult<usize> {
+        self.transaction(|tx| {
+            let cutoff = chrono::Utc::now()
+                .checked_sub_signed(chrono::Duration::days(keep_days as i64))
+                .unwrap_or_else(chrono::Utc::now)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+
+            let pruned = tx
+                .execute(
+                    "UPDATE l2_checkpoints SET block_data = X'' WHERE created_at < ?1 AND length(block_data) > 0",
+                    [&cutoff],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if pruned > 0 {
+                info!(pruned, keep_days, "Pruned old L2 checkpoint block_data");
+            }
+
+            Ok(pruned)
         })
     }
 }
@@ -1163,6 +1196,8 @@ pub struct MaintenanceConfig {
     pub keep_challenge_days: u32,
     /// Number of days to keep verification records (STOR-6)
     pub keep_verification_days: u32,
+    /// Number of days to keep L2 checkpoint block_data
+    pub keep_checkpoint_days: u32,
     /// Force optimize even if little was deleted
     pub force_optimize: bool,
 }
@@ -1175,6 +1210,7 @@ impl Default for MaintenanceConfig {
             keep_uptime_sample_days: 7, // 7 days of uptime samples (STOR-1)
             keep_challenge_days: 30,    // 30 days of challenge results (STOR-2/3/4/5)
             keep_verification_days: 30, // 30 days of verification records (STOR-6)
+            keep_checkpoint_days: 90,   // 90 days of L2 checkpoint block_data
             force_optimize: false,
         }
     }
@@ -1190,6 +1226,7 @@ pub struct MaintenanceResult {
     pub uptime_deleted: usize,
     pub challenges_deleted: ChallengesPruneResult,
     pub verifications_deleted: usize,
+    pub checkpoints_pruned: usize,
     pub db_size_bytes: i64,
 }
 

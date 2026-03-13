@@ -1624,11 +1624,21 @@ phase3_validation() {
         fi
     done
 
-    # Ghost-pay DB integrity
+    # Ghost-pay DB integrity (SQLCipher-encrypted — derive key via scrypt then use sqlcipher CLI)
     log "Ghost-pay DB integrity..."
     for i in $(seq 0 $((VM_COUNT - 1))); do
         local pay_integrity
-        pay_integrity=$(ssh_cmd "$i" "sqlite3 /home/ghost/.ghost/ghost-pay/ghost-pay.db 'PRAGMA integrity_check;'" 2>/dev/null)
+        pay_integrity=$(ssh_cmd "$i" "
+            PASSWORD=\$(cat /home/ghost/.ghost/ghost-pay/.ghost-pay-key 2>/dev/null) && \
+            KEY=\$(python3 -c \"
+import hashlib, sys
+pw = sys.argv[1].encode()
+dk = hashlib.scrypt(pw, salt=b'ghost-pay-sqlcipher-v1', n=2**14, r=8, p=1, dklen=32)
+print(dk.hex())
+\" \"\$PASSWORD\") && \
+            sqlcipher /home/ghost/.ghost/ghost-pay/ghost-pay.db \
+                \"PRAGMA key = \\\"x'\$KEY'\\\"; PRAGMA integrity_check;\" 2>/dev/null | tail -1
+        " 2>/dev/null)
         if [[ "$pay_integrity" == "ok" ]]; then
             check_ok "ghost-pay DB integrity on $(vm_label $i)" "ok"
         else

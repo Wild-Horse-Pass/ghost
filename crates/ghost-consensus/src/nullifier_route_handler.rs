@@ -29,8 +29,9 @@ use crate::epoch_manager::{EpochManager, PROPOSER_GRACE_SECS};
 use crate::mesh::MessageHandler;
 use crate::message::{
     L2CheckpointBlockMessage, L2CheckpointVoteMessage, L2ConfidentialTransferMessage,
-    L2Transaction, L2TransferBroadcastMessage, L2TransferConfirmationMessage, L2TreeSyncRequest,
-    L2TreeSyncResponse, MessageEnvelope, MessageType, ShieldCommitment,
+    L2NoteGapRequest, L2NoteGapResponse, L2Transaction, L2TransferBroadcastMessage,
+    L2TransferConfirmationMessage, L2TreeSyncRequest, L2TreeSyncResponse, MessageEnvelope,
+    MessageType, ShieldCommitment,
 };
 use crate::vote_handler::BroadcastFn;
 
@@ -1629,14 +1630,45 @@ impl NullifierRouteHandler {
             *self.checkpoint_base_root.write() = last.new_commitment_root;
         }
 
+        // Pagination follow-up: if peer has more checkpoints, request next batch
+        if response.has_more {
+            let new_height = self.epoch_manager.current_height();
+            info!(from_height = new_height, "Tree sync has more checkpoints — requesting next batch");
+            // Clear rate limit for responding peer so follow-up isn't throttled
+            self.sync_requests.write().remove(&response.responding_node);
+            let _ = self.request_tree_sync();
+            // Update last checkpoint time and return — don't gap-check mid-pagination
+            *self.last_checkpoint_time.write() = Instant::now();
+            return Ok(());
+        }
+
         // Verify our root matches the peer's reported root
         let final_root = self.epoch_manager.current_root()?;
         if final_root != response.commitment_root {
             warn!(
                 our_root = %hex::encode(&final_root[..8]),
                 peer_root = %hex::encode(&response.commitment_root[..8]),
-                "Root mismatch after tree sync — requesting more data"
+                "Root mismatch after tree sync — initiating note gap recovery"
             );
+
+            // Load our note indices and ask peer for any we're missing
+            let epoch = self.epoch_manager.current_epoch();
+            if let Ok(our_notes) = self.db.load_all_l2_notes_for_epoch(epoch) {
+                let our_indices: Vec<u64> = our_notes.iter().map(|(idx, _)| *idx).collect();
+                let gap_request = L2NoteGapRequest {
+                    requesting_node: self.our_id,
+                    our_note_count: our_indices.len() as u64,
+                    our_note_indices: our_indices,
+                    from_index: 0,
+                    timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                };
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    let payload = serde_json::to_vec(&gap_request)
+                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                    broadcast(MessageType::L2TreeSync, payload)?;
+                    info!("Sent note gap request to peers");
+                }
+            }
         } else {
             info!("Tree sync complete — root matches peer");
         }
@@ -1662,6 +1694,126 @@ impl NullifierRouteHandler {
                 .map_err(|e| GhostError::Serialization(e.to_string()))?;
             broadcast(MessageType::L2TreeSync, payload)?;
             info!(from_height = current_height, "Requested L2 tree sync from peers");
+        }
+
+        Ok(())
+    }
+
+    /// Handle note gap request — peer is missing notes after tree sync, respond with
+    /// the notes they don't have.
+    fn handle_note_gap_request(&self, request: &L2NoteGapRequest) -> GhostResult<Option<L2NoteGapResponse>> {
+        // Don't respond to our own requests
+        if request.requesting_node == self.our_id {
+            return Ok(None);
+        }
+
+        let epoch = self.epoch_manager.current_epoch();
+        let our_notes = self.db.load_all_l2_notes_for_epoch(epoch)?;
+
+        // Build set of requester's indices for O(1) lookup
+        let their_indices: HashSet<u64> = request.our_note_indices.iter().copied().collect();
+
+        // Find notes we have that they don't, starting from the pagination cursor
+        let mut missing: Vec<ShieldCommitment> = our_notes.iter()
+            .filter(|(idx, _)| *idx >= request.from_index && !their_indices.contains(idx))
+            .map(|(idx, commitment)| ShieldCommitment {
+                note_index: *idx,
+                commitment: *commitment,
+                block_height: 0,
+            })
+            .collect();
+
+        if missing.is_empty() {
+            return Ok(None);
+        }
+
+        // Cap at MAX_SYNC_CHECKPOINTS (100) per batch
+        let has_more = missing.len() > MAX_SYNC_CHECKPOINTS;
+        missing.truncate(MAX_SYNC_CHECKPOINTS);
+
+        info!(
+            peer = %hex::encode(&request.requesting_node[..8]),
+            batch_size = missing.len(),
+            has_more,
+            from_index = request.from_index,
+            our_count = our_notes.len(),
+            their_count = request.our_note_count,
+            "Responding to note gap request"
+        );
+
+        Ok(Some(L2NoteGapResponse {
+            responding_node: self.our_id,
+            missing_notes: missing,
+            their_note_count: our_notes.len() as u64,
+            commitment_root: self.epoch_manager.current_root()?,
+            has_more,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        }))
+    }
+
+    /// Handle note gap response — insert missing notes from peer to recover from SIGKILL gaps
+    fn handle_note_gap_response(&self, response: &L2NoteGapResponse) -> GhostResult<()> {
+        if response.missing_notes.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            from = %hex::encode(&response.responding_node[..8]),
+            count = response.missing_notes.len(),
+            has_more = response.has_more,
+            "Applying note gap recovery batch"
+        );
+
+        for note in &response.missing_notes {
+            // insert_commitment_at uses INSERT OR IGNORE — safe to replay
+            let _ = self.epoch_manager.insert_commitment_at(
+                note.note_index,
+                note.commitment,
+                note.block_height,
+            );
+        }
+
+        // If peer has more missing notes, request the next batch
+        if response.has_more {
+            // Pagination cursor: continue from after the last note we received
+            let next_index = response.missing_notes.iter()
+                .map(|n| n.note_index)
+                .max()
+                .unwrap_or(0) + 1;
+
+            let epoch = self.epoch_manager.current_epoch();
+            if let Ok(our_notes) = self.db.load_all_l2_notes_for_epoch(epoch) {
+                let our_indices: Vec<u64> = our_notes.iter().map(|(idx, _)| *idx).collect();
+                let follow_up = L2NoteGapRequest {
+                    requesting_node: self.our_id,
+                    our_note_count: our_indices.len() as u64,
+                    our_note_indices: our_indices,
+                    from_index: next_index,
+                    timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                };
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    let payload = serde_json::to_vec(&follow_up)
+                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                    broadcast(MessageType::L2TreeSync, payload)?;
+                    info!(from_index = next_index, "Requesting next note gap batch");
+                }
+            }
+            return Ok(());
+        }
+
+        // Final batch — check if roots match
+        let our_root = self.epoch_manager.current_root()?;
+        if our_root == response.commitment_root {
+            info!(
+                recovered_notes = response.missing_notes.len(),
+                "Note gap recovery complete — roots match"
+            );
+        } else {
+            warn!(
+                our_root = %hex::encode(&our_root[..8]),
+                peer_root = %hex::encode(&response.commitment_root[..8]),
+                "Root still mismatched after note gap recovery"
+            );
         }
 
         Ok(())
@@ -1853,7 +2005,7 @@ impl MessageHandler for NullifierRouteHandler {
             }
 
             MessageType::L2TreeSync => {
-                // Tree sync request/response for new nodes joining the network
+                // Tree sync request/response + note gap recovery
                 if let Ok(request) =
                     serde_json::from_slice::<L2TreeSyncRequest>(&envelope.payload)
                 {
@@ -1868,6 +2020,20 @@ impl MessageHandler for NullifierRouteHandler {
                     serde_json::from_slice::<L2TreeSyncResponse>(&envelope.payload)
                 {
                     self.handle_tree_sync_response(&response)?;
+                } else if let Ok(gap_req) =
+                    serde_json::from_slice::<L2NoteGapRequest>(&envelope.payload)
+                {
+                    if let Ok(Some(gap_resp)) = self.handle_note_gap_request(&gap_req) {
+                        if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                            let payload = serde_json::to_vec(&gap_resp)
+                                .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                            broadcast(MessageType::L2TreeSync, payload)?;
+                        }
+                    }
+                } else if let Ok(gap_resp) =
+                    serde_json::from_slice::<L2NoteGapResponse>(&envelope.payload)
+                {
+                    self.handle_note_gap_response(&gap_resp)?;
                 } else {
                     debug!("Unrecognized L2TreeSync message format");
                 }
