@@ -206,11 +206,7 @@
 
       <section class="doc-section" id="buds">
         <h2>BUDS Classification</h2>
-        <div class="warning-box">
-          <div class="warning-box-title">Planned Feature</div>
-          <div class="warning-box-content">BUDS is a proposed specification currently in design. The tier system described below is not yet implemented in the codebase.</div>
-        </div>
-        <p><strong>BUDS (Bitcoin Unified Data Standard)</strong> is Ghost's proposed system for classifying transaction data into tiers based on importance.</p>
+        <p><strong>BUDS (Bitcoin Unified Data Standard)</strong> is Ghost's system for classifying transaction data into tiers based on importance. The T0-T3 tier classification is active in production, used by the ghost-pool template processor for transaction filtering and block construction.</p>
         
         <h3>Tier Definitions</h3>
         <table>
@@ -302,11 +298,7 @@
 
       <section class="doc-section" id="mempool">
         <h2>Mempool Profiles</h2>
-        <div class="warning-box">
-          <div class="warning-box-title">Planned Feature</div>
-          <div class="warning-box-content">Mempool profiles are a proposed feature. Currently, Ghost uses standard Bitcoin Core mempool behavior.</div>
-        </div>
-        <p>Mempool profiles will control which transactions your node accepts and relays:</p>
+        <p>Mempool profiles control which transactions your node accepts and relays. Profiles are config-driven and available via the API:</p>
         
         <table>
           <tr>
@@ -352,11 +344,7 @@
 
       <section class="doc-section" id="templates">
         <h2>Template Profiles</h2>
-        <div class="warning-box">
-          <div class="warning-box-title">Planned Feature</div>
-          <div class="warning-box-content">Template profiles are a proposed feature. Currently, Ghost uses standard Bitcoin Core block template generation.</div>
-        </div>
-        <p>Template profiles will control how your node builds blocks for mining:</p>
+        <p>Template profiles control how your node builds blocks for mining. The <code>bitcoin_pure</code>, <code>permissive</code>, and <code>full_open</code> profiles filter transactions at template build time:</p>
         
         <table>
           <tr>
@@ -407,11 +395,7 @@
 
       <section class="doc-section" id="ghost-mode">
         <h2>Ghost Mode</h2>
-        <div class="warning-box">
-          <div class="warning-box-title">Planned Feature</div>
-          <div class="warning-box-content">Ghost Mode is a proposed feature currently in design. Not yet implemented.</div>
-        </div>
-        <p>Ghost Mode will make your node "invisible" on the network while remaining fully functional:</p>
+        <p>Ghost Mode makes your node "invisible" on the network while remaining fully functional. It operates in blocks-only relay mode, syncing with ghostd via RPC:</p>
         
         <h3>Behavior Changes</h3>
         <ul>

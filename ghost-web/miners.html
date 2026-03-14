@@ -207,6 +207,7 @@
         <a href="index.html">Home</a>
         <a href="network.html">Network</a>
         <a href="pool-stats.html">Pool</a>
+        <a href="features.html">Features</a>
         <a href="how-it-works.html">How It Works</a>
         <a href="economics.html">Economics</a>
         <a href="docs/index.html">Docs</a>
@@ -339,7 +340,7 @@
             </div>
             
             <div class="wizard-field">
-              <label>Region (<a href="node-finder.html" style="color: var(--orange); font-size: 12px;">find best node</a>)</label>
+              <label>Region</label>
               <select id="region-select">
                 <option value="eu">Europe - London (eu.pool.bitcoinghost.org)</option>
                 <option value="us">North America - New York (us.pool.bitcoinghost.org)</option>
@@ -403,7 +404,7 @@
   <section>
     <div class="container">
       <h2 class="section-title">Regional Pool Endpoints</h2>
-      <p class="section-subtitle">Connect to the nearest region for lowest latency. <a href="node-finder.html" style="color: var(--orange);">Use Node Finder</a> to discover the best endpoint.</p>
+      <p class="section-subtitle">Connect to the nearest region for lowest latency.</p>
 
       <!-- Regional endpoints grid -->
       <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 40px;">
@@ -440,7 +441,6 @@
       <div style="margin-top: 32px; padding: 24px; background: rgba(247, 147, 26, 0.1); border: 1px solid rgba(247, 147, 26, 0.3); border-radius: 12px; text-align: center;">
         <div style="font-weight: 600; color: var(--orange); margin-bottom: 8px;">Not sure which node to use?</div>
         <p style="font-size: 14px; color: var(--gray-300); margin-bottom: 16px;">Use Node Finder to discover all available pool nodes and test latency from your location.</p>
-        <a href="node-finder.html" class="btn btn-primary">Open Node Finder</a>
       </div>
 
       <!-- Protocol info -->
@@ -503,6 +503,20 @@
           <div class="benefit-icon">🌐</div>
           <div class="benefit-title">No Account Required</div>
           <div class="benefit-desc">Just point your miner and start hashing. Your Bitcoin address is your identity.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section style="padding: 80px 0; text-align: center; background: radial-gradient(ellipse at 50% 100%, rgba(247, 147, 26, 0.08) 0%, transparent 60%);">
+    <div class="container">
+      <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 24px; padding: 60px 40px; max-width: 700px; margin: 0 auto;">
+        <h2 style="font-size: 32px; font-weight: 700; margin-bottom: 16px;">Mining? Now send payments.</h2>
+        <p style="font-size: 16px; color: var(--gray-400); margin-bottom: 32px;">See real-time pool performance or start sending instant private payments with Ghost-Tap.</p>
+        <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+          <a href="pool-stats.html" class="btn btn-primary">View Pool Stats</a>
+          <a href="ghost-tap.html" class="btn btn-secondary">Send Payments</a>
         </div>
       </div>
     </div>
