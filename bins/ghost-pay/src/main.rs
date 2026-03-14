@@ -5232,11 +5232,15 @@ async fn simulate_l2_activity(
     };
 
     // Step 2: Shield a note (100,000 sats with random blinding)
+    // Zero last 8 bytes of each 32-byte random value to stay under
+    // BLS12-381 scalar field modulus (~2^255). blstrs is little-endian,
+    // so the last bytes are most significant.
     let spending_key: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
             return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
         }
+        buf[24..].fill(0);
         buf
     };
     let blinding: [u8; 32] = {
@@ -5244,6 +5248,7 @@ async fn simulate_l2_activity(
         if getrandom::getrandom(&mut buf).is_err() {
             return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
         }
+        buf[24..].fill(0);
         buf
     };
     let note_value: u64 = 100_000;
@@ -5332,6 +5337,7 @@ async fn simulate_l2_activity(
         if getrandom::getrandom(&mut buf).is_err() {
             return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
         }
+        buf[24..].fill(0);
         buf
     };
     let recipient_blinding: [u8; 32] = {
@@ -5339,6 +5345,7 @@ async fn simulate_l2_activity(
         if getrandom::getrandom(&mut buf).is_err() {
             return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
         }
+        buf[24..].fill(0);
         buf
     };
 

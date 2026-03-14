@@ -1260,36 +1260,43 @@ phase2_soak() {
         if (( iter % 4 == 0 )); then
             log "  ${BLUE}── Bi-hourly checks ──${RESET}"
 
+            # Round-robin VM selection for simulations (prevents VM1 accumulation)
+            local sim_vm=$(( (iter / 4) % VM_COUNT ))
+
             # Wraith simulation (ghost-pay endpoint, not ghost-pool)
-            log "  Triggering wraith simulation on VM1..."
+            log "  Triggering wraith simulation on ${VM_NAMES[$sim_vm]}..."
             local wraith_resp
-            wraith_resp=$(pay_api 0 "/api/v1/admin/simulate-wraith-session" "POST")
+            wraith_resp=$(pay_api "$sim_vm" "/api/v1/admin/simulate-wraith-session" "POST")
             if [[ -n "$wraith_resp" ]]; then
                 log "    Wraith simulation: ${GREEN}triggered${RESET}"
-                log_event "wraith-sim" "iteration=$iter" "triggered"
+                log_event "wraith-sim" "iteration=$iter,vm=${VM_NAMES[$sim_vm]}" "triggered"
             else
                 log "    Wraith simulation: ${YELLOW}no response${RESET}"
-                log_event "wraith-sim" "iteration=$iter" "no-response"
+                log_event "wraith-sim" "iteration=$iter,vm=${VM_NAMES[$sim_vm]}" "no-response"
             fi
 
-            # L2 activity simulation (ghost-pay endpoint, not ghost-pool)
-            log "  Triggering L2 activity simulation on VM1..."
-            local l2_resp
-            l2_resp=$(pay_api 0 "/api/v1/admin/simulate-l2-activity" "POST")
-            if [[ -n "$l2_resp" ]]; then
-                log_event "l2-activity-sim" "iteration=$iter" "triggered"
-            else
-                log_event "l2-activity-sim" "iteration=$iter" "no-response"
-            fi
+            # L2 activity simulation on ALL VMs (balanced note creation)
+            log "  Triggering L2 activity simulation on ALL VMs..."
+            for sim_i in $(seq 0 $((VM_COUNT - 1))); do
+                local l2_resp
+                l2_resp=$(pay_api "$sim_i" "/api/v1/admin/simulate-l2-activity" "POST")
+                if [[ -n "$l2_resp" ]]; then
+                    log "    ${VM_NAMES[$sim_i]}: ${GREEN}triggered${RESET}"
+                    log_event "l2-activity-sim" "iteration=$iter,vm=${VM_NAMES[$sim_i]}" "triggered"
+                else
+                    log "    ${VM_NAMES[$sim_i]}: ${YELLOW}no response${RESET}"
+                    log_event "l2-activity-sim" "iteration=$iter,vm=${VM_NAMES[$sim_i]}" "no-response"
+                fi
+            done
 
-            # Fee pipeline verification
-            log "  Verifying fee pipeline on VM1..."
+            # Fee pipeline verification (round-robin)
+            log "  Verifying fee pipeline on ${VM_NAMES[$sim_vm]}..."
             local fee_resp
-            fee_resp=$(pay_api 0 "/api/v1/admin/verify-fee-pipeline" "POST")
+            fee_resp=$(pay_api "$sim_vm" "/api/v1/admin/verify-fee-pipeline" "POST")
             if [[ -n "$fee_resp" ]]; then
-                log_event "fee-pipeline" "iteration=$iter" "ok"
+                log_event "fee-pipeline" "iteration=$iter,vm=${VM_NAMES[$sim_vm]}" "ok"
             else
-                log_event "fee-pipeline" "iteration=$iter" "no-response"
+                log_event "fee-pipeline" "iteration=$iter,vm=${VM_NAMES[$sim_vm]}" "no-response"
             fi
 
             # L2 epoch fee consistency
