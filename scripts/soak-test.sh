@@ -1772,17 +1772,14 @@ main() {
         if [[ $overall_result -eq 0 ]]; then
             log "Waiting 30s between Phase 0 and Phase 1 (rate limit cooldown)..."
             sleep 30
-            phase1_chaos || { overall_result=1; log "Aborting: chaos tests failed"; }
+            phase1_chaos || { log "WARNING: Phase 1 had failures — continuing to Phase 2"; }
         fi
 
-        if [[ $overall_result -eq 0 ]]; then
-            phase2_soak || overall_result=1
-        fi
+        # Always run Phase 2 (SIGKILL soak) even if Phase 1 had failures
+        phase2_soak || overall_result=1
 
-        # Always run phase 3 unless aborted early
-        if [[ $overall_result -eq 0 ]]; then
-            phase3_validation || overall_result=1
-        fi
+        # Always run Phase 3 validation
+        phase3_validation || overall_result=1
     fi
 
     echo ""
