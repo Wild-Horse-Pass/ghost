@@ -1525,6 +1525,35 @@ impl NullifierRouteHandler {
     fn handle_tree_sync_response(&self, response: &L2TreeSyncResponse) -> GhostResult<()> {
         if response.checkpoints.is_empty() {
             debug!("Empty tree sync response, nothing to replay");
+            // Even with no checkpoints to replay, check root convergence.
+            // This catches the case where notes were lost (e.g., SIGKILL) but
+            // checkpoint records survived — the node is at the right height
+            // but its Merkle root diverges from peers.
+            let our_root = self.epoch_manager.current_root()?;
+            if our_root != response.commitment_root && response.commitment_root != [0u8; 32] {
+                warn!(
+                    our_root = %hex::encode(&our_root[..8]),
+                    peer_root = %hex::encode(&response.commitment_root[..8]),
+                    "Root mismatch on empty tree sync — initiating note gap recovery"
+                );
+                let epoch = self.epoch_manager.current_epoch();
+                if let Ok(our_notes) = self.db.load_all_l2_notes_for_epoch(epoch) {
+                    let our_indices: Vec<u64> = our_notes.iter().map(|(idx, _)| *idx).collect();
+                    let gap_request = L2NoteGapRequest {
+                        requesting_node: self.our_id,
+                        our_note_count: our_indices.len() as u64,
+                        our_note_indices: our_indices,
+                        from_index: 0,
+                        timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                    };
+                    if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                        let payload = serde_json::to_vec(&gap_request)
+                            .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                        broadcast(MessageType::L2TreeSync, payload)?;
+                        info!("Sent note gap request to peers (empty sync path)");
+                    }
+                }
+            }
             return Ok(());
         }
 
