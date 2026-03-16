@@ -23,7 +23,6 @@ void RegisterSignMessageRPCCommands(CRPCTable&);
 void RegisterSignerRPCCommands(CRPCTable &tableRPC);
 void RegisterTxoutProofRPCCommands(CRPCTable&);
 void RegisterHazeRPCCommands(CRPCTable&);
-void RegisterRungRPCCommands(CRPCTable&);  // LADDER SCRIPT
 
 static inline void RegisterAllCoreRPCCommands(CRPCTable &t)
 {
@@ -41,7 +40,6 @@ static inline void RegisterAllCoreRPCCommands(CRPCTable &t)
 #endif // ENABLE_EXTERNAL_SIGNER
     RegisterTxoutProofRPCCommands(t);
     RegisterHazeRPCCommands(t);
-    RegisterRungRPCCommands(t);  // LADDER SCRIPT
 }
 
 #endif // BITCOIN_RPC_REGISTER_H

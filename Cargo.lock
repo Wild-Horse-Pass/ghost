@@ -2979,26 +2979,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghost-light-wallet-tui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bitcoin",
- "chrono",
- "clap",
- "crossterm",
- "dirs 5.0.1",
- "ghost-gsp-proto",
- "ghost-light-wallet",
- "ratatui",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "ghost-locks"
 version = "1.8.0"
 dependencies = [

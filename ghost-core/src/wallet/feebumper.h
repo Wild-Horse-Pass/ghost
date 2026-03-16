@@ -92,7 +92,6 @@ public:
             break;
         case SigVersion::TAPROOT:
         case SigVersion::TAPSCRIPT:
-        case SigVersion::LADDER: // LADDER SCRIPT: not used in wallet fee bumping
             assert(false);
         }
     }
