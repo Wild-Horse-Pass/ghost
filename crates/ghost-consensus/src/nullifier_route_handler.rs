@@ -188,6 +188,9 @@ pub struct NullifierRouteHandler {
     global_msg_rate: RwLock<(Instant, u32)>,
     /// Last tree sync request per peer (for rate limiting)
     sync_requests: RwLock<HashMap<NodeId, Instant>>,
+    /// Client-side cooldown: last time we sent a tree sync request.
+    /// Prevents spamming peers (who rate-limit at 60s) with redundant requests.
+    last_sync_request_sent: RwLock<Option<Instant>>,
     /// Cached proposal for the current height. Reused on repeated proposal cycles to ensure
     /// hash stability — without this, any tree mutation between cycles would change the hash
     /// and reset peer vote state, preventing BFT quorum.
@@ -229,6 +232,7 @@ impl NullifierRouteHandler {
             peer_msg_rates: RwLock::new(HashMap::new()),
             global_msg_rate: RwLock::new((Instant::now(), 0)),
             sync_requests: RwLock::new(HashMap::new()),
+            last_sync_request_sent: RwLock::new(None),
             cached_proposal: RwLock::new(None),
             finalize_fn: RwLock::new(None),
             metrics: RwLock::new(None),
@@ -1708,8 +1712,22 @@ impl NullifierRouteHandler {
         Ok(())
     }
 
-    /// Request tree sync from peers (called on startup or when behind)
+    /// Request tree sync from peers (called on startup or when behind).
+    /// Client-side cooldown prevents spamming peers who rate-limit at 60s.
     pub fn request_tree_sync(&self) -> GhostResult<()> {
+        // Client-side dedup: don't re-request within the cooldown window.
+        // Peers rate-limit at SYNC_REQUEST_COOLDOWN_SECS, so sending more
+        // often just wastes bandwidth and delays the first accepted response.
+        {
+            let last = self.last_sync_request_sent.read();
+            if let Some(last_time) = *last {
+                if last_time.elapsed().as_secs() < SYNC_REQUEST_COOLDOWN_SECS {
+                    debug!("Tree sync request suppressed (client-side cooldown)");
+                    return Ok(());
+                }
+            }
+        }
+
         let current_height = self.epoch_manager.current_height();
 
         let request = L2TreeSyncRequest {
@@ -1722,6 +1740,7 @@ impl NullifierRouteHandler {
             let payload = serde_json::to_vec(&request)
                 .map_err(|e| GhostError::Serialization(e.to_string()))?;
             broadcast(MessageType::L2TreeSync, payload)?;
+            *self.last_sync_request_sent.write() = Some(Instant::now());
             info!(from_height = current_height, "Requested L2 tree sync from peers");
         }
 
