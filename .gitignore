@@ -65,8 +65,16 @@ docs/ops/
 docs/MAINNET_CHECKLIST.md
 docs/RECOVERY_RUNBOOK.md
 
+# Audit and report files
+audit.toml
+OVERNIGHT_REPORT.md
+
 # Soak test logs (ephemeral run data)
 soak-logs/
+
+# Build artifacts (C++/Next.js)
+ghost-core/build/
+dashboard/.next/
 
 # Fuzz corpus and artifacts (machine-generated, ~100MB)
 fuzz/corpus/
