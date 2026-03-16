@@ -222,6 +222,14 @@ CTxDestination ConsumeTxDestination(FuzzedDataProvider& fuzzed_data_provider) no
                 program = {0, 0};
             }
             tx_destination = WitnessUnknown{fuzzed_data_provider.ConsumeIntegralInRange<unsigned int>(2, 16), program};
+        },
+        [&] {
+            auto scan = ConsumeFixedLengthByteVector(fuzzed_data_provider, 33);
+            auto spend = ConsumeFixedLengthByteVector(fuzzed_data_provider, 33);
+            std::array<unsigned char, 33> scan_arr, spend_arr;
+            std::copy(scan.begin(), scan.end(), scan_arr.begin());
+            std::copy(spend.begin(), spend.end(), spend_arr.begin());
+            tx_destination = SilentPaymentDestination{scan_arr, spend_arr};
         })};
     Assert(call_size == std::variant_size_v<CTxDestination>);
     return tx_destination;

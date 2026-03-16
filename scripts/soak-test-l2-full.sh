@@ -11,7 +11,7 @@
 # 15-minute iterations (24 total for 6 hours).
 #
 # Usage:
-#   ./scripts/soak-test-l2-full.sh [--hours N] [--no-inject]
+#   ./scripts/soak-test-l2-full.sh [--hours N] [--no-inject] [--dry-run]
 
 set -uo pipefail
 # Note: NOT using set -e — fault injection functions intentionally trigger failures.
@@ -21,6 +21,7 @@ set -uo pipefail
 
 SOAK_HOURS=6
 NO_INJECT=""
+DRY_RUN=""
 ITER_INTERVAL=900  # 15 minutes between iterations
 
 SSH_KEY="$HOME/.ssh/ghost_signet_ed25519"
@@ -785,6 +786,7 @@ preflight() {
     log "${BOLD}═══════════════════════════════════════════════════════════════════${RESET}"
     log "${BOLD}  Comprehensive L2 Soak Test: Wraith + Payments + Gap Recovery${RESET}"
     log "${BOLD}  Duration: ${SOAK_HOURS} hours | Interval: $((ITER_INTERVAL / 60)) min${RESET}"
+    log "${BOLD}  Mode: $([ -n "$DRY_RUN" ] && echo "DRY RUN (1 hour, no injection)" || echo "FULL")${RESET}"
     log "${BOLD}  Injections: $([ "$NO_INJECT" == "--no-inject" ] && echo "DISABLED" || echo "ENABLED")${RESET}"
     log "${BOLD}═══════════════════════════════════════════════════════════════════${RESET}"
     log ""
@@ -1118,6 +1120,7 @@ main() {
         case "$1" in
             --hours) SOAK_HOURS="$2"; shift 2 ;;
             --no-inject) NO_INJECT="--no-inject"; shift ;;
+            --dry-run) DRY_RUN="1"; SOAK_HOURS=1; NO_INJECT="--no-inject"; shift ;;
             *) shift ;;
         esac
     done

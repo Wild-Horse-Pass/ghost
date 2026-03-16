@@ -1637,6 +1637,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/l2/finalize", post(l2_finalize_handler))
         .route("/api/v1/admin/verify-fee-pipeline", post(verify_fee_pipeline))
         .route("/api/v1/admin/simulate-l2-activity", post(simulate_l2_activity))
+        .route("/api/v1/admin/simulate-unshield", post(simulate_unshield))
         .route("/api/v1/admin/simulate-wraith-session", post(simulate_wraith_session))
         .layer(axum::middleware::from_fn(localhost_only))
         .with_state(state.clone());
@@ -5535,6 +5536,189 @@ async fn simulate_l2_activity(
     let all_pass = steps
         .values()
         .all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
+
+    Json(serde_json::json!({
+        "success": all_pass,
+        "elapsed_ms": start.elapsed().as_millis(),
+        "steps": steps,
+    }))
+}
+
+/// Simulate unshield (L2 → L1 withdrawal): shield a note, generate unshield proof, verify it.
+/// Does NOT create an actual L1 transaction — validates the ZK pipeline only.
+async fn simulate_unshield(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use std::path::PathBuf;
+
+    let mut steps = serde_json::Map::new();
+    let start = std::time::Instant::now();
+
+    // Step 1: Load unshield prover params (MPC slot 3)
+    let prover = {
+        let params_dir = PathBuf::from(
+            std::env::var("GHOST_MPC_PARAMS_DIR")
+                .unwrap_or_else(|_| "/home/ghost/.ghost/mpc_params".to_string()),
+        );
+        let params_path = params_dir.join("unshield_params_current.bin");
+        match ghost_mpc::params::load_parameters(&params_path) {
+            Ok(params) => {
+                let prover = ghost_zkp::GhostUnshieldProver::new_with_params(
+                    Arc::new(params),
+                    COMMITMENT_TREE_DEPTH,
+                );
+                steps.insert(
+                    "load_prover".into(),
+                    serde_json::json!({
+                        "pass": true,
+                        "params_path": params_path.display().to_string(),
+                        "elapsed_ms": start.elapsed().as_millis(),
+                    }),
+                );
+                prover
+            }
+            Err(e) => {
+                steps.insert(
+                    "load_prover".into(),
+                    serde_json::json!({
+                        "pass": false,
+                        "error": format!("{e}"),
+                        "params_path": params_path.display().to_string(),
+                    }),
+                );
+                return Json(serde_json::json!({
+                    "success": false,
+                    "steps": steps,
+                    "error": "Unshield prover params not available",
+                }));
+            }
+        }
+    };
+
+    // Step 2: Shield a test note (reuses same pattern as simulate-l2-activity)
+    let spending_key: [u8; 32] = {
+        let mut buf = [0u8; 32];
+        if getrandom::getrandom(&mut buf).is_err() {
+            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+        }
+        buf[24..].fill(0);
+        buf
+    };
+    let blinding: [u8; 32] = {
+        let mut buf = [0u8; 32];
+        if getrandom::getrandom(&mut buf).is_err() {
+            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+        }
+        buf[24..].fill(0);
+        buf
+    };
+    let note_value: u64 = 100_000;
+
+    let commitment = match ghost_zkp::compute_commitment_bytes(note_value, &blinding) {
+        Ok(c) => c,
+        Err(e) => {
+            steps.insert("shield_note".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            return Json(serde_json::json!({"success": false, "steps": steps}));
+        }
+    };
+
+    let (note_index, _commitment_root) = {
+        let mut tree = state.commitment_tree.write();
+        let idx = tree.next_index();
+        tree.insert(idx, commitment);
+        let root = tree.root().unwrap_or([0u8; 32]);
+        (idx, root)
+    };
+
+    let current_height = state.rpc.get_block_count().await.unwrap_or(0);
+    let _ = state.db.insert_confidential_note(note_index, &commitment, &spending_key, current_height);
+
+    // Sync to ghost-pool
+    let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
+    let sync_body = serde_json::json!({
+        "commitment": hex::encode(commitment),
+        "note_index": note_index,
+        "block_height": current_height,
+    });
+    let _ = state.pool_http_client.post(&sync_url).json(&sync_body).send().await;
+
+    steps.insert("shield_note".into(), serde_json::json!({
+        "pass": true,
+        "note_index": note_index,
+        "note_value": note_value,
+    }));
+
+    // Step 3: Get Merkle proof
+    let merkle_siblings = {
+        let tree = state.commitment_tree.read();
+        match tree.get_proof(note_index) {
+            Ok(proof) => proof.siblings,
+            Err(e) => {
+                steps.insert("merkle_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+                return Json(serde_json::json!({"success": false, "steps": steps}));
+            }
+        }
+    };
+    steps.insert("merkle_proof".into(), serde_json::json!({"pass": true, "depth": merkle_siblings.len()}));
+
+    // Step 4: Generate unshield proof (MPC slot 3 circuit)
+    let epoch = ghost_common::constants::l2_epoch_from_height(current_height);
+    let witness = ghost_zkp::UnshieldWitness {
+        spending_key,
+        note_value,
+        note_blinding: blinding,
+        note_index,
+        epoch,
+        merkle_siblings,
+    };
+
+    let proof_start = std::time::Instant::now();
+    let proof = match prover.prove(&witness) {
+        Ok(p) => {
+            steps.insert("unshield_proof".into(), serde_json::json!({
+                "pass": true,
+                "proof_bytes": p.proof.len(),
+                "nullifier": hex::encode(p.public_inputs.nullifier),
+                "withdrawal_amount": p.public_inputs.withdrawal_amount,
+                "elapsed_ms": proof_start.elapsed().as_millis(),
+            }));
+            p
+        }
+        Err(e) => {
+            steps.insert("unshield_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            return Json(serde_json::json!({"success": false, "steps": steps}));
+        }
+    };
+
+    // Step 5: Verify through production unshield verifier
+    let verifier = match state.unshield_verifier.read().as_ref().cloned() {
+        Some(v) => v,
+        None => {
+            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": "Unshield verifier not initialized"}));
+            return Json(serde_json::json!({"success": false, "steps": steps}));
+        }
+    };
+
+    match verifier.verify(&proof) {
+        Ok(true) => {
+            steps.insert("verify_unshield".into(), serde_json::json!({
+                "pass": true,
+                "verified_by_mpc_vk": true,
+                "nullifier": hex::encode(proof.public_inputs.nullifier),
+                "withdrawal_amount": proof.public_inputs.withdrawal_amount,
+            }));
+        }
+        Ok(false) => {
+            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": "Proof verification returned false"}));
+            return Json(serde_json::json!({"success": false, "steps": steps}));
+        }
+        Err(e) => {
+            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            return Json(serde_json::json!({"success": false, "steps": steps}));
+        }
+    }
+
+    let all_pass = steps.values().all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
 
     Json(serde_json::json!({
         "success": all_pass,

@@ -1722,7 +1722,10 @@ impl NullifierRouteHandler {
             let last = self.last_sync_request_sent.read();
             if let Some(last_time) = *last {
                 if last_time.elapsed().as_secs() < SYNC_REQUEST_COOLDOWN_SECS {
-                    debug!("Tree sync request suppressed (client-side cooldown)");
+                    info!(
+                        remaining_secs = SYNC_REQUEST_COOLDOWN_SECS - last_time.elapsed().as_secs(),
+                        "Tree sync request suppressed (client-side cooldown)"
+                    );
                     return Ok(());
                 }
             }
