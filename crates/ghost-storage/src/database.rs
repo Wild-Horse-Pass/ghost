@@ -1108,6 +1108,13 @@ impl Database {
         let challenges_deleted = self.prune_old_challenges(config.keep_challenge_days)?;
         let verifications_deleted = self.prune_old_verifications(config.keep_verification_days)?;
         let checkpoints_pruned = self.prune_old_l2_checkpoints(config.keep_checkpoint_days)?;
+        let pending_shields_cleaned = match self.delete_stale_pending_shields() {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(error = %e, "Failed to clean stale pending shields");
+                0
+            }
+        };
 
         // Checkpoint WAL
         self.checkpoint()?;
@@ -1120,7 +1127,8 @@ impl Database {
             + uptime_deleted
             + challenges_deleted.total()
             + verifications_deleted
-            + checkpoints_pruned;
+            + checkpoints_pruned
+            + pending_shields_cleaned;
         if total_deleted > 1000 || config.force_optimize {
             self.optimize()?;
         }
@@ -1136,6 +1144,7 @@ impl Database {
             challenges_deleted = challenges_deleted.total(),
             verifications_deleted,
             checkpoints_pruned,
+            pending_shields_cleaned,
             db_size_mb = stats.size_mb(),
             "Database maintenance complete"
         );
@@ -1149,6 +1158,7 @@ impl Database {
             challenges_deleted,
             verifications_deleted,
             checkpoints_pruned,
+            pending_shields_cleaned,
             db_size_bytes: stats.size_bytes,
         })
     }
@@ -1227,6 +1237,7 @@ pub struct MaintenanceResult {
     pub challenges_deleted: ChallengesPruneResult,
     pub verifications_deleted: usize,
     pub checkpoints_pruned: usize,
+    pub pending_shields_cleaned: usize,
     pub db_size_bytes: i64,
 }
 

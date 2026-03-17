@@ -239,8 +239,12 @@ impl EpochManager {
     /// Initialize from database state (called at startup)
     pub fn initialize(&self) -> GhostResult<()> {
         // Load active epoch
+        let mut loaded_epoch: Option<u64> = None;
+        let mut loaded_notes: Vec<(u64, [u8; 32])> = Vec::new();
+
         if let Some(epoch_record) = self.db.get_active_l2_epoch()? {
             *self.current_epoch.write() = epoch_record.epoch;
+            loaded_epoch = Some(epoch_record.epoch);
             info!(epoch = epoch_record.epoch, "Restored active epoch from DB");
 
             // Reconstruct commitment tree from persisted notes
@@ -251,6 +255,7 @@ impl EpochManager {
             }
             *self.commitment_tree.write() = tree;
             info!(notes = notes.len(), "Reconstructed commitment tree");
+            loaded_notes = notes;
 
             // Reconstruct nullifier set from confirmed nullifiers
             let nullifiers = self.db.load_l2_nullifiers_for_epoch(epoch_record.epoch)?;
@@ -308,8 +313,39 @@ impl EpochManager {
                         checkpoint_root = %hex::encode(&checkpoint.commitment_root[..8]),
                         checkpoint_height = checkpoint.height,
                         "INTEGRITY: Tree root does not match any known valid root after startup rebuild. \
-                         This node will request tree sync from peers to converge."
+                         Attempting phantom note pruning before requesting tree sync."
                     );
+
+                    // Attempt phantom note pruning
+                    if let Some(epoch) = loaded_epoch {
+                        match self.prune_phantom_notes(epoch, &loaded_notes, &checkpoint) {
+                            Ok(pruned) if pruned > 0 => {
+                                let new_root = self.commitment_tree.read()
+                                    .root()
+                                    .unwrap_or([0u8; 32]);
+                                if new_root == checkpoint.commitment_root {
+                                    info!(
+                                        pruned,
+                                        new_root = %hex::encode(&new_root[..8]),
+                                        "Phantom pruning resolved tree root divergence"
+                                    );
+                                } else {
+                                    warn!(
+                                        pruned,
+                                        new_root = %hex::encode(&new_root[..8]),
+                                        checkpoint_root = %hex::encode(&checkpoint.commitment_root[..8]),
+                                        "Phantom pruning did not fully resolve divergence — will request tree sync"
+                                    );
+                                }
+                            }
+                            Ok(_) => {
+                                warn!("No phantom notes found — divergence may require tree sync from peers");
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Phantom note pruning failed — will request tree sync");
+                            }
+                        }
+                    }
                 } else {
                     info!(
                         tree_root = %hex::encode(&tree_root[..8]),
@@ -353,6 +389,91 @@ impl EpochManager {
 
         info!("Initialized L2 epoch 0 (genesis)");
         Ok(())
+    }
+
+    /// Prune phantom notes — notes in l2_notes that were synced but never included
+    /// in any finalized checkpoint. Scans backwards from the tail of the sorted notes
+    /// to find the count N where building a tree from notes[0..N] matches the checkpoint root.
+    fn prune_phantom_notes(
+        &self,
+        epoch: u64,
+        notes: &[(u64, [u8; 32])],
+        checkpoint: &ghost_storage::L2CheckpointRecord,
+    ) -> GhostResult<usize> {
+        if notes.is_empty() {
+            return Ok(0);
+        }
+
+        let target_root = checkpoint.commitment_root;
+
+        // Reverse linear scan: start from all notes, remove from the tail one at a time.
+        // Phantoms are appended after the checkpointed notes, so they'll be at the end
+        // of the sorted list. Cap at 100 iterations to bound worst case.
+        // Notes are already sorted by note_index (from load_all_l2_notes_for_epoch).
+        let max_scan = notes.len().min(100);
+        let mut found: Option<usize> = None;
+
+        for count in (1..=notes.len()).rev().take(max_scan) {
+            let mut tree = CommitmentTree::new(self.config.tree_depth);
+            for (index, commitment) in notes.iter().take(count) {
+                tree.insert(*index, *commitment);
+            }
+            let root = tree.root().unwrap_or([0u8; 32]);
+
+            if root == target_root {
+                found = Some(count);
+                break;
+            }
+        }
+
+        let valid_count = match found {
+            Some(n) => n,
+            None => {
+                warn!(
+                    epoch,
+                    notes = notes.len(),
+                    checkpoint_root = %hex::encode(&target_root[..8]),
+                    "Phantom pruning: could not find any subset matching checkpoint root — skipping"
+                );
+                return Ok(0);
+            }
+        };
+
+        let phantom_count = notes.len() - valid_count;
+        if phantom_count == 0 {
+            return Ok(0);
+        }
+
+        // Get the highest valid note_index
+        let max_valid_index = notes[valid_count - 1].0;
+
+        // Delete phantom notes from DB
+        let deleted = self.db.delete_l2_notes_above_index(epoch, max_valid_index)?;
+
+        // Clean up orphaned pending shields
+        let pending_cleaned = self.db.delete_stale_pending_shields()?;
+
+        // Rebuild tree with only valid notes
+        let mut tree = CommitmentTree::new(self.config.tree_depth);
+        for (index, commitment) in notes.iter().take(valid_count) {
+            tree.insert(*index, *commitment);
+        }
+        *self.commitment_tree.write() = tree;
+
+        let phantom_indices_start = max_valid_index + 1;
+        let phantom_indices_end = notes.last().map(|(idx, _)| *idx).unwrap_or(0);
+
+        warn!(
+            pruned = phantom_count,
+            deleted_from_db = deleted,
+            pending_cleaned,
+            indices = %format!("{}..{}", phantom_indices_start, phantom_indices_end),
+            valid_notes = valid_count,
+            checkpoint_root = %hex::encode(&target_root[..8]),
+            "Pruned phantom notes (indices not in any finalized checkpoint)"
+        );
+
+        Ok(phantom_count)
     }
 
     // =========================================================================

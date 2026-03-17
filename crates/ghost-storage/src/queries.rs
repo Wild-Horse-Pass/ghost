@@ -6264,6 +6264,34 @@ impl Database {
         })
     }
 
+    /// Delete L2 notes with note_index above a threshold for a given epoch.
+    /// Used during phantom note pruning to remove notes not included in any checkpoint.
+    pub fn delete_l2_notes_above_index(&self, epoch: u64, max_index: u64) -> GhostResult<usize> {
+        self.with_connection(|conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM l2_notes WHERE epoch = ?1 AND note_index > ?2",
+                    params![epoch as i64, max_index as i64],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(deleted)
+        })
+    }
+
+    /// Delete pending shields whose note_index is not present in l2_notes.
+    /// Shields should checkpoint within seconds; orphaned entries are phantom remnants.
+    pub fn delete_stale_pending_shields(&self) -> GhostResult<usize> {
+        self.with_connection(|conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM pending_l2_shields WHERE note_index NOT IN (SELECT note_index FROM l2_notes)",
+                    [],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(deleted)
+        })
+    }
+
     // =========================================================================
     // L2 NULLIFIERS (EPOCH-SCOPED)
     // =========================================================================

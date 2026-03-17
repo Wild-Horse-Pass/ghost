@@ -1639,6 +1639,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/admin/simulate-l2-activity", post(simulate_l2_activity))
         .route("/api/v1/admin/simulate-unshield", post(simulate_unshield))
         .route("/api/v1/admin/simulate-wraith-session", post(simulate_wraith_session))
+        .route("/api/v1/admin/test-withdrawal", post(test_withdrawal))
         .layer(axum::middleware::from_fn(localhost_only))
         .with_state(state.clone());
 
@@ -5727,6 +5728,210 @@ async fn simulate_unshield(
     }))
 }
 
+/// Test the full L1 withdrawal pipeline: shield → proof → submit_unshield → relay.
+/// Does NOT broadcast to Bitcoin L1 (requires a funded Ghost Lock).
+/// Exercises: ZK proof generation, nullifier spending, and relay to ghost-pool.
+async fn test_withdrawal(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use std::path::PathBuf;
+
+    let mut steps = serde_json::Map::new();
+    let start = std::time::Instant::now();
+
+    // Step 1: Load unshield prover params (MPC slot 3)
+    let prover = {
+        let params_dir = PathBuf::from(
+            std::env::var("GHOST_MPC_PARAMS_DIR")
+                .unwrap_or_else(|_| "/home/ghost/.ghost/mpc_params".to_string()),
+        );
+        let params_path = params_dir.join("unshield_params_current.bin");
+        match ghost_mpc::params::load_parameters(&params_path) {
+            Ok(params) => {
+                let prover = ghost_zkp::GhostUnshieldProver::new_with_params(
+                    Arc::new(params),
+                    COMMITMENT_TREE_DEPTH,
+                );
+                steps.insert("load_prover".into(), serde_json::json!({"pass": true}));
+                prover
+            }
+            Err(e) => {
+                steps.insert("load_prover".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+                return Json(serde_json::json!({"success": false, "steps": steps, "error": "Prover params not available"}));
+            }
+        }
+    };
+
+    // Step 2: Shield a test note
+    let spending_key: [u8; 32] = {
+        let mut buf = [0u8; 32];
+        if getrandom::getrandom(&mut buf).is_err() {
+            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+        }
+        buf[24..].fill(0);
+        buf
+    };
+    let blinding: [u8; 32] = {
+        let mut buf = [0u8; 32];
+        if getrandom::getrandom(&mut buf).is_err() {
+            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+        }
+        buf[24..].fill(0);
+        buf
+    };
+    let note_value: u64 = 1_000; // 1000 sats
+
+    let commitment = match ghost_zkp::compute_commitment_bytes(note_value, &blinding) {
+        Ok(c) => c,
+        Err(e) => {
+            steps.insert("shield_note".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            return Json(serde_json::json!({"success": false, "steps": steps}));
+        }
+    };
+
+    let (note_index, commitment_root) = {
+        let mut tree = state.commitment_tree.write();
+        let idx = tree.next_index();
+        tree.insert(idx, commitment);
+        let root = tree.root().unwrap_or([0u8; 32]);
+        (idx, root)
+    };
+
+    let current_height = state.rpc.get_block_count().await.unwrap_or(0);
+    let _ = state.db.insert_confidential_note(note_index, &commitment, &spending_key, current_height);
+
+    // Sync to ghost-pool
+    let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
+    let sync_body = serde_json::json!({
+        "commitment": hex::encode(commitment),
+        "note_index": note_index,
+        "block_height": current_height,
+    });
+    let sync_result = state.pool_http_client.post(&sync_url).json(&sync_body).send().await;
+    let synced = sync_result.is_ok();
+
+    steps.insert("shield_note".into(), serde_json::json!({
+        "pass": true,
+        "note_index": note_index,
+        "note_value": note_value,
+        "synced_to_pool": synced,
+    }));
+
+    // Step 3: Get Merkle proof
+    let merkle_siblings = {
+        let tree = state.commitment_tree.read();
+        match tree.get_proof(note_index) {
+            Ok(proof) => proof.siblings,
+            Err(e) => {
+                steps.insert("merkle_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+                return Json(serde_json::json!({"success": false, "steps": steps}));
+            }
+        }
+    };
+    steps.insert("merkle_proof".into(), serde_json::json!({"pass": true, "depth": merkle_siblings.len()}));
+
+    // Step 4: Generate unshield proof
+    let epoch = ghost_common::constants::l2_epoch_from_height(current_height);
+    let witness = ghost_zkp::UnshieldWitness {
+        spending_key,
+        note_value,
+        note_blinding: blinding,
+        note_index,
+        epoch,
+        merkle_siblings,
+    };
+
+    let proof_start = std::time::Instant::now();
+    let proof = match prover.prove(&witness) {
+        Ok(p) => {
+            steps.insert("unshield_proof".into(), serde_json::json!({
+                "pass": true,
+                "proof_bytes": p.proof.len(),
+                "nullifier": hex::encode(p.public_inputs.nullifier),
+                "withdrawal_amount": p.public_inputs.withdrawal_amount,
+                "elapsed_ms": proof_start.elapsed().as_millis(),
+            }));
+            p
+        }
+        Err(e) => {
+            steps.insert("unshield_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            return Json(serde_json::json!({"success": false, "steps": steps}));
+        }
+    };
+    let proof_time_ms = proof_start.elapsed().as_millis();
+
+    // Step 5: Submit through the REAL unshield path (POST to our own endpoint)
+    let unshield_body = serde_json::json!({
+        "proof_hex": hex::encode(&proof.proof),
+        "commitment_root": hex::encode(commitment_root),
+        "nullifier": hex::encode(proof.public_inputs.nullifier),
+        "withdrawal_amount_sats": proof.public_inputs.withdrawal_amount,
+        "destination_address": "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+    });
+
+    let submit_url = format!("http://localhost:{}/api/v1/confidential/unshield", 8800);
+
+    // Construct HMAC auth headers (unshield endpoint requires API auth)
+    let body_bytes = serde_json::to_vec(&unshield_body).unwrap_or_default();
+    let timestamp = chrono::Utc::now().timestamp().to_string();
+    let signature = if let Some(ref secret) = state.config.api_secret {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
+            .unwrap_or_else(|_| <Hmac<Sha256> as Mac>::new_from_slice(b"").unwrap());
+        mac.update(timestamp.as_bytes());
+        mac.update(&body_bytes);
+        hex::encode(mac.finalize().into_bytes())
+    } else {
+        String::new()
+    };
+
+    let submit_result = state.pool_http_client
+        .post(&submit_url)
+        .header("Content-Type", "application/json")
+        .header("X-Ghost-Signature", &signature)
+        .header("X-Ghost-Timestamp", &timestamp)
+        .body(body_bytes)
+        .send()
+        .await;
+
+    let (nullifier_spent, relayed_to_pool, submit_detail) = match submit_result {
+        Ok(resp) => {
+            let status = resp.status();
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            if status.is_success() {
+                let relayed = body.get("relayed_to_pool")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                (true, relayed, body)
+            } else {
+                (false, false, body)
+            }
+        }
+        Err(e) => {
+            (false, false, serde_json::json!({"error": format!("{e}")}))
+        }
+    };
+
+    steps.insert("submit_unshield".into(), serde_json::json!({
+        "pass": nullifier_spent,
+        "nullifier_spent": nullifier_spent,
+        "relayed_to_pool": relayed_to_pool,
+        "detail": submit_detail,
+    }));
+
+    let all_pass = steps.values().all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
+
+    Json(serde_json::json!({
+        "success": all_pass,
+        "elapsed_ms": start.elapsed().as_millis(),
+        "proof_time_ms": proof_time_ms,
+        "nullifier_spent": nullifier_spent,
+        "relayed_to_pool": relayed_to_pool,
+        "steps": steps,
+    }))
+}
+
 /// Simulate a full wraith session with 10 virtual participants on signet
 async fn simulate_wraith_session(
     State(state): State<Arc<AppState>>,
@@ -6216,42 +6421,6 @@ fn update_sim_state(state: &AppState, session_id: &str, new_state: &str) {
     if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
         session.state = new_state.to_string();
     }
-}
-
-async fn wait_for_confirmation(
-    rpc: &BitcoinRpc,
-    txid: &str,
-    required: i64,
-) -> Result<(), String> {
-    for attempt in 0..120 {
-        // Max ~30 minutes at 15s intervals
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-
-        match rpc.get_raw_transaction(txid, true).await {
-            Ok(tx_info) => {
-                let confirmations = tx_info
-                    .get("confirmations")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                if confirmations >= required {
-                    return Ok(());
-                }
-                if attempt % 4 == 0 {
-                    debug!(txid = %txid, confirmations, "Waiting for confirmation");
-                }
-            }
-            Err(_) if attempt < 4 => {
-                // Tx might not be indexed yet
-                continue;
-            }
-            Err(e) => {
-                warn!(txid = %txid, error = %e, attempt, "Error checking tx confirmation");
-            }
-        }
-    }
-    Err(format!(
-        "Timed out waiting for {required} confirmations on {txid}"
-    ))
 }
 
 ///
