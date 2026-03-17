@@ -7549,7 +7549,7 @@ async fn send_l2_payment(
             let lock_balance: i64 = conn
                 .query_row(
                     "SELECT COALESCE(SUM(amount_sats), 0) FROM ghost_locks \
-                     WHERE owner_ghost_id = ?1 AND state = 'Active'",
+                     WHERE owner_ghost_id = ?1 AND state = 'active'",
                     rusqlite::params![sender_gid],
                     |row| row.get(0),
                 )
