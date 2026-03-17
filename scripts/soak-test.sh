@@ -1209,6 +1209,23 @@ phase2_soak() {
     log "Starting soak: $total_iterations iterations over ${SOAK_HOURS} hours"
     log "Logs: $LOG_DIR"
 
+    # Seed L2 test balance on all VMs so send_l2_payment has funds
+    log "Seeding L2 test balance on all VMs..."
+    for i in $(seq 0 $((VM_COUNT - 1))); do
+        local seed_result
+        seed_result=$(ssh_cmd "$i" "curl -s -X POST -H 'Content-Type: application/json' \
+            -H 'X-Api-Secret: ${VM_PAY_SECRETS[$i]}' \
+            -d '{\"amount_sats\": 10000000}' \
+            http://localhost:${PAY_PORT}/api/v1/admin/seed-test-balance" 2>/dev/null)
+        local seed_ok
+        seed_ok=$(echo "$seed_result" | jq -r '.success // false' 2>/dev/null)
+        if [[ "$seed_ok" == "true" ]]; then
+            log "  ${GREEN}✓${RESET} Seeded 0.1 BTC test balance on $(vm_label $i)"
+        else
+            log "  ${YELLOW}!${RESET} Seed failed on $(vm_label $i): $(echo "$seed_result" | jq -r '.error // empty' 2>/dev/null)"
+        fi
+    done
+
     # Pre-compute failure injection schedule (elapsed seconds from start)
     local inject_hour_1=$((1 * 3600))
     local inject_hour_2=$((2 * 3600))

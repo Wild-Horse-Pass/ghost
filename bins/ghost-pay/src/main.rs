@@ -1640,6 +1640,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/admin/simulate-unshield", post(simulate_unshield))
         .route("/api/v1/admin/simulate-wraith-session", post(simulate_wraith_session))
         .route("/api/v1/admin/test-withdrawal", post(test_withdrawal))
+        .route("/api/v1/admin/seed-test-balance", post(seed_test_balance))
         .layer(axum::middleware::from_fn(localhost_only))
         .with_state(state.clone());
 
@@ -5930,6 +5931,77 @@ async fn test_withdrawal(
         "relayed_to_pool": relayed_to_pool,
         "steps": steps,
     }))
+}
+
+/// Seed test balance by inserting Active ghost locks (admin/soak-test only).
+/// Creates a synthetic lock per call, giving the node spendable L2 balance.
+async fn seed_test_balance(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let amount_sats = req.get("amount_sats")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1_000_000); // default 0.01 BTC
+
+    let ghost_id = match state.ghost_id.read().clone() {
+        Some(id) => id,
+        None => return Json(serde_json::json!({"success": false, "error": "Ghost ID not loaded"})),
+    };
+
+    let current_height = state.rpc.get_block_count().await.unwrap_or(0) as u32;
+
+    // Generate a unique lock ID from random bytes
+    let lock_id = {
+        let mut buf = [0u8; 16];
+        let _ = getrandom::getrandom(&mut buf);
+        format!("test_{}", hex::encode(buf))
+    };
+
+    // Dummy pubkeys (not used for actual spending in test mode)
+    let dummy_pubkey = "02".to_string() + &"00".repeat(32);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let record = GhostLockRecord {
+        lock_id: lock_id.clone(),
+        owner_ghost_id: ghost_id,
+        lock_pubkey: dummy_pubkey.clone(),
+        recovery_pubkey: dummy_pubkey,
+        denomination: "Test".to_string(),
+        amount_sats,
+        timelock_tier: "Standard".to_string(),
+        creation_height: current_height,
+        recovery_height: current_height + 1000,
+        state: DbLockState::Active,
+        funding_txid: Some(format!("test_{}", hex::encode(&lock_id.as_bytes()[..16]))),
+        funding_vout: Some(0),
+        spend_txid: None,
+        output_script: "00".repeat(34),
+        jump_risk_tier: "Low".to_string(),
+        next_jump_height: None,
+        created_at: now,
+        updated_at: now,
+        source: "soak_test".to_string(),
+        wraith_fee_sats: 0,
+    };
+
+    match state.db.insert_ghost_lock(&record) {
+        Ok(()) => {
+            info!(lock_id = %lock_id, amount_sats, "Seeded test balance (Active ghost lock)");
+            Json(serde_json::json!({
+                "success": true,
+                "lock_id": lock_id,
+                "amount_sats": amount_sats,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": format!("{e}"),
+        })),
+    }
 }
 
 /// Simulate a full wraith session with 10 virtual participants on signet
