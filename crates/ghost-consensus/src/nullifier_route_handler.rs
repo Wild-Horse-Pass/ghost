@@ -889,6 +889,26 @@ impl NullifierRouteHandler {
                 .collect()
         };
 
+        // Expire phantom shields that have been pending too long (>15 checkpoint heights).
+        // Without this, shields from stalled periods accumulate and poison the tree root,
+        // preventing checkpoint convergence when nodes have accumulated different phantoms.
+        {
+            let current_height = self.epoch_manager.current_height();
+            let mut pending = self.pending_shields.write();
+            let before = pending.len();
+            pending.retain(|sc| {
+                current_height.saturating_sub(sc.block_height) < 15
+            });
+            let expired = before - pending.len();
+            if expired > 0 {
+                info!(expired, remaining = pending.len(), "Expired stale pending shields (>15 checkpoints old)");
+                // Also clean expired shields from the staging table
+                if let Err(e) = self.db.delete_stale_pending_shields() {
+                    warn!(error = %e, "Failed to clean expired shields from staging table");
+                }
+            }
+        }
+
         // Clone pending shields for checkpoint inclusion. Same clone-not-drain pattern —
         // shields are only removed from pending_shields when they are finalized in
         // finalize_checkpoint(). If this proposal loses to a competing proposal,
@@ -1088,9 +1108,27 @@ impl NullifierRouteHandler {
                 height,
                 our_root = %hex::encode(&our_base_root[..8]),
                 proposal_root = %hex::encode(&msg.prev_commitment_root[..8]),
-                "Checkpoint prev_root doesn't match our checkpoint base root"
+                "Checkpoint prev_root doesn't match our checkpoint base root — attempting recovery"
             );
-            // Still vote but reject
+
+            // Attempt recovery: flush all pending shields (they're likely phantoms causing
+            // the divergence) and request tree sync to converge with the proposer.
+            {
+                let mut pending = self.pending_shields.write();
+                if !pending.is_empty() {
+                    let flushed = pending.len();
+                    pending.clear();
+                    info!(flushed, "Flushed all pending shields to resolve root divergence");
+                    if let Err(e) = self.db.delete_stale_pending_shields() {
+                        warn!(error = %e, "Failed to clean pending shields from staging table");
+                    }
+                }
+            }
+
+            // Request tree sync to converge with peers
+            let _ = self.request_tree_sync();
+
+            // Still vote but reject (recovery happens asynchronously via tree sync)
             let mut vote = L2CheckpointVoteMessage {
                 height,
                 checkpoint_hash,

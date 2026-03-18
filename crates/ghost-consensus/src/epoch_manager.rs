@@ -394,7 +394,9 @@ impl EpochManager {
     /// Prune phantom notes — notes in l2_notes that were synced but never included
     /// in any finalized checkpoint. Scans backwards from the tail of the sorted notes
     /// to find the count N where building a tree from notes[0..N] matches the checkpoint root.
-    fn prune_phantom_notes(
+    /// Public so the checkpoint handler can trigger pruning during live operation
+    /// when root divergence is detected (not just at startup).
+    pub fn prune_phantom_notes(
         &self,
         epoch: u64,
         notes: &[(u64, [u8; 32])],
