@@ -6278,13 +6278,14 @@ impl Database {
         })
     }
 
-    /// Delete pending shields whose note_index is not present in l2_notes.
-    /// Shields should checkpoint within seconds; orphaned entries are phantom remnants.
+    /// Delete pending shields that have already been finalized in l2_notes.
+    /// Once a shield's note_index appears in l2_notes, it's been included in a
+    /// checkpoint and no longer needs to be in the staging table.
     pub fn delete_stale_pending_shields(&self) -> GhostResult<usize> {
         self.with_connection(|conn| {
             let deleted = conn
                 .execute(
-                    "DELETE FROM pending_l2_shields WHERE note_index NOT IN (SELECT note_index FROM l2_notes)",
+                    "DELETE FROM pending_l2_shields WHERE note_index IN (SELECT note_index FROM l2_notes)",
                     [],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
