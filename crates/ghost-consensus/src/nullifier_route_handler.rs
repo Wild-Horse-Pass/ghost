@@ -548,15 +548,22 @@ impl NullifierRouteHandler {
         let root = self.epoch_manager.current_root()?;
         self.epoch_manager.add_valid_root(root, block_height)?;
 
+        // Use L2 checkpoint height for pending shield tracking, NOT the Bitcoin
+        // block height passed from ghost-pay. The stale shield expiry in
+        // propose_checkpoint() compares against L2 checkpoint heights — using
+        // Bitcoin heights (31xxx) against L2 heights (139xxx) caused all shields
+        // to expire immediately, preventing checkpoint inclusion.
+        let checkpoint_height = self.epoch_manager.current_height();
+
         // Persist to staging table so pending shields survive restarts.
         self.db
-            .insert_pending_shield(note_index, &commitment, block_height)?;
+            .insert_pending_shield(note_index, &commitment, checkpoint_height)?;
 
         // Queue for checkpoint inclusion and transfer prerequisites
         self.pending_shields.write().push(ShieldCommitment {
             commitment,
             note_index,
-            block_height,
+            block_height: checkpoint_height,
         });
 
         Ok(())
