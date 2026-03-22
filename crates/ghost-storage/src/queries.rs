@@ -1985,8 +1985,8 @@ impl Database {
                     denomination, amount_sats, timelock_tier, creation_height,
                     recovery_height, state, funding_txid, funding_vout,
                     spend_txid, output_script, jump_risk_tier, next_jump_height,
-                    created_at, updated_at, source, wraith_fee_sats
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                    created_at, updated_at, source, wraith_fee_sats, key_index
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                 params![
                     lock.lock_id,
                     lock.owner_ghost_id,
@@ -2008,6 +2008,7 @@ impl Database {
                     lock.updated_at,
                     lock.source,
                     lock.wraith_fee_sats,
+                    lock.key_index,
                 ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2024,7 +2025,7 @@ impl Database {
                             denomination, amount_sats, timelock_tier, creation_height,
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
-                            created_at, updated_at, source, wraith_fee_sats
+                            created_at, updated_at, source, wraith_fee_sats, key_index
                      FROM ghost_locks WHERE lock_id = ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2052,7 +2053,7 @@ impl Database {
                             denomination, amount_sats, timelock_tier, creation_height,
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
-                            created_at, updated_at, source, wraith_fee_sats
+                            created_at, updated_at, source, wraith_fee_sats, key_index
                      FROM ghost_locks WHERE owner_ghost_id = ?1 ORDER BY created_at DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2084,7 +2085,7 @@ impl Database {
                             denomination, amount_sats, timelock_tier, creation_height,
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
-                            created_at, updated_at, source, wraith_fee_sats
+                            created_at, updated_at, source, wraith_fee_sats, key_index
                      FROM ghost_locks
                      WHERE owner_ghost_id = ?1 AND state = 'active'
                      ORDER BY created_at DESC LIMIT ?2",
@@ -2115,7 +2116,7 @@ impl Database {
                             denomination, amount_sats, timelock_tier, creation_height,
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
-                            created_at, updated_at, source, wraith_fee_sats
+                            created_at, updated_at, source, wraith_fee_sats, key_index
                      FROM ghost_locks
                      WHERE state = 'active' AND next_jump_height IS NOT NULL AND next_jump_height <= ?1
                      ORDER BY next_jump_height ASC LIMIT ?2",
@@ -2155,6 +2156,22 @@ impl Database {
         lock_id: &str,
     ) -> GhostResult<u32> {
         self.with_connection(|conn| {
+            // Prefer stored key_index (stable across lock insertions/deletions)
+            let stored: Option<i64> = conn
+                .query_row(
+                    "SELECT key_index FROM ghost_locks WHERE lock_id = ?1",
+                    [lock_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .flatten();
+
+            if let Some(idx) = stored {
+                return Ok(idx as u32);
+            }
+
+            // Fallback: compute dynamically (for locks created before v34 migration)
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM ghost_locks \
@@ -2165,6 +2182,27 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(count as u32)
+        })
+    }
+
+    /// Get the next available key_index for lock derivation.
+    ///
+    /// Returns `MAX(key_index) + 1` from all locks owned by this ghost_id,
+    /// or 0 if no locks exist. This is stable across restarts — unlike
+    /// the in-memory `ghost_locks.len()` which resets to 0.
+    pub fn get_next_lock_key_index(&self, owner_ghost_id: &str) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let max_index: Option<i64> = conn
+                .query_row(
+                    "SELECT MAX(key_index) FROM ghost_locks WHERE owner_ghost_id = ?1",
+                    [owner_ghost_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .flatten();
+
+            Ok(max_index.map(|i| (i + 1) as u32).unwrap_or(0))
         })
     }
 
@@ -2259,6 +2297,7 @@ fn ghost_lock_from_row(row: &rusqlite::Row) -> rusqlite::Result<GhostLockRecord>
         updated_at: row.get(17)?,
         source: row.get(18)?,
         wraith_fee_sats: row.get(19)?,
+        key_index: row.get(20).ok(),
     })
 }
 
@@ -2671,8 +2710,8 @@ impl Database {
             conn.execute(
                 "INSERT INTO withdrawal_requests (
                     ghost_id, lock_id, destination_address, amount_sats, fee_sats,
-                    status, batch_id, l1_txid, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    status, batch_id, l1_txid, settlement_class, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     request.ghost_id,
                     request.lock_id,
@@ -2682,6 +2721,7 @@ impl Database {
                     request.status.as_str(),
                     request.batch_id,
                     request.l1_txid,
+                    request.settlement_class,
                     request.created_at,
                     request.updated_at,
                 ],
@@ -2718,8 +2758,8 @@ impl Database {
             let result = conn.execute(
                 "INSERT INTO withdrawal_requests (
                     ghost_id, lock_id, destination_address, amount_sats, fee_sats,
-                    status, batch_id, l1_txid, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    status, batch_id, l1_txid, settlement_class, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     request.ghost_id,
                     request.lock_id,
@@ -2729,6 +2769,7 @@ impl Database {
                     request.status.as_str(),
                     request.batch_id,
                     request.l1_txid,
+                    request.settlement_class,
                     request.created_at,
                     request.updated_at,
                 ],
@@ -2763,7 +2804,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, ghost_id, lock_id, destination_address, amount_sats, fee_sats,
-                            status, batch_id, l1_txid, created_at, updated_at
+                            status, batch_id, l1_txid, settlement_class, created_at, updated_at
                      FROM withdrawal_requests WHERE id = ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2785,7 +2826,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, ghost_id, lock_id, destination_address, amount_sats, fee_sats,
-                            status, batch_id, l1_txid, created_at, updated_at
+                            status, batch_id, l1_txid, settlement_class, created_at, updated_at
                      FROM withdrawal_requests
                      WHERE ghost_id = ?1 AND status = 'pending'
                      ORDER BY created_at ASC LIMIT ?2",
@@ -2813,7 +2854,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, ghost_id, lock_id, destination_address, amount_sats, fee_sats,
-                            status, batch_id, l1_txid, created_at, updated_at
+                            status, batch_id, l1_txid, settlement_class, created_at, updated_at
                      FROM withdrawal_requests
                      WHERE status = 'pending'
                      ORDER BY created_at ASC LIMIT ?1",
@@ -2838,7 +2879,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, ghost_id, lock_id, destination_address, amount_sats, fee_sats,
-                            status, batch_id, l1_txid, created_at, updated_at
+                            status, batch_id, l1_txid, settlement_class, created_at, updated_at
                      FROM withdrawal_requests
                      WHERE lock_id = ?1
                      ORDER BY created_at DESC LIMIT ?2",
@@ -2850,6 +2891,63 @@ impl Database {
                     params![lock_id, Self::MAX_QUERY_RESULTS],
                     withdrawal_from_row,
                 )
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(requests)
+        })
+    }
+
+    /// Get pending withdrawals filtered by settlement class
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
+    pub fn get_pending_withdrawals_by_class(
+        &self,
+        settlement_class: &str,
+    ) -> GhostResult<Vec<WithdrawalRequest>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, ghost_id, lock_id, destination_address, amount_sats, fee_sats,
+                            status, batch_id, l1_txid, settlement_class, created_at, updated_at
+                     FROM withdrawal_requests
+                     WHERE status = 'pending' AND settlement_class = ?1
+                     ORDER BY created_at ASC LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let requests = stmt
+                .query_map(
+                    params![settlement_class, Self::MAX_QUERY_RESULTS],
+                    withdrawal_from_row,
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(requests)
+        })
+    }
+
+    /// Get submitted-but-unconfirmed withdrawals (for confirmation monitoring)
+    ///
+    /// Returns withdrawals that have been broadcast to L1 but not yet confirmed.
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
+    pub fn get_submitted_withdrawals(&self) -> GhostResult<Vec<WithdrawalRequest>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, ghost_id, lock_id, destination_address, amount_sats, fee_sats,
+                            status, batch_id, l1_txid, settlement_class, created_at, updated_at
+                     FROM withdrawal_requests
+                     WHERE status = 'submitted'
+                     ORDER BY updated_at ASC LIMIT ?1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let requests = stmt
+                .query_map([Self::MAX_QUERY_RESULTS], withdrawal_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -3559,8 +3657,9 @@ fn withdrawal_from_row(row: &rusqlite::Row) -> rusqlite::Result<WithdrawalReques
         status: parse_withdrawal_status_strict(&status_str, "withdrawal_from_row")?,
         batch_id: row.get(7)?,
         l1_txid: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        settlement_class: row.get::<_, String>(9).unwrap_or_else(|_| "standard".to_string()),
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -7699,6 +7798,7 @@ mod tests {
             updated_at: now,
             source: "manual".to_string(),
             wraith_fee_sats: 0,
+            key_index: None,
         };
 
         db.insert_ghost_lock(&lock)
@@ -8079,6 +8179,7 @@ mod tests {
             updated_at: now,
             source: "manual".to_string(),
             wraith_fee_sats: 0,
+            key_index: None,
         };
         db.insert_ghost_lock(&lock)
             .expect("LOW-STOR-8: Failed to insert ghost lock");
@@ -8094,6 +8195,7 @@ mod tests {
             status: WithdrawalStatus::Pending,
             batch_id: None,
             l1_txid: None,
+            settlement_class: "standard".to_string(),
             created_at: now,
             updated_at: now,
         };
@@ -8116,6 +8218,7 @@ mod tests {
             status: WithdrawalStatus::Pending,
             batch_id: None,
             l1_txid: None,
+            settlement_class: "standard".to_string(),
             created_at: now + 1,
             updated_at: now + 1,
         };
@@ -8160,6 +8263,7 @@ mod tests {
             updated_at: now,
             source: "manual".to_string(),
             wraith_fee_sats: 0,
+            key_index: None,
         };
         db.insert_ghost_lock(&lock)
             .expect("LOW-STOR-8: Failed to insert ghost lock");
@@ -8175,6 +8279,7 @@ mod tests {
             status: WithdrawalStatus::Pending,
             batch_id: None,
             l1_txid: None,
+            settlement_class: "standard".to_string(),
             created_at: now,
             updated_at: now,
         };
@@ -8199,6 +8304,7 @@ mod tests {
             status: WithdrawalStatus::Pending,
             batch_id: None,
             l1_txid: None,
+            settlement_class: "standard".to_string(),
             created_at: now + 1,
             updated_at: now + 1,
         };
@@ -8239,6 +8345,7 @@ mod tests {
             updated_at: now,
             source: "manual".to_string(),
             wraith_fee_sats: 0,
+            key_index: None,
         };
         db.insert_ghost_lock(&lock)
             .expect("LOW-STOR-8: Failed to insert ghost lock");
@@ -8254,6 +8361,7 @@ mod tests {
             status: WithdrawalStatus::Pending,
             batch_id: None,
             l1_txid: None,
+            settlement_class: "standard".to_string(),
             created_at: now,
             updated_at: now,
         };
@@ -8278,6 +8386,7 @@ mod tests {
             status: WithdrawalStatus::Pending,
             batch_id: None,
             l1_txid: None,
+            settlement_class: "standard".to_string(),
             created_at: now + 1,
             updated_at: now + 1,
         };

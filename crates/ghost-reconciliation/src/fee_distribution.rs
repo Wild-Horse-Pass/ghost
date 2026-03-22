@@ -128,6 +128,27 @@ impl TreasuryState {
     }
 }
 
+/// Per-node direct L2 fee split: the node that processed the L2 transaction
+/// gets half the fee (pre-threshold), treasury gets the other half.
+/// Uses the same `DECAY_SCHEDULE_BPS` decay as the global distribution.
+///
+/// Returns `(treasury_amount, node_amount)`.
+pub fn calculate_node_direct(
+    fee_pool: u64,
+    treasury_state: &TreasuryState,
+    now: DateTime<Utc>,
+) -> (u64, u64) {
+    if fee_pool == 0 {
+        return (0, 0);
+    }
+
+    let (treasury_bps, _node_bps) = treasury_state.get_fee_split_bps(now);
+    let treasury_amount = (fee_pool as u128 * treasury_bps as u128 / 10000) as u64;
+    let node_amount = fee_pool.saturating_sub(treasury_amount);
+
+    (treasury_amount, node_amount)
+}
+
 /// L2 fee distribution: splits accumulated fees between treasury and
 /// Ghost Pay nodes using the same decay schedule as L1.
 #[derive(Debug, Clone)]
@@ -422,5 +443,59 @@ mod tests {
         assert_eq!(dist.treasury_amount, 0);
         assert_eq!(dist.node_pool, 0);
         assert!(dist.node_payouts.is_empty());
+    }
+
+    // calculate_node_direct tests
+
+    #[test]
+    fn test_node_direct_pre_threshold() {
+        let state = TreasuryState::new();
+        let now = Utc::now();
+
+        let (treasury, node) = calculate_node_direct(1000, &state, now);
+        assert_eq!(treasury, 500);
+        assert_eq!(node, 500);
+    }
+
+    #[test]
+    fn test_node_direct_year5_full_decay() {
+        let now = Utc::now();
+        let threshold_time = now - chrono::Duration::days(365 * 6);
+        let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
+
+        let (treasury, node) = calculate_node_direct(1000, &state, now);
+        assert_eq!(treasury, 0);
+        assert_eq!(node, 1000);
+    }
+
+    #[test]
+    fn test_node_direct_zero_pool() {
+        let state = TreasuryState::new();
+        let now = Utc::now();
+
+        let (treasury, node) = calculate_node_direct(0, &state, now);
+        assert_eq!(treasury, 0);
+        assert_eq!(node, 0);
+    }
+
+    #[test]
+    fn test_node_direct_no_remainder_loss() {
+        let state = TreasuryState::new();
+        let now = Utc::now();
+
+        let (treasury, node) = calculate_node_direct(999, &state, now);
+        assert_eq!(treasury + node, 999);
+    }
+
+    #[test]
+    fn test_node_direct_year3_decay() {
+        let now = Utc::now();
+        let threshold_time = now - chrono::Duration::days(365 * 2 + 100);
+        let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
+
+        let (treasury, node) = calculate_node_direct(10000, &state, now);
+        // Year 3: 20% treasury, 80% node
+        assert_eq!(treasury, 2000);
+        assert_eq!(node, 8000);
     }
 }

@@ -349,9 +349,14 @@ impl PayoutProposalCreator {
         // H-FUND-1 SECURITY: Block finder MUST have a payout address configured.
         // If not, this is a configuration error that must be fixed BEFORE block production.
         // Silent redirect to treasury allowed fund misallocation to go unnoticed.
+        //
+        // M-04 FIX: Use the Bitcoin dust threshold (546 sats) for the tx_fee allocation
+        // check, NOT min_payout_sats. The min_payout_sats config gates minimum OUTPUT
+        // sizes for miner/node payouts, but tx_fees must always be allocated somewhere.
+        // When below dust, they're added to an existing node payout (no new output needed)
+        // or redirected to treasury — never silently dropped.
         let tx_fees_unallocated: u64 = 0;
-
-        if fee_dist.tx_fees_to_block_finder >= self.config.dust_threshold_sats {
+        if fee_dist.tx_fees_to_block_finder >= ghost_common::constants::DUST_THRESHOLD_SATS {
             let block_finder_address = self.get_node_address(&data.winning_node_id)?;
             if !block_finder_address.is_empty() {
                 // Check if this node is already in node_payouts - if so, add to their amount
@@ -395,6 +400,14 @@ impl PayoutProposalCreator {
                     tx_fees: fee_dist.tx_fees_to_block_finder,
                 });
             }
+        } else if fee_dist.tx_fees_to_block_finder > 0 {
+            // M-04 FIX: TX fees below dust threshold — add to treasury rather than dropping.
+            // This prevents the cross-check from failing when tx_fees are small.
+            final_treasury = final_treasury.saturating_add(fee_dist.tx_fees_to_block_finder);
+            debug!(
+                tx_fees = fee_dist.tx_fees_to_block_finder,
+                "TX fees below dust threshold, redirected to treasury"
+            );
         }
 
         // H-MINE-3: Use treasury address snapshot from BlockFoundData

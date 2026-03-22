@@ -250,14 +250,15 @@ mod tests {
     fn test_batch_rules() {
         let rules = BatchRules::default();
 
-        // Enough settlements
+        // Any settlement count >= MIN_BATCH_SIZE (1) forms batch
         assert!(rules.should_form_batch(10, 1_000_000, 0));
+        assert!(rules.should_form_batch(1, 1_000_000, 0));
 
-        // Not enough settlements, no timeout
-        assert!(!rules.should_form_batch(5, 1_000_000, 0));
+        // Zero settlements never form batch
+        assert!(!rules.should_form_batch(0, 1_000_000, 0));
 
-        // Not enough settlements but timeout reached
-        assert!(rules.should_form_batch(5, 1_000_000, 7 * 60 * 60));
+        // Zero settlements but timeout reached — still no batch (nothing to batch)
+        assert!(!rules.should_form_batch(0, 1_000_000, 7 * 60 * 60));
 
         // High value forces batch
         assert!(rules.should_form_batch(1, 20_000_000_000, 0));

@@ -284,6 +284,83 @@ pub fn l2_epoch_from_height(block_height: u64) -> u64 {
     block_height / L2_EPOCH_BLOCKS
 }
 
+// =============================================================================
+// SETTLEMENT CLASSES
+// =============================================================================
+
+/// Settlement class determines how frequently withdrawals are batched for L1 settlement.
+///
+/// Settlement is triggered at epoch boundaries. Each class settles at a different
+/// frequency, trading speed for cost:
+/// - Express: every epoch (~6h) — 1.5x fee
+/// - Standard: every 4 epochs (~24h) — 1.0x fee
+/// - Economy: every 28 epochs (~7d) — 0.5x fee
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlementClass {
+    Express,
+    Standard,
+    Economy,
+}
+
+impl SettlementClass {
+    /// All settlement classes, for iteration.
+    pub const ALL: [SettlementClass; 3] = [
+        SettlementClass::Express,
+        SettlementClass::Standard,
+        SettlementClass::Economy,
+    ];
+
+    /// How many epochs between settlements for this class.
+    pub fn epoch_multiplier(self) -> u64 {
+        match self {
+            Self::Express => 1,
+            Self::Standard => 4,
+            Self::Economy => 28,
+        }
+    }
+
+    /// Fee multiplier relative to base fee rate.
+    /// Express pays more for faster settlement; Economy pays less for batching.
+    pub fn fee_multiplier(self) -> f64 {
+        match self {
+            Self::Express => 1.5,
+            Self::Standard => 1.0,
+            Self::Economy => 0.5,
+        }
+    }
+
+    /// Returns true if this class should settle at the given epoch number.
+    pub fn is_due_at_epoch(self, epoch: u64) -> bool {
+        epoch > 0 && epoch % self.epoch_multiplier() == 0
+    }
+
+    /// Parse from string (case-insensitive).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "express" => Some(Self::Express),
+            "standard" => Some(Self::Standard),
+            "economy" => Some(Self::Economy),
+            _ => None,
+        }
+    }
+
+    /// String representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Express => "express",
+            Self::Standard => "standard",
+            Self::Economy => "economy",
+        }
+    }
+}
+
+impl Default for SettlementClass {
+    fn default() -> Self {
+        Self::Standard
+    }
+}
+
 /// Wraith denomination tiers (satoshis)
 pub const WRAITH_DENOMINATIONS: [u64; 4] = [
     100_000,     // 0.001 BTC
@@ -357,5 +434,44 @@ mod tests {
             // Fee should be exactly 1%
             assert_eq!(fee, subsidy / 100);
         }
+    }
+
+    #[test]
+    fn test_settlement_class_epoch_due() {
+        assert!(!SettlementClass::Express.is_due_at_epoch(0));
+        assert!(SettlementClass::Express.is_due_at_epoch(1));
+        assert!(SettlementClass::Express.is_due_at_epoch(4));
+
+        assert!(!SettlementClass::Standard.is_due_at_epoch(0));
+        assert!(!SettlementClass::Standard.is_due_at_epoch(1));
+        assert!(SettlementClass::Standard.is_due_at_epoch(4));
+        assert!(!SettlementClass::Standard.is_due_at_epoch(5));
+        assert!(SettlementClass::Standard.is_due_at_epoch(8));
+
+        assert!(!SettlementClass::Economy.is_due_at_epoch(0));
+        assert!(!SettlementClass::Economy.is_due_at_epoch(4));
+        assert!(SettlementClass::Economy.is_due_at_epoch(28));
+        assert!(SettlementClass::Economy.is_due_at_epoch(56));
+    }
+
+    #[test]
+    fn test_settlement_class_parse() {
+        assert_eq!(SettlementClass::parse("express"), Some(SettlementClass::Express));
+        assert_eq!(SettlementClass::parse("standard"), Some(SettlementClass::Standard));
+        assert_eq!(SettlementClass::parse("economy"), Some(SettlementClass::Economy));
+        assert_eq!(SettlementClass::parse("Express"), Some(SettlementClass::Express));
+        assert_eq!(SettlementClass::parse("invalid"), None);
+    }
+
+    #[test]
+    fn test_settlement_class_default() {
+        assert_eq!(SettlementClass::default(), SettlementClass::Standard);
+    }
+
+    #[test]
+    fn test_settlement_class_fee_multiplier() {
+        assert!((SettlementClass::Express.fee_multiplier() - 1.5).abs() < f64::EPSILON);
+        assert!((SettlementClass::Standard.fee_multiplier() - 1.0).abs() < f64::EPSILON);
+        assert!((SettlementClass::Economy.fee_multiplier() - 0.5).abs() < f64::EPSILON);
     }
 }

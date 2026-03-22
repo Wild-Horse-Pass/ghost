@@ -157,6 +157,11 @@ struct Args {
     /// Defaults to http://127.0.0.1:8080 (local ghost-pool)
     #[arg(long, env = "GHOST_POOL_API_URL", default_value = "http://127.0.0.1:8080")]
     pool_api_url: String,
+
+    /// Bitcoin address for receiving this node's share of L2 fees.
+    /// Each node earns directly from L2 transactions it processes.
+    #[arg(long, env = "GHOST_NODE_PAYOUT_ADDRESS")]
+    node_payout_address: Option<String>,
 }
 
 // =============================================================================
@@ -901,6 +906,8 @@ struct AppState {
     pool_http_client: reqwest::Client,
     /// Ghost-pool API URL for L2 transaction relay
     pool_api_url: String,
+    /// Last settled epoch per settlement class (for dedup)
+    last_settled_epoch: RwLock<std::collections::HashMap<String, u64>>,
 }
 
 /// Lock information with metadata
@@ -1205,6 +1212,7 @@ async fn main() -> Result<()> {
         unshield_verifier: RwLock::new(unshield_verifier),
         pool_http_client,
         pool_api_url,
+        last_settled_epoch: RwLock::new(std::collections::HashMap::new()),
     });
 
     // Spawn periodic VK hot-reload task (picks up MPC ceremony completions without restart)
@@ -1507,19 +1515,19 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Spawn L1 settlement loop (only if treasury address is configured)
+    // Spawn L1 settlement monitor (only if treasury address is configured)
     if treasury_configured {
         let state_clone = Arc::clone(&state);
         let mut shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
             tokio::select! {
-                _ = run_settlement_loop(state_clone) => {}
+                _ = run_settlement_monitor(state_clone) => {}
                 _ = shutdown_rx.recv() => {
-                    info!("Settlement loop shutting down");
+                    info!("Settlement monitor shutting down");
                 }
             }
         });
-        info!("L1 settlement loop enabled");
+        info!("L1 settlement monitor enabled");
     }
 
     // H-2: Create API authentication state
@@ -1640,6 +1648,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/admin/simulate-unshield", post(simulate_unshield))
         .route("/api/v1/admin/simulate-wraith-session", post(simulate_wraith_session))
         .route("/api/v1/admin/test-withdrawal", post(test_withdrawal))
+        .route("/api/v1/admin/trigger-settlement", post(admin_trigger_settlement))
         .route("/api/v1/admin/seed-test-balance", post(seed_test_balance))
         .layer(axum::middleware::from_fn(localhost_only))
         .with_state(state.clone());
@@ -2018,13 +2027,21 @@ async fn create_lock(
         _ => TimelockTier::Standard,
     };
 
-    // Get current lock index
-    // H-21: Safe conversion with bounds checking
-    let lock_count = state.ghost_locks.read().len();
-    let lock_index = u32::try_from(lock_count).map_err(|_| {
-        error!("H-21: Lock index {} exceeds u32::MAX", lock_count);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    // Get the ghost_id for database (needed for key index lookup)
+    let owner_ghost_id = state
+        .ghost_id
+        .read()
+        .clone()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Get next lock key index from DB (stable across restarts)
+    let lock_index = state
+        .db
+        .get_next_lock_key_index(&owner_ghost_id)
+        .map_err(|e| {
+            error!("Failed to get next lock key index: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // Derive lock and recovery secrets
     let lock_secret = keys
@@ -2073,13 +2090,6 @@ async fn create_lock(
         blocks_until_jump: ghost_lock.blocks_until_jump(creation_height),
     };
 
-    // Get the ghost_id for database
-    let owner_ghost_id = state
-        .ghost_id
-        .read()
-        .clone()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-
     // Create database record
     let lock_source = req.source.as_deref().unwrap_or("manual").to_string();
     let wraith_fee = req.wraith_fee_sats.unwrap_or(0);
@@ -2104,6 +2114,7 @@ async fn create_lock(
         updated_at: now as i64,
         source: lock_source,
         wraith_fee_sats: wraith_fee,
+        key_index: Some(lock_index),
     };
 
     // Persist to database
@@ -2362,6 +2373,9 @@ struct WithdrawalRequestBody {
     destination_address: String,
     /// Amount to withdraw in satoshis (must be <= lock amount minus fees)
     amount_sats: u64,
+    /// Settlement class: "express", "standard", or "economy" (default: "standard")
+    #[serde(default = "default_settlement_class")]
+    settlement_class: String,
 }
 
 /// List pending withdrawals
@@ -2428,10 +2442,16 @@ async fn request_withdrawal(
         })));
     }
 
-    // Validate amount
+    // Validate settlement class
+    let class = ghost_common::constants::SettlementClass::parse(&req.settlement_class)
+        .unwrap_or_default();
+
+    // Validate amount — fee scaled by settlement class multiplier
     let fee_rate = estimate_fee_rate(&state).await;
     let estimated_vsize = 110u64; // Single-input P2WPKH withdrawal
-    let settlement_fee = (estimated_vsize * fee_rate).max(1);
+    let base_fee = estimated_vsize * fee_rate;
+    let settlement_fee = ((base_fee as f64) * class.fee_multiplier()).ceil() as u64;
+    let settlement_fee = settlement_fee.max(1);
     let max_withdrawal = lock.amount_sats.saturating_sub(settlement_fee);
     if req.amount_sats > max_withdrawal {
         return Ok(Json(serde_json::json!({
@@ -2464,6 +2484,7 @@ async fn request_withdrawal(
         status: WithdrawalStatus::Pending,
         batch_id: None,
         l1_txid: None,
+        settlement_class: class.as_str().to_string(),
         created_at: now,
         updated_at: now,
     };
@@ -4090,13 +4111,39 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
 
         info!(txid = %req.txid, vout = req.vout, "Scanning transaction");
 
-        // Fetch the raw transaction from Bitcoin Core
-        let tx_result = state.rpc.get_raw_transaction(&req.txid, true).await;
-        let tx_json = match tx_result {
+        // Fetch the transaction from Bitcoin Core
+        // Try getrawtransaction first (requires -txindex for confirmed non-wallet txs),
+        // fall back to gettransaction (wallet txs only, returns decoded in .decoded field)
+        let tx_json = match state.rpc.get_raw_transaction(&req.txid, true).await {
             Ok(json) => json,
-            Err(e) => {
-                warn!(txid = %req.txid, error = %e, "Failed to fetch transaction");
-                continue;
+            Err(_) => {
+                // Fallback: gettransaction (wallet RPC) wraps decoded tx differently
+                match state.rpc.get_transaction(&req.txid).await {
+                    Ok(wallet_json) => {
+                        // gettransaction with verbose=true returns decoded tx in .decoded
+                        if let Some(decoded) = wallet_json.get("decoded") {
+                            decoded.clone()
+                        } else {
+                            // Older Bitcoin Core: decode the hex ourselves
+                            if let Some(hex) = wallet_json.get("hex").and_then(|h| h.as_str()) {
+                                match state.rpc.decode_raw_transaction(hex).await {
+                                    Ok(decoded) => decoded,
+                                    Err(e) => {
+                                        warn!(txid = %req.txid, error = %e, "Failed to decode wallet transaction");
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                warn!(txid = %req.txid, "No hex in wallet transaction");
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(txid = %req.txid, error = %e, "Failed to fetch transaction (both getrawtransaction and gettransaction failed)");
+                        continue;
+                    }
+                }
             }
         };
 
@@ -4212,6 +4259,13 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                         vout = payment.output_index,
                                         "Lock funded"
                                     );
+                                    // Refresh in-memory lock cache
+                                    {
+                                        let mut locks_cache = state.locks.write();
+                                        if let Some(cached) = locks_cache.iter_mut().find(|l| l.id == lock.lock_id) {
+                                            cached.state = "Active".to_string();
+                                        }
+                                    }
 
                                     // GhostGlyph: complete registration if pending claim exists
                                     if let Ok(Some(glyph_record)) = state.db.get_glyph_by_ghost_id(gid) {
@@ -4256,8 +4310,60 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                     }
                 }
             }
+        } else if !outputs.is_empty() {
+            // No ephemeral pubkey (not a Silent Payment) — try direct address matching.
+            // This handles plain BTC sends (e.g. sendtoaddress) to a lock's P2TR address.
+            debug!(txid = %req.txid, "No ephemeral pubkey — trying direct address match");
+
+            let ghost_id = state.ghost_id.read().clone();
+            if let Some(ref gid) = ghost_id {
+                if let Ok(locks) = state.db.get_ghost_locks_by_owner(gid) {
+                    let unfunded_locks: Vec<_> = locks
+                        .iter()
+                        .filter(|l| l.funding_txid.is_none())
+                        .collect();
+
+                    if !unfunded_locks.is_empty() {
+                        // Check each output against unfunded lock scripts
+                        for (idx, vout) in vout_array.iter().enumerate() {
+                            let script_hex = vout
+                                .get("scriptPubKey")
+                                .and_then(|s| s.get("hex"))
+                                .and_then(|h| h.as_str())
+                                .unwrap_or("");
+                            let value_btc = vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let value_sats = (value_btc * SATS_PER_BTC_F64).round() as u64;
+
+                            for lock in &unfunded_locks {
+                                if lock.output_script == script_hex && lock.amount_sats == value_sats {
+                                    if let Err(e) = state.db.update_ghost_lock_funding(
+                                        &lock.lock_id,
+                                        &req.txid,
+                                        idx as u32,
+                                    ) {
+                                        error!(error = %e, lock_id = %lock.lock_id, "Failed to update lock funding");
+                                    } else {
+                                        info!(
+                                            lock_id = %lock.lock_id,
+                                            txid = %req.txid,
+                                            vout = idx,
+                                            amount = value_sats,
+                                            "Lock funded via direct address match"
+                                        );
+                                        // Refresh in-memory lock cache
+                                        let mut locks_cache = state.locks.write();
+                                        if let Some(cached) = locks_cache.iter_mut().find(|l| l.id == lock.lock_id) {
+                                            cached.state = "Active".to_string();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         } else {
-            debug!(txid = %req.txid, "No ephemeral pubkey found in transaction");
+            debug!(txid = %req.txid, "No outputs to scan");
         }
     }
 }
@@ -4786,6 +4892,29 @@ async fn query_fee_distribution_context(state: &AppState) -> Option<FeeDistribut
         threshold_reached_at,
         ghost_pay_nodes,
     })
+}
+
+/// Query ghost-pool for treasury state only (balance + threshold timestamp).
+/// Used by per-node direct fee distribution — no node list needed.
+async fn query_treasury_state(
+    state: &AppState,
+) -> Option<ghost_reconciliation::fee_distribution::TreasuryState> {
+    use ghost_reconciliation::fee_distribution::TreasuryState;
+
+    let url = format!(
+        "{}/api/v1/l2/fee-distribution-context",
+        state.pool_api_url
+    );
+    let resp = state.pool_http_client.get(&url).send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+
+    let treasury_balance_sats = json.get("treasury_balance_sats")?.as_u64()?;
+    let threshold_ts = json
+        .get("threshold_reached_at")
+        .and_then(|v| v.as_i64())
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
+
+    Some(TreasuryState::from_stored(treasury_balance_sats, threshold_ts))
 }
 
 /// Localhost-only diagnostic: exercises every component of the L2 fee pipeline
@@ -5730,6 +5859,38 @@ async fn simulate_unshield(
 }
 
 /// Test the full L1 withdrawal pipeline: shield → proof → submit_unshield → relay.
+/// POST /api/v1/admin/trigger-settlement — Force-trigger epoch settlement now
+async fn admin_trigger_settlement(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use ghost_common::constants::{SettlementClass, L2_EPOCH_BLOCKS};
+
+    // Use the current L2 epoch (or next one) to trigger settlement for all due classes
+    let current_epoch = state.db.with_connection(|conn| {
+        let h: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(height), 0) FROM blocks", [], |r| r.get(0)
+        ).unwrap_or(0);
+        Ok(h as u64 / L2_EPOCH_BLOCKS)
+    }).unwrap_or(1);
+
+    // Use a synthetic epoch that triggers all classes (divisible by 28)
+    let trigger_epoch = if current_epoch == 0 { 28 } else {
+        // Round up to next multiple of 28 to trigger all classes
+        ((current_epoch / 28) + 1) * 28
+    };
+
+    info!(trigger_epoch, current_epoch, "Admin-triggered settlement");
+    let state_clone = state.clone();
+    tokio::spawn(try_epoch_settlement(state_clone, trigger_epoch));
+
+    Json(serde_json::json!({
+        "success": true,
+        "trigger_epoch": trigger_epoch,
+        "current_epoch": current_epoch,
+        "message": "Settlement triggered for all classes"
+    }))
+}
+
 /// Does NOT broadcast to Bitcoin L1 (requires a funded Ghost Lock).
 /// Exercises: ZK proof generation, nullifier spending, and relay to ghost-pool.
 async fn test_withdrawal(
@@ -5986,6 +6147,7 @@ async fn seed_test_balance(
         updated_at: now,
         source: "soak_test".to_string(),
         wraith_fee_sats: 0,
+        key_index: None, // Test lock, not signable
     };
 
     match state.db.insert_ghost_lock(&record) {
@@ -6495,62 +6657,648 @@ fn update_sim_state(state: &AppState, session_id: &str, new_state: &str) {
     }
 }
 
+/// Execute a settlement batch for a set of withdrawal requests.
 ///
-/// This background task periodically:
-/// 1. Checks for pending withdrawal requests
-/// 2. Validates locks have sufficient funds
-/// 3. Batches settlements according to rules
-/// 4. Broadcasts settlement transactions to L1
-/// 5. Updates withdrawal and lock states based on confirmations
-async fn run_settlement_loop(state: Arc<AppState>) {
-    use tracing::{debug, error, warn};
+/// This function handles the full UTXO validation → input building → batch formation →
+/// L2 fee distribution → TX signing → broadcast pipeline.
+/// Returns the batch_id on success, or an error string on failure.
+async fn execute_settlement_batch(
+    state: &Arc<AppState>,
+    withdrawals: Vec<WithdrawalRequest>,
+) -> Result<Option<String>, String> {
+    if withdrawals.is_empty() {
+        return Ok(None);
+    }
 
-    info!("Starting L1 settlement loop");
-
-    // Settlement check interval (5 minutes)
-    let check_interval = std::time::Duration::from_secs(300);
-
-    // Fix 5: Track failed broadcast attempts per lock_id for exponential backoff
-    // Maps lock_id -> (attempt_count, last_attempt_time)
-    let mut retry_tracker: std::collections::HashMap<String, (u32, std::time::Instant)> =
-        std::collections::HashMap::new();
-
-    // Create batch executor with treasury address from config
-    // Note: Settlement loop only starts if treasury_address is configured (checked in main)
     let treasury_address = state.config.treasury_address.clone().unwrap_or_default();
     let mut executor = BatchExecutor::new(state.network, treasury_address);
 
-    // Track processed withdrawal IDs for current batch
+    // Track failed broadcast attempts per lock_id for exponential backoff
+    let mut retry_tracker: std::collections::HashMap<String, (u32, std::time::Instant)> =
+        std::collections::HashMap::new();
+
     let mut processed_withdrawal_ids: Vec<i64> = Vec::new();
 
-    loop {
-        tokio::time::sleep(check_interval).await;
+    let fee_rate = estimate_fee_rate(state).await;
 
-        // Fix 5: Clean stale retry entries (>24 hours old) to prevent memory growth
-        retry_tracker.retain(|_, (_, last_try)| last_try.elapsed().as_secs() < 86400);
-
-        // Get ghost_id
-        let ghost_id = match state.ghost_id.read().clone() {
-            Some(id) => id,
-            None => {
-                debug!("No ghost keys loaded, skipping settlement check");
+    for withdrawal in &withdrawals {
+        debug!(
+            withdrawal_id = ?withdrawal.id,
+            lock_id = %withdrawal.lock_id,
+            amount = withdrawal.amount_sats,
+            "Processing withdrawal for settlement"
+        );
+        let lock = match state.db.get_ghost_lock(&withdrawal.lock_id) {
+            Ok(Some(l)) => l,
+            Ok(None) => {
+                warn!(lock_id = %withdrawal.lock_id, "Lock not found for withdrawal");
+                continue;
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to get lock");
                 continue;
             }
         };
 
-        // H-PAY-1 FIX: Check for stale PendingSettlement locks and revert them to Active
-        // Locks stuck in PendingSettlement for > 24 hours are reverted (broadcast likely failed)
+        if lock.state != DbLockState::Active || lock.funding_txid.is_none() {
+            warn!(
+                lock_id = %lock.lock_id,
+                state = ?lock.state,
+                "Lock not ready for settlement"
+            );
+            continue;
+        }
+
+        // Check cooldown from previous failed broadcast
+        if let Some(&(attempts, last_try)) = retry_tracker.get(&lock.lock_id) {
+            let backoff_secs =
+                std::cmp::min(300u64.saturating_mul(2u64.saturating_pow(attempts)), 7200);
+            if last_try.elapsed().as_secs() < backoff_secs {
+                debug!(
+                    lock_id = %lock.lock_id,
+                    attempts = attempts,
+                    backoff_secs = backoff_secs,
+                    "Lock in cooldown after failed broadcast, skipping"
+                );
+                continue;
+            }
+        }
+
+        let (txid, vout) = match (lock.funding_txid.as_ref(), lock.funding_vout) {
+            (Some(txid_str), Some(vout)) => {
+                let txid: bitcoin::Txid = match txid_str.parse() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                (txid, vout)
+            }
+            _ => continue,
+        };
+
+        // Verify UTXO exists on-chain
+        let utxo_confirmations = match state.rpc.get_tx_out(&txid.to_string(), vout, false).await {
+            Ok(Some(tx_out)) => tx_out.confirmations.max(0) as u32,
+            Ok(None) => {
+                warn!(
+                    lock_id = %lock.lock_id,
+                    txid = %txid,
+                    vout = vout,
+                    "UTXO not found on-chain, skipping settlement"
+                );
+                if let Err(e) = state
+                    .db
+                    .update_ghost_lock_state(&lock.lock_id, DbLockState::Spent)
+                {
+                    error!(
+                        lock_id = %lock.lock_id,
+                        error = %e,
+                        "Failed to mark lock as spent"
+                    );
+                }
+                continue;
+            }
+            Err(e) => {
+                warn!(
+                    lock_id = %lock.lock_id,
+                    error = %e,
+                    "Failed to verify UTXO existence, skipping this withdrawal"
+                );
+                continue;
+            }
+        };
+
+        // Verify we can sign this lock before adding to batch
+        {
+            let keys_guard = state.keys.read();
+            if let Some(keys) = keys_guard.as_ref() {
+                let lock_index = match state.db.get_lock_index_for_owner(
+                    &lock.owner_ghost_id, &lock.lock_id,
+                ) {
+                    Ok(idx) => idx,
+                    Err(e) => {
+                        warn!(lock_id = %lock.lock_id, error = %e, "Cannot get lock index, skipping");
+                        continue;
+                    }
+                };
+                let lock_secret = match keys.derive_lock_secret(lock_index) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!(lock_id = %lock.lock_id, error = ?e, "Cannot derive lock key, skipping");
+                        continue;
+                    }
+                };
+                let secp = Secp256k1::new();
+                let derived_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
+                if let Ok(stored_bytes) = hex::decode(&lock.lock_pubkey) {
+                    if let Ok(stored_pubkey) = bitcoin::secp256k1::PublicKey::from_slice(&stored_bytes) {
+                        if derived_pubkey != stored_pubkey {
+                            warn!(lock_id = %lock.lock_id, "Pubkey mismatch, skipping (stale lock)");
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        let input = ReconciliationInput {
+            txid,
+            vout,
+            amount: lock.amount_sats,
+            ghost_id: lock.owner_ghost_id.clone(),
+            lock_id: Some(hex_to_32bytes(&lock.lock_id)),
+            confirmations: utxo_confirmations,
+        };
+
+        // Create settlement BEFORE adding input to executor — if Settlement::new()
+        // fails (e.g. below minimum), we must not leave an orphan input in the executor
+        // which would corrupt the fund tracking for subsequent withdrawals.
+        let source_lock_id = hex_to_32bytes(&lock.lock_id);
+        let settlement = match Settlement::new(
+            withdrawal.ghost_id.clone(),
+            source_lock_id,
+            withdrawal.destination_address.clone(),
+            withdrawal.amount_sats,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    withdrawal_id = ?withdrawal.id,
+                    error = %e,
+                    "Failed to create settlement"
+                );
+                continue;
+            }
+        };
+
+        executor.add_input(input);
+
+        #[allow(deprecated)]
+        if let Err(e) = executor.add_settlement(settlement) {
+            warn!(
+                withdrawal_id = ?withdrawal.id,
+                error = %e,
+                "Failed to add settlement"
+            );
+            continue;
+        }
+
+        if let Some(id) = withdrawal.id {
+            processed_withdrawal_ids.push(id);
+        }
+    }
+
+    if !executor.should_form_batch() {
+        return Ok(None);
+    }
+
+    info!("Forming settlement batch");
+
+    let batch = executor
+        .form_batch()
+        .map_err(|e| format!("Failed to form batch: {}", e))?;
+    let batch_id = batch.id_hex();
+    info!(batch_id = %batch_id, "Formed settlement batch");
+
+    // Collect undistributed L2 fees for inclusion in settlement.
+    // L2 fees are funded from the total batch input pool — the difference between
+    // total lock inputs and total settlement outputs covers mining fees + L2 fee
+    // distribution. The H-7 overflow check in build_transaction_with_l2_fees
+    // validates that outputs never exceed inputs.
+    let undistributed = state.db.get_undistributed_fees().unwrap_or_default();
+    let l2_fee_pool: u64 = undistributed.iter().map(|(_, fee)| fee).sum();
+    let total_input_sats: u64 = withdrawals
+        .iter()
+        .filter(|w| processed_withdrawal_ids.contains(&w.id.unwrap_or(-1)))
+        .map(|w| {
+            // Input = withdrawal amount + fee (the full lock value)
+            w.amount_sats.saturating_add(w.fee_sats)
+        })
+        .sum();
+    let total_settlement_sats: u64 = withdrawals
+        .iter()
+        .filter(|w| processed_withdrawal_ids.contains(&w.id.unwrap_or(-1)))
+        .map(|w| w.amount_sats)
+        .sum();
+    // Available for fees = inputs - settlements - estimated mining fee
+    let estimated_mining_fee = fee_rate * 400; // conservative vsize estimate (P2WSH + L2 fee outputs)
+    let available_for_l2 = total_input_sats
+        .saturating_sub(total_settlement_sats)
+        .saturating_sub(estimated_mining_fee);
+    let include_l2_fees = l2_fee_pool > 0 && l2_fee_pool <= available_for_l2;
+
+    if l2_fee_pool > 0 && !include_l2_fees {
+        info!(
+            l2_fee_pool,
+            available_for_l2,
+            "L2 fees exceed available batch capacity, deferring to larger batch"
+        );
+    }
+
+    let build_result = if include_l2_fees {
+        // Per-node direct fee split: this node earns from its own L2 traffic
+        let node_payout_address = state.config.node_payout_address.clone();
+        match (query_treasury_state(state).await, node_payout_address) {
+            (Some(treasury_state), Some(addr)) => {
+                use ghost_reconciliation::fee_distribution::calculate_node_direct;
+                let (treasury_amount, node_amount) =
+                    calculate_node_direct(l2_fee_pool, &treasury_state, chrono::Utc::now());
+                info!(
+                    l2_fee_pool,
+                    treasury_amount,
+                    node_amount,
+                    "Including L2 fees in settlement batch (node-direct)"
+                );
+                // Single-element node payout vec — this node only
+                let node_payouts = if node_amount > 0 {
+                    vec![("self".to_string(), addr, node_amount)]
+                } else {
+                    vec![]
+                };
+                executor.build_transaction_with_l2_fees(
+                    &batch,
+                    fee_rate,
+                    treasury_amount,
+                    &node_payouts,
+                )
+            }
+            (_, None) => {
+                warn!("No --node-payout-address configured, building without L2 fees");
+                executor.build_transaction(&batch, fee_rate)
+            }
+            (None, _) => {
+                warn!("Failed to get treasury state, building without L2 fees");
+                executor.build_transaction(&batch, fee_rate)
+            }
+        }
+    } else {
+        executor.build_transaction(&batch, fee_rate)
+    };
+
+    let batch_tx = build_result
+        .map_err(|e| format!("Failed to build batch transaction: {}", e))?;
+
+    // Update withdrawal requests to batched status
+    for withdrawal_id in &processed_withdrawal_ids {
+        if let Err(e) = state
+            .db
+            .update_withdrawal_batched(*withdrawal_id, &batch_id)
+        {
+            error!(
+                withdrawal_id = withdrawal_id,
+                error = %e,
+                "Failed to update withdrawal status"
+            );
+        }
+    }
+
+    // H-PAY-1 FIX: Mark associated locks as PendingSettlement BEFORE broadcast
+    for withdrawal in &withdrawals {
+        if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
+            if let Err(e) = state.db.update_ghost_lock_state(
+                &withdrawal.lock_id,
+                DbLockState::PendingSettlement,
+            ) {
+                error!(
+                    lock_id = %withdrawal.lock_id,
+                    error = %e,
+                    "Failed to update lock state to PendingSettlement"
+                );
+            }
+        }
+    }
+
+    // Sign each input using the lock owner's keys
+    let secp = Secp256k1::new();
+    let sign_result: Result<bitcoin::Transaction, String> = (|| {
+        let keys_guard = state.keys.read();
+        let keys = keys_guard
+            .as_ref()
+            .ok_or("No ghost keys loaded for settlement signing")?;
+
+        let mut signed_tx = batch_tx.transaction.clone();
+        let mut input_idx = 0usize;
+
+        for withdrawal in &withdrawals {
+            if !processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
+                continue;
+            }
+
+            let lock = state
+                .db
+                .get_ghost_lock(&withdrawal.lock_id)
+                .map_err(|e| format!("DB error: {}", e))?
+                .ok_or_else(|| format!("Lock {} not found", withdrawal.lock_id))?;
+
+            let lock_index = state
+                .db
+                .get_lock_index_for_owner(&lock.owner_ghost_id, &lock.lock_id)
+                .map_err(|e| format!("Failed to get lock index: {}", e))?;
+
+            let lock_secret = keys
+                .derive_lock_secret(lock_index)
+                .map_err(|e| format!("Key derivation error: {:?}", e))?;
+
+            let lock_pubkey_bytes = hex::decode(&lock.lock_pubkey)
+                .map_err(|e| format!("Invalid lock_pubkey hex: {}", e))?;
+            let lock_pubkey =
+                bitcoin::secp256k1::PublicKey::from_slice(&lock_pubkey_bytes)
+                    .map_err(|e| format!("Invalid lock_pubkey: {}", e))?;
+            let recovery_pubkey_bytes = hex::decode(&lock.recovery_pubkey)
+                .map_err(|e| format!("Invalid recovery_pubkey hex: {}", e))?;
+            let recovery_pubkey =
+                bitcoin::secp256k1::PublicKey::from_slice(&recovery_pubkey_bytes)
+                    .map_err(|e| format!("Invalid recovery_pubkey: {}", e))?;
+
+            let derived_pubkey =
+                bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
+            if derived_pubkey != lock_pubkey {
+                return Err(format!(
+                    "Derived pubkey mismatch for lock {} at index {}",
+                    lock.lock_id, lock_index
+                ));
+            }
+
+            let recovery_blocks =
+                lock.recovery_height.saturating_sub(lock.creation_height);
+
+            let witness_script = ghost_locks::build_wsh_witness_script(
+                &lock_pubkey,
+                &recovery_pubkey,
+                recovery_blocks,
+            )
+            .map_err(|e| format!("Witness script error: {}", e))?;
+
+            let sighash = {
+                let mut cache = bitcoin::sighash::SighashCache::new(&signed_tx);
+                cache
+                    .p2wsh_signature_hash(
+                        input_idx,
+                        &witness_script,
+                        bitcoin::Amount::from_sat(lock.amount_sats),
+                        bitcoin::EcdsaSighashType::All,
+                    )
+                    .map_err(|e| format!("Sighash error: {}", e))?
+            };
+
+            let sighash_bytes: [u8; 32] = sighash[..]
+                .try_into()
+                .map_err(|_| "Sighash not 32 bytes".to_string())?;
+            let msg = bitcoin::secp256k1::Message::from_digest(sighash_bytes);
+            let sig = secp.sign_ecdsa(&msg, &lock_secret);
+
+            let mut sig_bytes = sig.serialize_der().to_vec();
+            sig_bytes.push(0x01); // SIGHASH_ALL
+
+            let witness_vec =
+                ghost_locks::build_normal_witness(&sig_bytes, &witness_script);
+            signed_tx.input[input_idx].witness =
+                bitcoin::Witness::from_slice(&witness_vec);
+
+            input_idx += 1;
+        }
+
+        Ok(signed_tx)
+    })();
+
+    let signed_tx = match sign_result {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!(
+                batch_id = %batch_id,
+                error = %e,
+                "Settlement transaction signing failed"
+            );
+            // Revert lock states on signing failure
+            for withdrawal in &withdrawals {
+                if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
+                    let _ = state.db.update_ghost_lock_state(
+                        &withdrawal.lock_id,
+                        DbLockState::Active,
+                    );
+                }
+            }
+            return Err(format!("Signing failed: {}", e));
+        }
+    };
+
+    let tx_hex = bitcoin::consensus::encode::serialize_hex(&signed_tx);
+
+    match state.rpc.send_raw_transaction(&tx_hex).await {
+        Ok(broadcast_txid) => {
+            info!(
+                batch_id = %batch_id,
+                txid = %broadcast_txid,
+                total_sats = batch_tx.total_input_sats,
+                outputs = batch_tx.settlement_count(),
+                fee = batch_tx.mining_fee,
+                "Settlement batch broadcast successful"
+            );
+
+            // Update withdrawals to submitted status
+            for withdrawal_id in &processed_withdrawal_ids {
+                if let Err(e) = state.db.update_withdrawal_submitted(
+                    *withdrawal_id,
+                    &broadcast_txid,
+                ) {
+                    error!(
+                        withdrawal_id = withdrawal_id,
+                        error = %e,
+                        "Failed to update withdrawal to submitted"
+                    );
+                }
+            }
+
+            // Mark L2 epoch fees as distributed after successful broadcast (only if included)
+            if include_l2_fees && !undistributed.is_empty() {
+                for (epoch, _) in &undistributed {
+                    if let Err(e) = state.db.mark_epoch_fees_distributed(*epoch) {
+                        error!(
+                            epoch,
+                            error = %e,
+                            "Failed to mark epoch fees as distributed"
+                        );
+                    }
+                }
+                info!(
+                    epochs = undistributed.len(),
+                    l2_fee_pool,
+                    "Marked L2 epoch fees as distributed"
+                );
+            }
+
+            Ok(Some(batch_id))
+        }
+        Err(e) => {
+            error!(
+                batch_id = %batch_id,
+                error = %e,
+                "Settlement batch broadcast failed"
+            );
+
+            // Revert lock states back to Active on broadcast failure
+            for withdrawal in &withdrawals {
+                if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
+                    if let Err(revert_err) = state.db.update_ghost_lock_state(
+                        &withdrawal.lock_id,
+                        DbLockState::Active,
+                    ) {
+                        error!(
+                            lock_id = %withdrawal.lock_id,
+                            error = %revert_err,
+                            "Failed to revert lock state after broadcast failure"
+                        );
+                    }
+
+                    retry_tracker
+                        .entry(withdrawal.lock_id.clone())
+                        .and_modify(|(count, last)| {
+                            *count += 1;
+                            *last = std::time::Instant::now();
+                        })
+                        .or_insert((1, std::time::Instant::now()));
+                }
+            }
+
+            Err(format!("Broadcast failed: {}", e))
+        }
+    }
+}
+
+/// Attempt epoch-triggered settlement for all due settlement classes.
+///
+/// Called when the L2 finalize handler detects an epoch boundary.
+async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
+    use ghost_common::constants::SettlementClass;
+
+    info!(epoch, "Epoch boundary detected, checking settlement classes");
+
+    for class in SettlementClass::ALL {
+        if !class.is_due_at_epoch(epoch) {
+            continue;
+        }
+
+        // Dedup: skip if we already settled this class at this epoch
+        {
+            let last_epochs = state.last_settled_epoch.read();
+            if let Some(&last) = last_epochs.get(class.as_str()) {
+                if last >= epoch {
+                    debug!(
+                        class = class.as_str(),
+                        epoch,
+                        "Already settled this class at epoch, skipping"
+                    );
+                    continue;
+                }
+            }
+        }
+
+        let pending = match state.db.get_pending_withdrawals_by_class(class.as_str()) {
+            Ok(w) => w,
+            Err(e) => {
+                warn!(
+                    class = class.as_str(),
+                    error = %e,
+                    "Failed to query pending withdrawals by class"
+                );
+                continue;
+            }
+        };
+
+        if pending.is_empty() {
+            debug!(
+                class = class.as_str(),
+                epoch,
+                "No pending withdrawals for class"
+            );
+            continue;
+        }
+
+        info!(
+            class = class.as_str(),
+            epoch,
+            count = pending.len(),
+            "Executing epoch settlement"
+        );
+
+        match execute_settlement_batch(&state, pending).await {
+            Ok(Some(batch_id)) => {
+                info!(
+                    class = class.as_str(),
+                    epoch,
+                    batch_id = %batch_id,
+                    "Epoch settlement batch broadcast"
+                );
+                state
+                    .last_settled_epoch
+                    .write()
+                    .insert(class.as_str().to_string(), epoch);
+            }
+            Ok(None) => {
+                debug!(
+                    class = class.as_str(),
+                    epoch,
+                    "No batch formed (insufficient inputs)"
+                );
+            }
+            Err(e) => {
+                error!(
+                    class = class.as_str(),
+                    epoch,
+                    error = %e,
+                    "Epoch settlement failed"
+                );
+            }
+        }
+    }
+}
+
+/// Background monitor for settlement confirmation tracking and stale lock recovery.
+///
+/// This replaces the old `run_settlement_loop`. Settlement batch creation is now
+/// triggered by epoch boundaries in `l2_finalize_handler` → `try_epoch_settlement`.
+/// This monitor handles:
+/// 1. H-PAY-1: Stale PendingSettlement lock recovery (24h revert)
+/// 2. Confirmation monitoring for submitted withdrawals (database-driven)
+async fn run_settlement_monitor(state: Arc<AppState>) {
+    use tracing::{debug, error, warn};
+
+    info!("Starting L1 settlement monitor");
+
+    // Monitor interval (60 seconds)
+    let check_interval = std::time::Duration::from_secs(60);
+
+    let required_confirmations: u64 = match state.network {
+        Network::Bitcoin => 6,
+        _ => 1,
+    };
+
+    loop {
+        tokio::time::sleep(check_interval).await;
+
+        let ghost_id = match state.ghost_id.read().clone() {
+            Some(id) => id,
+            None => {
+                debug!("No ghost keys loaded, skipping settlement monitor");
+                continue;
+            }
+        };
+
+        // H-PAY-1 FIX: Check for stale PendingSettlement/Jumping locks and revert to Active
+        // Jumping locks are from the old reconcile_lock code that set state before settlement
         const STALE_SETTLEMENT_TIMEOUT_SECS: i64 = 24 * 60 * 60; // 24 hours
         if let Ok(db_locks) = state.db.get_ghost_locks_by_owner(&ghost_id) {
             let now = chrono::Utc::now().timestamp();
             for lock in db_locks {
-                if lock.state == DbLockState::PendingSettlement {
+                if lock.state == DbLockState::PendingSettlement
+                    || lock.state == DbLockState::Jumping
+                {
                     let age_secs = now - lock.updated_at;
                     if age_secs > STALE_SETTLEMENT_TIMEOUT_SECS {
                         warn!(
                             lock_id = %lock.lock_id,
+                            state = ?lock.state,
                             age_hours = age_secs / 3600,
-                            "Reverting stale PendingSettlement lock to Active"
+                            "Reverting stale lock to Active"
                         );
                         if let Err(e) = state
                             .db
@@ -6567,638 +7315,110 @@ async fn run_settlement_loop(state: Arc<AppState>) {
             }
         }
 
-        // Estimate fee rate from recent network activity
-        // In production, this would call Bitcoin Core's estimatesmartfee RPC
-        let fee_rate = estimate_fee_rate(&state).await;
-        debug!(fee_rate = fee_rate, "Using estimated fee rate");
+        // Check submitted-but-unconfirmed withdrawals for L1 confirmations
+        let submitted = match state.db.get_submitted_withdrawals() {
+            Ok(w) => w,
+            Err(e) => {
+                warn!(error = %e, "Failed to query submitted withdrawals");
+                continue;
+            }
+        };
 
-        // Get pending withdrawal requests
-        let pending_withdrawals: Vec<WithdrawalRequest> =
-            match state.db.get_pending_withdrawals(&ghost_id) {
-                Ok(requests) => requests,
-                Err(e) => {
-                    warn!(error = %e, "Failed to get pending withdrawals");
-                    continue;
-                }
-            };
-
-        if pending_withdrawals.is_empty() {
-            debug!("No pending withdrawal requests");
+        if submitted.is_empty() {
             continue;
         }
 
-        info!(
-            count = pending_withdrawals.len(),
-            "Processing pending withdrawal requests"
-        );
+        // Group by l1_txid to avoid redundant RPC calls for same batch
+        let mut txid_checked: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        // Clear processed list for new batch
-        processed_withdrawal_ids.clear();
-
-        // Process each withdrawal request
-        for withdrawal in &pending_withdrawals {
-            // Get the associated lock
-            let lock = match state.db.get_ghost_lock(&withdrawal.lock_id) {
-                Ok(Some(l)) => l,
-                Ok(None) => {
-                    warn!(lock_id = %withdrawal.lock_id, "Lock not found for withdrawal");
-                    continue;
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to get lock");
-                    continue;
-                }
-            };
-
-            // Verify lock is funded and active
-            if lock.state != DbLockState::Active || lock.funding_txid.is_none() {
-                warn!(
-                    lock_id = %lock.lock_id,
-                    state = ?lock.state,
-                    "Lock not ready for settlement"
-                );
-                continue;
-            }
-
-            // Fix 5: Check if lock is in cooldown from a previous failed broadcast
-            if let Some(&(attempts, last_try)) = retry_tracker.get(&lock.lock_id) {
-                let backoff_secs =
-                    std::cmp::min(300u64.saturating_mul(2u64.saturating_pow(attempts)), 7200);
-                if last_try.elapsed().as_secs() < backoff_secs {
-                    debug!(
-                        lock_id = %lock.lock_id,
-                        attempts = attempts,
-                        backoff_secs = backoff_secs,
-                        "Lock in cooldown after failed broadcast, skipping"
-                    );
-                    continue;
-                }
-            }
-
-            // Get funding info
-            let (txid, vout) = match (lock.funding_txid.as_ref(), lock.funding_vout) {
-                (Some(txid_str), Some(vout)) => {
-                    let txid: bitcoin::Txid = match txid_str.parse() {
-                        Ok(t) => t,
-                        Err(_) => continue,
-                    };
-                    (txid, vout)
-                }
+        for withdrawal in &submitted {
+            let txid_str = match withdrawal.l1_txid.as_ref() {
+                Some(t) if !t.is_empty() => t.clone(),
                 _ => continue,
             };
 
-            // Fix 4: Verify UTXO exists on-chain before including in settlement
-            let utxo_confirmations = match state.rpc.get_tx_out(&txid.to_string(), vout, false).await {
-                Ok(Some(tx_out)) => {
-                    // H-15: Extract confirmations for MIN_INPUT_CONFIRMATIONS check
-                    tx_out.confirmations.max(0) as u32
-                }
-                Ok(None) => {
-                    warn!(
-                        lock_id = %lock.lock_id,
-                        txid = %txid,
-                        vout = vout,
-                        "UTXO not found on-chain, skipping settlement"
-                    );
-                    if let Err(e) = state
-                        .db
-                        .update_ghost_lock_state(&lock.lock_id, DbLockState::Spent)
-                    {
-                        error!(
-                            lock_id = %lock.lock_id,
-                            error = %e,
-                            "Failed to mark lock as spent"
-                        );
-                    }
-                    continue;
-                }
-                Err(e) => {
-                    warn!(
-                        lock_id = %lock.lock_id,
-                        error = %e,
-                        "Failed to verify UTXO existence, skipping this withdrawal"
-                    );
-                    continue;
-                }
-            };
-
-            // Create settlement input
-            let input = ReconciliationInput {
-                txid,
-                vout,
-                amount: lock.amount_sats,
-                ghost_id: lock.owner_ghost_id.clone(),
-                lock_id: Some(hex_to_32bytes(&lock.lock_id)),
-                confirmations: utxo_confirmations,
-            };
-
-            executor.add_input(input);
-
-            // Create settlement from withdrawal request
-            let source_lock_id = hex_to_32bytes(&lock.lock_id);
-            let settlement = match Settlement::new(
-                withdrawal.ghost_id.clone(),
-                source_lock_id,
-                withdrawal.destination_address.clone(),
-                withdrawal.amount_sats,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!(
-                        withdrawal_id = ?withdrawal.id,
-                        error = %e,
-                        "Failed to create settlement"
-                    );
-                    continue;
-                }
-            };
-
-            // SECURITY: Ownership was already verified when the withdrawal request was
-            // submitted to the L2 system. The Ghost Pay backend only processes withdrawals
-            // that were authenticated by the user's Ghost Key signature at request time.
-            #[allow(deprecated)]
-            if let Err(e) = executor.add_settlement(settlement) {
-                warn!(
-                    withdrawal_id = ?withdrawal.id,
-                    error = %e,
-                    "Failed to add settlement"
-                );
+            // Skip if we already checked this txid in this iteration
+            if txid_checked.contains(&txid_str) {
                 continue;
             }
+            txid_checked.insert(txid_str.clone());
 
-            // Track this withdrawal for batch update
-            if let Some(id) = withdrawal.id {
-                processed_withdrawal_ids.push(id);
-            }
-        }
+            match state.rpc.get_raw_transaction(&txid_str, true).await {
+                Ok(tx_json) => {
+                    let confirmations = tx_json
+                        .get("confirmations")
+                        .and_then(|c| c.as_u64())
+                        .unwrap_or(0);
 
-        // Check if we should form a batch
-        if executor.should_form_batch() {
-            info!("Forming settlement batch");
+                    if confirmations < required_confirmations {
+                        debug!(
+                            txid = %txid_str,
+                            confirmations,
+                            required = required_confirmations,
+                            "Settlement TX awaiting confirmations"
+                        );
+                        continue;
+                    }
 
-            match executor.form_batch() {
-                Ok(batch) => {
-                    let batch_id = batch.id_hex();
-                    info!(batch_id = %batch_id, "Formed settlement batch");
+                    info!(
+                        txid = %txid_str,
+                        confirmations,
+                        "Settlement TX confirmed, finalizing withdrawals"
+                    );
 
-                    // Collect undistributed L2 fees for inclusion in settlement
-                    let undistributed = state.db.get_undistributed_fees().unwrap_or_default();
-                    let l2_fee_pool: u64 = undistributed.iter().map(|(_, fee)| fee).sum();
-
-                    // Build the batch transaction, optionally including L2 fee outputs
-                    let build_result = if l2_fee_pool > 0 {
-                        // Query ghost-pool for treasury state + qualified Ghost Pay nodes
-                        match query_fee_distribution_context(&state).await {
-                            Some(ctx) => {
-                                use ghost_reconciliation::fee_distribution::{
-                                    L2FeeDistribution, TreasuryState,
-                                };
-                                let threshold_ts = ctx.threshold_reached_at.and_then(|ts| {
-                                    chrono::DateTime::from_timestamp(ts, 0)
-                                });
-                                let treasury_state = TreasuryState::from_stored(
-                                    ctx.treasury_balance_sats,
-                                    threshold_ts,
-                                );
-                                let dist = L2FeeDistribution::calculate(
-                                    l2_fee_pool,
-                                    &treasury_state,
-                                    chrono::Utc::now(),
-                                    &ctx.ghost_pay_nodes,
-                                );
-                                info!(
-                                    l2_fee_pool,
-                                    treasury_amount = dist.treasury_amount,
-                                    node_payouts = dist.node_payouts.len(),
-                                    "Including L2 fees in settlement batch"
-                                );
-                                executor.build_transaction_with_l2_fees(
-                                    &batch,
-                                    fee_rate,
-                                    dist.treasury_amount,
-                                    &dist.node_payouts,
-                                )
-                            }
-                            None => {
-                                warn!("Failed to get fee distribution context, building without L2 fees");
-                                executor.build_transaction(&batch, fee_rate)
-                            }
+                    // Confirm all withdrawals with this txid
+                    for w in &submitted {
+                        if w.l1_txid.as_deref() != Some(&txid_str) {
+                            continue;
                         }
-                    } else {
-                        executor.build_transaction(&batch, fee_rate)
-                    };
 
-                    match build_result {
-                        Ok(batch_tx) => {
-                            let txid = batch_tx.txid();
-
-                            // Update withdrawal requests to batched status
-                            for withdrawal_id in &processed_withdrawal_ids {
-                                if let Err(e) = state
-                                    .db
-                                    .update_withdrawal_batched(*withdrawal_id, &batch_id)
-                                {
-                                    error!(
-                                        withdrawal_id = withdrawal_id,
-                                        error = %e,
-                                        "Failed to update withdrawal status"
-                                    );
-                                }
-                            }
-
-                            // H-PAY-1 FIX: Mark associated locks as PendingSettlement BEFORE broadcast
-                            // This prevents double-spend if broadcast succeeds but we crash before
-                            // updating state. Safe to revert to Active if broadcast fails.
-                            for withdrawal in &pending_withdrawals {
-                                if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
-                                    if let Err(e) = state.db.update_ghost_lock_state(
-                                        &withdrawal.lock_id,
-                                        DbLockState::PendingSettlement,
-                                    ) {
-                                        error!(
-                                            lock_id = %withdrawal.lock_id,
-                                            error = %e,
-                                            "Failed to update lock state to PendingSettlement"
-                                        );
-                                    }
-                                }
-                            }
-
-                            // Fix 3: Sign each input using the lock owner's keys
-                            let secp = Secp256k1::new();
-                            let sign_result: Result<bitcoin::Transaction, String> = (|| {
-                                let keys_guard = state.keys.read();
-                                let keys = keys_guard
-                                    .as_ref()
-                                    .ok_or("No ghost keys loaded for settlement signing")?;
-
-                                let mut signed_tx = batch_tx.transaction.clone();
-                                let mut input_idx = 0usize;
-
-                                for withdrawal in &pending_withdrawals {
-                                    if !processed_withdrawal_ids
-                                        .contains(&withdrawal.id.unwrap_or(-1))
-                                    {
-                                        continue;
-                                    }
-
-                                    // Get lock record for pubkeys and timelock info
-                                    let lock = state
-                                        .db
-                                        .get_ghost_lock(&withdrawal.lock_id)
-                                        .map_err(|e| format!("DB error: {}", e))?
-                                        .ok_or_else(|| {
-                                            format!("Lock {} not found", withdrawal.lock_id)
-                                        })?;
-
-                                    // Get derivation index for this lock
-                                    let lock_index = state
-                                        .db
-                                        .get_lock_index_for_owner(
-                                            &lock.owner_ghost_id,
-                                            &lock.lock_id,
-                                        )
-                                        .map_err(|e| format!("Failed to get lock index: {}", e))?;
-
-                                    // Derive the lock secret key
-                                    let lock_secret = keys
-                                        .derive_lock_secret(lock_index)
-                                        .map_err(|e| format!("Key derivation error: {:?}", e))?;
-
-                                    // Parse stored pubkeys from hex
-                                    let lock_pubkey_bytes = hex::decode(&lock.lock_pubkey)
-                                        .map_err(|e| format!("Invalid lock_pubkey hex: {}", e))?;
-                                    let lock_pubkey = bitcoin::secp256k1::PublicKey::from_slice(
-                                        &lock_pubkey_bytes,
-                                    )
-                                    .map_err(|e| format!("Invalid lock_pubkey: {}", e))?;
-                                    let recovery_pubkey_bytes = hex::decode(&lock.recovery_pubkey)
-                                        .map_err(|e| {
-                                            format!("Invalid recovery_pubkey hex: {}", e)
-                                        })?;
-                                    let recovery_pubkey =
-                                        bitcoin::secp256k1::PublicKey::from_slice(
-                                            &recovery_pubkey_bytes,
-                                        )
-                                        .map_err(|e| format!("Invalid recovery_pubkey: {}", e))?;
-
-                                    // Verify derived key matches stored key
-                                    let derived_pubkey =
-                                        bitcoin::secp256k1::PublicKey::from_secret_key(
-                                            &secp,
-                                            &lock_secret,
-                                        );
-                                    if derived_pubkey != lock_pubkey {
-                                        return Err(format!(
-                                            "Derived pubkey mismatch for lock {} at index {}",
-                                            lock.lock_id, lock_index
-                                        ));
-                                    }
-
-                                    // Compute recovery_blocks from stored heights
-                                    let recovery_blocks =
-                                        lock.recovery_height.saturating_sub(lock.creation_height);
-
-                                    // Reconstruct witness script
-                                    let witness_script = ghost_locks::build_wsh_witness_script(
-                                        &lock_pubkey,
-                                        &recovery_pubkey,
-                                        recovery_blocks,
-                                    )
-                                    .map_err(|e| format!("Witness script error: {}", e))?;
-
-                                    // Compute P2WSH sighash
-                                    let sighash = {
-                                        let mut cache =
-                                            bitcoin::sighash::SighashCache::new(&signed_tx);
-                                        cache
-                                            .p2wsh_signature_hash(
-                                                input_idx,
-                                                &witness_script,
-                                                bitcoin::Amount::from_sat(lock.amount_sats),
-                                                bitcoin::EcdsaSighashType::All,
-                                            )
-                                            .map_err(|e| format!("Sighash error: {}", e))?
-                                    };
-
-                                    // Sign with ECDSA (P2WSH uses ECDSA, not Schnorr)
-                                    let sighash_bytes: [u8; 32] = sighash[..]
-                                        .try_into()
-                                        .map_err(|_| "Sighash not 32 bytes".to_string())?;
-                                    let msg =
-                                        bitcoin::secp256k1::Message::from_digest(sighash_bytes);
-                                    let sig = secp.sign_ecdsa(&msg, &lock_secret);
-
-                                    // Build DER signature with SIGHASH_ALL byte
-                                    let mut sig_bytes = sig.serialize_der().to_vec();
-                                    sig_bytes.push(0x01); // SIGHASH_ALL
-
-                                    // Build witness: [signature, 0x01 (IF branch), witness_script]
-                                    let witness_vec = ghost_locks::build_normal_witness(
-                                        &sig_bytes,
-                                        &witness_script,
-                                    );
-                                    signed_tx.input[input_idx].witness =
-                                        bitcoin::Witness::from_slice(&witness_vec);
-
-                                    input_idx += 1;
-                                }
-
-                                Ok(signed_tx)
-                            })(
+                        // Mark lock as Spent
+                        if let Err(e) = state
+                            .db
+                            .update_ghost_lock_state(&w.lock_id, DbLockState::Spent)
+                        {
+                            error!(
+                                lock_id = %w.lock_id,
+                                error = %e,
+                                "Failed to update lock state to Spent"
                             );
+                        }
 
-                            let signed_tx = match sign_result {
-                                Ok(tx) => tx,
-                                Err(e) => {
-                                    error!(
-                                        batch_id = %batch_id,
-                                        error = %e,
-                                        "Settlement transaction signing failed"
-                                    );
-                                    // Revert lock states on signing failure
-                                    for withdrawal in &pending_withdrawals {
-                                        if processed_withdrawal_ids
-                                            .contains(&withdrawal.id.unwrap_or(-1))
-                                        {
-                                            let _ = state.db.update_ghost_lock_state(
-                                                &withdrawal.lock_id,
-                                                DbLockState::Active,
-                                            );
-                                        }
-                                    }
-                                    continue;
-                                }
-                            };
-
-                            // Serialize signed transaction and broadcast via Bitcoin Core RPC
-                            let tx_hex = bitcoin::consensus::encode::serialize_hex(&signed_tx);
-
-                            match state.rpc.send_raw_transaction(&tx_hex).await {
-                                Ok(broadcast_txid) => {
-                                    info!(
-                                        batch_id = %batch_id,
-                                        txid = %broadcast_txid,
-                                        total_sats = batch_tx.total_input_sats,
-                                        outputs = batch_tx.settlement_count(),
-                                        fee = batch_tx.mining_fee,
-                                        "Settlement batch broadcast successful"
-                                    );
-
-                                    // Update executor state with confirmed txid
-                                    let confirmed_txid: bitcoin::Txid =
-                                        broadcast_txid.parse().unwrap_or(txid);
-                                    if let Err(e) =
-                                        executor.mark_submitted(&batch_id, confirmed_txid)
-                                    {
-                                        error!(error = %e, "Failed to mark batch as submitted");
-                                    }
-
-                                    // Update withdrawals to submitted status
-                                    for withdrawal_id in &processed_withdrawal_ids {
-                                        if let Err(e) = state.db.update_withdrawal_submitted(
-                                            *withdrawal_id,
-                                            &broadcast_txid,
-                                        ) {
-                                            error!(
-                                                withdrawal_id = withdrawal_id,
-                                                error = %e,
-                                                "Failed to update withdrawal to submitted"
-                                            );
-                                        }
-                                    }
-
-                                    // Fix 5: Clear retry tracker on success
-                                    for withdrawal in &pending_withdrawals {
-                                        if processed_withdrawal_ids
-                                            .contains(&withdrawal.id.unwrap_or(-1))
-                                        {
-                                            retry_tracker.remove(&withdrawal.lock_id);
-                                        }
-                                    }
-
-                                    // Mark L2 epoch fees as distributed after successful broadcast
-                                    if !undistributed.is_empty() {
-                                        for (epoch, _) in &undistributed {
-                                            if let Err(e) =
-                                                state.db.mark_epoch_fees_distributed(*epoch)
-                                            {
-                                                error!(
-                                                    epoch,
-                                                    error = %e,
-                                                    "Failed to mark epoch fees as distributed"
-                                                );
-                                            }
-                                        }
-                                        info!(
-                                            epochs = undistributed.len(),
-                                            l2_fee_pool,
-                                            "Marked L2 epoch fees as distributed"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(
-                                        batch_id = %batch_id,
-                                        error = %e,
-                                        "Settlement batch broadcast failed"
-                                    );
-
-                                    // Revert lock states back to Active on broadcast failure
-                                    for withdrawal in &pending_withdrawals {
-                                        if processed_withdrawal_ids
-                                            .contains(&withdrawal.id.unwrap_or(-1))
-                                        {
-                                            if let Err(revert_err) =
-                                                state.db.update_ghost_lock_state(
-                                                    &withdrawal.lock_id,
-                                                    DbLockState::Active,
-                                                )
-                                            {
-                                                error!(
-                                                    lock_id = %withdrawal.lock_id,
-                                                    error = %revert_err,
-                                                    "Failed to revert lock state after broadcast failure"
-                                                );
-                                            }
-
-                                            // Fix 5: Increment retry count with exponential backoff
-                                            let entry = retry_tracker
-                                                .entry(withdrawal.lock_id.clone())
-                                                .or_insert((0, std::time::Instant::now()));
-                                            entry.0 += 1;
-                                            entry.1 = std::time::Instant::now();
-                                        }
-                                    }
-                                }
+                        // Mark withdrawal as Confirmed
+                        if let Some(id) = w.id {
+                            if let Err(e) = state.db.update_withdrawal_confirmed(id) {
+                                error!(
+                                    withdrawal_id = id,
+                                    error = %e,
+                                    "Failed to confirm withdrawal"
+                                );
+                            } else {
+                                info!(withdrawal_id = id, "Withdrawal confirmed");
                             }
                         }
-                        Err(e) => {
-                            error!(error = %e, "Failed to build batch transaction");
+                    }
+
+                    // Finalize batch if batch_id is available
+                    if let Some(batch_id) = submitted
+                        .iter()
+                        .find(|w| w.l1_txid.as_deref() == Some(&txid_str))
+                        .and_then(|w| w.batch_id.as_ref())
+                    {
+                        if let Err(e) = state.db.finalize_reconciliation_batch(batch_id) {
+                            error!(
+                                batch_id = %batch_id,
+                                error = %e,
+                                "Failed to finalize batch in database"
+                            );
                         }
                     }
                 }
                 Err(e) => {
-                    warn!(error = %e, "Failed to form batch");
-                }
-            }
-        }
-
-        // Check current batch for confirmations
-        if let Some(batch) = executor.current_batch() {
-            let batch_id = batch.id_hex();
-            let txid = batch.l1_txid();
-
-            if let Some(txid_str) = txid {
-                // Check transaction confirmations via RPC
-                match state.rpc.get_raw_transaction(txid_str, true).await {
-                    Ok(tx_json) => {
-                        // Check for confirmations field
-                        if let Some(confirmations) =
-                            tx_json.get("confirmations").and_then(|c| c.as_u64())
-                        {
-                            debug!(
-                                batch_id = %batch_id,
-                                txid = %txid_str,
-                                confirmations = confirmations,
-                                "Checking settlement confirmations"
-                            );
-
-                            // Require 6 confirmations for finalization (or 1 for testnet/regtest)
-                            let required_confirmations = match state.network {
-                                Network::Bitcoin => 6,
-                                _ => 1,
-                            };
-
-                            if confirmations >= required_confirmations {
-                                info!(
-                                    batch_id = %batch_id,
-                                    txid = %txid_str,
-                                    confirmations = confirmations,
-                                    "Settlement batch confirmed, finalizing"
-                                );
-
-                                // Get block height from transaction
-                                // H-21: Safe block height conversion with bounds checking
-                                let raw_height = tx_json
-                                    .get("blockheight")
-                                    .and_then(|h| h.as_u64())
-                                    .unwrap_or(0);
-                                let block_height = match safe_block_height_u64(raw_height) {
-                                    Ok(h) => h,
-                                    Err(e) => {
-                                        error!(error = %e, "Invalid block height, cannot finalize batch");
-                                        continue;
-                                    }
-                                };
-
-                                // Mark batch as confirmed in executor
-                                if let Err(e) = executor.mark_confirmed(&batch_id, block_height) {
-                                    error!(error = %e, "Failed to mark batch as confirmed");
-                                } else {
-                                    // Update all withdrawals in this batch to confirmed status
-                                    if let Ok(withdrawals) = state.db.get_all_pending_withdrawals()
-                                    {
-                                        for withdrawal in withdrawals {
-                                            if withdrawal.batch_id.as_deref() == Some(&batch_id) {
-                                                // H-PAY-1 FIX: Now mark locks as Spent after confirmations
-                                                // This is the safe point - transaction is confirmed on-chain
-                                                if let Err(e) = state.db.update_ghost_lock_state(
-                                                    &withdrawal.lock_id,
-                                                    DbLockState::Spent,
-                                                ) {
-                                                    error!(
-                                                        lock_id = %withdrawal.lock_id,
-                                                        error = %e,
-                                                        "Failed to update lock state to Spent"
-                                                    );
-                                                }
-
-                                                if let Some(id) = withdrawal.id {
-                                                    if let Err(e) =
-                                                        state.db.update_withdrawal_confirmed(id)
-                                                    {
-                                                        error!(
-                                                            withdrawal_id = id,
-                                                            error = %e,
-                                                            "Failed to confirm withdrawal"
-                                                        );
-                                                    } else {
-                                                        info!(
-                                                            withdrawal_id = id,
-                                                            "Withdrawal confirmed"
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Store finalization in database
-                                    if let Err(e) =
-                                        state.db.finalize_reconciliation_batch(&batch_id)
-                                    {
-                                        error!(error = %e, "Failed to finalize batch in database");
-                                    }
-                                }
-                            }
-                        } else {
-                            debug!(
-                                batch_id = %batch_id,
-                                txid = %txid_str,
-                                "Transaction not yet confirmed (0 confirmations)"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        // Transaction might be in mempool or not found
-                        debug!(
-                            batch_id = %batch_id,
-                            txid = %txid_str,
-                            error = %e,
-                            "Could not fetch transaction status"
-                        );
-                    }
+                    debug!(
+                        txid = %txid_str,
+                        error = %e,
+                        "Could not fetch settlement TX status"
+                    );
                 }
             }
         }
@@ -7374,10 +7594,10 @@ async fn reconcile_lock(
     let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
 
     // Validate settlement class
-    if !["standard", "batched"].contains(&req.settlement_class.as_str()) {
+    if !["express", "standard", "economy"].contains(&req.settlement_class.as_str()) {
         return Ok(Json(serde_json::json!({
             "success": false,
-            "error": "Invalid settlement_class. Must be 'standard' or 'batched'"
+            "error": "Invalid settlement_class. Must be 'express', 'standard', or 'economy'"
         })));
     }
 
@@ -7418,13 +7638,16 @@ async fn reconcile_lock(
         })));
     }
 
-    // Settlement fee
+    // Settlement fee — covers mining fee + L2 fee headroom.
+    // Mining: ~300 vbytes * fee_rate * class multiplier.
+    // L2 headroom: reserve undistributed L2 fees so settlement batch can include them.
     let fee_rate = estimate_fee_rate(&state).await;
-    let settlement_fee = if req.settlement_class == "batched" {
-        (68u64 * fee_rate).max(1) // Per-output in batch
-    } else {
-        (110u64 * fee_rate).max(1) // Solo transaction
-    };
+    let class = ghost_common::constants::SettlementClass::parse(&req.settlement_class)
+        .unwrap_or_default();
+    let mining_fee = ((300u64 * fee_rate) as f64 * class.fee_multiplier()).ceil() as u64;
+    let l2_fee_headroom: u64 = state.db.get_undistributed_fees().unwrap_or_default()
+        .iter().map(|(_, fee)| fee).sum();
+    let settlement_fee = mining_fee.saturating_add(l2_fee_headroom).max(546);
     let settlement_amount = lock.amount_sats.saturating_sub(settlement_fee);
 
     let now = chrono::Utc::now().timestamp();
@@ -7440,6 +7663,7 @@ async fn reconcile_lock(
         status: WithdrawalStatus::Pending,
         batch_id: None,
         l1_txid: None,
+        settlement_class: req.settlement_class.clone(),
         created_at: now,
         updated_at: now,
     };
@@ -7461,14 +7685,9 @@ async fn reconcile_lock(
         }
     };
 
-    // Update lock state to indicate reconciliation in progress
-    state
-        .db
-        .update_ghost_lock_state(&id, DbLockState::Jumping)
-        .map_err(|e| {
-            tracing::error!("Failed to update lock state for reconciliation: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    // Lock stays Active — the epoch settlement pipeline will transition it to
+    // PendingSettlement when the batch is formed, then Spent when confirmed.
+    // Setting it to Jumping here was preventing the settlement from processing it.
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -7957,6 +8176,22 @@ async fn l2_finalize_handler(
             error!(error = %e, "Failed to record L2 block");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Check for epoch boundary — trigger settlement for due classes
+    {
+        use ghost_common::constants::L2_EPOCH_BLOCKS;
+        let prev_epoch = height.saturating_sub(1) / L2_EPOCH_BLOCKS;
+        let new_epoch = height / L2_EPOCH_BLOCKS;
+        if new_epoch > prev_epoch && height > 0 {
+            info!(
+                height,
+                new_epoch,
+                "Epoch boundary crossed, spawning settlement check"
+            );
+            let settlement_state = state.clone();
+            tokio::spawn(try_epoch_settlement(settlement_state, new_epoch));
+        }
+    }
 
     info!(
         height,

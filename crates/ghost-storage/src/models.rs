@@ -402,6 +402,8 @@ pub struct GhostLockRecord {
     pub source: String,
     /// Wraith service fee deducted at L2 (0 for non-wraith locks)
     pub wraith_fee_sats: u64,
+    /// Key derivation index (stored at creation time for stable signing)
+    pub key_index: Option<u32>,
 }
 
 /// Ghost Lock state
@@ -707,6 +709,8 @@ pub struct WithdrawalRequest {
     pub batch_id: Option<String>,
     /// L1 transaction ID (if broadcast)
     pub l1_txid: Option<String>,
+    /// Settlement class (express, standard, economy)
+    pub settlement_class: String,
     /// Created timestamp
     pub created_at: i64,
     /// Updated timestamp

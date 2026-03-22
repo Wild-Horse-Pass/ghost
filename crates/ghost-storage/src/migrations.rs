@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 32;
+const SCHEMA_VERSION: u32 = 34;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -88,6 +88,8 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (30, migrate_v30),
         (31, migrate_v31),
         (32, migrate_v32),
+        (33, migrate_v33),
+        (34, migrate_v34),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1780,6 +1782,42 @@ fn migrate_v32(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added confirmed_pool_staging table for crash recovery of verified transactions");
+    Ok(())
+}
+
+fn migrate_v33(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v33: Add settlement_class to withdrawal_requests");
+
+    conn.execute_batch(
+        "ALTER TABLE withdrawal_requests ADD COLUMN settlement_class TEXT NOT NULL DEFAULT 'standard';
+         CREATE INDEX IF NOT EXISTS idx_withdrawal_class ON withdrawal_requests(settlement_class);",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added settlement_class column and index to withdrawal_requests");
+    Ok(())
+}
+
+fn migrate_v34(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v34: Add key_index to ghost_locks");
+
+    conn.execute_batch(
+        "ALTER TABLE ghost_locks ADD COLUMN key_index INTEGER;",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    // Backfill existing locks with their current computed index
+    // This uses the same logic as get_lock_index_for_owner: count of locks created before each lock
+    conn.execute_batch(
+        "UPDATE ghost_locks SET key_index = (
+            SELECT COUNT(*) FROM ghost_locks AS g2
+            WHERE g2.owner_ghost_id = ghost_locks.owner_ghost_id
+            AND g2.created_at < ghost_locks.created_at
+        );",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added key_index column to ghost_locks with backfill");
     Ok(())
 }
 

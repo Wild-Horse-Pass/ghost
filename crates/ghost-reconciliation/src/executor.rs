@@ -1141,22 +1141,22 @@ mod tests {
     fn test_should_form_batch_min_size() {
         let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
 
-        // Add less than minimum
-        for i in 0..5 {
-            let settlement = Settlement::new(
-                format!("ghost1{}", i),
-                test_lock_id(i as u8),
-                format!("bcrt1qoutput{}", i),
-                100_000,
-            )
-            .unwrap();
-            executor.add_settlement(settlement).unwrap();
-        }
-
+        // With MIN_BATCH_SIZE=1, no settlements → should NOT form batch
         assert!(!executor.should_form_batch());
 
-        // Add more to reach minimum
-        for i in 5..10 {
+        // Even 1 settlement should form a batch (epoch-driven settlement)
+        let settlement = Settlement::new(
+            "ghost10".to_string(),
+            test_lock_id(0),
+            "bcrt1qoutput0".to_string(),
+            100_000,
+        )
+        .unwrap();
+        executor.add_settlement(settlement).unwrap();
+        assert!(executor.should_form_batch());
+
+        // Multiple settlements also form batch
+        for i in 1..10 {
             let settlement = Settlement::new(
                 format!("ghost1{}", i),
                 test_lock_id(i as u8),
@@ -1166,7 +1166,6 @@ mod tests {
             .unwrap();
             executor.add_settlement(settlement).unwrap();
         }
-
         assert!(executor.should_form_batch());
     }
 

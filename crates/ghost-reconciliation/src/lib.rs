@@ -78,7 +78,8 @@ pub use settlement::*;
 pub use transaction::*;
 
 /// Default minimum settlements per batch
-pub const MIN_BATCH_SIZE: usize = 10;
+/// MAINNET: raise back to 10
+pub const MIN_BATCH_SIZE: usize = 1;
 
 /// Default maximum settlements per batch
 pub const MAX_BATCH_SIZE: usize = 1000;

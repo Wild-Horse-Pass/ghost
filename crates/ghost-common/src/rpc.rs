@@ -971,6 +971,12 @@ impl BitcoinRpc {
             .await
     }
 
+    /// Get wallet transaction (for transactions in the wallet, does not require -txindex)
+    pub async fn get_transaction(&self, txid: &str) -> GhostResult<Value> {
+        self.call("gettransaction", vec![json!(txid), json!(true)])
+            .await
+    }
+
     /// Send raw transaction
     pub async fn send_raw_transaction(&self, tx_hex: &str) -> GhostResult<String> {
         self.call("sendrawtransaction", vec![json!(tx_hex)]).await
