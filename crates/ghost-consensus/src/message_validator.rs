@@ -384,6 +384,7 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
         MessageType::L2CheckpointBlock => MAX_L2_CHECKPOINT_SIZE,
         MessageType::L2CheckpointVote => MAX_L2_VOTE_SIZE,
         MessageType::L2TreeSync => MAX_L2_TREE_SYNC_SIZE,
+        MessageType::L2ShieldBroadcast => 256, // ShieldCommitment: 32-byte commitment + u64 index + u64 height
         MessageType::GhostGlyphClaim => MAX_GLYPH_CLAIM_SIZE,
         MessageType::GhostGlyphRegistered => MAX_GLYPH_REGISTERED_SIZE,
     }

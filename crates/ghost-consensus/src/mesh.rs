@@ -1405,6 +1405,7 @@ impl MeshNetwork {
             | MessageType::L2CheckpointBlock
             | MessageType::L2CheckpointVote
             | MessageType::L2TreeSync
+            | MessageType::L2ShieldBroadcast
             // GhostGlyph messages use Noise (contain identity binding data)
             | MessageType::GhostGlyphClaim
             | MessageType::GhostGlyphRegistered => true,
@@ -1680,7 +1681,8 @@ impl MeshNetwork {
             | MessageType::L2TransferBroadcast
             | MessageType::L2CheckpointBlock
             | MessageType::L2CheckpointVote
-            | MessageType::L2TreeSync => self.config.ports.consensus_voting,
+            | MessageType::L2TreeSync
+            | MessageType::L2ShieldBroadcast => self.config.ports.consensus_voting,
             // GhostGlyph messages use consensus voting port
             MessageType::GhostGlyphClaim
             | MessageType::GhostGlyphRegistered => self.config.ports.consensus_voting,
@@ -2505,7 +2507,8 @@ impl MeshNetwork {
             | MessageType::L2TransferBroadcast
             | MessageType::L2CheckpointBlock
             | MessageType::L2CheckpointVote
-            | MessageType::L2TreeSync => self.config.ports.consensus_voting,
+            | MessageType::L2TreeSync
+            | MessageType::L2ShieldBroadcast => self.config.ports.consensus_voting,
             MessageType::VerificationResult => self.config.ports.health_monitoring,
             MessageType::GhostGlyphClaim
             | MessageType::GhostGlyphRegistered => self.config.ports.consensus_voting,
@@ -3279,6 +3282,7 @@ mod tests {
                 | MessageType::L2CheckpointBlock
                 | MessageType::L2CheckpointVote
                 | MessageType::L2TreeSync
+                | MessageType::L2ShieldBroadcast
                 | MessageType::GhostGlyphClaim
                 | MessageType::GhostGlyphRegistered => true,
             }

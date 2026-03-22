@@ -503,11 +503,41 @@ impl NullifierRouteHandler {
 
     /// Sync a commitment from ghost-pay to the local L2 tree.
     ///
-    /// Called when ghost-pay shields a note. No broadcast — shields reach the
-    /// network via two paths:
-    /// 1. Piggybacked as prerequisites on the next L2TransferBroadcastMessage (~100-200ms)
-    /// 2. Batched in the next L2CheckpointBlockMessage (~10s, BFT finalized)
+    /// Called when ghost-pay shields a note. Broadcasts to all peers via P2P
+    /// so every node applies the shield immediately, preventing tree divergence.
+    /// Shields are also batched in the next L2CheckpointBlockMessage for BFT finality.
     pub fn sync_commitment(
+        &self,
+        commitment: [u8; 32],
+        note_index: u64,
+        block_height: u64,
+    ) -> GhostResult<()> {
+        self.apply_shield_commitment(commitment, note_index, block_height)?;
+
+        // Broadcast to all peers so they apply immediately
+        let shield = ShieldCommitment {
+            commitment,
+            note_index,
+            block_height,
+        };
+        if let Some(ref broadcast) = *self.broadcast_fn.read() {
+            let payload = serde_json::to_vec(&shield)
+                .map_err(|e| GhostError::Serialization(e.to_string()))?;
+            if let Err(e) = broadcast(MessageType::L2ShieldBroadcast, payload) {
+                warn!(error = %e, "Failed to broadcast shield commitment to peers");
+            }
+        }
+
+        debug!(
+            index = note_index,
+            height = block_height,
+            "Synced commitment to local tree and broadcast to peers"
+        );
+        Ok(())
+    }
+
+    /// Apply a shield commitment to the local tree (used by both local sync and P2P receive).
+    fn apply_shield_commitment(
         &self,
         commitment: [u8; 32],
         note_index: u64,
@@ -519,9 +549,6 @@ impl NullifierRouteHandler {
         self.epoch_manager.add_valid_root(root, block_height)?;
 
         // Persist to staging table so pending shields survive restarts.
-        // Without this, a restart would rebuild the tree (including this shield)
-        // but pending_shields would be empty, causing the proposer to create
-        // checkpoints with phantom data that other nodes can't reproduce.
         self.db
             .insert_pending_shield(note_index, &commitment, block_height)?;
 
@@ -532,11 +559,6 @@ impl NullifierRouteHandler {
             block_height,
         });
 
-        debug!(
-            index = note_index,
-            height = block_height,
-            "Synced commitment to local tree (pending checkpoint)"
-        );
         Ok(())
     }
 
@@ -1960,6 +1982,7 @@ impl MessageHandler for NullifierRouteHandler {
                 | MessageType::L2TransferBroadcast
                 | MessageType::L2CheckpointBlock
                 | MessageType::L2CheckpointVote
+                | MessageType::L2ShieldBroadcast
         ) {
             if let Err(e) = self.check_rate_limit(&envelope.sender) {
                 warn!(error = %e, "L2 message rate limited");
@@ -2125,6 +2148,24 @@ impl MessageHandler for NullifierRouteHandler {
                     self.handle_note_gap_response(&gap_resp)?;
                 } else {
                     debug!("Unrecognized L2TreeSync message format");
+                }
+            }
+
+            MessageType::L2ShieldBroadcast => {
+                let shield: ShieldCommitment = serde_json::from_slice(&envelope.payload)
+                    .map_err(|e| GhostError::Serialization(e.to_string()))?;
+
+                // Idempotent: insert_commitment_at uses INSERT OR IGNORE
+                if let Err(e) = self.apply_shield_commitment(
+                    shield.commitment,
+                    shield.note_index,
+                    shield.block_height,
+                ) {
+                    debug!(
+                        index = shield.note_index,
+                        error = %e,
+                        "Shield broadcast apply failed (likely duplicate)"
+                    );
                 }
             }
 

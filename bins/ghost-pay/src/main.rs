@@ -3946,17 +3946,17 @@ async fn shield_balance(
         "Balance shielded into commitment"
     );
 
-    // Sync commitment to ghost-pool tree (awaited — ghost-pool must have this root
-    // before any transfer proof built against it can be relayed)
-    let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
-    let sync_body = serde_json::json!({
-        "commitment": hex::encode(commitment),
-        "note_index": note_index,
-        "block_height": current_height,
-    });
-    if let Err(e) = state.pool_http_client.post(&sync_url).json(&sync_body).send().await {
-        warn!(error = %e, "Failed to sync shield commitment to ghost-pool");
-    }
+    // Sync commitment to ghost-pool tree with retry (ghost-pool must have this root
+    // before any transfer proof built against it can be relayed).
+    // Ghost-pool will also P2P broadcast to all peers for convergence.
+    sync_commitment_with_retry(
+        &state.pool_http_client,
+        &state.pool_api_url,
+        &commitment,
+        note_index,
+        current_height,
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "note_index": note_index,
@@ -5413,20 +5413,15 @@ async fn simulate_l2_activity(
         current_height,
     );
 
-    // Sync to ghost-pool
-    let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
-    let sync_body = serde_json::json!({
-        "commitment": hex::encode(commitment),
-        "note_index": note_index,
-        "block_height": current_height,
-    });
-    let sync_ok = state
-        .pool_http_client
-        .post(&sync_url)
-        .json(&sync_body)
-        .send()
-        .await
-        .is_ok();
+    // Sync to ghost-pool with retry
+    let sync_ok = sync_commitment_with_retry(
+        &state.pool_http_client,
+        &state.pool_api_url,
+        &commitment,
+        note_index,
+        current_height,
+    )
+    .await;
 
     steps.insert(
         "shield_note".into(),
@@ -5764,19 +5759,21 @@ async fn simulate_unshield(
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
     let _ = state.db.insert_confidential_note(note_index, &commitment, &spending_key, current_height);
 
-    // Sync to ghost-pool
-    let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
-    let sync_body = serde_json::json!({
-        "commitment": hex::encode(commitment),
-        "note_index": note_index,
-        "block_height": current_height,
-    });
-    let _ = state.pool_http_client.post(&sync_url).json(&sync_body).send().await;
+    // Sync to ghost-pool with retry
+    let synced = sync_commitment_with_retry(
+        &state.pool_http_client,
+        &state.pool_api_url,
+        &commitment,
+        note_index,
+        current_height,
+    )
+    .await;
 
     steps.insert("shield_note".into(), serde_json::json!({
         "pass": true,
         "note_index": note_index,
         "note_value": note_value,
+        "synced_to_pool": synced,
     }));
 
     // Step 3: Get Merkle proof
@@ -7423,6 +7420,54 @@ async fn run_settlement_monitor(state: Arc<AppState>) {
             }
         }
     }
+}
+
+/// Sync a shield commitment to ghost-pool with exponential backoff retry.
+/// Returns true if sync succeeded on any attempt.
+async fn sync_commitment_with_retry(
+    client: &reqwest::Client,
+    pool_url: &str,
+    commitment: &[u8; 32],
+    note_index: u64,
+    block_height: u64,
+) -> bool {
+    let url = format!("{}/api/v1/l2/sync-commitment", pool_url);
+    let body = serde_json::json!({
+        "commitment": hex::encode(commitment),
+        "note_index": note_index,
+        "block_height": block_height,
+    });
+
+    for attempt in 0..4u32 {
+        if attempt > 0 {
+            let delay = std::time::Duration::from_millis(200 * (1 << (attempt - 1)));
+            tokio::time::sleep(delay).await;
+        }
+
+        match client.post(&url).json(&body).send().await {
+            Ok(resp) if resp.status().is_success() => return true,
+            Ok(resp) => {
+                warn!(
+                    attempt,
+                    status = %resp.status(),
+                    "Shield commitment sync returned error, retrying"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    attempt,
+                    error = %e,
+                    "Shield commitment sync failed, retrying"
+                );
+            }
+        }
+    }
+
+    error!(
+        note_index,
+        "Shield commitment sync failed after 4 attempts — peers will receive via P2P broadcast"
+    );
+    false
 }
 
 /// Estimate fee rate in sat/vbyte

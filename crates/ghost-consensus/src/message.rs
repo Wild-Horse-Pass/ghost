@@ -62,6 +62,8 @@ pub mod topics {
     pub const L2_VOTE: &[u8] = b"l2vote";
     /// L2 tree sync
     pub const L2_SYNC: &[u8] = b"l2sync";
+    /// L2 shield commitment broadcast
+    pub const L2_SHIELD: &[u8] = b"l2shld";
     /// GhostGlyph visual identity
     pub const GLYPH: &[u8] = b"glyph";
 }
@@ -228,6 +230,8 @@ pub enum MessageType {
     L2CheckpointVote,
     /// L2: Tree sync request/response (node → peer)
     L2TreeSync,
+    /// L2: Shield commitment broadcast (node → all)
+    L2ShieldBroadcast,
     /// GhostGlyph: Claim broadcast (user submits glyph design)
     GhostGlyphClaim,
     /// GhostGlyph: Registration confirmed (lock funded)
@@ -263,6 +267,7 @@ impl MessageType {
             Self::L2CheckpointBlock => topics::L2_CHECKPOINT,
             Self::L2CheckpointVote => topics::L2_VOTE,
             Self::L2TreeSync => topics::L2_SYNC,
+            Self::L2ShieldBroadcast => topics::L2_SHIELD,
             Self::GhostGlyphClaim | Self::GhostGlyphRegistered => topics::GLYPH,
         }
     }
@@ -297,6 +302,7 @@ impl MessageType {
             Self::L2CheckpointBlock => "l2chk",
             Self::L2CheckpointVote => "l2vote",
             Self::L2TreeSync => "l2sync",
+            Self::L2ShieldBroadcast => "l2shield",
             Self::GhostGlyphClaim | Self::GhostGlyphRegistered => "glyph",
         }
     }
