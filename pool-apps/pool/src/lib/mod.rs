@@ -36,9 +36,9 @@ pub mod config;
 pub mod downstream;
 pub mod error;
 mod io_task;
-pub mod share_webhook;
 #[cfg(feature = "monitoring")]
 mod monitoring;
+pub mod share_webhook;
 pub mod template_receiver;
 pub mod utils;
 

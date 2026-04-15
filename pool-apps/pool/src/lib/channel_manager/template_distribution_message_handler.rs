@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use stratum_apps::stratum_core::{
-    bitcoin::Amount,
+    bitcoin::{Amount, TxOut},
     channels_sv2::outputs::deserialize_outputs,
     handlers_sv2::HandleTemplateDistributionMessagesFromServerAsync,
     mining_sv2::SetNewPrevHash as SetNewPrevHashMp,
@@ -40,8 +40,37 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
             }
 
             let mut messages: Vec<RouteMessageTo> = Vec::new();
-            let mut coinbase_output = deserialize_outputs(channel_manager_data.coinbase_outputs.clone()).expect("deserialization failed");
-            coinbase_output[0].value = Amount::from_sat(msg.coinbase_tx_value_remaining);
+
+            // External-TP / ghost-pool mode: when the Template Provider sets
+            // `coinbase_tx_value_remaining == 0`, it is declaring that it has
+            // already allocated the entire subsidy + fees into the outputs it
+            // supplied in `template.coinbase_tx_outputs`. In that case we must
+            // pass an empty `additional_coinbase_outputs` vector to
+            // `on_new_template` so that the channels_sv2 sum check passes
+            // (`sum([]) == 0 == value_remaining`) and the final coinbase
+            // consists solely of the TP-provided outputs, which
+            // `JobFactory::coinbase()` appends automatically after the (empty)
+            // additional list.
+            //
+            // When `value_remaining > 0` we stay on the classic path: build a
+            // single reward output whose value matches `value_remaining`, or
+            // let the per-downstream `PayoutMode` split it as usual.
+            let tp_owns_coinbase = msg.coinbase_tx_value_remaining == 0;
+            if tp_owns_coinbase {
+                tracing::debug!(
+                    "Template: TP owns coinbase (value_remaining=0, template_outputs_count={})",
+                    msg.coinbase_tx_outputs_count
+                );
+            }
+
+            let coinbase_output: Vec<TxOut> = if tp_owns_coinbase {
+                Vec::new()
+            } else {
+                let mut out = deserialize_outputs(channel_manager_data.coinbase_outputs.clone())
+                    .expect("deserialization failed");
+                out[0].value = Amount::from_sat(msg.coinbase_tx_value_remaining);
+                out
+            };
 
             for (downstream_id, downstream) in channel_manager_data.downstream.iter_mut() {
                 // If REQUIRES_CUSTOM_WORK is set, skip template handling entirely (see https://github.com/stratum-mining/sv2-apps/issues/55)
@@ -51,7 +80,9 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                 }
 
                 let messages_: Vec<RouteMessageTo<'_>> = downstream.downstream_data.super_safe_lock(|data| {
-                    let downstream_coinbase_outputs = if let Some(ref payout_mode) = data.payout_mode {
+                    let downstream_coinbase_outputs = if tp_owns_coinbase {
+                        Vec::new()
+                    } else if let Some(ref payout_mode) = data.payout_mode {
                         payout_mode.coinbase_outputs(msg.coinbase_tx_value_remaining, &self.coinbase_reward_script)
                     } else {
                         coinbase_output.clone()

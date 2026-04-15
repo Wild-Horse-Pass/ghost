@@ -104,6 +104,8 @@ pub struct ChannelManager {
     required_extensions: Vec<u16>,
     /// Embedded Job Declaration engine (present when `[jds]` config is set).
     job_declarator: Option<JobDeclarator>,
+    /// Optional ghost share webhook sender. When Some, every validated share is posted.
+    pub(crate) share_webhook_sender: Option<crate::share_webhook::ShareWebhookSender>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -117,6 +119,7 @@ impl ChannelManager {
         downstream_receiver: Receiver<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
         coinbase_outputs: Vec<u8>,
         job_declarator: Option<JobDeclarator>,
+        share_webhook_sender: Option<crate::share_webhook::ShareWebhookSender>,
     ) -> PoolResult<Self, error::ChannelManager> {
         let range_0 = 0..0;
         let range_1 = 0..POOL_ALLOCATION_BYTES;
@@ -168,6 +171,7 @@ impl ChannelManager {
             supported_extensions: config.supported_extensions().to_vec(),
             required_extensions: config.required_extensions().to_vec(),
             job_declarator,
+            share_webhook_sender,
         };
 
         Ok(channel_manager)
@@ -205,12 +209,35 @@ impl ChannelManager {
             }
         };
 
-        let coinbase_output = TxOut {
-            value: Amount::from_sat(last_future_template.coinbase_tx_value_remaining),
-            script_pubkey: self.coinbase_reward_script.script_pubkey(),
+        // External-TP / ghost-pool mode: when the Template Provider sets
+        // `coinbase_tx_value_remaining == 0`, it is declaring that it has
+        // already allocated the entire subsidy + fees into the outputs it
+        // supplied in `template.coinbase_tx_outputs`. The pool must then
+        // pass an empty `additional_coinbase_outputs` vector to
+        // `on_new_template` so that:
+        //   (a) the channels_sv2 sum check passes: `sum([]) == 0 == value_remaining`
+        //   (b) the final coinbase consists solely of the TP-provided outputs,
+        //       which `JobFactory::coinbase()` appends automatically after
+        //       the (empty) `additional` list.
+        //
+        // When `value_remaining > 0` we stay on the classic flow and build a
+        // single reward output backed by the pool's `coinbase_reward_script`
+        // that sums to exactly `value_remaining`.
+        let coinbase_outputs: Vec<TxOut> = if last_future_template.coinbase_tx_value_remaining == 0
+        {
+            debug!(
+                "Bootstrap: TP owns coinbase (value_remaining=0, template_outputs_count={})",
+                last_future_template.coinbase_tx_outputs_count
+            );
+            Vec::new()
+        } else {
+            vec![TxOut {
+                value: Amount::from_sat(last_future_template.coinbase_tx_value_remaining),
+                script_pubkey: self.coinbase_reward_script.script_pubkey(),
+            }]
         };
 
-        if let Err(e) = group_channel.on_new_template(last_future_template, vec![coinbase_output]) {
+        if let Err(e) = group_channel.on_new_template(last_future_template, coinbase_outputs) {
             error!(error = ?e, "Failed to add template to group channel");
             return None;
         }

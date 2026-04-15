@@ -111,7 +111,10 @@ impl ShareWebhookWorker {
     /// This task accumulates shares and sends batches when either:
     /// - `batch_size` shares have been accumulated
     /// - `batch_timeout_ms` has elapsed since the first share in the batch
-    pub async fn run(mut self, cancellation_token: bitcoin_core_sv2::template_distribution_protocol::CancellationToken) {
+    pub async fn run(
+        mut self,
+        cancellation_token: bitcoin_core_sv2::template_distribution_protocol::CancellationToken,
+    ) {
         info!(
             url = %self.config.url,
             batch_size = self.config.batch_size,
@@ -195,18 +198,16 @@ impl ShareWebhookWorker {
         loop {
             attempts += 1;
 
-            match self.client.post(&self.config.url)
+            match self
+                .client
+                .post(&self.config.url)
                 .json(&payload)
                 .send()
                 .await
             {
                 Ok(response) => {
                     if response.status().is_success() {
-                        debug!(
-                            batch_seq,
-                            share_count,
-                            "Share batch sent successfully"
-                        );
+                        debug!(batch_seq, share_count, "Share batch sent successfully");
                         return;
                     } else {
                         warn!(
@@ -230,9 +231,7 @@ impl ShareWebhookWorker {
             if attempts > max_retries {
                 error!(
                     batch_seq,
-                    share_count,
-                    max_retries,
-                    "Share batch dropped after max retries"
+                    share_count, max_retries, "Share batch dropped after max retries"
                 );
                 return;
             }
@@ -274,9 +273,18 @@ mod tests {
         println!("Serialized ShareData: {}", json);
 
         // Verify all fields are present
-        assert!(json.contains("\"user_identity\":"), "user_identity missing from JSON");
-        assert!(json.contains("\"channel_id\":"), "channel_id missing from JSON");
+        assert!(
+            json.contains("\"user_identity\":"),
+            "user_identity missing from JSON"
+        );
+        assert!(
+            json.contains("\"channel_id\":"),
+            "channel_id missing from JSON"
+        );
         assert!(json.contains("\"is_block\":"), "is_block missing from JSON");
-        assert!(json.contains("bc1qtest.worker1"), "user_identity value missing");
+        assert!(
+            json.contains("bc1qtest.worker1"),
+            "user_identity value missing"
+        );
     }
 }
