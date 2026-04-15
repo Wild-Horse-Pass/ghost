@@ -36,6 +36,7 @@ pub mod config;
 pub mod downstream;
 pub mod error;
 mod io_task;
+pub mod share_webhook;
 #[cfg(feature = "monitoring")]
 mod monitoring;
 pub mod template_receiver;
@@ -149,6 +150,25 @@ impl PoolSv2 {
             None
         };
 
+        // Optional ghost-style share webhook: when configured, spawn a worker that
+        // batches validated shares and POSTs them to a downstream service (ghost-pool).
+        let share_webhook_sender = if let Some(webhook_cfg) = self.config.share_webhook() {
+            info!(
+                "Share webhook enabled: POST to {} (batch={}, timeout={}ms)",
+                webhook_cfg.url, webhook_cfg.batch_size, webhook_cfg.batch_timeout_ms
+            );
+            let pool_id = self.config.server_id();
+            let (sender, worker) =
+                crate::share_webhook::ShareWebhookWorker::new(webhook_cfg.clone(), pool_id);
+            let ct = cancellation_token.clone();
+            tokio::spawn(async move {
+                worker.run(ct).await;
+            });
+            Some(sender)
+        } else {
+            None
+        };
+
         let channel_manager = ChannelManager::new(
             self.config.clone(),
             channel_manager_to_tp_sender.clone(),
@@ -156,6 +176,7 @@ impl PoolSv2 {
             downstream_to_channel_manager_receiver,
             encoded_outputs.clone(),
             job_declarator,
+            share_webhook_sender,
         )
         .await?;
 

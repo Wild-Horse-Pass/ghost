@@ -24,6 +24,34 @@ use stratum_apps::{
 
 use crate::error::PoolErrorKind;
 
+fn default_share_webhook_batch_size() -> usize {
+    100
+}
+
+fn default_share_webhook_batch_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_share_webhook_max_retries() -> u32 {
+    3
+}
+
+/// Configuration for webhook notifications of valid shares.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct ShareWebhookConfig {
+    /// URL to POST share batches to.
+    pub url: String,
+    /// Number of shares to accumulate before sending a batch.
+    #[serde(default = "default_share_webhook_batch_size")]
+    pub batch_size: usize,
+    /// Maximum time (ms) to wait before sending a partial batch.
+    #[serde(default = "default_share_webhook_batch_timeout_ms")]
+    pub batch_timeout_ms: u64,
+    /// Number of retry attempts for failed requests.
+    #[serde(default = "default_share_webhook_max_retries")]
+    pub max_retries: u32,
+}
+
 /// Configuration for the Pool, including connection, authority, and coinbase settings.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct PoolConfig {
@@ -50,6 +78,14 @@ pub struct PoolConfig {
     jds: Option<JDSPartialConfig>,
     #[serde(default)]
     monitoring_cache_refresh_secs: Option<u64>,
+    #[serde(default)]
+    share_webhook: Option<ShareWebhookConfig>,
+}
+
+impl PoolConfig {
+    pub fn share_webhook(&self) -> Option<&ShareWebhookConfig> {
+        self.share_webhook.as_ref()
+    }
 }
 
 impl PoolConfig {
@@ -90,6 +126,7 @@ impl PoolConfig {
             monitoring_address,
             monitoring_cache_refresh_secs,
             jds,
+            share_webhook: None,
         }
     }
 

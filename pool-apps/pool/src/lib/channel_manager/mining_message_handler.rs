@@ -28,6 +28,7 @@ use jd_server_sv2::job_declarator::SetCustomMiningJobResponse;
 use crate::{
     channel_manager::{ChannelManager, RouteMessageTo, CLIENT_SEARCH_SPACE_BYTES},
     error::{self, PoolError, PoolErrorKind},
+    share_webhook::{now_ms, ShareData},
     utils::{create_close_channel_msg, PayoutMode},
 };
 
@@ -606,6 +607,20 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
 
                 match res {
                     Ok(ShareValidationResult::Valid(share_hash)) => {
+                        let share_work = standard_channel.get_target().difficulty_float();
+                        if let Some(ref sender) = self.share_webhook_sender {
+                            sender.send(ShareData {
+                                timestamp_ms: now_ms(),
+                                share_hash: share_hash.to_string(),
+                                share_work,
+                                channel_id,
+                                sequence_number: msg.sequence_number,
+                                job_id: msg.job_id,
+                                downstream_id,
+                                is_block: false,
+                                user_identity: standard_channel.get_user_identity().to_string(),
+                            });
+                        }
                         let share_accounting = standard_channel.get_share_accounting();
                         if share_accounting.should_acknowledge() {
                             let success = SubmitSharesSuccess {
@@ -617,7 +632,6 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             info!("SubmitSharesStandard: {} ✅", success);
                             messages.push((downstream_id, Mining::SubmitSharesSuccess(success)).into());
                         } else {
-                            let share_work = standard_channel.get_target().difficulty_float();
                             info!(
                                 "SubmitSharesStandard: valid share | downstream_id: {}, channel_id: {}, sequence_number: {}, share_hash: {}, share_work: {} ✅",
                                 downstream_id, channel_id, msg.sequence_number, share_hash, share_work
@@ -627,6 +641,20 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     }
                     Ok(ShareValidationResult::BlockFound(share_hash, template_id, coinbase)) => {
                         info!("SubmitSharesStandard: 💰 Block Found!!! 💰{share_hash}");
+                        let share_work = standard_channel.get_target().difficulty_float();
+                        if let Some(ref sender) = self.share_webhook_sender {
+                            sender.send(ShareData {
+                                timestamp_ms: now_ms(),
+                                share_hash: share_hash.to_string(),
+                                share_work,
+                                channel_id,
+                                sequence_number: msg.sequence_number,
+                                job_id: msg.job_id,
+                                downstream_id,
+                                is_block: true,
+                                user_identity: standard_channel.get_user_identity().to_string(),
+                            });
+                        }
                         // if we have a template id (i.e.: this was not a custom job)
                         // we can propagate the solution to the TP
                         if let Some(template_id) = template_id {
@@ -793,6 +821,20 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
 
                 match res {
                     Ok(ShareValidationResult::Valid(share_hash)) => {
+                        let share_work = extended_channel.get_target().difficulty_float();
+                        if let Some(ref sender) = self.share_webhook_sender {
+                            sender.send(ShareData {
+                                timestamp_ms: now_ms(),
+                                share_hash: share_hash.to_string(),
+                                share_work,
+                                channel_id,
+                                sequence_number: msg.sequence_number,
+                                job_id: msg.job_id,
+                                downstream_id,
+                                is_block: false,
+                                user_identity: extended_channel.get_user_identity().to_string(),
+                            });
+                        }
                         let share_accounting = extended_channel.get_share_accounting();
                         if share_accounting.should_acknowledge() {
                             let success = SubmitSharesSuccess {
@@ -804,7 +846,6 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             info!("SubmitSharesExtended: {} ✅", success);
                             messages.push((downstream_id, Mining::SubmitSharesSuccess(success)).into());
                         } else {
-                            let share_work = extended_channel.get_target().difficulty_float();
                             info!(
                                 "SubmitSharesExtended: valid share | downstream_id: {}, channel_id: {}, sequence_number: {}, share_hash: {}, share_work: {} ✅",
                                 downstream_id, channel_id, msg.sequence_number, share_hash, share_work
@@ -813,6 +854,20 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     }
                     Ok(ShareValidationResult::BlockFound(share_hash, template_id, coinbase)) => {
                         info!("SubmitSharesExtended: 💰 Block Found!!! 💰{share_hash}");
+                        let share_work = extended_channel.get_target().difficulty_float();
+                        if let Some(ref sender) = self.share_webhook_sender {
+                            sender.send(ShareData {
+                                timestamp_ms: now_ms(),
+                                share_hash: share_hash.to_string(),
+                                share_work,
+                                channel_id,
+                                sequence_number: msg.sequence_number,
+                                job_id: msg.job_id,
+                                downstream_id,
+                                is_block: true,
+                                user_identity: extended_channel.get_user_identity().to_string(),
+                            });
+                        }
                         // if we have a template id (i.e.: this was not a custom job)
                         // we can propagate the solution to the TP
                         if let Some(template_id) = template_id {
