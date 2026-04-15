@@ -2881,6 +2881,15 @@ async fn main() -> Result<()> {
              Internal endpoints (/api/internal/*, /admin/*) are UNPROTECTED. \
              Generate a secret with: openssl rand -hex 32"
         );
+        // Dev/test: on non-mainnet networks, allow the verification server to start
+        // without an internal API secret so local rigs can POST to /api/internal/*.
+        // Mainnet enforcement is still intact via the normal validator path.
+        if !matches!(config.bitcoin.network, ghost_common::config::BitcoinNetwork::Mainnet) {
+            warn!(
+                "Dev mode: network != mainnet and no internal_api_secret — allowing insecure internal API for local development only"
+            );
+            verification_state = verification_state.allow_insecure_internal_api(true);
+        }
     }
 
     // Configure test proposal callback for BFT consensus testing
