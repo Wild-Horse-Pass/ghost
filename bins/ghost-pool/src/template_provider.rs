@@ -1205,12 +1205,22 @@ fn create_new_template(
 
     // Extract just the scriptSig prefix from coinbase1
     // coinbase1 format: version(4) + input_count(1) + prev_txhash(32) + prev_outindex(4) + scriptsig_len(1) + scriptsig_data
-    // SV2 protocol expects coinbase_prefix to be ONLY the scriptsig_data (height + pool tag)
-    // NOT the full coinbase1!
+    // SV2 protocol expects coinbase_prefix to carry the BIP34 height push only.
+    //
+    // IMPORTANT: we must NOT include the pool tag (config.coinbase_extra) in
+    // the TDP coinbase_prefix, because SRI Pool's channels_sv2 independently
+    // stamps the scriptSig with its own `pool_tag_string` via the
+    // `/pool_tag_string//` delimiter injection in `JobFactory::coinbase`. The
+    // tag flows from ghost-pool to sri-pool via the `coinbase_tag` file
+    // (written at startup in main.rs) and the systemd ExecStartPre step,
+    // so it still lands in the final scriptSig — but only once. Including it
+    // here as well produces a double-stamp that bitaxe miners display as
+    // "- G H O S T - X - G H O S T - X" in decoded block explorers.
     //
     // SRI will construct the full coinbase by:
     // - Adding its own version, marker/flag, input structure
-    // - Using our coinbase_prefix as the scriptSig content
+    // - Using our coinbase_prefix as the leading scriptSig content (height only)
+    // - Injecting its pool_tag_string as "/<tag>//" between coinbase_prefix and extranonce
     // - Adding extranonce
     // - Using our coinbase_tx_outputs
     const SCRIPTSIG_START: usize = 4 + 1 + 32 + 4 + 1; // 42 bytes before scriptSig data
@@ -1219,13 +1229,32 @@ fn create_new_template(
         return Err(anyhow::anyhow!("Coinbase1 too short"));
     }
 
-    // Extract scriptSig prefix (height bytes + pool tag) - everything after the length byte
-    let scriptsig_prefix = &work_state.coinbase1[SCRIPTSIG_START..];
+    // BIP34 encodes the block height as a 1-byte push opcode + N little-endian
+    // bytes, where N depends on the height's magnitude. This matches the exact
+    // encoding produced by `TemplateProcessor::encode_height`.
+    let height = work_state.height;
+    let height_push_len: usize = if height <= 0x7f {
+        2 // OP_PUSH1 + 1 byte
+    } else if height <= 0x7fff {
+        3 // OP_PUSH2 + 2 bytes
+    } else if height <= 0x7fffff {
+        4 // OP_PUSH3 + 3 bytes
+    } else {
+        5 // OP_PUSH4 + 4 bytes
+    };
+
+    let scriptsig_full = &work_state.coinbase1[SCRIPTSIG_START..];
+    if scriptsig_full.len() < height_push_len {
+        return Err(anyhow::anyhow!(
+            "Coinbase1 scriptSig shorter than expected BIP34 height push"
+        ));
+    }
+    let scriptsig_prefix = &scriptsig_full[..height_push_len];
 
     debug!(
-        "TDP coinbase_prefix: {} bytes (from coinbase1 {} bytes), hex: {}",
+        "TDP coinbase_prefix: {} bytes (height-only, stripping {} tag bytes), hex: {}",
         scriptsig_prefix.len(),
-        work_state.coinbase1.len(),
+        scriptsig_full.len() - height_push_len,
         hex::encode(scriptsig_prefix)
     );
 
