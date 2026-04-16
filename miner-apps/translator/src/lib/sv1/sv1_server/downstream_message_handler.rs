@@ -86,6 +86,22 @@ impl IsServer<'static> for Sv1Server {
         let downstream_id = client_id.expect("Downstream id should exist");
         info!("Received mining.authorize from Sv1 downstream {downstream_id}");
         debug!("Down: Handling mining.authorize: {}", request);
+
+        // Public-pool requirement: SV1 username MUST be `<bitcoin_address>.<worker_name>`.
+        // The address part determines where the miner's coinbase share is paid; without an
+        // address we have no payout target and the miner would mine for nobody. We reject
+        // bare-worker (no `.`) authorize attempts with a clear failure response so the miner
+        // can fix their config rather than silently lose earnings to whatever fallback the
+        // pool happened to set. This is the same convention every public Bitcoin mining pool
+        // enforces.
+        let name = request.name.as_str();
+        if !name.contains('.') {
+            warn!(
+                "Down: Rejecting mining.authorize from downstream {} — username '{}' has no '.' separator; expected `<bitcoin_address>.<worker_name>`",
+                downstream_id, name
+            );
+            return false;
+        }
         true
     }
 

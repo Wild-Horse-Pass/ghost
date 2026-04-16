@@ -464,10 +464,16 @@ impl Sv1Server {
                     // carries the authorize-supplied `<addr>.<worker>` string instead of the
                     // config prefix. Aggregated mode shares one upstream channel across all
                     // downstreams; if it's already open, this is a no-op for non-first miners.
-                    let channel_open = downstream
+                    //
+                    // Skip the open if authorize was rejected (e.g. bare-worker username with no
+                    // `.` separator). The SV1 framework only calls `authorize()` — which sets
+                    // `authorized_worker_name` — when `handle_authorize` returns true, so an
+                    // empty name here means the miner failed validation and we'd otherwise burn
+                    // an upstream channel for a connection that's about to be torn down.
+                    let (channel_open, name_set) = downstream
                         .downstream_data
-                        .super_safe_lock(|d| d.channel_id.is_some());
-                    if !channel_open {
+                        .super_safe_lock(|d| (d.channel_id.is_some(), !d.authorized_worker_name.is_empty()));
+                    if !channel_open && name_set {
                         debug!(
                             "Down: Authorize handled, opening upstream channel for downstream {} now that user_identity is known",
                             downstream_id
