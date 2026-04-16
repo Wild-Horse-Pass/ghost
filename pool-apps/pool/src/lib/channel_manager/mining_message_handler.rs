@@ -32,6 +32,30 @@ use crate::{
     utils::{create_close_channel_msg, PayoutMode},
 };
 
+/// Builds the `user_identity` string the share_webhook should report to the downstream
+/// accounting service (ghost-pool).
+///
+/// When the Worker-Specific Hashrate Tracking TLV is present (`tlv_worker = Some("bitaxe1")`),
+/// splice that worker name onto the address portion of the channel's `user_identity` so the
+/// resulting payload is `<addr>.<worker>` — the format ghost-pool's `parse_user_identity`
+/// expects to derive both a per-miner `miner_id` AND a payout `<addr>`. When the TLV is absent
+/// or empty, fall back to the channel `user_identity` verbatim, matching pre-TLV behavior.
+///
+/// The "address portion" is the prefix before the first `.` in the channel user_identity. If
+/// the channel user_identity has no `.` we treat the whole thing as the address.
+fn build_webhook_user_identity(channel_uid: String, tlv_worker: Option<&str>) -> String {
+    match tlv_worker.filter(|s| !s.is_empty()) {
+        Some(worker) => {
+            let addr = channel_uid
+                .split_once('.')
+                .map(|(a, _)| a)
+                .unwrap_or(&channel_uid);
+            format!("{}.{}", addr, worker)
+        }
+        None => channel_uid,
+    }
+}
+
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleMiningMessagesFromClientAsync for ChannelManager {
     type Error = PoolError<error::ChannelManager>;
@@ -808,9 +832,11 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     return Ok(vec![(downstream_id, Mining::SubmitSharesError(error)).into()]);
                 };
 
-                if let Some(_user_identity) = user_identity {
-                    // here we have the UserIdentity TLV, so we can use it to enhance monitoring of individual miners in the future
-                }
+                // The UserIdentity TLV (Worker-Specific Hashrate Tracking, ext 0x0002) is read
+                // out into the local `user_identity` binding above. It's consumed below at the
+                // share_webhook send sites via `build_webhook_user_identity`, which splices the
+                // TLV's worker name onto the channel address so ghost-pool sees the per-miner
+                // `<addr>.<worker>` form instead of one collapsed identity per channel.
 
                 let Some(vardiff) = channel_manager_data.vardiff.get_mut(&(downstream_id, channel_id).into()) else {
                     return Ok(vec![(downstream_id, Mining::CloseChannel(create_close_channel_msg(channel_id, "invalid-channel-id"))).into()]);
@@ -818,6 +844,13 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
 
                 let res = extended_channel.validate_share(msg.clone());
                 vardiff.increment_shares_since_last_update();
+
+                // Worker-Specific Hashrate Tracking TLV: when present, splice the per-miner
+                // worker name onto the channel address for the share_webhook payload so
+                // ghost-pool sees `<addr>.<worker>` and can distinguish individual miners
+                // sharing one aggregated channel.
+                let tlv_worker: Option<&str> =
+                    user_identity.as_ref().and_then(|ui| ui.as_str());
 
                 match res {
                     Ok(ShareValidationResult::Valid(share_hash)) => {
@@ -832,7 +865,10 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                                 job_id: msg.job_id,
                                 downstream_id,
                                 is_block: false,
-                                user_identity: extended_channel.get_user_identity().to_string(),
+                                user_identity: build_webhook_user_identity(
+                                    extended_channel.get_user_identity().to_string(),
+                                    tlv_worker,
+                                ),
                             });
                         }
                         let share_accounting = extended_channel.get_share_accounting();
@@ -865,7 +901,10 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                                 job_id: msg.job_id,
                                 downstream_id,
                                 is_block: true,
-                                user_identity: extended_channel.get_user_identity().to_string(),
+                                user_identity: build_webhook_user_identity(
+                                    extended_channel.get_user_identity().to_string(),
+                                    tlv_worker,
+                                ),
                             });
                         }
                         // if we have a template id (i.e.: this was not a custom job)
