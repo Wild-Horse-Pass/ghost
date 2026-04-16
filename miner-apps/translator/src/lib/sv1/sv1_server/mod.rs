@@ -20,6 +20,22 @@ fn is_mining_authorize(msg: &Message) -> bool {
     }
 }
 
+/// Extracts the worker-identifier portion of an SV1 `mining.authorize` username for use as the
+/// per-downstream identity that flows into the Worker-Specific Hashrate Tracking TLV.
+///
+/// Public-pool convention is `<payout_address>.<worker_name>` (e.g.
+/// `bc1qabc...xyz.bitaxe1`). The address part is too long for the 32-byte TLV cap and would
+/// duplicate information already carried in the channel-level `user_identity` (which the
+/// translator config sources from the operator's wallet). The worker part — the bit that
+/// actually distinguishes one device from another behind the same wallet — is short and fits.
+///
+/// If the username has no `.` separator, the whole string is treated as the worker name and
+/// returned. The caller still passes the result through [`tlv_compatible_username`] to enforce
+/// the 32-byte ceiling for safety against pathological inputs.
+pub(super) fn extract_worker_name(name: &str) -> &str {
+    name.rsplit_once('.').map(|(_, w)| w).unwrap_or(name)
+}
+
 /// Truncates a string to [`MAX_USER_IDENTITY_BYTES`], respecting UTF-8 character boundaries.
 ///
 /// If the input string exceeds the limit, it is truncated at the last valid UTF-8 character

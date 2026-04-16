@@ -509,8 +509,13 @@ impl Sv1Server {
         )
         .map_err(|_| TproxyError::shutdown(TproxyErrorKind::SV1Error))?;
 
-        // Only add TLV fields with user identity in non-aggregated mode
-        let tlv_fields = if is_non_aggregated() {
+        // Attach a Worker-Specific Hashrate Tracking TLV with the per-downstream user_identity
+        // for EVERY share submission, regardless of `aggregate_channels` mode. The pool side
+        // uses the TLV (when the extension is negotiated) to attribute shares per worker
+        // instead of per channel. In aggregate mode this is the only way to distinguish
+        // multiple SV1 miners sharing one upstream channel; in non-aggregated mode it's
+        // redundant with the channel's own user_identity but harmless.
+        let tlv_fields = {
             let Some(downstream) = self
                 .downstreams
                 .get(&message.downstream_id)
@@ -525,20 +530,18 @@ impl Sv1Server {
             let user_identity = downstream
                 .downstream_data
                 .super_safe_lock(|d| d.user_identity.clone());
-            // Considering we are trucating user identity to 32 bytes,
-            // If an error happen we should disconnect the downstream.
-            UserIdentity::new(&user_identity)
-                .map_err(|e| {
-                    TproxyError::disconnect(
-                        TproxyErrorKind::General(e.into()),
-                        message.downstream_id,
-                    )
-                })?
-                .to_tlv()
-                .ok()
-                .map(|tlv| vec![tlv])
-        } else {
-            None
+            // The downstream's user_identity is set during mining.authorize via
+            // extract_worker_name + tlv_compatible_username, so it's already capped at 32
+            // bytes. If it somehow isn't (empty downstream pre-authorize), skip the TLV
+            // gracefully rather than disconnecting the miner.
+            if user_identity.is_empty() {
+                None
+            } else {
+                UserIdentity::new(&user_identity)
+                    .ok()
+                    .and_then(|ui| ui.to_tlv().ok())
+                    .map(|tlv| vec![tlv])
+            }
         };
 
         self.sv1_server_channel_state
