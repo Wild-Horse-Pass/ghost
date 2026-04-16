@@ -6,7 +6,8 @@ use crate::{
     sv1::{
         downstream::{downstream::Downstream, SubmitShareWithChannelId},
         sv1_server::{
-            channel::Sv1ServerChannelState, is_mining_authorize, KEEPALIVE_JOB_ID_DELIMITER,
+            channel::Sv1ServerChannelState, is_mining_authorize, is_mining_subscribe,
+            KEEPALIVE_JOB_ID_DELIMITER,
         },
     },
     utils::AGGREGATED_CHANNEL_ID,
@@ -392,22 +393,43 @@ impl Sv1Server {
             .downstream_data
             .super_safe_lock(|data| data.channel_id);
         if channel_id.is_none() {
-            let is_first_message = downstream
-                .downstream_data
-                .super_safe_lock(|d| d.queued_sv1_handshake_messages.is_empty());
-            if is_first_message {
-                self.handle_open_channel_request(downstream_id).await?;
+            // Public-pool defer-open: in non-aggregated mode we want the upstream SV2 channel's
+            // user_identity to carry each miner's full `<address>.<worker>` from
+            // `mining.authorize`, so the pool can attribute shares per miner AND derive each
+            // miner's payout address from their own credentials. The classic flow opened the
+            // channel on the very first message (typically `mining.subscribe`), which arrives
+            // BEFORE authorize — too early to know the user_identity.
+            //
+            // New flow:
+            //   - `mining.subscribe`: process immediately. The subscribe response carries the
+            //     extranonce1 from `data.extranonce1`, which is pre-initialised to a per-
+            //     downstream placeholder by `DownstreamData::new`. The miner gets a fast
+            //     response and won't time out. We update extranonce1 to the real value once
+            //     the upstream channel opens, and notify the miner via SV1
+            //     `mining.set_extranonce`.
+            //   - `mining.authorize`: process immediately so `data.user_identity` /
+            //     `data.authorized_worker_name` are populated, then trigger
+            //     `handle_open_channel_request`.
+            //   - Anything else: queue until the channel is open (existing behaviour).
+            //
+            // Aggregated mode is unaffected — every downstream still piggybacks on the single
+            // shared upstream channel that the channel_manager already opened, so this branch
+            // simply falls through for `mining.submit` etc. once the channel exists.
+            let process_immediately =
+                is_mining_subscribe(&downstream_message) || is_mining_authorize(&downstream_message);
+            if !process_immediately {
                 debug!(
-                    "Down: Sent OpenChannel request for downstream {}",
+                    "Down: Queuing Sv1 message until channel is established (downstream {})",
                     downstream_id
                 );
+                downstream.downstream_data.super_safe_lock(|data| {
+                    data.queued_sv1_handshake_messages
+                        .push(downstream_message.clone())
+                });
+                return Ok(());
             }
-            debug!("Down: Queuing Sv1 message until channel is established");
-            downstream.downstream_data.super_safe_lock(|data| {
-                data.queued_sv1_handshake_messages
-                    .push(downstream_message.clone())
-            });
-            return Ok(());
+            // For subscribe/authorize: fall through to the normal handle_message path below.
+            // Authorize-triggered channel open happens in the post-response block.
         }
 
         let is_authorize = is_mining_authorize(&downstream_message);
@@ -435,6 +457,28 @@ impl Sv1Server {
                     if let Err(e) = downstream.handle_sv1_handshake_completion().await {
                         error!("Down: Failed to handle handshake completion: {:?}", e);
                         return Err(TproxyError::disconnect(e, downstream_id));
+                    }
+
+                    // Public-pool defer-open: if the upstream channel hasn't been opened yet
+                    // (deferred from subscribe), do it now so the channel's `user_identity`
+                    // carries the authorize-supplied `<addr>.<worker>` string instead of the
+                    // config prefix. Aggregated mode shares one upstream channel across all
+                    // downstreams; if it's already open, this is a no-op for non-first miners.
+                    let channel_open = downstream
+                        .downstream_data
+                        .super_safe_lock(|d| d.channel_id.is_some());
+                    if !channel_open {
+                        debug!(
+                            "Down: Authorize handled, opening upstream channel for downstream {} now that user_identity is known",
+                            downstream_id
+                        );
+                        if let Err(e) = self.handle_open_channel_request(downstream_id).await {
+                            error!(
+                                "Down: Failed to open upstream channel for downstream {}: {:?}",
+                                downstream_id, e
+                            );
+                            return Err(e);
+                        }
                     }
                 }
             }
@@ -628,23 +672,70 @@ impl Sv1Server {
                 if let Some(downstream) = self.downstreams.get(&downstream_id) {
                     let initial_target =
                         Target::from_le_bytes(m.target.inner_as_ref().try_into().unwrap());
-                    let extranonce1 = m
+                    let real_extranonce1: stratum_apps::stratum_core::sv1_api::utils::Extranonce<
+                        'static,
+                    > = m
                         .extranonce_prefix
                         .to_vec()
                         .try_into()
                         .map_err(TproxyError::fallback)?;
-                    downstream
+                    let real_extranonce2_size: usize = m.extranonce_size.into();
+                    let already_subscribed = downstream
                         .downstream_data
                         .safe_lock(|d| {
-                            d.extranonce1 = extranonce1;
-                            d.extranonce2_len = m.extranonce_size.into();
+                            // Detect whether subscribe was already responded to with a placeholder
+                            // extranonce — i.e. the public-pool defer-open path. We treat the
+                            // initial DownstreamData::new value (8 bytes of zero) as the
+                            // placeholder. Any other prior value means we shouldn't send a
+                            // post-hoc set_extranonce (would be confusing for the miner).
+                            let was_placeholder = d.extranonce1.as_ref().len() == 8
+                                && d.extranonce1.as_ref().iter().all(|b| *b == 0);
+                            d.extranonce1 = real_extranonce1.clone();
+                            d.extranonce2_len = real_extranonce2_size;
                             d.channel_id = Some(m.channel_id);
                             // Set the initial upstream target from OpenExtendedMiningChannelSuccess
                             d.set_upstream_target(initial_target, downstream_id);
+                            was_placeholder
                         })
                         .map_err(TproxyError::shutdown)?;
                     self.channel_id_to_downstream_id
                         .super_safe_lock(|map| map.insert(m.channel_id, downstream_id));
+
+                    // Public-pool defer-open: if subscribe was responded to with a placeholder
+                    // extranonce (because the channel had not been opened yet — we deferred it
+                    // until `mining.authorize` arrived so we knew the user_identity), send a
+                    // standard SV1 `mining.set_extranonce` notification now so the miner
+                    // switches to the real channel-allocated extranonce before the first
+                    // `mining.notify` arrives. cpuminer/bitaxe/standard SV1 miners all support
+                    // this. Without it, every share built with the placeholder extranonce
+                    // would have an extranonce mismatch against the translator's local
+                    // validation (which uses `data.extranonce1`, now set to the real value),
+                    // and every share would be rejected.
+                    if already_subscribed {
+                        use stratum_apps::stratum_core::sv1_api::methods::server_to_client::SetExtranonce;
+                        let set_extranonce_msg: stratum_apps::stratum_core::sv1_api::json_rpc::Message =
+                            SetExtranonce {
+                                extra_nonce1: real_extranonce1.clone(),
+                                extra_nonce2_size: real_extranonce2_size,
+                            }
+                            .into();
+                        if let Err(e) = downstream
+                            .downstream_channel_state
+                            .downstream_sv1_sender
+                            .send(set_extranonce_msg)
+                            .await
+                        {
+                            warn!(
+                                "Down: failed to send mining.set_extranonce to downstream {}: {:?}",
+                                downstream_id, e
+                            );
+                        } else {
+                            info!(
+                                "Down: sent mining.set_extranonce to downstream {} (real extranonce={} bytes, extranonce2_size={})",
+                                downstream_id, real_extranonce1.as_ref().len(), real_extranonce2_size
+                            );
+                        }
+                    }
 
                     // Process all queued messages now that channel is established
                     let queued_messages = downstream.downstream_data.super_safe_lock(|d| {
@@ -844,18 +935,37 @@ impl Sv1Server {
         };
 
         let miner_id = self.miner_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        // SRI patterns use `/`-delimited segments for payout mode parsing, so appending
-        // a suffix would break pool-side validation.
-        // See: https://github.com/stratum-mining/sv2-apps/issues/369
-        let user_identity = if self.config.user_identity.starts_with("sri/") {
+        // Public-pool attribution: when `mining.authorize` has populated
+        // `data.authorized_worker_name` (the FULL `<address>.<worker>` SV1 username), use it
+        // verbatim as the channel-level user_identity. The SV2 wire field is `Str0255` (255
+        // bytes) so it fits any address type — P2WPKH (`bc1q…`), P2TR (`bc1p…`), P2WSH,
+        // legacy P2PKH (`1…`), P2SH (`3…`) — plus a worker name. The pool then derives both
+        // the per-miner payout address AND the per-miner worker from this single string via
+        // its `parse_user_identity` helper.
+        //
+        // Falls back to the classic config-prefix-derived identity when authorize hasn't
+        // fired yet — i.e. the aggregated-mode case where the channel opens early on
+        // subscribe to keep the shared upstream channel ready for subsequent miners. SRI
+        // patterns (`sri/…`) use `/`-delimited segments for payout-mode parsing, so we keep
+        // them unchanged. See: https://github.com/stratum-mining/sv2-apps/issues/369
+        let authorize_name = downstream
+            .downstream_data
+            .safe_lock(|d| d.authorized_worker_name.clone())
+            .map_err(TproxyError::shutdown)?;
+        let user_identity = if !authorize_name.is_empty() {
+            authorize_name
+        } else if self.config.user_identity.starts_with("sri/") {
             self.config.user_identity.clone()
         } else {
             format!("{}.miner{}", self.config.user_identity, miner_id)
         };
 
-        downstream
+        // NOTE: do NOT overwrite `data.user_identity` here — that field carries the per-share
+        // TLV worker-name (set by `mining.authorize` via `extract_worker_name`) and is bounded
+        // to 32 bytes by the spec. It must stay independent of the channel-level user_identity.
+        let _ = downstream
             .downstream_data
-            .safe_lock(|d| d.user_identity = user_identity.clone())
+            .safe_lock(|_d| ())
             .map_err(TproxyError::shutdown)?;
 
         if let Ok(open_channel_msg) = build_sv2_open_extended_mining_channel(

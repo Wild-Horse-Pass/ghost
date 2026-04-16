@@ -12,9 +12,18 @@ use tracing::warn;
 const KEEPALIVE_JOB_ID_DELIMITER: char = '#';
 
 /// Check if Sv1 message is mining.authorize
-fn is_mining_authorize(msg: &Message) -> bool {
+pub(super) fn is_mining_authorize(msg: &Message) -> bool {
     if let json_rpc::Message::StandardRequest(r) = &msg {
         r.method == "mining.authorize"
+    } else {
+        false
+    }
+}
+
+/// Check if Sv1 message is mining.subscribe
+pub(super) fn is_mining_subscribe(msg: &Message) -> bool {
+    if let json_rpc::Message::StandardRequest(r) = &msg {
+        r.method == "mining.subscribe"
     } else {
         false
     }
