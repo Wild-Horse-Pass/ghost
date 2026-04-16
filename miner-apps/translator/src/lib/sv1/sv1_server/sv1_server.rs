@@ -952,8 +952,22 @@ impl Sv1Server {
             .downstream_data
             .safe_lock(|d| d.authorized_worker_name.clone())
             .map_err(TproxyError::shutdown)?;
-        let user_identity = if !authorize_name.is_empty() {
+        // Rules for choosing the channel user_identity:
+        //   - authorize with `<addr>.<worker>` → use it verbatim (per-miner address)
+        //   - authorize with bare `<worker>` (no `.`) → splice with translator config
+        //     prefix so the address still resolves to operator wallet, worker is honoured.
+        //     Pool's `parse_user_identity` would otherwise try the bare worker as an address
+        //     and fall to FullDonation, leaving such miners without a payout target.
+        //   - empty authorize (shouldn't happen but defensive) → classic config-prefix.miner{N}
+        //   - SRI test patterns (`sri/…`) → keep unchanged for solo/donate parsing.
+        let user_identity = if authorize_name.contains('.') {
             authorize_name
+        } else if !authorize_name.is_empty() {
+            if self.config.user_identity.starts_with("sri/") {
+                self.config.user_identity.clone()
+            } else {
+                format!("{}.{}", self.config.user_identity, authorize_name)
+            }
         } else if self.config.user_identity.starts_with("sri/") {
             self.config.user_identity.clone()
         } else {
