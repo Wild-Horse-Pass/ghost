@@ -294,7 +294,7 @@ impl Sv1Server {
                                 // Load balancer: proxy to a less-loaded peer if configured
                                 if let Some(ref lb) = self.load_balancer {
                                     let local_count = self.downstreams.len();
-                                    if let Some(target) = lb.should_proxy(local_count).await {
+                                    if let Some(target) = lb.should_proxy(local_count, addr.ip()).await {
                                         info!("Proxying new connection from {} to {}", addr, target);
                                         lb.spawn_proxy(stream, target);
                                         continue;

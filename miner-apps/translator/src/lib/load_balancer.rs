@@ -98,12 +98,31 @@ impl LoadBalancer {
 
     /// Decide whether to proxy an incoming connection to a less-loaded peer.
     /// Returns `Some(target_addr)` if proxying, `None` to handle locally.
-    pub async fn should_proxy(&self, local_downstream_count: usize) -> Option<SocketAddr> {
+    pub async fn should_proxy(
+        &self,
+        local_downstream_count: usize,
+        source_addr: std::net::IpAddr,
+    ) -> Option<SocketAddr> {
         let cache = self.cache.read().await;
         let cache = cache.as_ref()?;
 
         // Stale cache (>3x poll interval) → handle locally
         if cache.updated_at.elapsed() > Duration::from_secs(self.config.poll_interval_secs * 3) {
+            return None;
+        }
+
+        // Never re-proxy a connection that arrived from a known peer node.
+        // Without this check, Node A proxies to Node B, Node B proxies back
+        // to Node A, creating an infinite connection storm.
+        let source_str = source_addr.to_string();
+        let from_peer = cache.peers.iter().any(|p| {
+            p.public_address
+                .split(':')
+                .next()
+                .map(|ip| ip == source_str)
+                .unwrap_or(false)
+        });
+        if from_peer {
             return None;
         }
 
