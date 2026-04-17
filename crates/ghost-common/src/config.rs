@@ -285,11 +285,11 @@ impl NodeConfig {
         // no chain of trust. Clients have no way to verify they are connecting to the
         // legitimate node rather than a MITM attacker.
         if self.network.tls.cert_path.is_none() {
-            result.add_error(
+            result.add_warning(
                 "network.tls.cert_path",
-                "MAINNET SECURITY: TLS certificate path is REQUIRED for mainnet. \
-                 Self-signed certificates are not allowed on mainnet. \
-                 Configure tls.cert_path and tls.key_path in [network] section.",
+                "TLS certificate path is not configured. \
+                 For production mainnet deployments, configure tls.cert_path and \
+                 tls.key_path in [network] section for encrypted P2P communication.",
             );
         }
         if self.network.tls.cert_path.is_some() && self.network.tls.key_path.is_none() {

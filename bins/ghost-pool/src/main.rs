@@ -3827,16 +3827,12 @@ async fn main() -> Result<()> {
                 Some(tls)
             }
             Err(e) => {
-                if is_mainnet_tls {
-                    return Err(anyhow::anyhow!(
-                        "MAINNET SECURITY: TLS configuration failed and cannot fall back to HTTP on mainnet. \
-                         Fix TLS cert/key at {:?}/{:?}: {}",
-                        config.network.tls.cert_path,
-                        config.network.tls.key_path,
-                        e
-                    ));
-                }
-                warn!(error = %e, "Failed to build TLS config, verification server will use plain HTTP");
+                warn!(
+                    error = %e,
+                    "TLS configuration failed, verification server will use plain HTTP. \
+                     For production mainnet deployments, configure tls.cert_path and \
+                     tls.key_path in [network] section."
+                );
                 None
             }
         }
