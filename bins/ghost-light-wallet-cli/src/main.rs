@@ -360,11 +360,11 @@ async fn main() -> Result<()> {
         gsp_urls,
         auto_reconnect: true,
         reconnect_interval_secs: 5,
-        params_node: Some((args.params_host.clone(), args.params_port)),
+        params_node: args.params_host.clone().map(|h| (h, args.params_port)),
     };
 
     // Extract API connection params before consuming args
-    let api_host = args.host.clone();
+    let api_host = args.host.clone().unwrap_or_else(|| "127.0.0.1".to_string());
     let api_port = args.pay_port;
 
     // Execute command

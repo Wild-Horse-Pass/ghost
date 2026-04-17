@@ -189,7 +189,7 @@ futures-util = "0.3"
 
 # Config
 config = "0.14"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 
 # TUI
 ratatui = "0.30"

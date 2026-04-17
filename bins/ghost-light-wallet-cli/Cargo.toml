@@ -47,7 +47,7 @@ bitcoin = "0.32"
 tokio = { version = "1.0", features = ["full"] }
 
 # CLI
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.0", features = ["derive", "env"] }
 
 # Terminal UI
 rpassword = "7.0"
