@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHmac } from "crypto";
 
-function hashPassword(password: string): string {
-  let hash = 0;
-  for (let i = 0; i < password.length; i++) {
-    const char = password.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return `ghost-${Math.abs(hash).toString(36)}`;
+function sessionToken(password: string): string {
+  return createHmac("sha256", "ghost-dashboard")
+    .update(password)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 export async function POST(request: NextRequest) {
@@ -23,7 +21,7 @@ export async function POST(request: NextRequest) {
   }
 
   const response = NextResponse.json({ ok: true });
-  response.cookies.set("ghost-session", hashPassword(dashboardPassword), {
+  response.cookies.set("ghost-session", sessionToken(dashboardPassword), {
     httpOnly: true,
     secure: request.nextUrl.protocol === "https:",
     sameSite: "lax",

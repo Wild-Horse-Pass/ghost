@@ -33,8 +33,17 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::*;
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use tabled::{Table, Tabled};
+
+fn confirm(prompt: &str) -> bool {
+    print!("{} (y/n): ", prompt);
+    io::stdout().flush().unwrap();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().eq_ignore_ascii_case("y")
+}
 
 /// Ghost CLI - Bitcoin Ghost Administration Tool
 #[derive(Parser)]
@@ -786,6 +795,10 @@ async fn main() -> Result<()> {
                 }
             }
             MinerCommands::Kick { miner_id, reason } => {
+                if !confirm(&format!("Kick miner {}?", miner_id)) {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
                 let body = serde_json::json!({ "reason": reason });
                 let _: serde_json::Value = client
                     .post(&format!("/admin/miners/{}/kick", miner_id), &body)
@@ -797,6 +810,10 @@ async fn main() -> Result<()> {
                 duration,
                 reason,
             } => {
+                if !confirm(&format!("Ban {} for {} hours?", target, duration)) {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
                 let body = serde_json::json!({ "duration_hours": duration, "reason": reason });
                 let _: serde_json::Value = client
                     .post(&format!("/admin/ban/{}", target), &body)

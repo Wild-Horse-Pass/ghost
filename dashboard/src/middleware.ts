@@ -3,6 +3,20 @@ import type { NextRequest } from "next/server";
 
 const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/auth/logout"];
 
+const SECURITY_HEADERS = {
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+};
+
+function addSecurityHeaders(response: NextResponse): NextResponse {
+  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+    response.headers.set(key, value);
+  }
+  return response;
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -32,38 +46,32 @@ export function middleware(request: NextRequest) {
     request.headers.get("host")?.startsWith("localhost");
 
   if (isLocalhost) {
-    return NextResponse.next();
+    return addSecurityHeaders(NextResponse.next());
   }
 
   // Check for dashboard password if configured
   const dashboardPassword = process.env.DASHBOARD_PASSWORD;
   if (!dashboardPassword) {
-    // No password set — allow all access
-    return NextResponse.next();
+    return addSecurityHeaders(NextResponse.next());
   }
 
   // Check session cookie
-  const sessionToken = request.cookies.get("ghost-session")?.value;
-  if (!sessionToken || sessionToken !== hashPassword(dashboardPassword)) {
-    // Redirect to login
+  const token = request.cookies.get("ghost-session")?.value;
+  if (!token || token !== sessionToken(dashboardPassword)) {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("redirect", pathname);
     return NextResponse.redirect(loginUrl);
   }
 
-  return NextResponse.next();
+  return addSecurityHeaders(NextResponse.next());
 }
 
-function hashPassword(password: string): string {
-  // Simple deterministic hash for session token comparison
-  // Not cryptographic — just prevents plaintext password in cookie
-  let hash = 0;
-  for (let i = 0; i < password.length; i++) {
-    const char = password.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return `ghost-${Math.abs(hash).toString(36)}`;
+function sessionToken(password: string): string {
+  const { createHmac } = require("crypto");
+  return createHmac("sha256", "ghost-dashboard")
+    .update(password)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 export const config = {
