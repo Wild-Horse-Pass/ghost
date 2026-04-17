@@ -910,7 +910,19 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
     // M-2: Use try_new() to properly handle Noise initialization failures
-    let mesh = Arc::new(MeshNetwork::try_new(Arc::clone(&identity), mesh_config)?);
+    let mut mesh_inner = MeshNetwork::try_new(Arc::clone(&identity), mesh_config)?;
+
+    // Provide real miner count for health pings (replaces peer_count placeholder).
+    // The round_manager tracks per-round miner stats from share submissions.
+    let rm_for_miner_count = Arc::clone(&round_manager);
+    mesh_inner.set_miner_count_provider(Arc::new(move || {
+        rm_for_miner_count
+            .round_stats(rm_for_miner_count.current_round_id())
+            .map(|s| s.miner_count as u32)
+            .unwrap_or(0)
+    }));
+
+    let mesh = Arc::new(mesh_inner);
 
     // Initialize consensus voting
     let voting_manager = Arc::new(VotingManager::new(100)); // 100 max sessions
@@ -2800,6 +2812,24 @@ async fn main() -> Result<()> {
         },
         move || mesh_for_verification.peers().unique_peer_count() as u32,
     );
+
+    // Wire pool-peers callback for the translator load-balancer endpoint.
+    let mesh_for_pool_peers = Arc::clone(&mesh);
+    verification_state = verification_state.with_pool_peers(move || {
+        use ghost_verification::PoolPeerInfo;
+        mesh_for_pool_peers
+            .peers()
+            .get_connected_peers(30)
+            .into_iter()
+            .filter(|p| p.capabilities.public_mining && !p.public_address.is_empty())
+            .map(|p| PoolPeerInfo {
+                public_address: p.public_address.clone(),
+                miner_count: p.miner_count,
+                public_mining: true,
+                last_seen: p.last_seen,
+            })
+            .collect()
+    });
 
     // Configure archive handler if archive mode enabled
     if capabilities.archive_mode {

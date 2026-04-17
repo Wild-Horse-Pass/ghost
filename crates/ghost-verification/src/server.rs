@@ -848,6 +848,15 @@ impl Default for DashboardConfig {
 }
 
 /// Verification server state
+/// Peer info for the load-balancer endpoint (`/api/internal/pool-nodes`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PoolPeerInfo {
+    pub public_address: String,
+    pub miner_count: u32,
+    pub public_mining: bool,
+    pub last_seen: u64,
+}
+
 pub struct VerificationState {
     /// Node ID (hex)
     pub node_id: String,
@@ -909,6 +918,8 @@ pub struct VerificationState {
     /// When true (default), server will fail to start if internal_auth is not configured
     /// When false, allows insecure mode for development/testing ONLY
     pub require_internal_auth: bool,
+    /// Pool peers callback: returns peers with public_mining + miner counts for load balancing.
+    get_pool_peers: Option<Box<dyn Fn() -> Vec<PoolPeerInfo> + Send + Sync>>,
     /// Signal to trigger graceful restart (set by config update API)
     /// When true, main.rs will initiate shutdown and exit with code 100
     pub restart_signal: Arc<AtomicBool>,
@@ -1053,6 +1064,7 @@ impl VerificationState {
             record_share_fn: None,
             block_found_fn: None,
             internal_auth: None,
+            get_pool_peers: None,
             // VF-C2: Default to requiring internal auth for security
             require_internal_auth: true,
             restart_signal: Arc::new(AtomicBool::new(false)),
@@ -1465,6 +1477,28 @@ impl VerificationState {
         self.get_round_id = Box::new(round_id);
         self.get_miner_count = Box::new(miner_count);
         self.get_peer_count = Box::new(peer_count);
+        self
+    }
+
+    /// Returns the current miner count from the application callback.
+    pub fn miner_count(&self) -> u32 {
+        (self.get_miner_count)()
+    }
+
+    /// Returns pool peers with public_mining enabled (for load balancer).
+    pub fn pool_peers(&self) -> Vec<PoolPeerInfo> {
+        self.get_pool_peers
+            .as_ref()
+            .map(|f| f())
+            .unwrap_or_default()
+    }
+
+    /// Set pool-peers callback for the load-balancer endpoint.
+    pub fn with_pool_peers(
+        mut self,
+        f: impl Fn() -> Vec<PoolPeerInfo> + Send + Sync + 'static,
+    ) -> Self {
+        self.get_pool_peers = Some(Box::new(f));
         self
     }
 

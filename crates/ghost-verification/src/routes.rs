@@ -354,6 +354,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
     let localhost_router = Router::new()
         .route("/api/internal/share", post(share_notification_handler))
         .route("/api/internal/shares", post(share_batch_handler))
+        .route("/api/internal/pool-nodes", get(pool_nodes_handler))
         // L2 mutation endpoints — localhost only (ghost-pay is colocated)
         .route("/api/v1/l2/submit", post(api_l2_submit_handler))
         .route(
@@ -5924,6 +5925,19 @@ fn fxhash(s: &str) -> u32 {
         h = h.wrapping_mul(0x01000193) ^ (b as u32);
     }
     h
+}
+
+/// Returns peers with public_mining enabled and their miner counts.
+/// Used by the colocated translator for transparent TCP load balancing.
+async fn pool_nodes_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "this_node": {
+            "miner_count": state.miner_count(),
+        },
+        "peers": state.pool_peers(),
+    }))
 }
 
 #[cfg(test)]

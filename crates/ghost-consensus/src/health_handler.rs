@@ -849,6 +849,14 @@ impl HealthPingHandler {
         }
         self.peers.update_last_seen(&envelope.sender);
 
+        // Update miner_count and capabilities from the health ping on every tick,
+        // even when the peer address hasn't changed — these are live metrics.
+        self.peers.update_health_metrics(
+            &envelope.sender,
+            ping.miner_count,
+            ping.capabilities,
+        );
+
         // Persist to database if available
         if let Some(ref db) = self.db {
             let now = chrono::Utc::now().timestamp();

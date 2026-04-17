@@ -209,6 +209,9 @@ pub struct MeshNetwork {
     /// Live node capabilities (updated after MPC contribution succeeds)
     /// Initialized from config.capabilities, then mutated via update_elder_status()
     capabilities: RwLock<ghost_common::types::NodeCapabilities>,
+    /// Application-provided callback for real miner count (used in health pings).
+    /// If None, falls back to peer_count.
+    miner_count_fn: Option<Arc<dyn Fn() -> u32 + Send + Sync>>,
 }
 
 /// Message identifier for deduplication
@@ -975,7 +978,14 @@ impl MeshNetwork {
             messages_received: AtomicU64::new(0),
             validation_stats: RwLock::new(ValidationStats::default()),
             noise_pool,
+            miner_count_fn: None,
         })
+    }
+
+    /// Set a callback that provides the real connected-miner count for health pings.
+    /// Without this, health pings report peer_count as a placeholder.
+    pub fn set_miner_count_provider(&mut self, f: Arc<dyn Fn() -> u32 + Send + Sync>) {
+        self.miner_count_fn = Some(f);
     }
 
     /// Create a new mesh network (infallible, panics on failure)
@@ -2337,7 +2347,9 @@ impl MeshNetwork {
                 block_height: 0, // Would track actual height
                 round_id: 0,     // Would track current round
                 capabilities: *self.capabilities.read(),
-                miner_count: self.peers.peer_count() as u32,
+                miner_count: self.miner_count_fn.as_ref()
+                    .map(|f| f())
+                    .unwrap_or(self.peers.peer_count() as u32),
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                 pow_proof,
             };

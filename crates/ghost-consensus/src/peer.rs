@@ -192,6 +192,19 @@ impl PeerManager {
         }
     }
 
+    /// Update live metrics from a health ping (miner count + capabilities).
+    pub fn update_health_metrics(
+        &self,
+        node_id: &NodeId,
+        miner_count: u32,
+        capabilities: ghost_common::types::NodeCapabilities,
+    ) {
+        if let Some(peer) = self.peers.write().get_mut(node_id) {
+            peer.miner_count = miner_count;
+            peer.capabilities = capabilities;
+        }
+    }
+
     /// Mark peer as disconnected
     ///
     /// P2P4-L1: Logs peer disconnection for observability
@@ -278,6 +291,8 @@ pub struct Peer {
     pub messages_received: u64,
     /// Messages sent to this peer
     pub messages_sent: u64,
+    /// Number of miners connected to this peer (from health pings)
+    pub miner_count: u32,
 }
 
 impl Peer {
@@ -297,6 +312,7 @@ impl Peer {
             latency_ms: None,
             messages_received: 0,
             messages_sent: 0,
+            miner_count: 0,
         }
     }
 
