@@ -86,6 +86,7 @@ pub struct Sv1Server {
     /// Valid Sv1 jobs storage, containing only a single shared entry (AGGREGATED_CHANNEL_ID) in
     /// case of channels aggregation (aggregated mode)
     pub(crate) valid_sv1_jobs: Arc<DashMap<ChannelId, Vec<server_to_client::Notify<'static>>>>,
+    pub(crate) load_balancer: Option<Arc<crate::load_balancer::LoadBalancer>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -176,6 +177,12 @@ impl Sv1Server {
         let shares_per_minute = config.downstream_difficulty_config.shares_per_minute;
         let sv1_server_channel_state =
             Sv1ServerChannelState::new(channel_manager_receiver, channel_manager_sender);
+        let load_balancer = config.load_balancer.as_ref().map(|lb_config| {
+            let lb = crate::load_balancer::LoadBalancer::new(lb_config.clone());
+            lb.spawn_poller();
+            lb
+        });
+
         Self {
             sv1_server_channel_state,
             config,
@@ -193,6 +200,7 @@ impl Sv1Server {
             prevhashes: Arc::new(DashMap::new()),
             pending_target_updates: Arc::new(Mutex::new(Vec::new())),
             valid_sv1_jobs: Arc::new(DashMap::new()),
+            load_balancer,
         }
     }
 
@@ -283,6 +291,16 @@ impl Sv1Server {
                     result = listener.accept() => {
                         match result {
                             Ok((stream, addr)) => {
+                                // Load balancer: proxy to a less-loaded peer if configured
+                                if let Some(ref lb) = self.load_balancer {
+                                    let local_count = self.downstreams.len();
+                                    if let Some(target) = lb.should_proxy(local_count).await {
+                                        info!("Proxying new connection from {} to {}", addr, target);
+                                        lb.spawn_proxy(stream, target);
+                                        continue;
+                                    }
+                                }
+
                                 info!("New SV1 downstream connection from {}", addr);
                                 let connection_token = cancellation_token.child_token();
                                 let connection = ConnectionSV1::new(

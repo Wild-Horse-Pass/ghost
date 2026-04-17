@@ -59,6 +59,11 @@ pub struct TranslatorConfig {
     monitoring_address: Option<SocketAddr>,
     #[serde(default)]
     monitoring_cache_refresh_secs: Option<u64>,
+    /// Optional load balancer for distributing miners across pool nodes.
+    /// When configured, the translator will proxy incoming connections to
+    /// less-loaded peers discovered via the local ghost-pool mesh.
+    #[serde(default)]
+    pub load_balancer: Option<crate::load_balancer::LoadBalancerConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -116,6 +121,7 @@ impl TranslatorConfig {
             log_file: None,
             monitoring_address,
             monitoring_cache_refresh_secs,
+            load_balancer: None,
         }
     }
 

@@ -11,6 +11,8 @@
 //! It relies on several sub-modules (`config`, `downstream_sv1`, `upstream_sv2`, `proxy`, `status`,
 //! etc.) for specialized functionalities.
 #![allow(clippy::module_inception)]
+pub mod load_balancer;
+
 use async_channel::{unbounded, Receiver, Sender};
 use std::{
     net::SocketAddr,
