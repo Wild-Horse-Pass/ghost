@@ -41,8 +41,8 @@ use tabled::{Table, Tabled};
 #[command(name = "ghost-cli")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Pool API URL
-    #[arg(short, long, default_value = "http://localhost:8080", global = true)]
+    /// Pool API URL (required, or set GHOST_POOL_URL env var)
+    #[arg(short, long, env = "GHOST_POOL_URL", global = true)]
     url: String,
 
     /// Output format (text, json)

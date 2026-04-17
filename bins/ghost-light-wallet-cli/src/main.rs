@@ -81,17 +81,17 @@ struct Args {
     #[arg(long, global = true)]
     gsp: Option<String>,
 
-    /// Ghost Pay API host
-    #[arg(long, global = true, default_value = "127.0.0.1")]
-    host: String,
+    /// Ghost Pay API host (or set GHOST_PAY_HOST env var)
+    #[arg(long, global = true, env = "GHOST_PAY_HOST")]
+    host: Option<String>,
 
     /// Ghost Pay API port
     #[arg(long, global = true, default_value = "8800")]
     pay_port: u16,
 
-    /// Ghost-pool node host for downloading NoteSpend MPC params
-    #[arg(long, global = true, default_value = "127.0.0.1")]
-    params_host: String,
+    /// Ghost-pool node host for downloading NoteSpend MPC params (or set GHOST_POOL_HOST env var)
+    #[arg(long, global = true, env = "GHOST_POOL_HOST")]
+    params_host: Option<String>,
 
     /// Ghost-pool node port for downloading NoteSpend MPC params
     #[arg(long, global = true, default_value = "8080")]
@@ -349,7 +349,10 @@ async fn main() -> Result<()> {
         .gsp
         .clone()
         .map(|url| vec![url])
-        .unwrap_or_else(|| vec!["wss://localhost:8901/ws/v1".to_string()]);
+        .unwrap_or_else(|| {
+            eprintln!("Warning: No --gsp URL provided. Set --gsp or GHOST_GSP_URL for production use.");
+            vec![]
+        });
 
     let config = WalletConfig {
         data_dir: data_dir.clone(),

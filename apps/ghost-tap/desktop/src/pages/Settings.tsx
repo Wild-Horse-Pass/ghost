@@ -32,9 +32,7 @@ export default function Settings() {
   const { refresh: refreshConnection } = useConnection();
   const [status, setStatus] = useState<ConnectionStatus>({ mode: "", connected: false });
   const [mode, setMode] = useState("rpc");
-
-  // ghostd RPC config
-  const [host, setHost] = useState("127.0.0.1");
+  const [host, setHost] = useState("");
   const [port, setPort] = useState("18232");
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");

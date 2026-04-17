@@ -22,7 +22,7 @@ export default function GlyphDesigner() {
   const [selectedColor, setSelectedColor] = useState(0);
   const [palette, setPalette] = useState<PaletteColor[]>([]);
   const [ghostId, setGhostId] = useState("");
-  const [payUrl, setPayUrl] = useState("http://127.0.0.1:8800");
+  const [payUrl, setPayUrl] = useState("");
   const [status, setStatus] = useState("");
   const [painting, setPainting] = useState(false);
 

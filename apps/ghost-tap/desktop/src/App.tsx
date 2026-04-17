@@ -51,13 +51,8 @@ function AppRoutes() {
       if (pinSet) {
         setAppState("pin");
       } else {
-        // No PIN — load wallet with default PIN
-        try {
-          await loadWallet("000000");
-        } catch {
-          // Storage doesn't exist yet or wrong key — go to setup
-        }
-        setAppState("ready");
+        // No PIN set — require PIN setup before first use
+        setAppState("setup");
       }
     })();
   }, []);

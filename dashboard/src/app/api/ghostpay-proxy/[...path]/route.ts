@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac } from "crypto";
 
-const GHOST_PAY_URL = process.env.GHOST_PAY_URL || "http://localhost:8800";
+const GHOST_PAY_URL = process.env.GHOST_PAY_URL;
+if (!GHOST_PAY_URL) {
+  console.error("GHOST_PAY_URL environment variable is required");
+}
 
 function signRequest(body: string): { signature: string; timestamp: string } {
   const key = process.env.INTERNAL_AUTH_KEY;

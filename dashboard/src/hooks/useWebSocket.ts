@@ -10,7 +10,7 @@ function getWsUrl(): string {
     const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
     return `${wsProtocol}//${hostname}:8080/ws`;
   }
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+  const base = process.env.NEXT_PUBLIC_API_URL || "";
   return base.replace(/^http/, "ws") + "/ws";
 }
 
