@@ -51,12 +51,24 @@ fn confirm(prompt: &str) -> bool {
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Pool API URL (required, or set GHOST_POOL_URL env var)
+    ///
+    /// Made optional at the clap level to sidestep a quirk where a required
+    /// `global = true` String arg ends up being required at both the top level
+    /// and every subcommand level. Presence is validated in main().
     #[arg(short, long, env = "GHOST_POOL_URL", global = true)]
-    url: String,
+    url: Option<String>,
 
     /// Output format (text, json)
     #[arg(short, long, default_value = "text", global = true)]
     format: OutputFormat,
+
+    /// Retry HTTP requests on transient failures (network errors, timeouts, 5xx)
+    #[arg(long, default_value = "3", global = true)]
+    retries: u32,
+
+    /// Dry-run mode: print what mutating commands would do without calling the API
+    #[arg(long, global = true)]
+    dry_run: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -333,36 +345,85 @@ struct PeerInfo {
 struct ApiClient {
     base_url: String,
     client: reqwest::Client,
+    retries: u32,
+}
+
+/// Outcome of a single attempt when running a request through [`ApiClient::with_retries`].
+/// Transient errors return Retry; any other error should not be retried.
+enum AttemptResult<T> {
+    Ok(T),
+    Retry(anyhow::Error),
+    Fatal(anyhow::Error),
 }
 
 impl ApiClient {
-    fn new(base_url: &str) -> Self {
+    fn new(base_url: &str, retries: u32) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("L-1: Failed to build HTTP client - check TLS/SSL configuration"),
+            retries,
         }
+    }
+
+    /// Retry transient errors up to `self.retries` times with exponential backoff + jitter.
+    /// Network errors, timeouts, and 5xx responses are retried; 4xx and decode errors are not.
+    async fn with_retries<T, F, Fut>(&self, mut attempt: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = AttemptResult<T>>,
+    {
+        let max_attempts = self.retries.saturating_add(1);
+        let mut last_err: Option<anyhow::Error> = None;
+        for n in 0..max_attempts {
+            match attempt().await {
+                AttemptResult::Ok(value) => return Ok(value),
+                AttemptResult::Fatal(e) => return Err(e),
+                AttemptResult::Retry(e) => {
+                    last_err = Some(e);
+                    if n + 1 >= max_attempts {
+                        break;
+                    }
+                    let base_ms = 250u64 << n.min(6); // 250,500,1000,…,16000 ms
+                    let jitter = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos() as u64 % 100)
+                        .unwrap_or(0);
+                    tokio::time::sleep(std::time::Duration::from_millis(base_ms + jitter)).await;
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("request failed")))
     }
 
     async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
         let url = format!("{}/api/v1{}", self.base_url, path);
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("Failed to connect to pool")?;
-
-        if !response.status().is_success() {
-            anyhow::bail!("API error: {}", response.status());
-        }
-
-        response
-            .json()
-            .await
-            .context("Failed to parse API response")
+        self.with_retries(|| async {
+            let resp = match self.client.get(&url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    return AttemptResult::Retry(
+                        anyhow::Error::from(e).context("Failed to connect to pool"),
+                    );
+                }
+            };
+            let status = resp.status();
+            if status.is_server_error() {
+                return AttemptResult::Retry(anyhow::anyhow!("API error: {}", status));
+            }
+            if !status.is_success() {
+                return AttemptResult::Fatal(anyhow::anyhow!("API error: {}", status));
+            }
+            match resp.json::<T>().await {
+                Ok(v) => AttemptResult::Ok(v),
+                Err(e) => AttemptResult::Fatal(
+                    anyhow::Error::from(e).context("Failed to parse API response"),
+                ),
+            }
+        })
+        .await
     }
 
     async fn post<T: for<'de> Deserialize<'de>>(
@@ -371,38 +432,59 @@ impl ApiClient {
         body: &impl Serialize,
     ) -> Result<T> {
         let url = format!("{}/api/v1{}", self.base_url, path);
-        let response = self
-            .client
-            .post(&url)
-            .json(body)
-            .send()
-            .await
-            .context("Failed to connect to pool")?;
-
-        if !response.status().is_success() {
-            anyhow::bail!("API error: {}", response.status());
-        }
-
-        response
-            .json()
-            .await
-            .context("Failed to parse API response")
+        let body_json = serde_json::to_value(body).context("Failed to serialize request body")?;
+        self.with_retries(|| async {
+            let resp = match self.client.post(&url).json(&body_json).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    return AttemptResult::Retry(
+                        anyhow::Error::from(e).context("Failed to connect to pool"),
+                    );
+                }
+            };
+            let status = resp.status();
+            if status.is_server_error() {
+                return AttemptResult::Retry(anyhow::anyhow!("API error: {}", status));
+            }
+            if !status.is_success() {
+                return AttemptResult::Fatal(anyhow::anyhow!("API error: {}", status));
+            }
+            match resp.json::<T>().await {
+                Ok(v) => AttemptResult::Ok(v),
+                Err(e) => AttemptResult::Fatal(
+                    anyhow::Error::from(e).context("Failed to parse API response"),
+                ),
+            }
+        })
+        .await
     }
 
     async fn get_text(&self, path: &str) -> Result<String> {
         let url = format!("{}/api/v1{}", self.base_url, path);
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("Failed to connect to pool")?;
-
-        if !response.status().is_success() {
-            anyhow::bail!("API error: {}", response.status());
-        }
-
-        response.text().await.context("Failed to read API response")
+        self.with_retries(|| async {
+            let resp = match self.client.get(&url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    return AttemptResult::Retry(
+                        anyhow::Error::from(e).context("Failed to connect to pool"),
+                    );
+                }
+            };
+            let status = resp.status();
+            if status.is_server_error() {
+                return AttemptResult::Retry(anyhow::anyhow!("API error: {}", status));
+            }
+            if !status.is_success() {
+                return AttemptResult::Fatal(anyhow::anyhow!("API error: {}", status));
+            }
+            match resp.text().await {
+                Ok(v) => AttemptResult::Ok(v),
+                Err(e) => {
+                    AttemptResult::Fatal(anyhow::Error::from(e).context("Failed to read API response"))
+                }
+            }
+        })
+        .await
     }
 }
 
@@ -772,10 +854,29 @@ fn format_duration(secs: u64) -> String {
 // Main
 // =============================================================================
 
+/// Print a dry-run summary for a mutating request and return true so the caller can skip it.
+fn dry_run_notice(method: &str, path: &str, body: Option<&serde_json::Value>) -> bool {
+    println!("{}", "[dry-run] would send:".yellow().bold());
+    println!("  {} {}", method.cyan(), path);
+    if let Some(b) = body {
+        if !b.is_null() {
+            println!("  body: {}", serde_json::to_string(b).unwrap_or_default());
+        }
+    }
+    println!("{}", "[dry-run] no request sent.".yellow());
+    true
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let client = ApiClient::new(&cli.url);
+    let url = cli.url.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "pool API URL is required — pass --url <URL> or set GHOST_POOL_URL (currently unset or empty)"
+        )
+    })?;
+    let client = ApiClient::new(url, cli.retries);
+    let dry_run = cli.dry_run;
 
     match cli.command {
         Commands::Status => cmd_status(&client, cli.format).await?,
@@ -795,14 +896,17 @@ async fn main() -> Result<()> {
                 }
             }
             MinerCommands::Kick { miner_id, reason } => {
+                let path = format!("/admin/miners/{}/kick", miner_id);
+                let body = serde_json::json!({ "reason": reason });
+                if dry_run {
+                    dry_run_notice("POST", &path, Some(&body));
+                    return Ok(());
+                }
                 if !confirm(&format!("Kick miner {}?", miner_id)) {
                     println!("Cancelled.");
                     return Ok(());
                 }
-                let body = serde_json::json!({ "reason": reason });
-                let _: serde_json::Value = client
-                    .post(&format!("/admin/miners/{}/kick", miner_id), &body)
-                    .await?;
+                let _: serde_json::Value = client.post(&path, &body).await?;
                 println!("{}", format!("Miner {} kicked", miner_id).yellow());
             }
             MinerCommands::Ban {
@@ -810,23 +914,29 @@ async fn main() -> Result<()> {
                 duration,
                 reason,
             } => {
+                let path = format!("/admin/ban/{}", target);
+                let body = serde_json::json!({ "duration_hours": duration, "reason": reason });
+                if dry_run {
+                    dry_run_notice("POST", &path, Some(&body));
+                    return Ok(());
+                }
                 if !confirm(&format!("Ban {} for {} hours?", target, duration)) {
                     println!("Cancelled.");
                     return Ok(());
                 }
-                let body = serde_json::json!({ "duration_hours": duration, "reason": reason });
-                let _: serde_json::Value = client
-                    .post(&format!("/admin/ban/{}", target), &body)
-                    .await?;
+                let _: serde_json::Value = client.post(&path, &body).await?;
                 println!(
                     "{}",
                     format!("Banned {} for {} hours", target, duration).red()
                 );
             }
             MinerCommands::Unban { target } => {
-                let _: serde_json::Value = client
-                    .post(&format!("/admin/unban/{}", target), &())
-                    .await?;
+                let path = format!("/admin/unban/{}", target);
+                if dry_run {
+                    dry_run_notice("POST", &path, None);
+                    return Ok(());
+                }
+                let _: serde_json::Value = client.post(&path, &()).await?;
                 println!("{}", format!("Unbanned {}", target).green());
             }
         },
@@ -881,8 +991,15 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            PayoutCommands::Process { dry_run } => {
-                let body = serde_json::json!({ "dry_run": dry_run });
+            PayoutCommands::Process { dry_run: local_dry } => {
+                // Two dry-runs in play: --dry-run skips the call entirely; the local
+                // --dry-run on payout process keeps the call but asks the backend to
+                // simulate. Global wins when set.
+                let body = serde_json::json!({ "dry_run": local_dry || dry_run });
+                if dry_run {
+                    dry_run_notice("POST", "/admin/payouts/process", Some(&body));
+                    return Ok(());
+                }
                 let result: serde_json::Value =
                     client.post("/admin/payouts/process", &body).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -922,8 +1039,20 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&info)?);
             }
             NodeCommands::Health => cmd_node_health(&client, cli.format).await?,
-            NodeCommands::Drain => cmd_node_drain(&client).await?,
-            NodeCommands::Resume => cmd_node_resume(&client).await?,
+            NodeCommands::Drain => {
+                if dry_run {
+                    dry_run_notice("POST", "/admin/drain", None);
+                } else {
+                    cmd_node_drain(&client).await?
+                }
+            }
+            NodeCommands::Resume => {
+                if dry_run {
+                    dry_run_notice("POST", "/admin/resume", None);
+                } else {
+                    cmd_node_resume(&client).await?
+                }
+            }
             NodeCommands::Config => {
                 let config: serde_json::Value = client.get("/node/config").await?;
                 println!("{}", serde_json::to_string_pretty(&config)?);
