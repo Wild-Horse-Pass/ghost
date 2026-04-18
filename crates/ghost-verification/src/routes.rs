@@ -186,6 +186,12 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/mining/status", get(api_mining_status_handler))
         .route("/api/v1/mining/miners", get(api_miners_handler))
         .route("/api/v1/miners/search", get(api_miners_search_handler))
+        // Public self-lookup endpoint — exact-match only, requires the full
+        // <address>.<worker> miner_id. Reachable without auth so a miner can
+        // look up their own stats from the website (industry standard for
+        // mining pools). Enumeration is prevented by exact-match semantics
+        // and per-IP nginx rate limiting at the proxy layer.
+        .route("/api/v1/miners/lookup", get(api_miner_lookup_handler))
         // M-14: /api/v1/miners/stats moved to internal routes (requires HMAC auth)
         // Exposes individual miner work values, hashrates, and share history
         .route("/api/v1/network/peers", get(peers_handler))
@@ -1759,6 +1765,73 @@ async fn api_miner_stats_handler(
     };
 
     Json(stats)
+}
+
+/// Public miner self-lookup handler.
+///
+/// Reads the persistent `miners` table (NOT the per-round `shares` table that
+/// `api_miner_stats_handler` queries — that gets pruned and would return
+/// "not found" for miners without current-round activity).
+///
+/// Caller provides the full <address>.<worker> identifier as `?miner_id=`.
+/// Exact match only; no listing or fuzzy search → no enumeration risk.
+/// Per-IP rate limiting is enforced at the nginx proxy layer.
+async fn api_miner_lookup_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<MinerStatsQuery>,
+) -> impl IntoResponse {
+    let miner_id = params.miner_id.unwrap_or_default();
+
+    if miner_id.is_empty() {
+        return Json(serde_json::json!({
+            "error": "Missing miner_id parameter",
+            "example": "/api/v1/miners/lookup?miner_id=bc1q....workername"
+        }));
+    }
+
+    let result = if let Some(ref db) = state.database {
+        match db.get_miner(&miner_id) {
+            Ok(Some(m)) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let active = (now - m.last_seen) < 600;
+                serde_json::json!({
+                    "found": true,
+                    "miner_id": m.miner_id,
+                    "payout_address": m.payout_address,
+                    "first_seen": m.first_seen,
+                    "last_seen": m.last_seen,
+                    "active": active,
+                    "total_shares": m.total_shares,
+                    "total_work": m.total_work,
+                    "blocks_won": m.blocks_won,
+                    "total_payouts_sats": m.total_payouts_sats,
+                    "avg_hashrate_ths": m.avg_hashrate_ths,
+                })
+            }
+            Ok(None) => serde_json::json!({
+                "found": false,
+                "miner_id": miner_id,
+                "message": "Miner not found"
+            }),
+            Err(e) => {
+                error!(error = %e, "Failed to get miner record");
+                serde_json::json!({
+                    "error": "Database error",
+                    "miner_id": miner_id
+                })
+            }
+        }
+    } else {
+        serde_json::json!({
+            "error": "Database not available",
+            "miner_id": miner_id
+        })
+    };
+
+    Json(result)
 }
 
 /// API v1 pool status handler

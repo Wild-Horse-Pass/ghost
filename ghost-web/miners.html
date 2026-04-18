@@ -405,6 +405,30 @@
     </div>
   </section>
 
+  <!-- Find Your Stats -->
+  <section id="lookup">
+    <div class="container">
+      <h2 class="section-title">Find Your Stats</h2>
+      <p class="section-subtitle">Look up your worker's mining performance. Enter the Bitcoin address and worker name you mine with.</p>
+
+      <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 32px; margin-top: 32px; max-width: 760px; margin-left: auto; margin-right: auto;">
+        <div style="display: grid; grid-template-columns: 1fr 220px auto; gap: 12px; align-items: end;">
+          <div>
+            <label style="display:block; font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Bitcoin Address</label>
+            <input id="lookup-address" type="text" placeholder="bc1q..." autocomplete="off" spellcheck="false" style="width:100%; padding:12px; background:var(--black); border:1px solid var(--gray-700); border-radius:8px; color:var(--white); font-family:var(--font-mono); font-size:13px;">
+          </div>
+          <div>
+            <label style="display:block; font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Worker Name</label>
+            <input id="lookup-worker" type="text" placeholder="worker1" autocomplete="off" spellcheck="false" style="width:100%; padding:12px; background:var(--black); border:1px solid var(--gray-700); border-radius:8px; color:var(--white); font-family:var(--font-mono); font-size:13px;">
+          </div>
+          <button id="lookup-btn" class="btn btn-primary" style="padding:12px 24px;">Lookup</button>
+        </div>
+
+        <div id="lookup-result" style="margin-top: 24px; display: none;"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- Why Ghost Pool -->
   <section>
     <div class="container">
@@ -496,6 +520,84 @@
 
     document.getElementById('payout-address').addEventListener('input', updateUsername);
     document.getElementById('worker-name').addEventListener('input', updateUsername);
+
+    // === Find Your Stats lookup ===
+    const POOL_VMS = ['vm1', 'vm2', 'vm3', 'vm4'];
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+    }
+
+    function formatAgo(unixSecs) {
+      const delta = Math.floor(Date.now() / 1000) - unixSecs;
+      if (delta < 60) return `${delta}s ago`;
+      if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+      if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
+      return `${Math.floor(delta / 86400)}d ago`;
+    }
+
+    async function performLookup() {
+      const addr = document.getElementById('lookup-address').value.trim();
+      const worker = document.getElementById('lookup-worker').value.trim();
+      const result = document.getElementById('lookup-result');
+
+      if (!addr || !worker) {
+        result.style.display = 'block';
+        result.innerHTML = '<div style="padding:16px; background:rgba(255,68,68,0.08); border:1px solid rgba(255,68,68,0.3); border-radius:10px; color:var(--gray-300);">Enter both your Bitcoin address and worker name.</div>';
+        return;
+      }
+
+      const minerId = `${addr}.${worker}`;
+      result.style.display = 'block';
+      result.innerHTML = '<div style="color:var(--gray-400); font-size:14px;">Searching across all 4 nodes…</div>';
+
+      const fetches = POOL_VMS.map(vm =>
+        fetch(`/api/pool/${vm}/api/v1/miners/lookup?miner_id=${encodeURIComponent(minerId)}`)
+          .then(r => r.json())
+          .then(data => ({ vm, data }))
+          .catch(() => ({ vm, data: { found: false } }))
+      );
+
+      const results = await Promise.all(fetches);
+      const hit = results.find(r => r.data.found);
+
+      if (!hit) {
+        result.innerHTML = `<div style="padding:20px; background:rgba(255,68,68,0.08); border:1px solid rgba(255,68,68,0.3); border-radius:10px;">
+          <div style="font-weight:600; color:var(--red); margin-bottom:8px;">Not found</div>
+          <div style="font-size:14px; color:var(--gray-300);">No miner with ID <code style="color:var(--cyan); font-family:var(--font-mono); word-break:break-all;">${escapeHtml(minerId)}</code> is registered on any pool node. Make sure your miner is connected and the address + worker match exactly.</div>
+        </div>`;
+        return;
+      }
+
+      const m = hit.data;
+      const status = m.active
+        ? '<span style="color:var(--green);">● Active</span>'
+        : '<span style="color:var(--gray-500);">○ Idle</span>';
+      const btc = (m.total_payouts_sats / 1e8).toFixed(8);
+
+      result.innerHTML = `
+        <div style="padding:20px; background:var(--black); border:1px solid var(--gray-800); border-radius:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:12px;">
+            <div style="font-family:var(--font-mono); font-size:13px; color:var(--gray-400); word-break:break-all;">${escapeHtml(m.miner_id)}</div>
+            <div style="font-size:14px; white-space:nowrap;">${status} <span style="color:var(--gray-500);">on</span> <span style="color:var(--cyan); text-transform:uppercase;">${hit.vm}</span></div>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:20px;">
+            <div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.05em;">Total Shares</div><div style="font-size:24px; font-weight:700; color:var(--orange); font-family:var(--font-mono); margin-top:4px;">${m.total_shares.toLocaleString()}</div></div>
+            <div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.05em;">Total Work</div><div style="font-size:24px; font-weight:700; color:var(--white); font-family:var(--font-mono); margin-top:4px;">${m.total_work.toExponential(2)}</div></div>
+            <div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.05em;">Blocks Won</div><div style="font-size:24px; font-weight:700; color:var(--green); font-family:var(--font-mono); margin-top:4px;">${m.blocks_won}</div></div>
+            <div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.05em;">Total Paid</div><div style="font-size:24px; font-weight:700; color:var(--white); font-family:var(--font-mono); margin-top:4px;">${btc} BTC</div></div>
+            <div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.05em;">Last Seen</div><div style="font-size:24px; font-weight:700; color:var(--white); font-family:var(--font-mono); margin-top:4px;">${formatAgo(m.last_seen)}</div></div>
+          </div>
+        </div>
+      `;
+    }
+
+    document.getElementById('lookup-btn').addEventListener('click', performLookup);
+    ['lookup-address', 'lookup-worker'].forEach(id => {
+      document.getElementById(id).addEventListener('keydown', e => {
+        if (e.key === 'Enter') performLookup();
+      });
+    });
   </script>
 </body>
 </html>
