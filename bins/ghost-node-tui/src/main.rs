@@ -105,6 +105,16 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber)?;
 
+    // Install panic hook that restores the terminal before the panic prints.
+    // Without this, a panic anywhere in the async stack leaves the user's terminal
+    // stuck in raw mode + alternate screen and unusable.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        original_hook(panic_info);
+    }));
+
     // Load config
     let mut swarm_config = match &args.config {
         Some(path) => SwarmConfig::load_from(&std::path::PathBuf::from(path))?,
@@ -241,9 +251,16 @@ async fn run_app(
                 }
                 AppEvent::Tick => {
                     tick_count += 1;
-                    // Refresh data every N ticks (based on refresh_interval)
+                    // Refresh data every N ticks (based on refresh_interval).
+                    // Skip when the active node is backed off — manual 'r' bypasses this.
                     if tick_count.is_multiple_of(refresh_interval * 4) {
-                        refresh_data(app).await;
+                        let active_url = app.active_node().map(|n| n.url.clone());
+                        let skip = active_url
+                            .as_deref()
+                            .is_some_and(|u| app.swarm.should_backoff(u));
+                        if !skip {
+                            refresh_data(app).await;
+                        }
                     }
                 }
                 AppEvent::Resize(_, _) => {
@@ -853,6 +870,7 @@ async fn refresh_data(app: &mut App) {
                 app.swarm
                     .connection_status
                     .insert(url.clone(), app::ConnectionStatus::Connected);
+                app.swarm.record_success(url);
             }
         }
         Err(_) => {
@@ -861,7 +879,10 @@ async fn refresh_data(app: &mut App) {
                     url.clone(),
                     app::ConnectionStatus::Error("Connection failed".to_string()),
                 );
+                app.swarm.record_failure(url);
             }
+            // Active node is down — skip per-tab fetches; they'll all fail too.
+            return;
         }
     }
 
@@ -918,6 +939,10 @@ async fn refresh_data(app: &mut App) {
                 if active_url.as_deref() == Some(&url) {
                     continue;
                 }
+                // Skip nodes currently in backoff
+                if app.swarm.should_backoff(&url) {
+                    continue;
+                }
                 let node_client =
                     create_client(&url, auth_token.as_deref(), hmac_secret.as_deref());
                 match node_client.get_node_status().await {
@@ -925,13 +950,15 @@ async fn refresh_data(app: &mut App) {
                         app.swarm.node_statuses.insert(url.clone(), status);
                         app.swarm
                             .connection_status
-                            .insert(url, app::ConnectionStatus::Connected);
+                            .insert(url.clone(), app::ConnectionStatus::Connected);
+                        app.swarm.record_success(&url);
                     }
                     Err(_) => {
                         app.swarm.connection_status.insert(
-                            url,
+                            url.clone(),
                             app::ConnectionStatus::Error("Connection failed".to_string()),
                         );
+                        app.swarm.record_failure(&url);
                     }
                 }
             }

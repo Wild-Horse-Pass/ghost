@@ -23,7 +23,7 @@
 //! Application state management for Ghost Node TUI
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::api::client::NodeApiClient;
 use crate::api::types::*;
@@ -69,6 +69,46 @@ pub struct SwarmState {
     pub settings: TuiSettings,
     pub connection_status: HashMap<String, ConnectionStatus>,
     pub node_statuses: HashMap<String, NodeStatus>,
+    pub backoff: HashMap<String, BackoffState>,
+}
+
+/// Per-node reconnect backoff. Reset on success, advances on failure.
+#[derive(Debug, Clone)]
+pub struct BackoffState {
+    pub next_attempt: Instant,
+    pub consecutive_failures: u32,
+}
+
+impl Default for BackoffState {
+    fn default() -> Self {
+        Self {
+            next_attempt: Instant::now(),
+            consecutive_failures: 0,
+        }
+    }
+}
+
+impl SwarmState {
+    /// True when an automatic refresh should skip this node — backoff is active.
+    /// Manual refresh ('r' key) calls refresh_data directly and bypasses this.
+    pub fn should_backoff(&self, url: &str) -> bool {
+        self.backoff
+            .get(url)
+            .is_some_and(|b| Instant::now() < b.next_attempt)
+    }
+
+    /// Reset backoff after a successful API call.
+    pub fn record_success(&mut self, url: &str) {
+        self.backoff.remove(url);
+    }
+
+    /// Advance backoff after a failed API call: 2,4,8,16,32,60,60,... seconds.
+    pub fn record_failure(&mut self, url: &str) {
+        let entry = self.backoff.entry(url.to_string()).or_default();
+        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+        let secs = (1u64 << entry.consecutive_failures.min(6)).min(60);
+        entry.next_attempt = Instant::now() + Duration::from_secs(secs);
+    }
 }
 
 /// Tab pages in the TUI
@@ -309,6 +349,7 @@ impl App {
             settings: config.settings,
             connection_status: HashMap::new(),
             node_statuses: HashMap::new(),
+            backoff: HashMap::new(),
         };
 
         Self {
