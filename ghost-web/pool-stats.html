@@ -683,7 +683,7 @@
       const results = await Promise.all(POOL_VMS.map(fetchVmStatus));
 
       let onlineCount = 0;
-      let totalMiners = 0;
+      let maxActiveMiners = 0;
       let totalHashrateThs = 0;
       let totalShares = 0;
       let totalBlocks = 0;
@@ -696,9 +696,11 @@
         const hashrateEl = document.getElementById(`node${n}-hashrate`);
         if (r.ok && r.info) {
           onlineCount++;
-          const m = r.info.connected_miners ?? r.info.miner_count ?? 0;
+          // active_miners (5-min last_seen window) is stable across round
+          // rotations; connected_miners drops to 0 when a round rolls.
+          const m = r.info.active_miners ?? r.info.connected_miners ?? r.info.miner_count ?? 0;
           const hr = r.info.total_hashrate ?? r.info.hashrate_th ?? 0;
-          totalMiners += m;
+          if (m > maxActiveMiners) maxActiveMiners = m;
           totalHashrateThs += hr;
           totalShares += r.info.shares_accepted ?? 0;
           totalBlocks += r.info.blocks_found ?? 0;
@@ -714,7 +716,11 @@
       });
 
       document.getElementById('pool-hashrate').textContent = totalHashrateThs > 0 ? formatHashrate(totalHashrateThs) : '--';
-      document.getElementById('active-miners').textContent = totalMiners.toString();
+      // MAX across VMs rather than SUM — same reasoning as pool.html: when the
+      // load balancer moves a miner between nodes, both VMs' miners table
+      // shows it for the 5-min window, so SUM over-counts. MAX is a stable
+      // lower bound until we add mesh-wide deduplication server-side.
+      document.getElementById('active-miners').textContent = maxActiveMiners.toString();
       document.getElementById('active-nodes').textContent = `${onlineCount}/4`;
       document.getElementById('blocks-24h').textContent = maxBlockHeight > 0 ? maxBlockHeight.toLocaleString() : '--';
       document.getElementById('blocks-found').textContent = totalBlocks.toLocaleString();

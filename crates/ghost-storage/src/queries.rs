@@ -1580,6 +1580,31 @@ impl Database {
         }
     }
 
+    /// Count miners whose `last_seen` is within the given window (seconds).
+    ///
+    /// Used for stable "active miners" reporting that's independent of round
+    /// rotation. The legacy `round_stats(current_round).miner_count` resets to
+    /// zero every time a round rolls and only fills back in as miners submit
+    /// fresh shares — fine for round-scoped accounting, misleading on a
+    /// dashboard where operators expect "how many miners are currently mining".
+    pub fn count_active_miners(&self, window_secs: i64) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let cutoff: i64 = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64)
+                - window_secs;
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM miners WHERE last_seen > ?1",
+                    params![cutoff],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count.max(0) as u32)
+        })
+    }
+
     /// Get miner's payout address by ID
     ///
     /// P-4: Decrypts the address if encryption is configured.
