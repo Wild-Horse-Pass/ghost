@@ -279,17 +279,13 @@
       <div class="main-stats">
         <div class="stat-card large">
           <div class="stat-label">Pool Hashrate</div>
-          <div class="stat-value orange" id="pool-hashrate">-- PH/s</div>
-          <div class="stat-change up">↑ 2.3% (24h)</div>
+          <div class="stat-value orange" id="pool-hashrate">--</div>
+          <div class="stat-change" id="pool-hashrate-range">live across all nodes</div>
         </div>
         <div class="stat-card large">
-          <div class="stat-label">Network Hashrate</div>
-          <div class="stat-value" id="network-hashrate">-- EH/s</div>
-          <div class="stat-change">Bitcoin network</div>
-        </div>
-        <div class="stat-card">
           <div class="stat-label">Active Miners</div>
           <div class="stat-value cyan" id="active-miners">--</div>
+          <div class="stat-change" id="active-miners-detail">connected across the pool</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">Active Nodes</div>
@@ -300,71 +296,40 @@
           <div class="stat-value orange" id="blocks-24h">--</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">Pool Luck (24h)</div>
-          <div class="stat-value" id="pool-luck">--%</div>
+          <div class="stat-label">Blocks Found</div>
+          <div class="stat-value" id="blocks-found">--</div>
+          <div class="stat-change">total, across the pool</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">Avg Block Time</div>
-          <div class="stat-value" id="avg-block-time">--:--</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Total Paid</div>
-          <div class="stat-value green" id="total-paid">-- BTC</div>
+          <div class="stat-label">Shares Accepted</div>
+          <div class="stat-value" id="shares-accepted">--</div>
+          <div class="stat-change">current round, pool-wide</div>
         </div>
       </div>
 
-      <!-- Miner Search -->
+      <!-- Pool Hashrate Over Time -->
+      <div class="stat-card" style="margin-top: 24px; padding: 24px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px;">
+          <div class="stat-label">Pool Hashrate — Last 24 Hours</div>
+          <div id="hashrate-graph-range" style="font-size:12px; color:var(--gray-500); font-family:var(--font-mono);">collecting data…</div>
+        </div>
+        <svg id="hashrate-graph" viewBox="0 0 800 160" preserveAspectRatio="none" style="width:100%; height:160px; display:block;"></svg>
+      </div>
+
+      <!-- Miner Lookup -->
       <div class="search-section">
         <div class="search-card">
           <div class="search-header">
-            <h2 class="search-title">Miner Lookup</h2>
-            <span style="font-size: 13px; color: var(--gray-500);">Search by worker name or address</span>
+            <h2 class="search-title">Find Your Stats</h2>
+            <span style="font-size: 13px; color: var(--gray-500);">Exact match — your full address + worker</span>
           </div>
           <form class="search-form" id="miner-search-form">
-            <input type="text" class="search-input" id="miner-search-input" placeholder="Enter worker name (e.g., bc1q...xyz.worker1)" minlength="3">
-            <button type="submit" class="search-btn" id="search-btn">Search</button>
+            <input type="text" class="search-input" id="lookup-address" placeholder="Bitcoin address (bc1q...)" autocomplete="off" spellcheck="false" style="flex: 2 1 0;">
+            <input type="text" class="search-input" id="lookup-worker" placeholder="Worker (e.g., worker1)" autocomplete="off" spellcheck="false" style="flex: 1 1 0;">
+            <button type="submit" class="search-btn" id="search-btn">Lookup</button>
           </form>
           <div class="search-results" id="search-results">
-            <!-- Results will be populated by JavaScript -->
-          </div>
-        </div>
-      </div>
-
-      <!-- Charts -->
-      <div class="charts-grid">
-        <div class="chart-card">
-          <div class="chart-header">
-            <span class="chart-title">Hashrate History</span>
-            <div class="chart-controls">
-              <button class="chart-btn">1H</button>
-              <button class="chart-btn active">24H</button>
-              <button class="chart-btn">7D</button>
-              <button class="chart-btn">30D</button>
-            </div>
-          </div>
-          <div class="chart-body">
-            <div class="chart-placeholder">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M3 3v18h18M7 14l4-4 4 4 5-5"/>
-              </svg>
-              <p>Hashrate chart will render here</p>
-              <p style="font-size: 12px; margin-top: 4px;">Connects to /api/v1/stats/hashrate</p>
-            </div>
-          </div>
-        </div>
-        <div class="chart-card">
-          <div class="chart-header">
-            <span class="chart-title">Share Distribution</span>
-          </div>
-          <div class="chart-body">
-            <div class="chart-placeholder">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <circle cx="12" cy="12" r="10"/>
-                <path d="M12 2a10 10 0 0 1 10 10"/>
-              </svg>
-              <p>Distribution chart</p>
-              <p style="font-size: 12px; margin-top: 4px;">By node operator</p>
-            </div>
+            <!-- Results populated by JavaScript -->
           </div>
         </div>
       </div>
@@ -487,9 +452,9 @@
       <!-- Node Status -->
       <h3 style="font-size: 20px; font-weight: 600; margin-top: 48px; margin-bottom: 20px;">Node Health</h3>
       <div class="nodes-grid" id="nodes-status">
-        <div class="node-card">
+        <div class="node-card" data-vm="vm1">
           <div class="node-header">
-            <span class="node-name">Node 1</span>
+            <span class="node-name">🇬🇧 London</span>
             <span class="node-status" id="node1-dot"></span>
           </div>
           <div class="node-region">83.136.251.162</div>
@@ -499,14 +464,14 @@
               <div class="node-stat-label">Miners</div>
             </div>
             <div class="node-stat">
-              <div class="node-stat-value" id="node1-status">--</div>
-              <div class="node-stat-label">Status</div>
+              <div class="node-stat-value" id="node1-hashrate">--</div>
+              <div class="node-stat-label">Hashrate</div>
             </div>
           </div>
         </div>
-        <div class="node-card">
+        <div class="node-card" data-vm="vm2">
           <div class="node-header">
-            <span class="node-name">Node 2</span>
+            <span class="node-name">🇺🇸 New York</span>
             <span class="node-status" id="node2-dot"></span>
           </div>
           <div class="node-region">85.9.198.212</div>
@@ -516,14 +481,14 @@
               <div class="node-stat-label">Miners</div>
             </div>
             <div class="node-stat">
-              <div class="node-stat-value" id="node2-status">--</div>
-              <div class="node-stat-label">Status</div>
+              <div class="node-stat-value" id="node2-hashrate">--</div>
+              <div class="node-stat-label">Hashrate</div>
             </div>
           </div>
         </div>
-        <div class="node-card">
+        <div class="node-card" data-vm="vm3">
           <div class="node-header">
-            <span class="node-name">Node 3</span>
+            <span class="node-name">🇸🇬 Singapore</span>
             <span class="node-status" id="node3-dot"></span>
           </div>
           <div class="node-region">213.163.207.46</div>
@@ -533,14 +498,14 @@
               <div class="node-stat-label">Miners</div>
             </div>
             <div class="node-stat">
-              <div class="node-stat-value" id="node3-status">--</div>
-              <div class="node-stat-label">Status</div>
+              <div class="node-stat-value" id="node3-hashrate">--</div>
+              <div class="node-stat-label">Hashrate</div>
             </div>
           </div>
         </div>
-        <div class="node-card">
+        <div class="node-card" data-vm="vm4">
           <div class="node-header">
-            <span class="node-name">Node 4</span>
+            <span class="node-name">🇦🇺 Sydney</span>
             <span class="node-status" id="node4-dot"></span>
           </div>
           <div class="node-region">95.111.221.169</div>
@@ -550,8 +515,8 @@
               <div class="node-stat-label">Miners</div>
             </div>
             <div class="node-stat">
-              <div class="node-stat-value" id="node4-status">--</div>
-              <div class="node-stat-label">Status</div>
+              <div class="node-stat-value" id="node4-hashrate">--</div>
+              <div class="node-stat-label">Hashrate</div>
             </div>
           </div>
         </div>
@@ -606,7 +571,12 @@
   </footer>
 
   <script>
-    // Stats API integration - fetches from ghost-pool health endpoint
+    // Stats API integration — fans out across all 4 pool nodes and aggregates.
+
+    const POOL_VMS = ['vm1', 'vm2', 'vm3', 'vm4'];
+    const HR_HISTORY_KEY = 'ghost-pool-hashrate-history-v1';
+    const HR_MAX_POINTS = 288; // 24h at 5-min intervals; array is capped + time-filtered below.
+    const HR_WINDOW_MS = 24 * 3600 * 1000;
 
     function formatUptime(seconds) {
       const days = Math.floor(seconds / 86400);
@@ -617,42 +587,146 @@
       return `${mins}m`;
     }
 
-    async function fetchStats() {
+    function formatHashrate(ths) {
+      if (!isFinite(ths) || ths < 0) return '0';
+      if (ths === 0) return '0';
+      if (ths < 0.001) return `${(ths * 1e6).toFixed(1)} MH/s`;
+      if (ths < 1) return `${(ths * 1000).toFixed(1)} GH/s`;
+      if (ths < 1000) return `${ths.toFixed(2)} TH/s`;
+      if (ths < 1e6) return `${(ths / 1000).toFixed(2)} PH/s`;
+      return `${(ths / 1e6).toFixed(2)} EH/s`;
+    }
+
+    function loadHashrateHistory() {
       try {
-        const response = await fetch('https://pool.bitcoinghost.org/api/v1/network/pool');
-        const stats = await response.json();
+        const raw = localStorage.getItem(HR_HISTORY_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        const cutoff = Date.now() - HR_WINDOW_MS;
+        return Array.isArray(arr) ? arr.filter(p => p && p.t >= cutoff) : [];
+      } catch { return []; }
+    }
 
-        // Available from pool network endpoint
-        document.getElementById('active-miners').textContent = stats.miner_count || '0';
-        document.getElementById('active-nodes').textContent = stats.active_nodes || '--';
+    function pushHashrateSample(ths) {
+      const history = loadHashrateHistory();
+      history.push({ t: Date.now(), h: ths });
+      while (history.length > HR_MAX_POINTS) history.shift();
+      try { localStorage.setItem(HR_HISTORY_KEY, JSON.stringify(history)); } catch {}
+      return history;
+    }
 
-        // Show block height instead of blocks-24h (not tracked yet)
-        document.getElementById('blocks-24h').textContent = stats.block_height || '--';
-
-        // Pool luck and hashrate require mining stats (future)
-        document.getElementById('pool-hashrate').textContent = stats.pool_hashrate || '-- TH/s';
-        document.getElementById('network-hashrate').textContent = stats.network_hashrate || '-- EH/s';
-        document.getElementById('pool-luck').textContent = stats.luck_24h || '--%';
-        document.getElementById('avg-block-time').textContent = stats.avg_block_time || '--:--';
-        document.getElementById('total-paid').textContent = stats.total_paid || '-- BTC';
-
-        console.log('Pool stats updated:', {
-          miners: stats.miner_count,
-          nodes: stats.active_nodes,
-          block: stats.block_height,
-          uptime: formatUptime(stats.uptime_secs),
-          version: stats.version
-        });
-      } catch (err) {
-        console.log('Stats API not available:', err.message);
-        const statusEl = document.querySelector('.pool-status');
-        if (statusEl) {
-          statusEl.classList.remove('status-online');
-          statusEl.classList.add('status-offline');
-          statusEl.textContent = 'Offline';
-        }
+    function renderHashrateGraph(history) {
+      const svg = document.getElementById('hashrate-graph');
+      const rangeEl = document.getElementById('hashrate-graph-range');
+      if (!svg) return;
+      if (!history.length) {
+        svg.innerHTML = '<text x="400" y="80" text-anchor="middle" fill="#666" font-size="14" font-family="monospace">No samples yet</text>';
+        return;
+      }
+      if (history.length < 2) {
+        svg.innerHTML = '<text x="400" y="80" text-anchor="middle" fill="#666" font-size="14" font-family="monospace">Collecting…</text>';
+        if (rangeEl) rangeEl.textContent = `1 sample · ${formatHashrate(history[0].h)}`;
+        return;
+      }
+      const w = 800, h = 160, pad = 8;
+      const hrs = history.map(p => p.h);
+      const minH = Math.min(...hrs);
+      const maxH = Math.max(...hrs);
+      const rangeH = Math.max(maxH - minH, maxH * 0.05, 0.001);
+      const yMin = Math.max(minH - rangeH * 0.1, 0);
+      const yMax = maxH + rangeH * 0.1;
+      const yRange = Math.max(yMax - yMin, 0.001);
+      const tMin = history[0].t;
+      const tMax = Math.max(history[history.length - 1].t, tMin + 1);
+      const tRange = tMax - tMin;
+      const pts = history.map(p => {
+        const x = pad + (p.t - tMin) / tRange * (w - 2 * pad);
+        const y = h - pad - (p.h - yMin) / yRange * (h - 2 * pad);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      const lastX = pad + (w - 2 * pad);
+      const areaPts = `${pad},${h - pad} ${pts} ${lastX.toFixed(1)},${h - pad}`;
+      svg.innerHTML = `
+        <defs>
+          <linearGradient id="hrfill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f7931a" stop-opacity="0.35"/>
+            <stop offset="100%" stop-color="#f7931a" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <polyline fill="url(#hrfill)" stroke="none" points="${areaPts}"/>
+        <polyline fill="none" stroke="#f7931a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${pts}"/>
+        <text x="${w - pad}" y="14" text-anchor="end" fill="#888" font-size="11" font-family="monospace">max ${formatHashrate(maxH)}</text>
+        <text x="${w - pad}" y="${h - 4}" text-anchor="end" fill="#888" font-size="11" font-family="monospace">min ${formatHashrate(minH)}</text>
+      `;
+      if (rangeEl) {
+        const spanMin = Math.round((tMax - tMin) / 60000);
+        rangeEl.textContent = `${history.length} samples · last ${spanMin < 60 ? spanMin + 'm' : Math.round(spanMin / 60) + 'h'} · now ${formatHashrate(history[history.length - 1].h)}`;
       }
     }
+
+    async function fetchVmStatus(vm) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(`/api/pool/${vm}/api/v1/mining/status`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (!response.ok) return { vm, ok: false };
+        const info = await response.json();
+        return { vm, ok: true, info };
+      } catch (e) {
+        clearTimeout(timeoutId);
+        return { vm, ok: false };
+      }
+    }
+
+    async function fetchStats() {
+      const results = await Promise.all(POOL_VMS.map(fetchVmStatus));
+
+      let onlineCount = 0;
+      let totalMiners = 0;
+      let totalHashrateThs = 0;
+      let totalShares = 0;
+      let totalBlocks = 0;
+      let maxBlockHeight = 0;
+
+      results.forEach((r, idx) => {
+        const n = idx + 1;
+        const dotEl = document.getElementById(`node${n}-dot`);
+        const minersEl = document.getElementById(`node${n}-miners`);
+        const hashrateEl = document.getElementById(`node${n}-hashrate`);
+        if (r.ok && r.info) {
+          onlineCount++;
+          const m = r.info.connected_miners ?? r.info.miner_count ?? 0;
+          const hr = r.info.total_hashrate ?? r.info.hashrate_th ?? 0;
+          totalMiners += m;
+          totalHashrateThs += hr;
+          totalShares += r.info.shares_accepted ?? 0;
+          totalBlocks += r.info.blocks_found ?? 0;
+          if (r.info.block_height > maxBlockHeight) maxBlockHeight = r.info.block_height;
+          if (dotEl) { dotEl.classList.remove('offline'); dotEl.classList.add('online'); }
+          if (minersEl) minersEl.textContent = m.toString();
+          if (hashrateEl) hashrateEl.textContent = formatHashrate(hr);
+        } else {
+          if (dotEl) { dotEl.classList.remove('online'); dotEl.classList.add('offline'); }
+          if (minersEl) minersEl.textContent = '--';
+          if (hashrateEl) hashrateEl.textContent = 'offline';
+        }
+      });
+
+      document.getElementById('pool-hashrate').textContent = totalHashrateThs > 0 ? formatHashrate(totalHashrateThs) : '--';
+      document.getElementById('active-miners').textContent = totalMiners.toString();
+      document.getElementById('active-nodes').textContent = `${onlineCount}/4`;
+      document.getElementById('blocks-24h').textContent = maxBlockHeight > 0 ? maxBlockHeight.toLocaleString() : '--';
+      document.getElementById('blocks-found').textContent = totalBlocks.toLocaleString();
+      document.getElementById('shares-accepted').textContent = totalShares.toLocaleString();
+
+      // Append to rolling hashrate history and redraw the graph.
+      const history = pushHashrateSample(totalHashrateThs);
+      renderHashrateGraph(history);
+    }
+
+    // Draw any existing history right away so the graph isn't empty on first paint.
+    renderHashrateGraph(loadHashrateHistory());
 
     // Fetch stats on load and every 10 seconds
     fetchStats();
@@ -660,9 +734,14 @@
 
     // Miner Search functionality
     const searchForm = document.getElementById('miner-search-form');
-    const searchInput = document.getElementById('miner-search-input');
+    const lookupAddressInput = document.getElementById('lookup-address');
+    const lookupWorkerInput = document.getElementById('lookup-worker');
     const searchBtn = document.getElementById('search-btn');
     const searchResults = document.getElementById('search-results');
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+    }
 
     function formatTimestamp(ts) {
       const date = new Date(ts * 1000);
@@ -678,29 +757,33 @@
       return `${Math.floor(diff / 86400)}d ago`;
     }
 
-    function renderMinerResult(miner) {
-      const isActive = miner.active;
+    function renderMinerResult(miner, vm) {
+      const btc = (miner.total_payouts_sats / 1e8).toFixed(8);
       return `
         <div class="miner-result">
           <div class="miner-result-header">
-            <div class="miner-result-id">${miner.miner_id}</div>
-            <div class="miner-result-status ${isActive ? 'active' : 'inactive'}">
+            <div class="miner-result-id">${escapeHtml(miner.miner_id)}</div>
+            <div class="miner-result-status ${miner.active ? 'active' : 'inactive'}">
               <span class="dot"></span>
-              ${isActive ? 'Active' : 'Inactive'}
+              ${miner.active ? 'Active' : 'Idle'} <span style="opacity:0.6;">· ${escapeHtml(vm).toUpperCase()}</span>
             </div>
           </div>
           <div class="miner-result-stats">
             <div class="miner-stat">
-              <div class="miner-stat-value orange">${miner.valid_shares.toLocaleString()}</div>
-              <div class="miner-stat-label">Valid Shares</div>
-            </div>
-            <div class="miner-stat">
-              <div class="miner-stat-value">${miner.total_shares.toLocaleString()}</div>
+              <div class="miner-stat-value orange">${miner.total_shares.toLocaleString()}</div>
               <div class="miner-stat-label">Total Shares</div>
             </div>
             <div class="miner-stat">
-              <div class="miner-stat-value green">${miner.estimated_hashrate_ths} TH/s</div>
-              <div class="miner-stat-label">Est. Hashrate</div>
+              <div class="miner-stat-value">${miner.total_work.toExponential(2)}</div>
+              <div class="miner-stat-label">Total Work</div>
+            </div>
+            <div class="miner-stat">
+              <div class="miner-stat-value green">${miner.blocks_won}</div>
+              <div class="miner-stat-label">Blocks Won</div>
+            </div>
+            <div class="miner-stat">
+              <div class="miner-stat-value">${btc} BTC</div>
+              <div class="miner-stat-label">Total Paid</div>
             </div>
             <div class="miner-stat">
               <div class="miner-stat-value">${formatTimeAgo(miner.last_seen)}</div>
@@ -711,72 +794,59 @@
       `;
     }
 
-    async function searchMiners(query) {
+    async function lookupMiner(minerId) {
       searchBtn.disabled = true;
-      searchBtn.textContent = 'Searching...';
+      searchBtn.textContent = 'Looking up…';
       searchResults.className = 'search-results active';
-      searchResults.innerHTML = '<div class="search-loading">Searching miners...</div>';
+      searchResults.innerHTML = '<div class="search-loading">Searching across all 4 nodes…</div>';
 
       try {
-        const response = await fetch(`https://pool.bitcoinghost.org/api/v1/miners/search?q=${encodeURIComponent(query)}`);
-        const data = await response.json();
+        // Fan out to every VM in parallel. Each miner is connected to one VM at a time.
+        const fetches = POOL_VMS.map(vm =>
+          fetch(`/api/pool/${vm}/api/v1/miners/lookup?miner_id=${encodeURIComponent(minerId)}`)
+            .then(r => r.json())
+            .then(data => ({ vm, data }))
+            .catch(() => ({ vm, data: { found: false } }))
+        );
+        const results = await Promise.all(fetches);
+        const hit = results.find(r => r.data && r.data.found);
 
-        if (data.error) {
-          searchResults.innerHTML = `<div class="search-empty">${data.error}</div>`;
-          return;
-        }
-
-        if (!data.miners || data.miners.length === 0) {
+        if (!hit) {
           searchResults.innerHTML = `
             <div class="search-empty">
-              <p>No miners found matching "${query}"</p>
-              <p style="font-size: 12px; margin-top: 8px; color: var(--gray-600);">
-                Try searching with at least 3 characters of your worker name or payout address
-              </p>
+              <p>No miner with ID <code style="color:var(--cyan); font-family:var(--font-mono); word-break:break-all;">${escapeHtml(minerId)}</code> found on any pool node.</p>
+              <p style="font-size: 12px; margin-top: 8px; color: var(--gray-600);">Make sure your miner is connected and the address + worker match exactly.</p>
             </div>
           `;
           return;
         }
-
-        searchResults.innerHTML = `
-          <div style="margin-bottom: 16px; color: var(--gray-400); font-size: 13px;">
-            Found ${data.count} miner${data.count !== 1 ? 's' : ''} matching "${data.query}"
-          </div>
-          ${data.miners.map(renderMinerResult).join('')}
-        `;
+        searchResults.innerHTML = renderMinerResult(hit.data, hit.vm);
       } catch (err) {
-        console.error('Search error:', err);
+        console.error('Lookup error:', err);
         searchResults.innerHTML = `
           <div class="search-empty">
-            <p>Search unavailable</p>
+            <p>Lookup unavailable</p>
             <p style="font-size: 12px; margin-top: 8px; color: var(--gray-600);">
-              The miner search API is not responding. Please try again later.
+              The pool API is not responding. Please try again in a moment.
             </p>
           </div>
         `;
       } finally {
         searchBtn.disabled = false;
-        searchBtn.textContent = 'Search';
+        searchBtn.textContent = 'Lookup';
       }
     }
 
     searchForm.addEventListener('submit', (e) => {
       e.preventDefault();
-      const query = searchInput.value.trim();
-      if (query.length >= 3) {
-        searchMiners(query);
-      } else {
+      const addr = lookupAddressInput.value.trim();
+      const worker = lookupWorkerInput.value.trim();
+      if (!addr || !worker) {
         searchResults.className = 'search-results active';
-        searchResults.innerHTML = '<div class="search-empty">Please enter at least 3 characters</div>';
+        searchResults.innerHTML = '<div class="search-empty">Enter both your Bitcoin address and worker name.</div>';
+        return;
       }
-    });
-
-    // Allow search on Enter key
-    searchInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        searchForm.dispatchEvent(new Event('submit'));
-      }
+      lookupMiner(`${addr}.${worker}`);
     });
   </script>
 </body>
