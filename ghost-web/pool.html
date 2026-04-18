@@ -592,9 +592,26 @@
         <div class="stat-label">Pool Nodes</div>
       </div>
       <div class="stat-item">
+        <div class="stat-value" id="blocks-found">--</div>
+        <div class="stat-label">Blocks Found (Pool)</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="network-height">--</div>
+        <div class="stat-label">Network Block Height</div>
+      </div>
+      <div class="stat-item">
         <div class="stat-value" id="pool-fee">1%</div>
         <div class="stat-label">Pool Fee</div>
       </div>
+    </div>
+
+    <!-- Hashrate over time -->
+    <div style="margin-top: 24px; background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 24px;">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px;">
+        <div style="font-size:12px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.05em;">Pool Hashrate — Last 24 Hours</div>
+        <div id="hashrate-graph-range" style="font-size:12px; color:var(--gray-500); font-family:var(--font-mono);">collecting data…</div>
+      </div>
+      <svg id="hashrate-graph" viewBox="0 0 800 140" preserveAspectRatio="none" style="width:100%; height:140px; display:block;"></svg>
     </div>
   </div>
 
@@ -687,8 +704,14 @@
         <div class="protocol-card">
           <div class="protocol-badge recommended">Stratum V1</div>
           <div class="protocol-title">Port 3333</div>
-          <div class="protocol-desc">Works with all ASIC miners (Antminer, Whatsminer, Avalon, BitAxe) and software miners (CGMiner, BFGMiner). SV2 translation is handled automatically by the pool.</div>
+          <div class="protocol-desc">Works with all ASIC miners (Antminer, Whatsminer, Avalon, BitAxe) and software miners (CGMiner, BFGMiner). The pool's TCP load balancer rebalances SV1 connections across healthy nodes automatically.</div>
           <div class="protocol-port">Connect: <span style="color: var(--orange);">pool.bitcoinghost.org:3333</span></div>
+        </div>
+        <div class="protocol-card">
+          <div class="protocol-badge">Stratum V2</div>
+          <div class="protocol-title">Port 34255</div>
+          <div class="protocol-desc">Native SV2 endpoint for miners and mining proxies that speak Stratum V2 directly — no translator required. Encrypted transport, per-channel work distribution, extended job messages. DNS round-robin routes your connection to one of the four nodes.</div>
+          <div class="protocol-port">Connect: <span style="color: var(--orange);">pool.bitcoinghost.org:34255</span></div>
         </div>
       </div>
     </div>
@@ -785,6 +808,79 @@
       return `${(ths / 1e6).toFixed(2)} EH/s`;
     }
 
+    // Hashrate history graph — shares localStorage key with pool-stats.html
+    // so samples collected on either page feed the same rolling 24h buffer.
+    const HR_HISTORY_KEY = 'ghost-pool-hashrate-history-v1';
+    const HR_MAX_POINTS = 288;
+    const HR_WINDOW_MS = 24 * 3600 * 1000;
+
+    function loadHashrateHistory() {
+      try {
+        const raw = localStorage.getItem(HR_HISTORY_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        const cutoff = Date.now() - HR_WINDOW_MS;
+        return Array.isArray(arr) ? arr.filter(p => p && p.t >= cutoff) : [];
+      } catch { return []; }
+    }
+
+    function pushHashrateSample(ths) {
+      const history = loadHashrateHistory();
+      history.push({ t: Date.now(), h: ths });
+      while (history.length > HR_MAX_POINTS) history.shift();
+      try { localStorage.setItem(HR_HISTORY_KEY, JSON.stringify(history)); } catch {}
+      return history;
+    }
+
+    function renderHashrateGraph(history) {
+      const svg = document.getElementById('hashrate-graph');
+      const rangeEl = document.getElementById('hashrate-graph-range');
+      if (!svg) return;
+      if (!history.length) {
+        svg.innerHTML = '<text x="400" y="70" text-anchor="middle" fill="#666" font-size="14" font-family="monospace">No samples yet</text>';
+        return;
+      }
+      if (history.length < 2) {
+        svg.innerHTML = '<text x="400" y="70" text-anchor="middle" fill="#666" font-size="14" font-family="monospace">Collecting…</text>';
+        if (rangeEl) rangeEl.textContent = `1 sample · ${formatHashrate(history[0].h)}`;
+        return;
+      }
+      const w = 800, h = 140, pad = 8;
+      const hrs = history.map(p => p.h);
+      const minH = Math.min(...hrs);
+      const maxH = Math.max(...hrs);
+      const rangeH = Math.max(maxH - minH, maxH * 0.05, 0.001);
+      const yMin = Math.max(minH - rangeH * 0.1, 0);
+      const yMax = maxH + rangeH * 0.1;
+      const yRange = Math.max(yMax - yMin, 0.001);
+      const tMin = history[0].t;
+      const tMax = Math.max(history[history.length - 1].t, tMin + 1);
+      const tRange = tMax - tMin;
+      const pts = history.map(p => {
+        const x = pad + (p.t - tMin) / tRange * (w - 2 * pad);
+        const y = h - pad - (p.h - yMin) / yRange * (h - 2 * pad);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      const lastX = pad + (w - 2 * pad);
+      const areaPts = `${pad},${h - pad} ${pts} ${lastX.toFixed(1)},${h - pad}`;
+      svg.innerHTML = `
+        <defs>
+          <linearGradient id="hrfill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f7931a" stop-opacity="0.35"/>
+            <stop offset="100%" stop-color="#f7931a" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <polyline fill="url(#hrfill)" stroke="none" points="${areaPts}"/>
+        <polyline fill="none" stroke="#f7931a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${pts}"/>
+        <text x="${w - pad}" y="14" text-anchor="end" fill="#888" font-size="11" font-family="monospace">max ${formatHashrate(maxH)}</text>
+        <text x="${w - pad}" y="${h - 4}" text-anchor="end" fill="#888" font-size="11" font-family="monospace">min ${formatHashrate(minH)}</text>
+      `;
+      if (rangeEl) {
+        const spanMin = Math.round((tMax - tMin) / 60000);
+        rangeEl.textContent = `${history.length} samples · last ${spanMin < 60 ? spanMin + 'm' : Math.round(spanMin / 60) + 'h'} · now ${formatHashrate(history[history.length - 1].h)}`;
+      }
+    }
+
     async function fetchNodeStatus() {
       // Fetch all 4 VMs in parallel — faster than the old sequential loop
       // and avoids a slow node blocking the rest of the UI.
@@ -809,6 +905,8 @@
       let onlineCount = 0;
       let totalMiners = 0;
       let totalHashrateThs = 0;
+      let totalBlocksFound = 0;
+      let maxBlockHeight = 0;
 
       for (const { node, ok, info } of results) {
         const statusEl = document.getElementById(`${node.id}-status`);
@@ -821,6 +919,8 @@
           totalMiners += m;
           const hr = info.total_hashrate ?? info.hashrate_th ?? 0;
           totalHashrateThs += hr;
+          totalBlocksFound += info.blocks_found ?? 0;
+          if (info.block_height && info.block_height > maxBlockHeight) maxBlockHeight = info.block_height;
           minersEl.textContent = m > 0
             ? `${m} miner${m !== 1 ? 's' : ''} · ${formatHashrate(hr)}`
             : 'No miners';
@@ -836,7 +936,18 @@
       document.getElementById('pool-hashrate').textContent = totalHashrateThs > 0
         ? formatHashrate(totalHashrateThs)
         : '---';
+      document.getElementById('blocks-found').textContent = totalBlocksFound.toLocaleString();
+      document.getElementById('network-height').textContent = maxBlockHeight > 0
+        ? maxBlockHeight.toLocaleString()
+        : '--';
+
+      // Record the aggregate hashrate and redraw the rolling graph.
+      const history = pushHashrateSample(totalHashrateThs);
+      renderHashrateGraph(history);
     }
+
+    // Paint whatever the browser has from previous sessions immediately.
+    renderHashrateGraph(loadHashrateHistory());
 
     updateConfig();
     fetchNodeStatus();
