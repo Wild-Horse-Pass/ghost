@@ -345,6 +345,43 @@ pub struct HealthPing {
     /// Proves computational work was done to create this identity
     #[serde(default)]
     pub pow_proof: Option<(u64, u32)>,
+    /// Truncated SHA-256 hashes of miner_ids active in the last N seconds on
+    /// the sender. Used by peers to compute a deduplicated mesh-wide active
+    /// miner count without leaking miner_ids in cleartext.
+    /// Field is `#[serde(default)]` for backward compatibility — older nodes
+    /// that don't include it deserialize to an empty Vec.
+    #[serde(default, with = "ghost_common_active_hashes")]
+    pub active_miner_id_hashes: Vec<[u8; 16]>,
+}
+
+/// Hex-encoded serialization for the active miner-id hash list.
+/// Keeps health-ping JSON human-readable and matches the `serde_hex` style
+/// used elsewhere for fixed-size byte arrays in this module.
+mod ghost_common_active_hashes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &[[u8; 16]], s: S) -> Result<S::Ok, S::Error> {
+        let hex_strs: Vec<String> = v.iter().map(hex::encode).collect();
+        serde::Serialize::serialize(&hex_strs, s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<[u8; 16]>, D::Error> {
+        let hex_strs: Vec<String> = Vec::deserialize(d)?;
+        let mut out = Vec::with_capacity(hex_strs.len());
+        for s in hex_strs {
+            let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
+            if bytes.len() != 16 {
+                return Err(serde::de::Error::custom(format!(
+                    "expected 16 bytes, got {}",
+                    bytes.len()
+                )));
+            }
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(&bytes);
+            out.push(arr);
+        }
+        Ok(out)
+    }
 }
 
 /// Errors for treasury address validation

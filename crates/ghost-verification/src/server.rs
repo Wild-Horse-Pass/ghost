@@ -920,6 +920,12 @@ pub struct VerificationState {
     pub require_internal_auth: bool,
     /// Pool peers callback: returns peers with public_mining + miner counts for load balancing.
     get_pool_peers: Option<Box<dyn Fn() -> Vec<PoolPeerInfo> + Send + Sync>>,
+    /// Mesh-wide deduplicated active miner count callback. Returns the size
+    /// of the union of locally-active miner_id hashes and every connected
+    /// peer's most-recent reported set, giving an exact pool-wide active
+    /// count that's stable across the round rotations and load-balancer
+    /// hopping that make per-VM counts misleading when summed.
+    get_mesh_active_miners: Option<Box<dyn Fn() -> u32 + Send + Sync>>,
     /// Signal to trigger graceful restart (set by config update API)
     /// When true, main.rs will initiate shutdown and exit with code 100
     pub restart_signal: Arc<AtomicBool>,
@@ -1065,6 +1071,7 @@ impl VerificationState {
             block_found_fn: None,
             internal_auth: None,
             get_pool_peers: None,
+            get_mesh_active_miners: None,
             // VF-C2: Default to requiring internal auth for security
             require_internal_auth: true,
             restart_signal: Arc::new(AtomicBool::new(false)),
@@ -1500,6 +1507,21 @@ impl VerificationState {
     ) -> Self {
         self.get_pool_peers = Some(Box::new(f));
         self
+    }
+
+    /// Set the mesh-wide active-miner count callback.
+    pub fn with_mesh_active_miners(
+        mut self,
+        f: impl Fn() -> u32 + Send + Sync + 'static,
+    ) -> Self {
+        self.get_mesh_active_miners = Some(Box::new(f));
+        self
+    }
+
+    /// Returns the mesh-wide deduplicated active miner count, or None if no
+    /// callback has been wired up (older deploys without the mesh provider).
+    pub fn mesh_active_miners(&self) -> Option<u32> {
+        self.get_mesh_active_miners.as_ref().map(|f| f())
     }
 
     /// Set archive handler

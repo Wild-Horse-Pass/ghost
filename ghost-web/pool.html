@@ -956,6 +956,7 @@
       let totalBlocksFound = 0;
       let maxBlockHeight = 0;
 
+      let meshActive = null;
       let maxActiveMiners = 0;
       for (const { node, ok, info } of results) {
         const statusEl = document.getElementById(`${node.id}-status`);
@@ -967,8 +968,10 @@
           // active_miners (5-min last_seen window) is stable across round
           // rotations; connected_miners drops to 0 when a round rolls.
           const m = info.active_miners ?? info.connected_miners ?? info.miner_count ?? 0;
-          totalMiners += m;
           if (m > maxActiveMiners) maxActiveMiners = m;
+          // Pool-wide deduplicated count gossiped via the mesh — every node
+          // converges on the same number, so any healthy node's value works.
+          if (typeof info.mesh_active_miners === 'number') meshActive = info.mesh_active_miners;
           const hr = info.total_hashrate ?? info.hashrate_th ?? 0;
           totalHashrateThs += hr;
           totalBlocksFound += info.blocks_found ?? 0;
@@ -982,12 +985,9 @@
           minersEl.textContent = '';
         }
       }
-      // Aggregate "Connected Miners": display MAX across VMs rather than SUM.
-      // Reason: when the load balancer moves a miner between nodes, it appears
-      // in both the old and new VM's `miners` table for the 5-min window, so
-      // SUM over-counts. MAX is a lower bound that's stable and never wildly
-      // wrong. True dedup would need mesh-wide aggregation server-side.
-      totalMiners = maxActiveMiners;
+      // Prefer the exact mesh-wide count; fall back to MAX across VMs if no
+      // node reported the new field (e.g. mid-rollout before all VMs upgrade).
+      totalMiners = meshActive ?? maxActiveMiners;
 
       document.getElementById('node-count').textContent = onlineCount.toString();
       document.getElementById('miner-count').textContent = totalMiners.toString();

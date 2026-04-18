@@ -856,6 +856,9 @@ impl HealthPingHandler {
             ping.miner_count,
             ping.capabilities,
         );
+        // Active miner_id hashes used for mesh-wide deduplicated counting.
+        self.peers
+            .update_active_miner_hashes(&envelope.sender, ping.active_miner_id_hashes.clone());
 
         // Persist to database if available
         if let Some(ref db) = self.db {

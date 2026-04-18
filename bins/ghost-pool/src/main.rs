@@ -922,6 +922,17 @@ async fn main() -> Result<()> {
             .unwrap_or(0)
     }));
 
+    // Gossip the local active miner_id hashes (5-min window) so peers can
+    // compute a deduplicated mesh-wide active count. Hashes are SHA-256
+    // truncated to 16 bytes — privacy-preserving and small (~16 KB per ping
+    // at 1k miners; negligible at our scale).
+    let db_for_active_hashes = Arc::clone(&db);
+    mesh_inner.set_active_miner_hashes_provider(Arc::new(move || {
+        db_for_active_hashes
+            .active_miner_id_hashes(300)
+            .unwrap_or_default()
+    }));
+
     let mesh = Arc::new(mesh_inner);
 
     // Initialize consensus voting
@@ -2829,6 +2840,13 @@ async fn main() -> Result<()> {
                 last_seen: p.last_seen,
             })
             .collect()
+    });
+
+    // Mesh-wide deduplicated active miner count. Unions local active miner_id
+    // hashes with the most-recent set from each connected peer (60s freshness).
+    let mesh_for_active = Arc::clone(&mesh);
+    verification_state = verification_state.with_mesh_active_miners(move || {
+        mesh_for_active.mesh_active_miner_count(60) as u32
     });
 
     // Configure archive handler if archive mode enabled

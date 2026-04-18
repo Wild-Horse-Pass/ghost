@@ -1488,12 +1488,14 @@ async fn api_mining_status_handler(
         };
 
     // Stable count of miners active in the last 5 minutes — survives round
-    // rotations that reset the round-scoped miner_count to zero.
+    // rotations that reset the round-scoped miner_count to zero. This is the
+    // local view; mesh_active_miners below is the deduplicated pool-wide count.
     let active_miners = state
         .database
         .as_ref()
         .and_then(|db| db.count_active_miners(300).ok())
         .unwrap_or(0);
+    let mesh_active_miners = state.mesh_active_miners().unwrap_or(active_miners);
 
     Json(serde_json::json!({
         // Backend fields
@@ -1514,6 +1516,7 @@ async fn api_mining_status_handler(
         "hashrate_th": total_hashrate_th,
         "connected_miners": health.miner_count,
         "active_miners": active_miners,
+        "mesh_active_miners": mesh_active_miners,
         "shares_submitted": shares_submitted,
         "shares_accepted": shares_accepted,
         "shares_rejected": shares_submitted - shares_accepted,
@@ -1851,6 +1854,7 @@ async fn api_pool_status_handler(State(state): State<Arc<VerificationState>>) ->
         .as_ref()
         .and_then(|db| db.count_active_miners(300).ok())
         .unwrap_or(0);
+    let mesh_active_miners = state.mesh_active_miners().unwrap_or(active_miners);
     Json(serde_json::json!({
         "pool_name": "Ghost Pool",
         "version": health.version,
@@ -1859,6 +1863,7 @@ async fn api_pool_status_handler(State(state): State<Arc<VerificationState>>) ->
         "active_nodes": health.peer_count + 1,
         "miner_count": health.miner_count,
         "active_miners": active_miners,
+        "mesh_active_miners": mesh_active_miners,
         "round_id": health.round_id,
         "uptime_secs": health.uptime_secs,
         "total_shares": health.capabilities.total_shares,

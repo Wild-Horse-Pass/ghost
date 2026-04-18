@@ -212,6 +212,11 @@ pub struct MeshNetwork {
     /// Application-provided callback for real miner count (used in health pings).
     /// If None, falls back to peer_count.
     miner_count_fn: Option<Arc<dyn Fn() -> u32 + Send + Sync>>,
+    /// Application-provided callback returning the truncated SHA-256 hashes
+    /// of locally-active miner_ids (5-min window). Used by `run_health_pinger`
+    /// to gossip the local active set so peers can compute a deduplicated
+    /// mesh-wide active miner count.
+    active_miner_hashes_fn: Option<Arc<dyn Fn() -> Vec<[u8; 16]> + Send + Sync>>,
 }
 
 /// Message identifier for deduplication
@@ -979,6 +984,7 @@ impl MeshNetwork {
             validation_stats: RwLock::new(ValidationStats::default()),
             noise_pool,
             miner_count_fn: None,
+            active_miner_hashes_fn: None,
         })
     }
 
@@ -986,6 +992,36 @@ impl MeshNetwork {
     /// Without this, health pings report peer_count as a placeholder.
     pub fn set_miner_count_provider(&mut self, f: Arc<dyn Fn() -> u32 + Send + Sync>) {
         self.miner_count_fn = Some(f);
+    }
+
+    /// Set a callback that provides the local active miner_id hashes for
+    /// health pings. Used for mesh-wide deduplicated active-miner counting.
+    /// Without this, health pings carry an empty list.
+    pub fn set_active_miner_hashes_provider(
+        &mut self,
+        f: Arc<dyn Fn() -> Vec<[u8; 16]> + Send + Sync>,
+    ) {
+        self.active_miner_hashes_fn = Some(f);
+    }
+
+    /// Compute the deduplicated mesh-wide active miner count.
+    /// Unions the local active miner_id hashes with the most recent hashes
+    /// reported by every peer whose `last_seen` is within `freshness_secs`.
+    /// Returns the size of the union.
+    pub fn mesh_active_miner_count(&self, freshness_secs: u64) -> usize {
+        use std::collections::HashSet;
+        let mut set: HashSet<[u8; 16]> = HashSet::new();
+        if let Some(f) = &self.active_miner_hashes_fn {
+            for h in f() {
+                set.insert(h);
+            }
+        }
+        for peer in self.peers.get_connected_peers(freshness_secs) {
+            for h in &peer.active_miner_id_hashes {
+                set.insert(*h);
+            }
+        }
+        set.len()
     }
 
     /// Create a new mesh network (infallible, panics on failure)
@@ -2352,6 +2388,9 @@ impl MeshNetwork {
                     .unwrap_or(self.peers.peer_count() as u32),
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                 pow_proof,
+                active_miner_id_hashes: self.active_miner_hashes_fn.as_ref()
+                    .map(|f| f())
+                    .unwrap_or_default(),
             };
 
             match self.create_envelope(

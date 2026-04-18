@@ -205,6 +205,14 @@ impl PeerManager {
         }
     }
 
+    /// Replace the active miner_id hash list for a peer with the most recent
+    /// from a health ping. Used for mesh-wide deduplicated active counting.
+    pub fn update_active_miner_hashes(&self, node_id: &NodeId, hashes: Vec<[u8; 16]>) {
+        if let Some(peer) = self.peers.write().get_mut(node_id) {
+            peer.active_miner_id_hashes = hashes;
+        }
+    }
+
     /// Mark peer as disconnected
     ///
     /// P2P4-L1: Logs peer disconnection for observability
@@ -293,6 +301,10 @@ pub struct Peer {
     pub messages_sent: u64,
     /// Number of miners connected to this peer (from health pings)
     pub miner_count: u32,
+    /// Truncated SHA-256 hashes of miner_ids active on this peer in the
+    /// last ~5 min, from the most recent health ping. Used for mesh-wide
+    /// deduplicated active-miner counting.
+    pub active_miner_id_hashes: Vec<[u8; 16]>,
 }
 
 impl Peer {
@@ -313,6 +325,7 @@ impl Peer {
             messages_received: 0,
             messages_sent: 0,
             miner_count: 0,
+            active_miner_id_hashes: Vec::new(),
         }
     }
 

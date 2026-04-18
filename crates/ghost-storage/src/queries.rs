@@ -1580,6 +1580,37 @@ impl Database {
         }
     }
 
+    /// Truncated SHA-256 of each miner_id whose `last_seen` is within the
+    /// window. 16 bytes is enough for ~2^64 entries before birthday collisions
+    /// become a concern — comfortable for a mining pool. Used to share a
+    /// privacy-preserving fingerprint with mesh peers so a deduplicated active
+    /// miner count can be computed without leaking miner_ids.
+    pub fn active_miner_id_hashes(&self, window_secs: i64) -> GhostResult<Vec<[u8; 16]>> {
+        use sha2::{Digest, Sha256};
+        self.with_connection(|conn| {
+            let cutoff: i64 = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64)
+                - window_secs;
+            let mut stmt = conn
+                .prepare("SELECT miner_id FROM miners WHERE last_seen > ?1")
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![cutoff], |row| row.get::<_, String>(0))
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            let mut out: Vec<[u8; 16]> = Vec::new();
+            for row in rows {
+                let miner_id = row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let digest = Sha256::digest(miner_id.as_bytes());
+                let mut h = [0u8; 16];
+                h.copy_from_slice(&digest[..16]);
+                out.push(h);
+            }
+            Ok(out)
+        })
+    }
+
     /// Count miners whose `last_seen` is within the given window (seconds).
     ///
     /// Used for stable "active miners" reporting that's independent of round

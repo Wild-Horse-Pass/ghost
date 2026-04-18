@@ -684,6 +684,7 @@
 
       let onlineCount = 0;
       let maxActiveMiners = 0;
+      let meshActive = null;
       let totalHashrateThs = 0;
       let totalShares = 0;
       let totalBlocks = 0;
@@ -701,6 +702,7 @@
           const m = r.info.active_miners ?? r.info.connected_miners ?? r.info.miner_count ?? 0;
           const hr = r.info.total_hashrate ?? r.info.hashrate_th ?? 0;
           if (m > maxActiveMiners) maxActiveMiners = m;
+          if (typeof r.info.mesh_active_miners === 'number') meshActive = r.info.mesh_active_miners;
           totalHashrateThs += hr;
           totalShares += r.info.shares_accepted ?? 0;
           totalBlocks += r.info.blocks_found ?? 0;
@@ -716,11 +718,11 @@
       });
 
       document.getElementById('pool-hashrate').textContent = totalHashrateThs > 0 ? formatHashrate(totalHashrateThs) : '--';
-      // MAX across VMs rather than SUM — same reasoning as pool.html: when the
-      // load balancer moves a miner between nodes, both VMs' miners table
-      // shows it for the 5-min window, so SUM over-counts. MAX is a stable
-      // lower bound until we add mesh-wide deduplication server-side.
-      document.getElementById('active-miners').textContent = maxActiveMiners.toString();
+      // Prefer the mesh-wide deduplicated count (every node converges on the
+      // same number via gossiped active miner_id hashes). Fall back to MAX
+      // across VMs if no node returned the field (mid-rollout).
+      const displayActive = meshActive ?? maxActiveMiners;
+      document.getElementById('active-miners').textContent = displayActive.toString();
       document.getElementById('active-nodes').textContent = `${onlineCount}/4`;
       document.getElementById('blocks-24h').textContent = maxBlockHeight > 0 ? maxBlockHeight.toLocaleString() : '--';
       document.getElementById('blocks-found').textContent = totalBlocks.toLocaleString();
