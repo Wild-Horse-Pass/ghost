@@ -774,41 +774,57 @@
     document.getElementById('payout-address').addEventListener('input', updateConfig);
     document.getElementById('worker-name').addEventListener('input', updateConfig);
 
+    function formatHashrate(ths) {
+      // Input is TH/s. Auto-scale to GH/PH/EH.
+      if (!isFinite(ths) || ths < 0) return '0';
+      if (ths === 0) return '0';
+      if (ths < 0.001) return `${(ths * 1e6).toFixed(1)} MH/s`;
+      if (ths < 1) return `${(ths * 1000).toFixed(1)} GH/s`;
+      if (ths < 1000) return `${ths.toFixed(2)} TH/s`;
+      if (ths < 1e6) return `${(ths / 1000).toFixed(2)} PH/s`;
+      return `${(ths / 1e6).toFixed(2)} EH/s`;
+    }
+
     async function fetchNodeStatus() {
-      let onlineCount = 0;
-      let totalMiners = 0;
-
-      for (const node of POOL_NODES) {
-        const statusEl = document.getElementById(`${node.id}-status`);
-        const minersEl = document.getElementById(`${node.id}-miners`);
+      // Fetch all 4 VMs in parallel — faster than the old sequential loop
+      // and avoids a slow node blocking the rest of the UI.
+      const results = await Promise.all(POOL_NODES.map(async (node) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
         try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-          const response = await fetch(`/api/pool/${node.id}/health`, {
+          const response = await fetch(`/api/pool/${node.id}/api/v1/mining/status`, {
             method: 'GET',
             signal: controller.signal
           });
           clearTimeout(timeoutId);
-
-          if (response.ok) {
-            const data = await response.json();
-            const info = data.response || data;
-
-            statusEl.textContent = 'Online';
-            statusEl.style.color = 'var(--green)';
-            onlineCount++;
-
-            if (info.miner_count !== undefined) {
-              totalMiners += info.miner_count;
-              minersEl.textContent = `${info.miner_count} miner${info.miner_count !== 1 ? 's' : ''}`;
-            }
-          } else {
-            statusEl.textContent = 'Offline';
-            statusEl.style.color = 'var(--red)';
-            minersEl.textContent = '';
-          }
+          if (!response.ok) return { node, ok: false };
+          const info = await response.json();
+          return { node, ok: true, info };
         } catch (e) {
+          clearTimeout(timeoutId);
+          return { node, ok: false };
+        }
+      }));
+
+      let onlineCount = 0;
+      let totalMiners = 0;
+      let totalHashrateThs = 0;
+
+      for (const { node, ok, info } of results) {
+        const statusEl = document.getElementById(`${node.id}-status`);
+        const minersEl = document.getElementById(`${node.id}-miners`);
+        if (ok && info) {
+          statusEl.textContent = 'Online';
+          statusEl.style.color = 'var(--green)';
+          onlineCount++;
+          const m = info.connected_miners ?? info.miner_count ?? 0;
+          totalMiners += m;
+          const hr = info.total_hashrate ?? info.hashrate_th ?? 0;
+          totalHashrateThs += hr;
+          minersEl.textContent = m > 0
+            ? `${m} miner${m !== 1 ? 's' : ''} · ${formatHashrate(hr)}`
+            : 'No miners';
+        } else {
           statusEl.textContent = 'Offline';
           statusEl.style.color = 'var(--red)';
           minersEl.textContent = '';
@@ -817,6 +833,9 @@
 
       document.getElementById('node-count').textContent = onlineCount.toString();
       document.getElementById('miner-count').textContent = totalMiners.toString();
+      document.getElementById('pool-hashrate').textContent = totalHashrateThs > 0
+        ? formatHashrate(totalHashrateThs)
+        : '---';
     }
 
     updateConfig();
