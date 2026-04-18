@@ -443,6 +443,33 @@
     }
     .protocol-badge.recommended { background: var(--orange); color: var(--black); }
     .protocol-badge.advanced { background: var(--cyan); color: var(--black); }
+
+    /* Protocol toggle inside Connect Your Miner */
+    .protocol-toggle {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .protocol-btn {
+      padding: 12px 14px;
+      background: var(--gray-900);
+      border: 1px solid var(--gray-700);
+      color: var(--gray-300);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-align: center;
+    }
+    .protocol-btn:hover { border-color: var(--gray-500); color: var(--white); }
+    .protocol-btn[data-protocol="sv1"].active {
+      background: var(--orange); border-color: var(--orange); color: var(--black); font-weight: 600;
+    }
+    .protocol-btn[data-protocol="sv2"].active {
+      background: var(--cyan); border-color: var(--cyan); color: var(--black); font-weight: 600;
+    }
     .protocol-title {
       font-size: 20px;
       font-weight: 600;
@@ -676,6 +703,14 @@
             <input type="text" placeholder="e.g., bitaxe1, rig2, antminer01" id="worker-name" value="worker1">
             <div style="font-size: 12px; color: var(--orange); margin-top: 4px;">Required &mdash; identifies your device in the pool dashboard</div>
           </div>
+          <div class="field">
+            <label>Protocol</label>
+            <div class="protocol-toggle" id="protocol-toggle">
+              <button type="button" class="protocol-btn active" data-protocol="sv1">Stratum V1 &middot; 3333</button>
+              <button type="button" class="protocol-btn" data-protocol="sv2">Stratum V2 &middot; 34255</button>
+            </div>
+            <div style="font-size: 12px; color: var(--gray-400); margin-top: 6px;">SV1 works with every ASIC; SV2 skips the translator for miners that support it natively.</div>
+          </div>
         </div>
 
         <div class="connect-output">
@@ -777,10 +812,15 @@
       { id: 'vm4', ip: '95.111.221.169' }
     ];
 
+    const PROTOCOL_PORTS = { sv1: 3333, sv2: 34255 };
+    let currentProtocol = 'sv1';
+
     function updateConfig() {
       const address = document.getElementById('payout-address').value || 'YOUR_BTC_ADDRESS';
       const worker = document.getElementById('worker-name').value || 'worker1';
       document.getElementById('stratum-user').textContent = `${address}.${worker}`;
+      const port = PROTOCOL_PORTS[currentProtocol];
+      document.getElementById('stratum-url').textContent = `stratum+tcp://pool.bitcoinghost.org:${port}`;
     }
 
     function copyConfig() {
@@ -796,6 +836,14 @@
 
     document.getElementById('payout-address').addEventListener('input', updateConfig);
     document.getElementById('worker-name').addEventListener('input', updateConfig);
+    document.querySelectorAll('#protocol-toggle .protocol-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#protocol-toggle .protocol-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentProtocol = btn.dataset.protocol;
+        updateConfig();
+      });
+    });
 
     function formatHashrate(ths) {
       // Input is TH/s. Auto-scale to GH/PH/EH.
