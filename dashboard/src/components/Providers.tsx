@@ -4,6 +4,7 @@ import { ReactNode, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "@/components/ui/Toast";
 import { useKeyboardShortcuts, KeyboardShortcutsHelp } from "@/hooks/useKeyboardShortcuts";
+import { SessionRefresh } from "@/components/SessionRefresh";
 
 function KeyboardShortcutsWrapper({ children }: { children: ReactNode }) {
   const { showHelp, setShowHelp } = useKeyboardShortcuts();
@@ -37,6 +38,7 @@ export function Providers({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
+        <SessionRefresh />
         <KeyboardShortcutsWrapper>{children}</KeyboardShortcutsWrapper>
       </ToastProvider>
     </QueryClientProvider>

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { resolveJwtSecret, verifySession } from "@/lib/jwt";
 
 const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/auth/logout"];
 
@@ -17,7 +18,7 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
   return response;
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Allow public paths
@@ -49,29 +50,40 @@ export function middleware(request: NextRequest) {
     return addSecurityHeaders(NextResponse.next());
   }
 
-  // Check for dashboard password if configured
+  // Remote access — password-gated dashboard
   const dashboardPassword = process.env.DASHBOARD_PASSWORD;
   if (!dashboardPassword) {
     return addSecurityHeaders(NextResponse.next());
   }
 
-  // Check session cookie
   const token = request.cookies.get("ghost-session")?.value;
-  if (!token || token !== sessionToken(dashboardPassword)) {
-    const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("redirect", pathname);
-    return NextResponse.redirect(loginUrl);
+  if (!token) {
+    return redirectToLogin(request, pathname);
+  }
+
+  const secret = await resolveJwtSecret();
+  if (!secret) {
+    // Server misconfig — fail closed.
+    return redirectToLogin(request, pathname);
+  }
+
+  const payload = await verifySession(token, secret);
+  if (!payload) {
+    return redirectToLogin(request, pathname);
   }
 
   return addSecurityHeaders(NextResponse.next());
 }
 
-function sessionToken(password: string): string {
-  const { createHmac } = require("crypto");
-  return createHmac("sha256", "ghost-dashboard")
-    .update(password)
-    .digest("hex")
-    .slice(0, 32);
+function redirectToLogin(request: NextRequest, pathname: string): NextResponse {
+  const loginUrl = new URL("/login", request.url);
+  if (pathname !== "/") {
+    loginUrl.searchParams.set("redirect", pathname);
+  }
+  const response = NextResponse.redirect(loginUrl);
+  // Clear a stale/expired cookie so the next request doesn't retrigger the same path.
+  response.cookies.delete("ghost-session");
+  return response;
 }
 
 export const config = {

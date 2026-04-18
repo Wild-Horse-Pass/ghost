@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createHmac } from "crypto";
-
-function sessionToken(password: string): string {
-  return createHmac("sha256", "ghost-dashboard")
-    .update(password)
-    .digest("hex")
-    .slice(0, 32);
-}
+import {
+  resolveJwtSecret,
+  resolveTtlSecs,
+  signSession,
+  timingSafeEqualStr,
+} from "@/lib/jwt";
 
 export async function POST(request: NextRequest) {
   const { password } = await request.json();
@@ -16,18 +14,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No password configured" }, { status: 500 });
   }
 
-  if (password !== dashboardPassword) {
+  if (!timingSafeEqualStr(password ?? "", dashboardPassword)) {
     return NextResponse.json({ error: "Invalid password" }, { status: 401 });
   }
 
-  const response = NextResponse.json({ ok: true });
-  response.cookies.set("ghost-session", sessionToken(dashboardPassword), {
+  const secret = await resolveJwtSecret();
+  if (!secret) {
+    return NextResponse.json({ error: "No signing secret configured" }, { status: 500 });
+  }
+
+  const ttl = resolveTtlSecs();
+  const token = await signSession("operator", secret, ttl);
+
+  const response = NextResponse.json({ ok: true, expires_in: ttl });
+  response.cookies.set("ghost-session", token, {
     httpOnly: true,
     secure: request.nextUrl.protocol === "https:",
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 7, // 7 days
+    maxAge: ttl,
   });
-
   return response;
 }
