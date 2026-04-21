@@ -276,15 +276,37 @@ bool CheckOversizedOpReturn(const CTransaction& tx, unsigned int max_bytes, std:
     return true;
 }
 
+bool CheckRunestone(const CTransaction& tx, std::string& reason)
+{
+    for (size_t i = 0; i < tx.vout.size(); i++) {
+        const CScript& script = tx.vout[i].scriptPubKey;
+        // Runestone signature: OP_RETURN (0x6a) followed by OP_13 (0x5d).
+        // When OP_13 appears as a standalone opcode (not inside a data push)
+        // immediately after OP_RETURN, the output is a Runestone per the
+        // protocol's canonical encoding.
+        if (script.size() >= 2 && script[0] == 0x6a && script[1] == 0x5d) {
+            reason = "ghost-reaper-runestone";
+            LogPrintLevel(BCLog::REAPER, BCLog::Level::Info, "Reaper: rejected tx %s output %zu — Runestone (OP_RETURN OP_13) detected\n",
+                     tx.GetHash().ToString(), i);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool IsGhostReaperClean(const CTransaction& tx, const GhostReaperConfig& config, std::string& reason)
 {
     if (config.mode == GhostReaperMode::Disabled) {
         return true;
     }
 
-    // Run all five detectors. Order: cheapest checks first.
+    // Run all six detectors. Order: cheapest checks first.
 
     if (!CheckOversizedOpReturn(tx, config.max_op_return_bytes, reason)) {
+        return false;
+    }
+
+    if (!CheckRunestone(tx, reason)) {
         return false;
     }
 

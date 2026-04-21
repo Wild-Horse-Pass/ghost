@@ -68,4 +68,13 @@ bool CheckAnnexPresence(const CTransaction& tx, std::string& reason);
  */
 bool CheckOversizedOpReturn(const CTransaction& tx, unsigned int max_bytes, std::string& reason);
 
+/**
+ * Check outputs for Runestone protocol markers.
+ * A Runestone is identified by an output whose scriptPubKey starts with
+ * OP_RETURN followed by OP_PUSHNUM_13 (opcodes 0x6a 0x5d). The OP_13 must
+ * be a standalone opcode — data pushes whose first byte happens to be
+ * 0x5d are NOT Runestones.
+ */
+bool CheckRunestone(const CTransaction& tx, std::string& reason);
+
 #endif // BITCOIN_POLICY_GHOST_REAPER_H

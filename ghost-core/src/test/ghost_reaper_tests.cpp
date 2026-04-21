@@ -334,6 +334,101 @@ BOOST_AUTO_TEST_CASE(exactly_at_limit_passes)
 }
 
 // ============================================================================
+// CheckRunestone
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(runestone_detected)
+{
+    CMutableTransaction mtx = MakeBaseTx();
+
+    // Canonical Runestone: OP_RETURN OP_13 <20 bytes of LEB128 tag/value pairs>
+    // Matches hex seen in the wild: 6a 5d 12 14 01 14 00 ff 7f ...
+    CScript runestone;
+    runestone << OP_RETURN << OP_13;
+    std::vector<unsigned char> payload = {
+        0x12, 0x14, 0x01, 0x14, 0x00, 0xff, 0x7f, 0x81,
+        0x8c, 0xec, 0x82, 0xd0, 0x8b, 0xc0, 0xa8, 0x82,
+        0x81, 0xd2, 0x15, 0x00
+    };
+    runestone << payload;
+
+    mtx.vout[0].scriptPubKey = runestone;
+
+    CTransaction tx(mtx);
+    std::string reason;
+    BOOST_CHECK(!CheckRunestone(tx, reason));
+    BOOST_CHECK_EQUAL(reason, "ghost-reaper-runestone");
+}
+
+BOOST_AUTO_TEST_CASE(runestone_bare_op13_only)
+{
+    CMutableTransaction mtx = MakeBaseTx();
+
+    // Minimal cenotaph: OP_RETURN OP_13 with no payload (still a Runestone).
+    mtx.vout[0].scriptPubKey = CScript() << OP_RETURN << OP_13;
+
+    CTransaction tx(mtx);
+    std::string reason;
+    BOOST_CHECK(!CheckRunestone(tx, reason));
+    BOOST_CHECK_EQUAL(reason, "ghost-reaper-runestone");
+}
+
+BOOST_AUTO_TEST_CASE(op_return_with_0x5d_data_passes)
+{
+    CMutableTransaction mtx = MakeBaseTx();
+
+    // OP_RETURN with a 20-byte data push whose first byte is coincidentally 0x5d.
+    // On the wire this is 6a 14 5d ... — script[1] is the pushdata length (0x14),
+    // not an OP_13 opcode, so this is NOT a Runestone.
+    std::vector<unsigned char> data_starting_5d = {
+        0x5d, 0x12, 0x14, 0x01, 0x14, 0x00, 0xff, 0x7f,
+        0x81, 0x8c, 0xec, 0x82, 0xd0, 0x8b, 0xc0, 0xa8,
+        0x82, 0x81, 0xd2, 0x15
+    };
+    CScript not_a_runestone;
+    not_a_runestone << OP_RETURN << data_starting_5d;
+    mtx.vout[0].scriptPubKey = not_a_runestone;
+
+    CTransaction tx(mtx);
+    std::string reason;
+    BOOST_CHECK(CheckRunestone(tx, reason));
+}
+
+BOOST_AUTO_TEST_CASE(runestone_in_second_output_detected)
+{
+    CMutableTransaction mtx = MakeBaseTx();
+
+    // First output is a normal payment, second is a Runestone.
+    mtx.vout.resize(2);
+    mtx.vout[0].nValue = 10000;
+    mtx.vout[0].scriptPubKey = CScript() << OP_DUP << OP_HASH160
+                                         << std::vector<unsigned char>(20, 0xab)
+                                         << OP_EQUALVERIFY << OP_CHECKSIG;
+    mtx.vout[1].nValue = 0;
+    mtx.vout[1].scriptPubKey = CScript() << OP_RETURN << OP_13
+                                         << std::vector<unsigned char>(10, 0x01);
+
+    CTransaction tx(mtx);
+    std::string reason;
+    BOOST_CHECK(!CheckRunestone(tx, reason));
+    BOOST_CHECK_EQUAL(reason, "ghost-reaper-runestone");
+}
+
+BOOST_AUTO_TEST_CASE(normal_opreturn_not_runestone)
+{
+    CMutableTransaction mtx = MakeBaseTx();
+
+    // Plain 40-byte OP_RETURN data carrier — no OP_13 opcode, not a Runestone.
+    CScript op_return;
+    op_return << OP_RETURN << std::vector<unsigned char>(40, 0xaa);
+    mtx.vout[0].scriptPubKey = op_return;
+
+    CTransaction tx(mtx);
+    std::string reason;
+    BOOST_CHECK(CheckRunestone(tx, reason));
+}
+
+// ============================================================================
 // IsGhostReaperClean (integration)
 // ============================================================================
 
