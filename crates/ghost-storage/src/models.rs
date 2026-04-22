@@ -47,6 +47,21 @@ pub struct ShareRecord {
     pub valid: bool,
 }
 
+/// Best (lowest-value, most-leading-zeros) share in a time window.
+/// Used to power the records strip on the public pool page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BestShare {
+    /// Raw share hash (hex, 64 chars)
+    pub share_hash: String,
+    /// Miner ID in `address.worker` form (caller is responsible for any
+    /// redaction before returning to public HTTP clients).
+    pub miner_id: String,
+    /// Unix millisecond timestamp the share was received.
+    pub timestamp: i64,
+    /// Claimed share difficulty at submission time.
+    pub difficulty: f64,
+}
+
 /// Round record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoundRecord {

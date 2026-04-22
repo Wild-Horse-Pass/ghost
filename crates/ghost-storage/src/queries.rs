@@ -532,16 +532,19 @@ impl Database {
         })
     }
 
-    /// Get aggregate miner stats for hashrate calculation
+    /// Get aggregate miner stats for hashrate calculation.
     ///
-    /// Uses a 10-minute window for accurate hashrate estimation.
+    /// Uses a 30-minute window for accurate hashrate estimation. The wider
+    /// window damps Bitaxe-class share variance — a single lucky share can
+    /// double the work integrated over a short window, producing 3-4x spikes
+    /// on the dashboard that don't reflect real hashrate changes.
     pub fn get_all_miners_stats(&self) -> GhostResult<Vec<MinerSearchResult>> {
         self.with_connection(|conn| {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            let window_start = now - 600; // 10 minute window
+            let window_start = now - 1800; // 30 minute window
             let mut stmt = conn
                 .prepare(
                     "SELECT
@@ -575,6 +578,46 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             Ok(miners)
+        })
+    }
+
+    /// Find the best (lowest-value hex, most-leading-zeros) valid share
+    /// submitted at or after `since_ts` (Unix seconds). Returns `None` if
+    /// no shares match. Used to power public pool records (best hash per
+    /// window).
+    ///
+    /// Correctness: SHA256 hashes rendered as zero-padded 64-char hex
+    /// sort lexicographically in the same order as the underlying integer
+    /// value, so `ORDER BY share_hash ASC LIMIT 1` gives the share closest
+    /// to the all-zero target.
+    pub fn get_best_share_since(
+        &self,
+        since_ts: i64,
+    ) -> GhostResult<Option<crate::models::BestShare>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT share_hash, miner_id, timestamp, difficulty
+                     FROM shares
+                     WHERE timestamp >= ?1 AND valid = 1
+                     ORDER BY share_hash ASC
+                     LIMIT 1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let row = stmt
+                .query_row(params![since_ts], |row| {
+                    Ok(crate::models::BestShare {
+                        share_hash: row.get(0)?,
+                        miner_id: row.get(1)?,
+                        timestamp: row.get(2)?,
+                        difficulty: row.get(3)?,
+                    })
+                })
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(row)
         })
     }
 

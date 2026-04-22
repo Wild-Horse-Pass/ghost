@@ -192,6 +192,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // mining pools). Enumeration is prevented by exact-match semantics
         // and per-IP nginx rate limiting at the proxy layer.
         .route("/api/v1/miners/lookup", get(api_miner_lookup_handler))
+        // Public best-hash records per window (block / day / week / month).
+        // Returns this node's best share only; website aggregates across
+        // nodes. No auth; enumeration not possible (one response).
+        .route("/api/v1/pool/records", get(api_pool_records_handler))
         // M-14: /api/v1/miners/stats moved to internal routes (requires HMAC auth)
         // Exposes individual miner work values, hashrates, and share history
         .route("/api/v1/network/peers", get(peers_handler))
@@ -1458,7 +1462,20 @@ async fn api_mining_status_handler(
     let health = state.get_health().await;
     let config = state.dashboard_config.read();
 
-    // Calculate aggregate hashrate from all miners (10-minute window)
+    // Aggregate hashrate across all miners. Use the miner's actual elapsed
+    // time in the window (now - first_share_in_window), clamped at both ends:
+    //   * MIN_ELAPSED = 300s prevents a single lucky high-difficulty share
+    //     from inflating the rate for brand-new miners (the original spike
+    //     bug the 30-min window was introduced to fix).
+    //   * WINDOW_SECS = 1800s caps elapsed at the SQL window length; since
+    //     the query only returns shares from the last 1800s, elapsed can
+    //     never honestly exceed that.
+    // This recovers the correct rate for miners that reconnected partway
+    // through the window (e.g. after a pool restart) — they were previously
+    // under-reported because a fixed 1800s denominator assumed a full
+    // window's worth of work.
+    const WINDOW_SECS: f64 = 1800.0;
+    const MIN_ELAPSED: f64 = 300.0;
     let (total_hashrate_th, shares_submitted, shares_accepted) =
         if let Some(ref db) = state.database {
             match db.get_all_miners_stats() {
@@ -1471,10 +1488,9 @@ async fn api_mining_status_handler(
                     let mut total_shares = 0u64;
                     let mut valid_shares = 0u64;
                     for m in &miners {
-                        // Use elapsed time from first share in window to now
-                        // This avoids inflated hashrate from short sample periods
-                        let elapsed = (now - m.first_seen).max(1) as f64;
-                        // Hashrate = SUM(difficulty) * 2^32 / elapsed_time / 1e12 (TH/s)
+                        let raw = (now - m.first_seen).max(1) as f64;
+                        let elapsed = raw.clamp(MIN_ELAPSED, WINDOW_SECS);
+                        // Hashrate = SUM(difficulty) * 2^32 / elapsed / 1e12 (TH/s)
                         total_hr += m.total_work * 4294967296.0 / elapsed / 1e12;
                         total_shares += m.total_shares;
                         valid_shares += m.valid_shares;
@@ -1581,6 +1597,13 @@ struct MinerSearchQuery {
 struct MinerStatsQuery {
     /// Miner ID to look up
     miner_id: Option<String>,
+}
+
+/// Query parameters for the public pool records endpoint.
+/// `window` is one of `block | day | week | month`.
+#[derive(Debug, Deserialize)]
+struct PoolRecordsQuery {
+    window: Option<String>,
 }
 
 /// API v1 miner search handler - search miners by worker name or address
@@ -1844,6 +1867,119 @@ async fn api_miner_lookup_handler(
     };
 
     Json(result)
+}
+
+/// Public pool records — best (lowest-value, most-leading-zeros) share
+/// submitted to THIS node within the requested time window.
+///
+/// The website fans out to every node and takes the min across them to get
+/// a pool-wide best. No mesh gossip required; each node serves its own view.
+///
+/// `?window=` accepts `block | day | week | month`. Defaults to `day`.
+/// "Block" is approximated as the last 10 minutes (average block interval)
+/// rather than looking up the actual network tip time — keeps the handler
+/// synchronous and DB-only.
+///
+/// The miner ID is returned in redacted form to preserve privacy while
+/// still giving enough of a handle to recognise one's own worker.
+async fn api_pool_records_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<PoolRecordsQuery>,
+) -> impl IntoResponse {
+    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let window_secs: i64 = match window_name.as_str() {
+        "block" => 600,
+        "day" => 86_400,
+        "week" => 604_800,
+        "month" => 2_592_000,
+        _ => {
+            return Json(serde_json::json!({
+                "error": "Invalid window — expected block | day | week | month",
+                "window": window_name,
+            }));
+        }
+    };
+
+    // Shares are persisted with Unix-seconds timestamps (despite the
+    // `ShareRecord::timestamp` docstring claiming ms) — match that unit here.
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let since_ts = now_s - window_secs;
+
+    let Some(ref db) = state.database else {
+        return Json(serde_json::json!({
+            "window": window_name,
+            "since_ts": since_ts,
+            "found": false,
+            "error": "Database not available",
+        }));
+    };
+
+    match db.get_best_share_since(since_ts) {
+        Ok(None) => Json(serde_json::json!({
+            "window": window_name,
+            "since_ts": since_ts,
+            "found": false,
+        })),
+        Ok(Some(best)) => {
+            // Count leading '0' hex chars (each = 4 binary leading zeros).
+            // This is a coarse signal; the hash itself is the definitive
+            // record, but "47 zeros" reads better than a hex blob in tiles.
+            let leading_hex_zeros = best
+                .share_hash
+                .chars()
+                .take_while(|c| *c == '0')
+                .count();
+            let leading_zero_bits = leading_hex_zeros * 4;
+            // Redact miner_id: `bc1q...tip.worker` keeps enough for the
+            // miner themself to recognise while shedding most of the
+            // address. Format: first 6 chars, ellipsis, last 4 chars of
+            // the address portion, then `.worker` intact.
+            let redacted = redact_miner_id(&best.miner_id);
+
+            Json(serde_json::json!({
+                "window": window_name,
+                "since_ts": since_ts,
+                "found": true,
+                "best": {
+                    "share_hash": best.share_hash,
+                    "leading_zero_bits": leading_zero_bits,
+                    "leading_hex_zeros": leading_hex_zeros,
+                    "miner_id_redacted": redacted,
+                    "timestamp": best.timestamp,
+                    "difficulty": best.difficulty,
+                }
+            }))
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to query best share");
+            Json(serde_json::json!({
+                "window": window_name,
+                "since_ts": since_ts,
+                "found": false,
+                "error": "Database error",
+            }))
+        }
+    }
+}
+
+/// Redact a miner_id of the form `<address>.<worker>` for public display.
+/// Keeps the first 6 and last 4 characters of the address, and leaves the
+/// worker portion intact. If the input doesn't contain a `.`, treats the
+/// whole thing as an address.
+fn redact_miner_id(id: &str) -> String {
+    let (addr, worker) = match id.find('.') {
+        Some(i) => (&id[..i], &id[i..]), // worker has leading '.'
+        None => (id, ""),
+    };
+    let redacted_addr = if addr.len() <= 12 {
+        addr.to_string()
+    } else {
+        format!("{}…{}", &addr[..6], &addr[addr.len() - 4..])
+    };
+    format!("{}{}", redacted_addr, worker)
 }
 
 /// API v1 pool status handler
