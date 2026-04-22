@@ -621,6 +621,89 @@ impl Database {
         })
     }
 
+    /// Leaderboard row: a miner's single best share in a time window.
+    /// Backs the "best hash" leaderboard tab.
+    pub fn get_leaderboard_best_hash(
+        &self,
+        since_ts: i64,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, String, i64, f64)>> {
+        // Returns (miner_id, best_share_hash, timestamp, difficulty).
+        // Finding each miner's MIN(share_hash) then re-sorting is cheap
+        // at our volume; if this becomes hot we can keep a materialised
+        // per-miner-per-day rollup.
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.miner_id, s.share_hash, s.timestamp, s.difficulty
+                     FROM shares s
+                     INNER JOIN (
+                         SELECT miner_id, MIN(share_hash) AS best_hash
+                         FROM shares
+                         WHERE timestamp >= ?1 AND valid = 1
+                         GROUP BY miner_id
+                     ) b ON s.miner_id = b.miner_id AND s.share_hash = b.best_hash
+                     WHERE s.timestamp >= ?1 AND s.valid = 1
+                     ORDER BY s.share_hash ASC
+                     LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![since_ts, limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, f64>(3)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
+    /// Leaderboard row: total shares and total work contributed by a
+    /// miner in a time window. Backs the "shares contributed" tab.
+    pub fn get_leaderboard_shares(
+        &self,
+        since_ts: i64,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, u64, f64)>> {
+        // Returns (miner_id, share_count, total_work). Sorted by
+        // total_work descending — "more work" is the honest measure of
+        // contribution since miners may be on different share difficulties.
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT miner_id, COUNT(*) AS share_count, SUM(work) AS total_work
+                     FROM shares
+                     WHERE timestamp >= ?1 AND valid = 1
+                     GROUP BY miner_id
+                     ORDER BY total_work DESC
+                     LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![since_ts, limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, f64>(2)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
     /// Get the highest round_id from the shares table
     ///
     /// Returns 0 if no shares exist (fresh install).

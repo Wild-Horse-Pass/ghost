@@ -196,6 +196,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Returns this node's best share only; website aggregates across
         // nodes. No auth; enumeration not possible (one response).
         .route("/api/v1/pool/records", get(api_pool_records_handler))
+        // Public per-window leaderboard: top miners by best-hash and by
+        // total shares contributed in the requested window. Used by the
+        // pool page gamification; same redaction rules as /records.
+        .route("/api/v1/pool/leaderboard", get(api_pool_leaderboard_handler))
         // M-14: /api/v1/miners/stats moved to internal routes (requires HMAC auth)
         // Exposes individual miner work values, hashrates, and share history
         .route("/api/v1/network/peers", get(peers_handler))
@@ -1606,6 +1610,15 @@ struct PoolRecordsQuery {
     window: Option<String>,
 }
 
+/// Query parameters for the public leaderboard endpoint.
+/// `window` is `day | week | month` (no `block` — 10 min is too short
+/// to rank). `limit` defaults to 10, capped at 50 to prevent enumeration.
+#[derive(Debug, Deserialize)]
+struct PoolLeaderboardQuery {
+    window: Option<String>,
+    limit: Option<u32>,
+}
+
 /// API v1 miner search handler - search miners by worker name or address
 /// M-13: Returns only aggregate counts, not individual miner details (same pattern as M-11)
 async fn api_miners_search_handler(
@@ -1963,6 +1976,79 @@ async fn api_pool_records_handler(
             }))
         }
     }
+}
+
+/// Public leaderboard for the pool page. Returns both the best-hash
+/// leaderboard and the shares-contributed leaderboard for the window.
+/// Website fans out to every node and merges per-miner across nodes.
+async fn api_pool_leaderboard_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<PoolLeaderboardQuery>,
+) -> impl IntoResponse {
+    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let window_secs: i64 = match window_name.as_str() {
+        "day" => 86_400,
+        "week" => 604_800,
+        "month" => 2_592_000,
+        _ => {
+            return Json(serde_json::json!({
+                "error": "Invalid window — expected day | week | month",
+                "window": window_name,
+            }));
+        }
+    };
+    let limit = params.limit.unwrap_or(10).min(50).max(1);
+
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let since_ts = now_s - window_secs;
+
+    let Some(ref db) = state.database else {
+        return Json(serde_json::json!({
+            "window": window_name,
+            "since_ts": since_ts,
+            "error": "Database not available",
+        }));
+    };
+
+    let best_hash = db
+        .get_leaderboard_best_hash(since_ts, limit)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(miner_id, hash, ts, difficulty)| {
+            let leading_hex_zeros = hash.chars().take_while(|c| *c == '0').count();
+            serde_json::json!({
+                "miner_id_redacted": redact_miner_id(&miner_id),
+                "share_hash": hash,
+                "leading_zero_bits": leading_hex_zeros * 4,
+                "timestamp": ts,
+                "claimed_difficulty": difficulty,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let shares = db
+        .get_leaderboard_shares(since_ts, limit)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(miner_id, share_count, total_work)| {
+            serde_json::json!({
+                "miner_id_redacted": redact_miner_id(&miner_id),
+                "share_count": share_count,
+                "total_work": total_work,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({
+        "window": window_name,
+        "since_ts": since_ts,
+        "limit": limit,
+        "best_hash": best_hash,
+        "shares": shares,
+    }))
 }
 
 /// Redact a miner_id of the form `<address>.<worker>` for public display.

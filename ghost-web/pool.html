@@ -194,6 +194,36 @@
   </div>
 </section>
 
+<section class="block leaderboard-section">
+  <div class="container">
+    <div class="section-label">leaderboards</div>
+    <h2 class="section-title">Who's on top.</h2>
+    <p class="section-lead">
+      Top miners by highest share difficulty reached and by total shares
+      contributed over the window. Pool-wide — merged across every node.
+    </p>
+
+    <div class="lb-controls">
+      <div class="viz-tabs lb-tabs">
+        <button class="active" data-lb="best_hash">Best hash</button>
+        <button data-lb="shares">Shares contributed</button>
+      </div>
+      <div class="lb-window">
+        <label for="lb-window">window</label>
+        <select id="lb-window">
+          <option value="day" selected>last day</option>
+          <option value="week">last week</option>
+          <option value="month">last month</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="lb-table-wrap">
+      <table class="lb-table" id="lb-table"><tbody></tbody></table>
+    </div>
+  </div>
+</section>
+
 <section class="block connect-cta" style="border-bottom:none">
   <div class="container">
     <div class="section-label">get started</div>
@@ -503,6 +533,29 @@
     getMiners:   function () { return lastStats.miners; }
   };
 
+  // ───────── Difficulty helpers (shared by Records + Leaderboards) ─────────
+  // Bitcoin "difficulty 1" target. Dividing it by a share's hash-as-int
+  // gives the share's difficulty in the standard pool sense — the same
+  // number miners see in logs and that every other pool displays.
+  var DIFF_1_TARGET = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
+  function hashToDifficulty(hashHex) {
+    try {
+      var h = BigInt('0x' + hashHex);
+      if (h === 0n) return Infinity;
+      return Number(DIFF_1_TARGET / h);
+    } catch (e) { return 0; }
+  }
+  function formatDifficulty(d) {
+    if (!isFinite(d) || d <= 0) return '—';
+    if (d < 1000) return d.toFixed(2);
+    if (d < 1e6) return (d / 1e3).toFixed(2) + 'K';
+    if (d < 1e9) return (d / 1e6).toFixed(2) + 'M';
+    if (d < 1e12) return (d / 1e9).toFixed(2) + 'G';
+    if (d < 1e15) return (d / 1e12).toFixed(2) + 'T';
+    if (d < 1e18) return (d / 1e15).toFixed(2) + 'P';
+    return (d / 1e18).toFixed(2) + 'E';
+  }
+
   // ───────── Pool records (best hash per window) ─────────
   // Fans out to every VM for each window, picks the single lowest
   // share_hash across all nodes. One request × 4 windows × 4 nodes = 16
@@ -546,14 +599,132 @@
         m.textContent = 'no shares in window';
         return;
       }
-      // Display: "NN zeros" headline + short hash + relative time
-      v.innerHTML = '<span style="color:var(--accent)">' + best.leading_zero_bits + '</span> <span style="color:var(--dim); font-size:12px">leading bits</span>';
+      // Display: difficulty (standard pool metric) + short hash + relative time
+      var diff = hashToDifficulty(best.share_hash);
+      v.innerHTML = '<span style="color:var(--accent)">' + formatDifficulty(diff) + '</span> <span style="color:var(--dim); font-size:12px">difficulty</span>';
       m.innerHTML = '<span style="color:var(--fainter); word-break:break-all">' + best.share_hash.slice(0, 20) + '…</span><br>' +
                     fmtAgo(best.timestamp) + ' · ' + (best.miner_id_redacted || '—').replace(/</g, '&lt;');
     });
   }
   refreshRecords();
   setInterval(refreshRecords, 60000); // every minute
+
+  // ───────── Difficulty helpers (client-side; hash → difficulty-1-scaled) ─────────
+  // Bitcoin "difficulty 1" target. Dividing it by a share's hash-as-int
+  // gives the share's difficulty in the standard pool sense — the same
+  // number miners see in logs and that every other pool displays.
+  var DIFF_1_TARGET = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
+  function hashToDifficulty(hashHex) {
+    try {
+      var h = BigInt('0x' + hashHex);
+      if (h === 0n) return Infinity;
+      // Use BigInt division then coerce to Number. For hashes with up to
+      // ~64 leading bits of zero, Number can represent the quotient
+      // (which is < 2^64 for typical pool shares). Beyond that we clamp.
+      var q = DIFF_1_TARGET / h;
+      return Number(q);
+    } catch (e) { return 0; }
+  }
+  function formatDifficulty(d) {
+    if (!isFinite(d) || d <= 0) return '—';
+    if (d < 1000) return d.toFixed(2);
+    if (d < 1e6) return (d / 1e3).toFixed(2) + 'K';
+    if (d < 1e9) return (d / 1e6).toFixed(2) + 'M';
+    if (d < 1e12) return (d / 1e9).toFixed(2) + 'G';
+    if (d < 1e15) return (d / 1e12).toFixed(2) + 'T';
+    if (d < 1e18) return (d / 1e15).toFixed(2) + 'P';
+    return (d / 1e18).toFixed(2) + 'E';
+  }
+
+  // ───────── Leaderboards ─────────
+  var lbState = { category: 'best_hash', window: 'day', data: null };
+
+  async function refreshLeaderboard() {
+    var results = await Promise.all(POOL_NODES.map(function (n) {
+      return fetch('/api/pool/' + n.id + '/api/v1/pool/leaderboard?window=' + lbState.window + '&limit=10')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; });
+    }));
+    // Merge per-miner across nodes
+    var bestByMiner = new Map();
+    var sharesByMiner = new Map();
+    results.forEach(function (d) {
+      if (!d) return;
+      (d.best_hash || []).forEach(function (row) {
+        var prev = bestByMiner.get(row.miner_id_redacted);
+        if (!prev || row.share_hash < prev.share_hash) {
+          bestByMiner.set(row.miner_id_redacted, row);
+        }
+      });
+      (d.shares || []).forEach(function (row) {
+        var prev = sharesByMiner.get(row.miner_id_redacted);
+        if (!prev) {
+          sharesByMiner.set(row.miner_id_redacted, { ...row });
+        } else {
+          prev.share_count += row.share_count;
+          prev.total_work += row.total_work;
+        }
+      });
+    });
+    var bestList = Array.from(bestByMiner.values())
+      .sort(function (a, b) { return a.share_hash < b.share_hash ? -1 : 1; })
+      .slice(0, 10);
+    var sharesList = Array.from(sharesByMiner.values())
+      .sort(function (a, b) { return b.total_work - a.total_work; })
+      .slice(0, 10);
+    lbState.data = { best_hash: bestList, shares: sharesList };
+    renderLeaderboard();
+  }
+
+  function renderLeaderboard() {
+    var tbody = document.querySelector('#lb-table tbody');
+    if (!lbState.data) {
+      tbody.innerHTML = '<tr><td colspan="4" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">loading…</td></tr>';
+      return;
+    }
+    var rows = lbState.data[lbState.category] || [];
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">no miners in this window yet</td></tr>';
+      return;
+    }
+    if (lbState.category === 'best_hash') {
+      tbody.innerHTML = rows.map(function (r, i) {
+        var diff = hashToDifficulty(r.share_hash);
+        return '<tr>' +
+          '<td class="lb-rank">' + (i + 1) + '</td>' +
+          '<td class="lb-diff"><span class="lb-diff-val">' + formatDifficulty(diff) + '</span><span class="lb-diff-sub">difficulty</span></td>' +
+          '<td class="lb-hash" title="' + r.share_hash + '">' + r.share_hash.slice(0, 24) + '…</td>' +
+          '<td class="lb-miner">' + r.miner_id_redacted.replace(/</g, '&lt;') + '</td>' +
+        '</tr>';
+      }).join('');
+    } else {
+      tbody.innerHTML = rows.map(function (r, i) {
+        return '<tr>' +
+          '<td class="lb-rank">' + (i + 1) + '</td>' +
+          '<td class="lb-diff"><span class="lb-diff-val">' + r.share_count.toLocaleString() + '</span><span class="lb-diff-sub">shares</span></td>' +
+          '<td class="lb-hash">' + formatDifficulty(r.total_work) + ' <span style="color:var(--dim); font-size:11px">total work</span></td>' +
+          '<td class="lb-miner">' + r.miner_id_redacted.replace(/</g, '&lt;') + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+  }
+
+  (function () {
+    document.querySelectorAll('.lb-tabs button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        document.querySelectorAll('.lb-tabs button').forEach(function (x) { x.classList.remove('active'); });
+        b.classList.add('active');
+        lbState.category = b.dataset.lb;
+        renderLeaderboard();
+      });
+    });
+    document.getElementById('lb-window').addEventListener('change', function (e) {
+      lbState.window = e.target.value;
+      refreshLeaderboard();
+    });
+  })();
+  refreshLeaderboard();
+  setInterval(refreshLeaderboard, 60000);
 
   // Miner lookup (client-side fan-out — aggregator endpoint is next up)
   (function () {
