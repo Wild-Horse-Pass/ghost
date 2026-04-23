@@ -886,7 +886,9 @@
         });
       });
       var workers = Array.from(byWorker.values())
-        .sort(function (a, b) { return b.last_seen - a.last_seen; });
+        .sort(function (a, b) {
+          return (a.worker || '').localeCompare(b.worker || '', undefined, { numeric: true, sensitivity: 'base' });
+        });
 
       if (!workers.length) {
         out.innerHTML =

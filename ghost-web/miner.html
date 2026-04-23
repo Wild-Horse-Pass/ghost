@@ -77,6 +77,27 @@
       </div>
     </div>
 
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin: 40px 0 16px; flex-wrap:wrap; gap:16px">
+      <div>
+        <div class="section-label">combined hashrate</div>
+        <h2 class="section-title" style="margin:4px 0 0">Address history.</h2>
+      </div>
+      <div class="lb-window">
+        <label for="addr-window">window</label>
+        <select id="addr-window">
+          <option value="day" selected>last day</option>
+          <option value="week">last week</option>
+          <option value="month">last month</option>
+        </select>
+      </div>
+    </div>
+    <div class="chart-frame">
+      <div class="chart-legend">
+        <div class="chart-title"><span id="addr-chart-avg">—</span> <span class="sub" id="addr-chart-window">avg (day)</span></div>
+      </div>
+      <svg id="addr-chart"></svg>
+    </div>
+
     <div class="section-label" style="margin-top:40px">workers</div>
     <div id="addr-workers" class="worker-grid" style="margin-top:12px"></div>
   </div>
@@ -285,8 +306,11 @@
           }
         });
       });
+      // Natural alphanumeric sort: bitaxe1, bitaxe2, bitaxe10 (not bitaxe1, bitaxe10, bitaxe2)
       var workers = Array.from(byWorker.values())
-        .sort(function (a, b) { return b.last_seen - a.last_seen; });
+        .sort(function (a, b) {
+          return (a.worker || '').localeCompare(b.worker || '', undefined, { numeric: true, sensitivity: 'base' });
+        });
 
       var totalShares = workers.reduce(function (s, w) { return s + (w.total_shares || 0); }, 0);
       var totalPayouts = workers.reduce(function (s, w) { return s + (w.total_payouts_sats || 0); }, 0);
@@ -317,43 +341,156 @@
         '</a>';
       }).join('');
 
-      // Combined hashrate from history across workers (fetched sequentially
-      // so we don't nuke the rate limit when an address has dozens of
-      // workers; each request is small and the DB index is warm).
-      var combinedThs = 0;
-      for (var i = 0; i < workers.length; i++) {
-        var ths = await workerRecentHashrate(workers[i].miner_id);
-        combinedThs += ths;
-      }
-      document.getElementById('addr-hashrate').innerHTML = formatHashrate(combinedThs);
+      // Kick off the combined chart + hashrate tile in parallel
+      loadAddressHistory(workers);
     }
+
+    // Address-mode hashrate chart: sums every worker's per-bucket work into
+    // one combined series, so the line reflects this address's total output
+    // regardless of how the hashing is split across ASICs.
+    var addrChartState = { window: 'day', bucketSecs: 300, series: [], workers: [] };
+
+    async function loadAddressHistory(workers) {
+      addrChartState.workers = workers;
+      var window_name = addrChartState.window;
+      addrChartState.series = [];
+      drawAddrChart();
+      document.getElementById('addr-chart-avg').textContent = '—';
+      document.getElementById('addr-chart-window').textContent = 'avg (' + window_name + ')';
+
+      if (!workers.length) {
+        document.getElementById('addr-hashrate').innerHTML = formatHashrate(0);
+        return;
+      }
+
+      // Fan out: 4 VMs × N workers in parallel
+      var perWorker = await Promise.all(workers.map(function (w) {
+        return Promise.all(POOL_NODES.map(function (n) {
+          return fetch('/api/pool/' + n.id + '/api/v1/miners/history?miner_id=' + encodeURIComponent(w.miner_id) + '&window=' + window_name)
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .catch(function () { return null; });
+        }));
+      }));
+
+      // Sum work per bucket across every worker and every node
+      var merged = new Map();
+      var bucketSecs = 300;
+      perWorker.forEach(function (nodeResponses) {
+        nodeResponses.forEach(function (d) {
+          if (!d || !Array.isArray(d.points)) return;
+          bucketSecs = d.bucket_secs || bucketSecs;
+          d.points.forEach(function (p) {
+            var prev = merged.get(p.t);
+            if (!prev) merged.set(p.t, { t: p.t, work: p.work || 0 });
+            else prev.work += p.work || 0;
+          });
+        });
+      });
+      addrChartState.bucketSecs = bucketSecs;
+      addrChartState.series = Array.from(merged.values()).sort(function (a, b) { return a.t - b.t; });
+
+      if (addrChartState.series.length) {
+        var totalWork = addrChartState.series.reduce(function (s, p) { return s + p.work; }, 0);
+        var totalSecs = addrChartState.series.length * bucketSecs;
+        document.getElementById('addr-chart-avg').innerHTML = formatHashrate(workToTHs(totalWork, totalSecs));
+        // Hero hashrate tile from last two buckets (≈10 min)
+        var last = addrChartState.series.slice(-2);
+        var recentWork = last.reduce(function (s, p) { return s + p.work; }, 0);
+        var recentSecs = last.length * bucketSecs;
+        document.getElementById('addr-hashrate').innerHTML = formatHashrate(workToTHs(recentWork, recentSecs));
+      } else {
+        document.getElementById('addr-chart-avg').innerHTML = formatHashrate(0);
+        document.getElementById('addr-hashrate').innerHTML = formatHashrate(0);
+      }
+      drawAddrChart();
+    }
+
+    function drawAddrChart() { drawChartInto('addr-chart', addrChartState); }
+
+    document.getElementById('addr-window').addEventListener('change', function (e) {
+      addrChartState.window = e.target.value;
+      loadAddressHistory(addrChartState.workers);
+    });
+    window.addEventListener('resize', drawAddrChart);
 
     load();
     setInterval(load, 60000);
   }
 
-  async function workerRecentHashrate(miner_id) {
-    var perNode = await Promise.all(POOL_NODES.map(function (n) {
-      return fetch('/api/pool/' + n.id + '/api/v1/miners/history?miner_id=' + encodeURIComponent(miner_id) + '&window=day')
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .catch(function () { return null; });
-    }));
-    var merged = new Map();
-    var bucketSecs = 300;
-    perNode.forEach(function (d) {
-      if (!d || !Array.isArray(d.points)) return;
-      bucketSecs = d.bucket_secs || bucketSecs;
-      d.points.forEach(function (p) {
-        var prev = merged.get(p.t);
-        if (!prev) merged.set(p.t, { work: p.work || 0 });
-        else prev.work += p.work || 0;
-      });
+  // Shared SVG chart renderer — used by both the per-worker dashboard and
+  // the combined-address chart. Takes a state with { series, bucketSecs }
+  // where each point is { t, work }. Gutter is 84px so labels like
+  // "123.45 TH/s" fit comfortably without clipping the left edge.
+  function drawChartInto(svgId, state) {
+    var svg = document.getElementById(svgId);
+    if (!svg) return;
+    var frame = svg.parentElement;
+    var fr = frame.getBoundingClientRect();
+    var W = Math.max(320, Math.floor(fr.width));
+    var H = Math.max(240, Math.floor(fr.height));
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('preserveAspectRatio', 'none');
+
+    var L = 84, R = 16, T = 40, B = 40;
+    var iw = W - L - R, ih = H - T - B;
+    var pts = state.series;
+
+    if (!pts || !pts.length) {
+      svg.innerHTML =
+        '<text x="' + (W / 2) + '" y="' + (H / 2) + '" text-anchor="middle" ' +
+        'fill="var(--fainter)" font-family="var(--font-mono)" font-size="12">no shares in window</text>';
+      return;
+    }
+
+    var values = pts.map(function (p) { return workToTHs(p.work, state.bucketSecs); });
+    var maxV = Math.max.apply(null, values);
+    if (maxV <= 0) maxV = 1;
+    maxV = maxV * 1.1;
+    var tMin = pts[0].t;
+    var tMax = pts[pts.length - 1].t;
+    if (tMax === tMin) tMax = tMin + 1;
+
+    function xOf(t) { return L + (t - tMin) / (tMax - tMin) * iw; }
+    function yOf(v) { return T + ih - v / maxV * ih; }
+
+    var yTicks = [];
+    for (var i = 0; i <= 4; i++) {
+      var v = maxV * i / 4;
+      var y = yOf(v);
+      yTicks.push(
+        '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '" stroke="var(--rule)" stroke-width="1" opacity="0.5"/>' +
+        '<text x="' + (L - 8) + '" y="' + (y + 4) + '" text-anchor="end" fill="var(--dim)" font-family="var(--font-mono)" font-size="10">' + formatHashrateText(v) + '</text>'
+      );
+    }
+
+    var xTicks = [];
+    [0, Math.floor(pts.length / 2), pts.length - 1].forEach(function (idx) {
+      var p = pts[idx];
+      var x = xOf(p.t);
+      var label = new Date(p.t * 1000).toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      xTicks.push('<text x="' + x + '" y="' + (H - 12) + '" text-anchor="middle" fill="var(--dim)" font-family="var(--font-mono)" font-size="10">' + label + '</text>');
     });
-    var sorted = Array.from(merged.entries()).sort(function (a, b) { return a[0] - b[0]; });
-    var last = sorted.slice(-2);
-    if (!last.length) return 0;
-    var w = last.reduce(function (s, e) { return s + e[1].work; }, 0);
-    return workToTHs(w, last.length * bucketSecs);
+
+    var pathD = pts.map(function (p, i) {
+      var x = xOf(p.t), y = yOf(workToTHs(p.work, state.bucketSecs));
+      return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1);
+    }).join(' ');
+    var areaD = pathD + ' L ' + xOf(tMax).toFixed(1) + ' ' + (T + ih) +
+                ' L ' + xOf(tMin).toFixed(1) + ' ' + (T + ih) + ' Z';
+
+    // Unique gradient id per svg so two charts on the page don't collide
+    var gradId = svgId + '-grad';
+    svg.innerHTML =
+      '<defs>' +
+        '<linearGradient id="' + gradId + '" x1="0" x2="0" y1="0" y2="1">' +
+          '<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22"/>' +
+          '<stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>' +
+        '</linearGradient>' +
+      '</defs>' +
+      yTicks.join('') +
+      '<path d="' + areaD + '" fill="url(#' + gradId + ')"/>' +
+      '<path d="' + pathD + '" fill="none" stroke="var(--accent)" stroke-width="1.6"/>' +
+      xTicks.join('');
   }
 
   // ───────── Worker mode: single-miner dashboard with chart ─────────
@@ -465,74 +602,7 @@
       drawChart();
     }
 
-    function drawChart() {
-      var svg = document.getElementById('mp-chart');
-      var frame = svg.parentElement;
-      var fr = frame.getBoundingClientRect();
-      var W = Math.max(320, Math.floor(fr.width));
-      var H = Math.max(240, Math.floor(fr.height));
-      svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-      svg.setAttribute('preserveAspectRatio', 'none');
-
-      var L = 64, R = 16, T = 40, B = 40;
-      var iw = W - L - R, ih = H - T - B;
-      var pts = chartState.series;
-
-      if (!pts.length) {
-        svg.innerHTML =
-          '<text x="' + (W / 2) + '" y="' + (H / 2) + '" text-anchor="middle" ' +
-          'fill="var(--fainter)" font-family="var(--font-mono)" font-size="12">no shares in window</text>';
-        return;
-      }
-
-      var values = pts.map(function (p) { return workToTHs(p.work, chartState.bucketSecs); });
-      var maxV = Math.max.apply(null, values);
-      if (maxV <= 0) maxV = 1;
-      maxV = maxV * 1.1;
-      var tMin = pts[0].t;
-      var tMax = pts[pts.length - 1].t;
-      if (tMax === tMin) tMax = tMin + 1;
-
-      function xOf(t) { return L + (t - tMin) / (tMax - tMin) * iw; }
-      function yOf(v) { return T + ih - v / maxV * ih; }
-
-      var yTicks = [];
-      for (var i = 0; i <= 4; i++) {
-        var v = maxV * i / 4;
-        var y = yOf(v);
-        yTicks.push(
-          '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '" stroke="var(--rule)" stroke-width="1" opacity="0.5"/>' +
-          '<text x="' + (L - 8) + '" y="' + (y + 4) + '" text-anchor="end" fill="var(--dim)" font-family="var(--font-mono)" font-size="10">' + formatHashrateText(v) + '</text>'
-        );
-      }
-
-      var xTicks = [];
-      [0, Math.floor(pts.length / 2), pts.length - 1].forEach(function (idx) {
-        var p = pts[idx];
-        var x = xOf(p.t);
-        var label = new Date(p.t * 1000).toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-        xTicks.push('<text x="' + x + '" y="' + (H - 12) + '" text-anchor="middle" fill="var(--dim)" font-family="var(--font-mono)" font-size="10">' + label + '</text>');
-      });
-
-      var pathD = pts.map(function (p, i) {
-        var x = xOf(p.t), y = yOf(workToTHs(p.work, chartState.bucketSecs));
-        return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1);
-      }).join(' ');
-      var areaD = pathD + ' L ' + xOf(tMax).toFixed(1) + ' ' + (T + ih) +
-                  ' L ' + xOf(tMin).toFixed(1) + ' ' + (T + ih) + ' Z';
-
-      svg.innerHTML =
-        '<defs>' +
-          '<linearGradient id="mpAreaGrad" x1="0" x2="0" y1="0" y2="1">' +
-            '<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22"/>' +
-            '<stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>' +
-          '</linearGradient>' +
-        '</defs>' +
-        yTicks.join('') +
-        '<path d="' + areaD + '" fill="url(#mpAreaGrad)"/>' +
-        '<path d="' + pathD + '" fill="none" stroke="var(--accent)" stroke-width="1.6"/>' +
-        xTicks.join('');
-    }
+    function drawChart() { drawChartInto('mp-chart', chartState); }
 
     document.getElementById('mp-window').addEventListener('change', function (e) {
       chartState.window = e.target.value;
