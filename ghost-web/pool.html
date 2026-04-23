@@ -260,7 +260,7 @@
     <div class="payout-meta">
       <span>block <span id="py-height">—</span></span>
       <span>·</span>
-      <span><span id="py-paid-this">—</span> paid this block</span>
+      <span><span id="py-paid-this">—</span> in next coinbase</span>
       <span>·</span>
       <span><span id="py-miners">—</span> on the ledger</span>
     </div>
@@ -884,15 +884,14 @@
     miners = miners.slice(0, base.ledger_cap || 1000);
     var totalWork = miners.reduce(function (s, m) { return s + m.unpaid_work; }, 0);
 
-    // "Paid this block" = dust-filtered merged count. "On the ledger" =
-    // everyone with unpaid shares right now (paid + still-waiting).
-    // At Ghost's scale these are usually equal because all active
-    // miners clear dust; the gap shows up once the pool is large
-    // enough that some miners' projected share falls below 546 sats.
+    // "In next coinbase" = dust-filtered merged count (what actually
+    // goes into the next block's outputs). "On the ledger" = every
+    // unique miner carrying unpaid shares right now. At current scale
+    // these match since all active miners clear dust; the gap widens
+    // once the pool is large enough that some miners fall below dust.
     var mergedUnique = byMiner.size;
-    var onLedger = Math.max(mergedUnique, totalOnLedger);
     document.getElementById('py-paid-this').textContent = miners.length.toLocaleString();
-    document.getElementById('py-miners').textContent = onLedger.toLocaleString();
+    document.getElementById('py-miners').textContent = mergedUnique.toLocaleString();
 
     var tbody = document.querySelector('#py-table tbody');
     if (!miners.length) {

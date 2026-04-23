@@ -1973,7 +1973,14 @@ async fn api_pool_next_payout_handler(
         .filter(|(miner_id, _)| !is_system_miner(miner_id))
         .take(LEDGER_CAP as usize)
         .collect();
-    let total_unpaid_miners = db.count_unpaid_miners(now_s).unwrap_or(0);
+    // Count distinct unpaid miners, excluding system accounts so the
+    // header tile matches what's actually shown in the table.
+    let total_unpaid_miners = db
+        .get_distinct_unpaid_miner_ids(now_s)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| !is_system_miner(id))
+        .count() as u64;
 
     // Iterative dust filter: drop miners whose projected payout < 546 sats,
     // recompute total_work, repeat until stable. Converges quickly (each
