@@ -525,20 +525,31 @@
     document.getElementById('mp-addr-link').href = '/miner.html?id=' + encodeURIComponent(addrPart);
     document.title = workerPart + ' · Miner · Bitcoin Ghost';
 
+    var lookupEverSeen = false;
     async function loadLookup() {
       var perNode = await Promise.all(POOL_NODES.map(function (n) {
         return fetch('/api/pool/' + n.id + '/api/v1/miners/lookup?miner_id=' + encodeURIComponent(minerId))
           .then(function (r) { return r.ok ? r.json() : null; })
           .catch(function () { return null; });
       }));
+      var okCount = perNode.filter(function (d) { return d !== null; }).length;
       var hits = perNode.filter(function (d) { return d && d.found === true; });
 
+      // All fetches failed this cycle (rate limit / transient). If we've
+      // rendered real data before, keep it rather than flashing "not found".
+      if (okCount === 0 && lookupEverSeen) return;
+
       if (!hits.length) {
+        // Some responses came back but nobody reported found=true. If
+        // we've shown real data before on this page load, assume
+        // transient inconsistency and preserve.
+        if (lookupEverSeen) return;
         document.getElementById('mp-status').className = 'mp-status offline';
         document.getElementById('mp-status').textContent = 'not found';
         document.getElementById('mp-nodeinfo').textContent = 'This worker has not submitted any shares yet.';
         return;
       }
+      lookupEverSeen = true;
 
       var first_seen = Infinity, last_seen = 0;
       var total_shares = 0, total_work = 0, blocks_won = 0, total_payouts_sats = 0;
@@ -584,16 +595,18 @@
 
     async function loadHistory() {
       var window_name = chartState.window;
-      chartState.series = [];
-      drawChart();
-      document.getElementById('mp-chart-avg').textContent = '—';
-      document.getElementById('mp-chart-window').textContent = 'avg (' + window_name + ')';
+      // Only blank the chart on an explicit window change (where
+      // chartState.series.length is already 0 from the caller).
+      // Auto-refreshes shouldn't blink an existing rendered chart.
+      var hasExisting = chartState.series.length > 0;
 
       var perNode = await Promise.all(POOL_NODES.map(function (n) {
         return fetch('/api/pool/' + n.id + '/api/v1/miners/history?miner_id=' + encodeURIComponent(minerId) + '&window=' + window_name)
           .then(function (r) { return r.ok ? r.json() : null; })
           .catch(function () { return null; });
       }));
+      var okCount = perNode.filter(function (d) { return d !== null; }).length;
+      if (okCount === 0 && hasExisting) return; // all failed, keep chart
 
       var merged = new Map();
       var bucketSecs = 300;

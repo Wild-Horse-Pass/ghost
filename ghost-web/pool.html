@@ -557,6 +557,12 @@
       dbg('polling 4 nodes…');
       var results = await Promise.all(POOL_NODES.map(fetchNode));
       var okCount = results.filter(function (r) { return !!r; }).length;
+      // All four fetches failed (rate limit / transient) — don't blank the
+      // tiles. Keep the last good numbers, user can ignore one missed tick.
+      if (okCount === 0 && lastStats.height) {
+        dbg('poll skip · 0/4 nodes — preserving last view');
+        return;
+      }
       var hashrate = 0, blocks = 0, height = 0, mesh = null, maxActive = 0;
       results.forEach(function (r) {
         if (!r) return;
@@ -626,6 +632,9 @@
     if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
     return Math.floor(diff / 86400) + 'd ago';
   }
+  // Cache of last-good per-window best so a transient fetch failure
+  // doesn't blank the record tiles.
+  var lastRecords = {};
   async function refreshRecords() {
     var jobs = [];
     REC_WINDOWS.forEach(function (w) {
@@ -641,8 +650,11 @@
     var results = await Promise.all(jobs);
     // Reduce to best per window (lowest share_hash lex string wins)
     var bestPerWindow = {};
+    var windowSawAny = {};
     results.forEach(function (r) {
-      if (!r.data || !r.data.found || !r.data.best) return;
+      if (!r.data) return;
+      windowSawAny[r.window] = true;
+      if (!r.data.found || !r.data.best) return;
       var prev = bestPerWindow[r.window];
       if (!prev || r.data.best.share_hash < prev.share_hash) {
         bestPerWindow[r.window] = r.data.best;
@@ -653,10 +665,15 @@
       var m = document.getElementById('rec-' + w + '-meta');
       var best = bestPerWindow[w];
       if (!best) {
+        // No data this cycle. If we had a last-good value AND this
+        // window's responses were all-null, preserve. Otherwise the
+        // window legitimately has no shares, show em dash.
+        if (lastRecords[w] && !windowSawAny[w]) return;
         v.textContent = '—';
         m.textContent = 'no shares in window';
         return;
       }
+      lastRecords[w] = best;
       // Display: difficulty (standard pool metric) + short hash + relative time
       var diff = hashToDifficulty(best.share_hash);
       v.innerHTML = '<span style="color:var(--accent)">' + formatDifficulty(diff) + '</span> <span style="color:var(--dim); font-size:12px">difficulty</span>';
@@ -821,6 +838,7 @@
     return sats.toLocaleString() + '<span class="unit"> sats</span>';
   }
 
+  var lastPayoutMiners = null;
   async function refreshPayout() {
     var results = await Promise.all(POOL_NODES.map(function (n) {
       return fetch('/api/pool/' + n.id + '/api/v1/pool/next_payout')
@@ -829,7 +847,8 @@
     }));
 
     // Subsidy / fee split values are derived from the current block height
-    // and are consensus-wide — first non-null response wins
+    // and are consensus-wide — first non-null response wins. If every
+    // fetch failed this cycle we keep whatever's currently rendered.
     var base = results.find(function (r) { return !!r; });
     if (!base) return;
 
@@ -895,9 +914,13 @@
 
     var tbody = document.querySelector('#py-table tbody');
     if (!miners.length) {
+      // If some VMs responded with empty ledgers but others failed, and
+      // we had rows before, assume transient and keep the previous render.
+      if (lastPayoutMiners && lastPayoutMiners.length) return;
       tbody.innerHTML = '<tr><td colspan="4" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">no miners on the ledger yet — submit a share to queue for the next payout</td></tr>';
       return;
     }
+    lastPayoutMiners = miners;
 
     tbody.innerHTML = miners.map(function (m, i) {
       var pct = totalWork > 0 ? (m.unpaid_work / totalWork * 100) : 0;
