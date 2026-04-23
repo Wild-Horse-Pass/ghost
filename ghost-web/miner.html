@@ -1,0 +1,456 @@
+<!-- Bitcoin Ghost · Miner -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Miner · Bitcoin Ghost</title>
+  <meta name="description" content="Per-miner stats and hashrate history on Ghost Pool.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=20260423">
+  <script>
+    (function () {
+      var saved = localStorage.getItem('ghost-theme');
+      var system = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', saved || system);
+    })();
+  </script>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="container">
+    <a href="/" class="brand bare">
+      <svg class="logo-ghost" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 10h.01"/>
+        <path d="M15 10h.01"/>
+        <path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/>
+      </svg>
+      <span class="wordmark">bitcoinghost</span>
+    </a>
+    <nav class="primary">
+      <a href="/">overview</a>
+      <a href="/core.html">core</a>
+      <a href="/pool.html" class="current">pool</a>
+      <a href="/pay.html">pay</a>
+      <a href="/nodes.html">nodes</a>
+      <a href="/miners.html">miners</a>
+      <a href="/downloads.html">downloads</a>
+      <a href="/docs/">docs</a>
+    </nav>
+    <div class="utils">
+      <a href="https://github.com/bitcoin-ghost" class="bare icon-btn" aria-label="GitHub">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+        </svg>
+      </a>
+      <button id="theme-toggle" class="theme-toggle" aria-label="Toggle colour scheme"></button>
+    </div>
+  </div>
+</header>
+
+<section class="block mp-hero">
+  <div class="container">
+    <div class="section-label"><a href="/pool.html" style="color:inherit">← pool</a> · miner dashboard</div>
+    <div class="mp-status-row">
+      <div id="mp-status" class="mp-status offline">—</div>
+      <div id="mp-nodeinfo" style="font-family:var(--font-mono); font-size:12px; color:var(--dim)"></div>
+    </div>
+    <h1 class="mp-worker" id="mp-worker">—</h1>
+    <div class="mp-full" id="mp-full"></div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="container">
+    <div class="mp-tiles">
+      <div class="mp-tile">
+        <div class="k">hashrate</div>
+        <div class="v" id="mp-hashrate">—</div>
+        <div class="sub" id="mp-hashrate-sub">last 10 min</div>
+      </div>
+      <div class="mp-tile">
+        <div class="k">total shares</div>
+        <div class="v" id="mp-shares">—</div>
+      </div>
+      <div class="mp-tile">
+        <div class="k">blocks won</div>
+        <div class="v" id="mp-blocks">—</div>
+      </div>
+      <div class="mp-tile">
+        <div class="k">total payouts</div>
+        <div class="v" id="mp-payouts">—</div>
+      </div>
+    </div>
+
+    <div class="mp-meta">
+      <div class="row"><span class="k">payout address</span><span class="v" id="mp-addr">—</span></div>
+      <div class="row"><span class="k">first seen</span><span class="v" id="mp-first">—</span></div>
+      <div class="row"><span class="k">last seen</span><span class="v" id="mp-last">—</span></div>
+      <div class="row"><span class="k">active nodes</span><span class="v" id="mp-active-nodes">—</span></div>
+    </div>
+
+    <div class="section-label" style="margin-top:32px">per-node share counts</div>
+    <div class="mp-nodes" id="mp-nodes"></div>
+
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin: 40px 0 16px; flex-wrap:wrap; gap:16px">
+      <div>
+        <div class="section-label">hashrate over time</div>
+        <h2 class="section-title" style="margin:4px 0 0">Work history.</h2>
+      </div>
+      <div class="lb-window">
+        <label for="mp-window">window</label>
+        <select id="mp-window">
+          <option value="day" selected>last day</option>
+          <option value="week">last week</option>
+          <option value="month">last month</option>
+        </select>
+      </div>
+    </div>
+    <div class="chart-frame">
+      <div class="chart-legend">
+        <div class="chart-title"><span id="mp-chart-avg">—</span> <span class="sub" id="mp-chart-window">avg (day)</span></div>
+      </div>
+      <svg id="mp-chart"></svg>
+    </div>
+  </div>
+</section>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="colophon">
+      <div class="brand">
+        <svg class="logo-ghost" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:22px;height:22px;">
+          <path d="M9 10h.01"/>
+          <path d="M15 10h.01"/>
+          <path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/>
+        </svg>
+        <span class="wordmark">bitcoinghost</span>
+      </div>
+      <div class="meta">Open source under the MIT license. No ICO, no foundation, no venture money.</div>
+    </div>
+    <div><h4>Core</h4><ul></ul></div>
+    <div><h4>Pool</h4><ul></ul></div>
+    <div><h4>Pay</h4><ul></ul></div>
+    <div><h4>Products</h4><ul></ul></div>
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="https://github.com/bitcoin-ghost">GitHub</a></li>
+        <li><a href="https://x.com/defenwycke">@defenwycke</a></li>
+        <li><a href="https://defenwycke.org">defenwycke.org</a></li>
+        <li><a href="https://github.com/bitcoin-ghost/ghost/blob/main/LICENSE">MIT License</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Theme toggle
+  (function () {
+    var html = document.documentElement;
+    var btn = document.getElementById('theme-toggle');
+    var sun = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>';
+    var moon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+    function render() { btn.innerHTML = html.getAttribute('data-theme') === 'dark' ? sun : moon; }
+    render();
+    btn.addEventListener('click', function () {
+      var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('ghost-theme', next);
+      render();
+    });
+  })();
+
+  var POOL_NODES = [
+    { id: 'vm1' }, { id: 'vm2' }, { id: 'vm3' }, { id: 'vm4' }
+  ];
+
+  function formatHashrate(ths) {
+    if (!isFinite(ths) || ths <= 0) return '0<span class="unit"> TH/s</span>';
+    if (ths < 0.001) return (ths * 1e6).toFixed(1) + '<span class="unit"> MH/s</span>';
+    if (ths < 1)     return (ths * 1000).toFixed(1) + '<span class="unit"> GH/s</span>';
+    if (ths < 1000)  return ths.toFixed(2) + '<span class="unit"> TH/s</span>';
+    if (ths < 1e6)   return (ths / 1000).toFixed(2) + '<span class="unit"> PH/s</span>';
+    return (ths / 1e6).toFixed(2) + '<span class="unit"> EH/s</span>';
+  }
+  function fmtSats(s) {
+    if (!s) return '0<span class="unit"> sats</span>';
+    if (s < 100000) return s.toLocaleString() + '<span class="unit"> sats</span>';
+    return (s / 1e8).toFixed(8) + '<span class="unit"> BTC</span>';
+  }
+  function fmtTs(ts) {
+    if (!ts || ts === Infinity) return '—';
+    return new Date(ts * 1000).toLocaleString();
+  }
+
+  // Parse ?id= from URL. An exact match is required — no fuzzy search here.
+  var params = new URLSearchParams(location.search);
+  var minerId = (params.get('id') || '').trim();
+
+  // A miner_id missing or trivially short is almost certainly a typo — bail
+  // out before firing any fetches and explain what format is expected.
+  if (!minerId) {
+    document.getElementById('mp-worker').textContent = 'No miner selected';
+    document.getElementById('mp-full').innerHTML =
+      'Append <code>?id=&lt;address.worker&gt;</code> to the URL, or use the ' +
+      '<a href="/pool.html#your-miner">lookup on the pool page</a>.';
+  } else {
+    // Escape for safe HTML rendering
+    var safeId = minerId.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Worker name is after the last '.'; address is before it
+    var lastDot = minerId.lastIndexOf('.');
+    var addrPart = lastDot >= 0 ? minerId.slice(0, lastDot) : minerId;
+    var workerPart = lastDot >= 0 ? minerId.slice(lastDot + 1) : '(no worker)';
+    document.getElementById('mp-worker').textContent = workerPart;
+    document.getElementById('mp-full').innerHTML = safeId;
+    document.title = workerPart + ' · Miner · Bitcoin Ghost';
+
+    // ───────── Lookup + aggregation ─────────
+    async function loadLookup() {
+      var perNode = await Promise.all(POOL_NODES.map(function (n) {
+        return fetch('/api/pool/' + n.id + '/api/v1/miners/lookup?miner_id=' + encodeURIComponent(minerId))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function () { return null; })
+          .then(function (data) { return { node: n.id, data: data }; });
+      }));
+      var hits = perNode.filter(function (r) { return r.data && r.data.found === true; });
+
+      if (!hits.length) {
+        document.getElementById('mp-status').className = 'mp-status offline';
+        document.getElementById('mp-status').textContent = 'not found';
+        document.getElementById('mp-nodeinfo').textContent = 'No record on any node.';
+        // Still render the (empty) per-node strip so the user sees we looked
+        renderNodes(perNode.map(function (r) { return { node: r.node, data: null }; }));
+        return;
+      }
+
+      var first_seen = Infinity, last_seen = 0;
+      var total_shares = 0, blocks_won = 0, total_payouts_sats = 0;
+      var hashrate_sum = 0, active = false;
+      var payout_address = null;
+      hits.forEach(function (h) {
+        var d = h.data;
+        if (d.first_seen && d.first_seen < first_seen) first_seen = d.first_seen;
+        if (d.last_seen && d.last_seen > last_seen) last_seen = d.last_seen;
+        total_shares += d.total_shares || 0;
+        blocks_won += d.blocks_won || 0;
+        total_payouts_sats += d.total_payouts_sats || 0;
+        if (d.active) active = true;
+        if (d.active && typeof d.avg_hashrate_ths === 'number') hashrate_sum += d.avg_hashrate_ths;
+        payout_address = d.payout_address || payout_address;
+      });
+      var activeCount = hits.filter(function (h) { return h.data.active; }).length;
+
+      document.getElementById('mp-status').className = 'mp-status ' + (active ? 'online' : 'offline');
+      document.getElementById('mp-status').textContent = active ? 'active' : 'inactive';
+      document.getElementById('mp-nodeinfo').textContent =
+        'on ' + activeCount + '/' + POOL_NODES.length + ' nodes · ' + total_shares.toLocaleString() + ' shares submitted';
+      document.getElementById('mp-hashrate').innerHTML = formatHashrate(hashrate_sum);
+      document.getElementById('mp-shares').textContent = total_shares.toLocaleString();
+      document.getElementById('mp-blocks').textContent = blocks_won;
+      document.getElementById('mp-payouts').innerHTML = fmtSats(total_payouts_sats);
+      document.getElementById('mp-addr').textContent = payout_address || '—';
+      document.getElementById('mp-first').textContent = fmtTs(first_seen === Infinity ? null : first_seen);
+      document.getElementById('mp-last').textContent = fmtTs(last_seen || null);
+      document.getElementById('mp-active-nodes').textContent = activeCount + ' / ' + POOL_NODES.length;
+
+      renderNodes(perNode);
+    }
+
+    function renderNodes(perNode) {
+      var container = document.getElementById('mp-nodes');
+      container.innerHTML = perNode.map(function (r) {
+        var found = r.data && r.data.found;
+        var on = found && r.data.active;
+        var shares = found ? (r.data.total_shares || 0) : 0;
+        var pill = found
+          ? '<span class="n-pill ' + (on ? 'on' : 'off') + '">' + (on ? 'live' : 'idle') + '</span>'
+          : '<span class="n-pill off">no data</span>';
+        return '<div class="mp-node">' +
+          '<div class="n-head">' +
+            '<span class="n-name">' + r.node + '</span>' +
+            pill +
+          '</div>' +
+          '<div class="n-shares">' + shares.toLocaleString() + '<span class="unit"> shares</span></div>' +
+        '</div>';
+      }).join('');
+    }
+
+    // ───────── History + hashrate chart ─────────
+    //
+    // Fetch per-bucket share/work from every node for the selected window,
+    // align on shared bucket timestamps, and draw an SVG line chart. Hashrate
+    // (TH/s) = work * 2^32 / (bucket_secs × 1e12). Bitcoin "work" units are
+    // difficulty × 2^32 which equals the expected number of hashes.
+    var chartState = { window: 'day', bucketSecs: 300, series: [] };
+    var HASH_PER_WORK = Math.pow(2, 32);
+
+    function workToTHs(work, bucketSecs) {
+      return work * HASH_PER_WORK / bucketSecs / 1e12;
+    }
+
+    async function loadHistory() {
+      var window_name = chartState.window;
+      // Client UI shows "loading" by blanking the chart first
+      chartState.series = [];
+      drawChart();
+      document.getElementById('mp-chart-avg').textContent = '—';
+      document.getElementById('mp-chart-window').textContent = 'avg (' + window_name + ')';
+
+      var perNode = await Promise.all(POOL_NODES.map(function (n) {
+        return fetch('/api/pool/' + n.id + '/api/v1/miners/history?miner_id=' + encodeURIComponent(minerId) + '&window=' + window_name)
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function () { return null; });
+      }));
+
+      // Merge: sum work/shares across nodes for each bucket timestamp
+      var merged = new Map();
+      var bucketSecs = 300;
+      perNode.forEach(function (d) {
+        if (!d || !Array.isArray(d.points)) return;
+        bucketSecs = d.bucket_secs || bucketSecs;
+        d.points.forEach(function (p) {
+          var prev = merged.get(p.t);
+          if (!prev) {
+            merged.set(p.t, { t: p.t, shares: p.shares || 0, work: p.work || 0 });
+          } else {
+            prev.shares += p.shares || 0;
+            prev.work += p.work || 0;
+          }
+        });
+      });
+      chartState.bucketSecs = bucketSecs;
+      chartState.series = Array.from(merged.values()).sort(function (a, b) { return a.t - b.t; });
+
+      // Summary label: time-weighted average hashrate over the window
+      if (chartState.series.length) {
+        var totalWork = chartState.series.reduce(function (s, p) { return s + p.work; }, 0);
+        var totalSecs = chartState.series.length * bucketSecs;
+        var avgThs = workToTHs(totalWork, totalSecs);
+        document.getElementById('mp-chart-avg').innerHTML = formatHashrate(avgThs);
+
+        // Also feed the hero "hashrate" tile from the most recent buckets
+        // since miners.avg_hashrate_ths isn't populated server-side.
+        var last = chartState.series.slice(-2);
+        var recentWork = last.reduce(function (s, p) { return s + p.work; }, 0);
+        var recentSecs = last.length * bucketSecs;
+        var recentThs = recentWork > 0 ? workToTHs(recentWork, recentSecs) : 0;
+        document.getElementById('mp-hashrate').innerHTML = formatHashrate(recentThs);
+        var minsBack = Math.round((last.length * bucketSecs) / 60);
+        document.getElementById('mp-hashrate-sub').textContent = 'last ' + minsBack + ' min';
+      } else {
+        document.getElementById('mp-chart-avg').innerHTML = formatHashrate(0);
+        document.getElementById('mp-hashrate').innerHTML = formatHashrate(0);
+      }
+      drawChart();
+    }
+
+    function drawChart() {
+      var svg = document.getElementById('mp-chart');
+      var frame = svg.parentElement;
+      var fr = frame.getBoundingClientRect();
+      // Use native pixels in viewBox so axis labels don't balloon when the
+      // SVG scales. 80px left gutter leaves room for Y-axis labels.
+      var W = Math.max(320, Math.floor(fr.width));
+      var H = Math.max(240, Math.floor(fr.height));
+      svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+      svg.setAttribute('preserveAspectRatio', 'none');
+
+      var L = 64, R = 16, T = 40, B = 40;
+      var iw = W - L - R, ih = H - T - B;
+      var pts = chartState.series;
+
+      if (!pts.length) {
+        svg.innerHTML =
+          '<text x="' + (W / 2) + '" y="' + (H / 2) + '" text-anchor="middle" ' +
+          'fill="var(--fainter)" font-family="var(--font-mono)" font-size="12">no shares in window</text>';
+        return;
+      }
+
+      // Compute hashrate per bucket (TH/s)
+      var values = pts.map(function (p) { return workToTHs(p.work, chartState.bucketSecs); });
+      var maxV = Math.max.apply(null, values);
+      if (maxV <= 0) maxV = 1;
+      // Pad top by 10% so the peak doesn't touch the frame
+      maxV = maxV * 1.1;
+      var tMin = pts[0].t;
+      var tMax = pts[pts.length - 1].t;
+      if (tMax === tMin) tMax = tMin + 1;
+
+      function xOf(t) { return L + (t - tMin) / (tMax - tMin) * iw; }
+      function yOf(v) { return T + ih - v / maxV * ih; }
+
+      // Y ticks (5)
+      var yTicks = [];
+      for (var i = 0; i <= 4; i++) {
+        var v = maxV * i / 4;
+        var y = yOf(v);
+        yTicks.push(
+          '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '" stroke="var(--rule)" stroke-width="1" opacity="0.5"/>' +
+          '<text x="' + (L - 8) + '" y="' + (y + 4) + '" text-anchor="end" fill="var(--dim)" font-family="var(--font-mono)" font-size="10">' + formatHashrateText(v) + '</text>'
+        );
+      }
+
+      // X ticks (date/time) — label first, middle, last
+      var xTicks = [];
+      [0, Math.floor(pts.length / 2), pts.length - 1].forEach(function (idx) {
+        var p = pts[idx];
+        var x = xOf(p.t);
+        var label = new Date(p.t * 1000).toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        xTicks.push(
+          '<text x="' + x + '" y="' + (H - 12) + '" text-anchor="middle" fill="var(--dim)" font-family="var(--font-mono)" font-size="10">' + label + '</text>'
+        );
+      });
+
+      // Line + area
+      var pathD = pts.map(function (p, i) {
+        var x = xOf(p.t), y = yOf(workToTHs(p.work, chartState.bucketSecs));
+        return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1);
+      }).join(' ');
+      var areaD = pathD + ' L ' + xOf(tMax).toFixed(1) + ' ' + (T + ih) +
+                  ' L ' + xOf(tMin).toFixed(1) + ' ' + (T + ih) + ' Z';
+
+      svg.innerHTML =
+        '<defs>' +
+          '<linearGradient id="mpAreaGrad" x1="0" x2="0" y1="0" y2="1">' +
+            '<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22"/>' +
+            '<stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>' +
+          '</linearGradient>' +
+        '</defs>' +
+        yTicks.join('') +
+        '<path d="' + areaD + '" fill="url(#mpAreaGrad)"/>' +
+        '<path d="' + pathD + '" fill="none" stroke="var(--accent)" stroke-width="1.6"/>' +
+        xTicks.join('');
+    }
+
+    // Plain-text formatter for SVG labels (no HTML <span> inside <text>)
+    function formatHashrateText(ths) {
+      if (!isFinite(ths) || ths <= 0) return '0';
+      if (ths < 0.001) return (ths * 1e6).toFixed(1) + ' MH/s';
+      if (ths < 1)     return (ths * 1000).toFixed(1) + ' GH/s';
+      if (ths < 1000)  return ths.toFixed(2) + ' TH/s';
+      if (ths < 1e6)   return (ths / 1000).toFixed(2) + ' PH/s';
+      return (ths / 1e6).toFixed(2) + ' EH/s';
+    }
+
+    document.getElementById('mp-window').addEventListener('change', function (e) {
+      chartState.window = e.target.value;
+      loadHistory();
+    });
+    window.addEventListener('resize', drawChart);
+
+    // Kick off both fetches in parallel
+    loadLookup();
+    loadHistory();
+
+    // Periodic refresh — lookup every 30s, history every 2 min
+    setInterval(loadLookup, 30000);
+    setInterval(loadHistory, 120000);
+  }
+</script>
+
+</body>
+</html>

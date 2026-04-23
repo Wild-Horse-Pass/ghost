@@ -286,8 +286,11 @@
   })();
 
   // Viz toggle (Quasar / Hashrate / Miners)
+  // Scope selector to `[data-viz]` so the shared `.viz-tabs` class on the
+  // leaderboard tabs doesn't match here — otherwise clicking an lb tab
+  // hides every viz panel and throws on `data-viz-panel="undefined"`.
   (function () {
-    var btns = document.querySelectorAll('.viz-tabs button');
+    var btns = document.querySelectorAll('.viz-tabs button[data-viz]');
     var panels = document.querySelectorAll('.viz-panel');
     btns.forEach(function (b) {
       b.addEventListener('click', function () {
@@ -609,75 +612,58 @@
   refreshRecords();
   setInterval(refreshRecords, 60000); // every minute
 
-  // ───────── Difficulty helpers (client-side; hash → difficulty-1-scaled) ─────────
-  // Bitcoin "difficulty 1" target. Dividing it by a share's hash-as-int
-  // gives the share's difficulty in the standard pool sense — the same
-  // number miners see in logs and that every other pool displays.
-  var DIFF_1_TARGET = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
-  function hashToDifficulty(hashHex) {
-    try {
-      var h = BigInt('0x' + hashHex);
-      if (h === 0n) return Infinity;
-      // Use BigInt division then coerce to Number. For hashes with up to
-      // ~64 leading bits of zero, Number can represent the quotient
-      // (which is < 2^64 for typical pool shares). Beyond that we clamp.
-      var q = DIFF_1_TARGET / h;
-      return Number(q);
-    } catch (e) { return 0; }
-  }
-  function formatDifficulty(d) {
-    if (!isFinite(d) || d <= 0) return '—';
-    if (d < 1000) return d.toFixed(2);
-    if (d < 1e6) return (d / 1e3).toFixed(2) + 'K';
-    if (d < 1e9) return (d / 1e6).toFixed(2) + 'M';
-    if (d < 1e12) return (d / 1e9).toFixed(2) + 'G';
-    if (d < 1e15) return (d / 1e12).toFixed(2) + 'T';
-    if (d < 1e18) return (d / 1e15).toFixed(2) + 'P';
-    return (d / 1e18).toFixed(2) + 'E';
-  }
-
   // ───────── Leaderboards ─────────
   var lbState = { category: 'best_hash', window: 'day', data: null };
 
   async function refreshLeaderboard() {
-    var results = await Promise.all(POOL_NODES.map(function (n) {
-      return fetch('/api/pool/' + n.id + '/api/v1/pool/leaderboard?window=' + lbState.window + '&limit=10')
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .catch(function () { return null; });
-    }));
-    // Merge per-miner across nodes
-    var bestByMiner = new Map();
-    var sharesByMiner = new Map();
-    results.forEach(function (d) {
-      if (!d) return;
-      (d.best_hash || []).forEach(function (row) {
-        var prev = bestByMiner.get(row.miner_id_redacted);
-        if (!prev || row.share_hash < prev.share_hash) {
-          bestByMiner.set(row.miner_id_redacted, row);
-        }
+    try {
+      var results = await Promise.all(POOL_NODES.map(function (n) {
+        return fetch('/api/pool/' + n.id + '/api/v1/pool/leaderboard?window=' + lbState.window + '&limit=10')
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function (e) { console.warn('[lb] fetch failed for', n.id, e); return null; });
+      }));
+      console.log('[lb] fetched', results);
+      var bestByMiner = new Map();
+      var sharesByMiner = new Map();
+      results.forEach(function (d) {
+        if (!d) return;
+        (d.best_hash || []).forEach(function (row) {
+          var prev = bestByMiner.get(row.miner_id_redacted);
+          if (!prev || row.share_hash < prev.share_hash) {
+            bestByMiner.set(row.miner_id_redacted, row);
+          }
+        });
+        (d.shares || []).forEach(function (row) {
+          var prev = sharesByMiner.get(row.miner_id_redacted);
+          if (!prev) {
+            sharesByMiner.set(row.miner_id_redacted, Object.assign({}, row));
+          } else {
+            prev.share_count += row.share_count;
+            prev.total_work += row.total_work;
+          }
+        });
       });
-      (d.shares || []).forEach(function (row) {
-        var prev = sharesByMiner.get(row.miner_id_redacted);
-        if (!prev) {
-          sharesByMiner.set(row.miner_id_redacted, { ...row });
-        } else {
-          prev.share_count += row.share_count;
-          prev.total_work += row.total_work;
-        }
-      });
-    });
-    var bestList = Array.from(bestByMiner.values())
-      .sort(function (a, b) { return a.share_hash < b.share_hash ? -1 : 1; })
-      .slice(0, 10);
-    var sharesList = Array.from(sharesByMiner.values())
-      .sort(function (a, b) { return b.total_work - a.total_work; })
-      .slice(0, 10);
-    lbState.data = { best_hash: bestList, shares: sharesList };
-    renderLeaderboard();
+      var bestList = Array.from(bestByMiner.values())
+        .sort(function (a, b) { return a.share_hash < b.share_hash ? -1 : 1; })
+        .slice(0, 10);
+      var sharesList = Array.from(sharesByMiner.values())
+        .sort(function (a, b) { return b.total_work - a.total_work; })
+        .slice(0, 10);
+      lbState.data = { best_hash: bestList, shares: sharesList };
+      console.log('[lb] merged', { best: bestList.length, shares: sharesList.length });
+      renderLeaderboard();
+    } catch (err) {
+      console.error('[lb] refresh failed:', err);
+      var tbody = document.querySelector('#lb-table tbody');
+      if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="4" style="padding:40px; text-align:center; color:var(--accent); font-family:var(--font-mono); font-size:12px">leaderboard error — ' + (err && err.message ? err.message : err) + '</td></tr>';
+      }
+    }
   }
 
   function renderLeaderboard() {
     var tbody = document.querySelector('#lb-table tbody');
+    if (!tbody) { console.warn('[lb] tbody not found'); return; }
     if (!lbState.data) {
       tbody.innerHTML = '<tr><td colspan="4" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">loading…</td></tr>';
       return;
@@ -720,9 +706,13 @@
     });
     document.getElementById('lb-window').addEventListener('change', function (e) {
       lbState.window = e.target.value;
+      // Show loading immediately so the table doesn't briefly look empty
+      lbState.data = null;
+      renderLeaderboard();
       refreshLeaderboard();
     });
   })();
+  renderLeaderboard(); // show "loading…" row while the first fetch is in flight
   refreshLeaderboard();
   setInterval(refreshLeaderboard, 60000);
 
@@ -793,25 +783,58 @@
         payout_address = d.payout_address || payout_address;
       });
 
-      var nodeTags = hits.map(function (h) {
-        return '<span class="cap' + (h.data.active ? '' : ' off') + '">' + h.node + (h.data.active ? ' · live' : '') + '</span>';
-      }).join(' ');
-
-      out.innerHTML =
-        '<div class="node-card">' +
-          '<div class="head">' +
-            '<div class="name" style="font-family:var(--font-mono); font-size:14px; word-break:break-all">' + q.replace(/</g,'&lt;') + '</div>' +
-            '<div class="status ' + (active ? 'online' : 'offline') + '">' + (active ? 'active' : 'inactive') + '</div>' +
-          '</div>' +
-          '<div class="row"><span class="k">hashrate</span><span class="v">' + formatHashrate(hashrate_sum) + '</span></div>' +
-          '<div class="row"><span class="k">shares</span><span class="v">' + total_shares.toLocaleString() + '</span></div>' +
-          '<div class="row"><span class="k">blocks won</span><span class="v">' + blocks_won + '</span></div>' +
-          '<div class="row"><span class="k">total payouts</span><span class="v">' + fmtSats(total_payouts_sats) + '</span></div>' +
-          (payout_address ? '<div class="row"><span class="k">payout addr</span><span class="v" style="font-size:11px; word-break:break-all">' + payout_address.replace(/</g,'&lt;') + '</span></div>' : '') +
-          '<div class="row"><span class="k">first seen</span><span class="v">' + fmtTs(first_seen === Infinity ? null : first_seen) + '</span></div>' +
-          '<div class="row"><span class="k">last seen</span><span class="v">' + fmtTs(last_seen || null) + '</span></div>' +
-          '<div class="caps">' + nodeTags + '</div>' +
-        '</div>';
+      var href = '/miner.html?id=' + encodeURIComponent(q);
+      var nodeCount = hits.filter(function (h) { return h.data.active; }).length;
+      var render = function (ths) {
+        out.innerHTML =
+          '<a class="miner-card" href="' + href + '">' +
+            '<div class="mc-head">' +
+              '<div class="mc-id">' + q.replace(/</g,'&lt;') + '</div>' +
+              '<div class="mc-status ' + (active ? 'online' : 'offline') + '">' + (active ? 'active' : 'inactive') + '</div>' +
+            '</div>' +
+            '<div class="mc-hashrate">' + formatHashrate(ths) + '</div>' +
+            '<div class="mc-tiles">' +
+              '<div class="mc-tile"><div class="k">shares</div><div class="v">' + total_shares.toLocaleString() + '</div></div>' +
+              '<div class="mc-tile"><div class="k">blocks won</div><div class="v">' + blocks_won + '</div></div>' +
+              '<div class="mc-tile"><div class="k">payouts</div><div class="v">' + fmtSats(total_payouts_sats) + '</div></div>' +
+            '</div>' +
+            '<div class="mc-foot">' +
+              '<span>last seen ' + fmtTs(last_seen || null) + ' · on ' + nodeCount + '/' + POOL_NODES.length + ' nodes</span>' +
+              '<span class="mc-cta">Open full stats →</span>' +
+            '</div>' +
+          '</a>';
+      };
+      // First paint with 0 while history fetch is in flight
+      render(0);
+      // Derive live hashrate from the last two 5-min buckets of history
+      // (miners.avg_hashrate_ths isn't populated server-side)
+      var HASH_PER_WORK = Math.pow(2, 32);
+      try {
+        var hist = await Promise.all(POOL_NODES.map(function (n) {
+          return fetch('/api/pool/' + n.id + '/api/v1/miners/history?miner_id=' + encodeURIComponent(q) + '&window=day')
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .catch(function () { return null; });
+        }));
+        var merged = new Map();
+        var bucketSecs = 300;
+        hist.forEach(function (d) {
+          if (!d || !Array.isArray(d.points)) return;
+          bucketSecs = d.bucket_secs || bucketSecs;
+          d.points.forEach(function (p) {
+            var prev = merged.get(p.t);
+            if (!prev) merged.set(p.t, { work: p.work || 0 });
+            else prev.work += p.work || 0;
+          });
+        });
+        var sorted = Array.from(merged.entries()).sort(function (a, b) { return a[0] - b[0]; });
+        var last = sorted.slice(-2);
+        if (last.length) {
+          var w = last.reduce(function (s, e) { return s + e[1].work; }, 0);
+          var secs = last.length * bucketSecs;
+          var ths = w * HASH_PER_WORK / secs / 1e12;
+          render(ths);
+        }
+      } catch (e) { /* keep the 0 hashrate paint — lookup data still useful */ }
     }
     btn.addEventListener('click', lookup);
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') lookup(); });
