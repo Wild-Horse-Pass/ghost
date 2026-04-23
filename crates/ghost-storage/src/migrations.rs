@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 34;
+const SCHEMA_VERSION: u32 = 35;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -90,6 +90,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (32, migrate_v32),
         (33, migrate_v33),
         (34, migrate_v34),
+        (35, migrate_v35),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1818,6 +1819,55 @@ fn migrate_v34(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added key_index column to ghost_locks with backfill");
+    Ok(())
+}
+
+/// v35: ledger-style payouts
+///
+/// Adds `paid_in_proposal_hash BLOB NULL` to `shares`. Null means "unpaid,
+/// counts toward the next block's coinbase"; non-null is a 32-byte payout
+/// proposal hash that committed this share to a specific coinbase.
+///
+/// Backfill: every existing share is stamped with a sentinel hash (32 zero
+/// bytes) so the first post-upgrade payout doesn't sweep legacy data into
+/// a single gigantic ledger reset. After migration, the unpaid ledger
+/// starts fresh and accumulates from live hashing activity going forward.
+///
+/// The partial index on `WHERE paid_in_proposal_hash IS NULL` is what
+/// keeps the ledger query hot regardless of how many historical paid
+/// shares sit in the table.
+fn migrate_v35(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v35: Add paid_in_proposal_hash to shares");
+
+    conn.execute_batch(
+        "ALTER TABLE shares ADD COLUMN paid_in_proposal_hash BLOB;",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    // Stamp every existing share as already-paid with an all-zero sentinel.
+    // Fresh start: the ledger is empty on first boot after this migration.
+    conn.execute_batch(
+        "UPDATE shares SET paid_in_proposal_hash = zeroblob(32);",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    // Partial index keeps the unpaid-ledger query O(log N_unpaid), not
+    // O(log N_all_shares). Without this, every payout lookup would scan
+    // millions of paid rows.
+    conn.execute_batch(
+        "CREATE INDEX idx_shares_unpaid ON shares(miner_id)
+         WHERE paid_in_proposal_hash IS NULL;",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    // Lookup by proposal hash for audit / reversal on reorg.
+    conn.execute_batch(
+        "CREATE INDEX idx_shares_paid_proposal ON shares(paid_in_proposal_hash)
+         WHERE paid_in_proposal_hash IS NOT NULL;",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added paid_in_proposal_hash column + partial indexes to shares");
     Ok(())
 }
 

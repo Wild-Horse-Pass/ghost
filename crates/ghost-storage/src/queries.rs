@@ -704,6 +704,151 @@ impl Database {
         })
     }
 
+    /// Unpaid-ledger snapshot: the top N miners by accumulated work that
+    /// has NOT yet been committed to a payout proposal. Backs the ledger
+    /// payout path — when a block is found the winning node calls this
+    /// with cutoff = block_timestamp, dust-filters the result, and
+    /// commits the survivors into the next template's coinbase.
+    ///
+    /// `cutoff_ts` keeps shares submitted *after* block-find out of the
+    /// current payout: those belong to the next round's ledger.
+    ///
+    /// Returns `(miner_id, unpaid_work)` ordered by unpaid_work desc.
+    pub fn get_top_unpaid_miners(
+        &self,
+        cutoff_ts: i64,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, f64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT miner_id, SUM(work) AS unpaid_work
+                     FROM shares
+                     WHERE paid_in_proposal_hash IS NULL
+                       AND timestamp <= ?1
+                       AND valid = 1
+                     GROUP BY miner_id
+                     ORDER BY unpaid_work DESC
+                     LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![cutoff_ts, limit], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
+    /// Distinct miner_ids with at least one unpaid share up to `cutoff_ts`.
+    /// Used by the proposal-accepted hook: each consensus-approving node
+    /// hashes these strings and matches against the `PayoutEntry.recipient_id`
+    /// hashes in the accepted proposal to learn which shares to mark paid.
+    /// The reverse lookup lives in Rust (SHA-256 of bytes) so we don't
+    /// need a custom SQLite function.
+    pub fn get_distinct_unpaid_miner_ids(&self, cutoff_ts: i64) -> GhostResult<Vec<String>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT miner_id FROM shares
+                     WHERE paid_in_proposal_hash IS NULL
+                       AND timestamp <= ?1
+                       AND valid = 1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![cutoff_ts], |row| row.get::<_, String>(0))
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
+    /// Count of distinct miners currently carrying unpaid shares. Useful
+    /// for the payout endpoint's "miners waiting" tile so the frontend
+    /// can show how many miners are in the ledger vs how many get paid
+    /// in a single block.
+    pub fn count_unpaid_miners(&self, cutoff_ts: i64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: u64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT miner_id) FROM shares
+                     WHERE paid_in_proposal_hash IS NULL
+                       AND timestamp <= ?1
+                       AND valid = 1",
+                    params![cutoff_ts],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count)
+        })
+    }
+
+    /// Commit a block's payout: mark every unpaid share belonging to the
+    /// paid miners (up to `cutoff_ts`) with this proposal's hash. Shares
+    /// submitted after the cutoff stay NULL and roll into the next block's
+    /// ledger.
+    ///
+    /// Batched in chunks to avoid SQLite's ~999 host-parameter limit on
+    /// large IN-lists (1000 miners exceeds it by 1).
+    pub fn mark_miners_paid(
+        &self,
+        proposal_hash: &[u8; 32],
+        miner_ids: &[String],
+        cutoff_ts: i64,
+    ) -> GhostResult<usize> {
+        if miner_ids.is_empty() {
+            return Ok(0);
+        }
+        // SQLite default SQLITE_MAX_VARIABLE_NUMBER is 32766 on modern
+        // builds but historically 999. Chunk at 500 to be safe and to
+        // keep each UPDATE's lock hold-time short.
+        const CHUNK: usize = 500;
+
+        self.with_connection(|conn| {
+            let mut updated_total: usize = 0;
+            for batch in miner_ids.chunks(CHUNK) {
+                let placeholders: Vec<&str> = batch.iter().map(|_| "?").collect();
+                let sql = format!(
+                    "UPDATE shares
+                     SET paid_in_proposal_hash = ?1
+                     WHERE paid_in_proposal_hash IS NULL
+                       AND timestamp <= ?2
+                       AND miner_id IN ({})",
+                    placeholders.join(",")
+                );
+
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                let mut bind: Vec<Box<dyn rusqlite::ToSql>> =
+                    Vec::with_capacity(batch.len() + 2);
+                bind.push(Box::new(proposal_hash.to_vec()));
+                bind.push(Box::new(cutoff_ts));
+                for id in batch {
+                    bind.push(Box::new(id.clone()));
+                }
+                let params_ref: Vec<&dyn rusqlite::ToSql> =
+                    bind.iter().map(|b| b.as_ref()).collect();
+
+                let updated = stmt
+                    .execute(params_ref.as_slice())
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                updated_total += updated;
+            }
+            Ok(updated_total)
+        })
+    }
+
     /// Rolling-window miner summary with lifetime share counts. Backs
     /// the "next block payout" projection: the recent work/share numbers
     /// drive the share% and projected-sats math, while `lifetime_shares`
@@ -895,16 +1040,41 @@ impl Database {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let cutoff_s = now_s - retention_secs;
+        let paid_cutoff = now_s - retention_secs;
+        // Inactive-miner cutoff: unpaid shares belonging to miners whose
+        // last_seen is older than 7 days are dropped into the node pool
+        // (via disappearance) so they don't sit on the ledger forever.
+        // Active miners keep every unpaid share regardless of age.
+        const INACTIVE_SECS: i64 = 7 * 24 * 3600;
+        let inactive_cutoff = now_s - INACTIVE_SECS;
 
         self.with_connection(|conn| {
-            let deleted = conn
+            // 1. Paid shares: plain age-based prune. Keeps an audit tail
+            //    of one retention window for paid history without bloat.
+            let paid_deleted = conn
                 .execute(
-                    "DELETE FROM shares WHERE timestamp < ?1",
-                    params![cutoff_s],
+                    "DELETE FROM shares
+                     WHERE timestamp < ?1
+                       AND paid_in_proposal_hash IS NOT NULL",
+                    params![paid_cutoff],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(deleted)
+
+            // 2. Unpaid shares: drop only if the miner has been dark for
+            //    7+ days. Active miners keep their full unpaid ledger.
+            let unpaid_deleted = conn
+                .execute(
+                    "DELETE FROM shares
+                     WHERE paid_in_proposal_hash IS NULL
+                       AND miner_id IN (
+                           SELECT miner_id FROM miners
+                           WHERE last_seen < ?1
+                       )",
+                    params![inactive_cutoff],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(paid_deleted + unpaid_deleted)
         })
     }
 

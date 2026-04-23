@@ -967,6 +967,7 @@ async fn main() -> Result<()> {
 
     // Create execute callback for consensus decisions
     let tp_for_execute = Arc::clone(&template_processor);
+    let db_for_execute = Arc::clone(&db);
     let execute_fn: ExecuteFn = Arc::new(move |result: ConsensusResult| {
         match result {
             ConsensusResult::Approved {
@@ -982,6 +983,55 @@ async fn main() -> Result<()> {
                 );
                 // Store approved payout for coinbase construction
                 tp_for_execute.set_approved_payout(proposal_hash);
+
+                // Ledger mark-paid: every consensus-approving node updates
+                // its local shares table so paid miners' unpaid work stops
+                // counting toward the next block's payout. recipient_id in
+                // the proposal is SHA-256(miner_id), so we reverse-lookup
+                // by hashing each locally-known unpaid miner_id and
+                // matching against the proposal's recipient set. Keeps
+                // all nodes' ledgers in sync without changing the
+                // PayoutProposal wire format.
+                if let Some(proposal) = tp_for_execute.get_proposal(&proposal_hash) {
+                    let db_mark = Arc::clone(&db_for_execute);
+                    let cutoff_ts = proposal.timestamp as i64;
+                    let wanted: std::collections::HashSet<[u8; 32]> = proposal
+                        .miner_payouts
+                        .iter()
+                        .map(|e| e.recipient_id)
+                        .collect();
+                    tokio::spawn(async move {
+                        let distinct = match db_mark.get_distinct_unpaid_miner_ids(cutoff_ts) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::error!(error = %e, "Failed to list unpaid miners for mark-paid");
+                                return;
+                            }
+                        };
+                        let matched: Vec<String> = distinct
+                            .into_iter()
+                            .filter(|id| {
+                                let h = ghost_common::identity::hash_message(id.as_bytes());
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&h);
+                                wanted.contains(&arr)
+                            })
+                            .collect();
+                        match db_mark.mark_miners_paid(&proposal_hash, &matched, cutoff_ts) {
+                            Ok(n) => tracing::info!(
+                                shares_marked = n,
+                                miners = matched.len(),
+                                "Ledger: marked paid shares for approved proposal"
+                            ),
+                            Err(e) => tracing::error!(error = %e, "Ledger mark-paid failed"),
+                        }
+                    });
+                } else {
+                    tracing::warn!(
+                        hash = %hex::encode(&proposal_hash[..8]),
+                        "Approved proposal not found in local store; cannot mark shares paid"
+                    );
+                }
 
                 // Refresh template to include approved payout in coinbase
                 // This is the "1 block behind" fix: when consensus approves the payout
@@ -3221,27 +3271,66 @@ async fn main() -> Result<()> {
                     }
                 }
             } else {
-                // Pool mode: proportional distribution to all miners
+                // Pool mode: ledger-style proportional distribution.
+                //
+                // Unpaid shares accumulate across rounds on each miner's
+                // ledger. When a block is found we take the top 1000
+                // unpaid contributors, iteratively dust-filter them so
+                // every coinbase output is ≥546 sats, and commit the
+                // survivors to the next block's coinbase. Miners below
+                // the dust line (or outside the 1000 cap) keep their
+                // ledger intact and compete again next block.
                 let miner_work = {
                     use ghost_accounting::shares::WORK_SCALE;
-                    let db_work = db_for_bf.get_round_miners(round_id).unwrap_or_default();
-                    let db_work = if db_work.is_empty() && round_id > 0 {
-                        db_for_bf
-                            .get_round_miners(round_id - 1)
-                            .unwrap_or_default()
-                    } else {
-                        db_work
-                    };
-                    if db_work.is_empty() {
+                    // Cutoff = now, expressed in Unix seconds. Shares
+                    // arriving after this moment belong to the next
+                    // block's ledger and aren't swept.
+                    let cutoff_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    const LEDGER_CAP: u32 = 1000;
+                    const DUST_SATS: u64 = 546;
+
+                    let raw = db_for_bf
+                        .get_top_unpaid_miners(cutoff_ts, LEDGER_CAP)
+                        .unwrap_or_default();
+
+                    if raw.is_empty() {
                         warn!(
                             round = round_id,
-                            "No miner work in DB for pre-submission proposal, falling back to in-memory data"
+                            cutoff_ts,
+                            "No unpaid ledger entries at block-found; falling back to in-memory round tracker"
                         );
                         rm_for_bf.get_miner_work_scaled(round_id)
                     } else {
-                        db_work
+                        // Iteratively drop miners whose projected payout
+                        // would fall below dust. Each drop increases the
+                        // per-sat share for everyone remaining, which can
+                        // pull someone else above the dust line, hence
+                        // the loop. Terminates because each iteration
+                        // strictly reduces the candidate set.
+                        let miner_pool_estimate =
+                            (subsidy as u128).saturating_mul(9900) / 10000; // 99% of subsidy
+                        let mut surviving: Vec<(String, f64)> = raw;
+                        loop {
+                            let total_work: f64 = surviving.iter().map(|(_, w)| *w).sum();
+                            if total_work <= 0.0 {
+                                break;
+                            }
+                            let pre_len = surviving.len();
+                            surviving.retain(|(_, work)| {
+                                let projected =
+                                    (miner_pool_estimate as f64 * work / total_work) as u64;
+                                projected >= DUST_SATS
+                            });
+                            if surviving.len() == pre_len {
+                                break;
+                            }
+                        }
+
+                        surviving
                             .into_iter()
-                            .take(200)
                             .map(|(id, w)| (id, (w * WORK_SCALE as f64) as u128))
                             .collect()
                     }

@@ -42,7 +42,12 @@ pub const MAX_SUPPLY_SATS: u64 = 21_000_000 * 100_000_000;
 pub const MAX_BLOCK_REWARD_SATS: u64 = 100 * 100_000_000; // 100 BTC
 
 /// Maximum number of payout outputs
-pub const MAX_PAYOUT_OUTPUTS: usize = 500;
+///
+/// Sized for: up to 1000 miner outputs + ~100 node reward outputs +
+/// treasury + finder bonus + coinbase-flags witness. At ~44 bytes per
+/// P2TR output that's ~50 KB or ~1.25% of the 4M-WU block weight —
+/// comfortably below where it would crowd out fee-paying transactions.
+pub const MAX_PAYOUT_OUTPUTS: usize = 1200;
 
 /// Payout validation errors
 #[derive(Debug, Error)]

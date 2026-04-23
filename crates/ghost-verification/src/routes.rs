@@ -1926,12 +1926,7 @@ async fn api_pool_next_payout_handler(
     const TREASURY_RATE_BPS: u64 = 5000;    // 50% of pool fee
     const NODE_RATE_BPS: u64 = 5000;        // 50% of pool fee
     const DUST_THRESHOLD_SATS: u64 = 546;
-    const LIMIT: u32 = 200;
-    // Rounds roll on every template (~30s), so "current round" shares
-    // churn faster than a user can read. The projection uses a wider
-    // rolling window so active miners stay visible; the real payout
-    // still credits only the round that's active at block-find.
-    const WINDOW_SECS: i64 = 900; // 15 minutes
+    const LEDGER_CAP: u32 = 1000;
 
     let health = state.get_health().await;
     let block_height = health.block_height as u64;
@@ -1963,25 +1958,39 @@ async fn api_pool_next_payout_handler(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    let since_ts = now_s - WINDOW_SECS;
 
-    let rows = db
-        .get_recent_miners_with_lifetime(since_ts, LIMIT)
+    // Ledger snapshot: top N by accumulated unpaid work. Mirror of the
+    // block-found payout path — same query, same dust filter — so the
+    // projection the website shows matches what gets written into the
+    // coinbase when a block is actually found.
+    let top_rows = db
+        .get_top_unpaid_miners(now_s, LEDGER_CAP)
         .unwrap_or_default();
+    let total_unpaid_miners = db.count_unpaid_miners(now_s).unwrap_or(0);
 
-    let total_work: f64 = rows.iter().map(|(_, w, _, _)| *w).sum();
-    let recent_share_count: u64 = rows.iter().map(|(_, _, c, _)| *c).sum();
-    let miner_count = rows.len() as u64;
+    // Iterative dust filter: drop miners whose projected payout < 546 sats,
+    // recompute total_work, repeat until stable. Converges quickly (each
+    // iteration strictly reduces the candidate set).
+    let mut surviving: Vec<(String, f64)> = top_rows;
+    loop {
+        let total_work: f64 = surviving.iter().map(|(_, w)| *w).sum();
+        if total_work <= 0.0 { break; }
+        let pre_len = surviving.len();
+        surviving.retain(|(_, work)| {
+            let projected = (miner_pool_sats as f64 * work / total_work) as u64;
+            projected >= DUST_THRESHOLD_SATS
+        });
+        if surviving.len() == pre_len { break; }
+    }
 
-    let miners: Vec<_> = rows
+    let total_work: f64 = surviving.iter().map(|(_, w)| *w).sum();
+    let paid_this_block = surviving.len() as u64;
+
+    let miners: Vec<_> = surviving
         .into_iter()
         .enumerate()
-        .map(|(i, (miner_id, work, recent_count, lifetime_shares))| {
+        .map(|(i, (miner_id, work))| {
             let share_pct = if total_work > 0.0 { work / total_work * 100.0 } else { 0.0 };
-            // Proportional projection in u128 to match the payout path's
-            // precision, then cast back. Dust redistribution is noted but
-            // NOT applied here — users see their raw share, with a dust
-            // threshold annotation in the response.
             let projected_sats = if total_work > 0.0 {
                 (miner_pool_sats as u128 * ((work * 1_000_000.0) as u128) / ((total_work * 1_000_000.0) as u128)) as u64
             } else {
@@ -1990,9 +1999,7 @@ async fn api_pool_next_payout_handler(
             serde_json::json!({
                 "rank": i + 1,
                 "miner_id_redacted": redact_miner_id(&miner_id),
-                "work": work,
-                "recent_shares": recent_count,
-                "lifetime_shares": lifetime_shares,
+                "unpaid_work": work,
                 "share_pct": share_pct,
                 "projected_sats": projected_sats,
             })
@@ -2000,8 +2007,6 @@ async fn api_pool_next_payout_handler(
         .collect();
 
     Json(serde_json::json!({
-        "window_secs": WINDOW_SECS,
-        "since_ts": since_ts,
         "block_height": block_height,
         "subsidy_sats": subsidy_sats,
         "pool_fee_bps": POOL_FEE_BPS,
@@ -2012,13 +2017,16 @@ async fn api_pool_next_payout_handler(
         "node_reward_pool_sats": node_reward_pool_sats,
         "miner_pool_sats": miner_pool_sats,
         "dust_threshold_sats": DUST_THRESHOLD_SATS,
+        "ledger_cap": LEDGER_CAP,
         "total_work": total_work,
-        "recent_share_count": recent_share_count,
-        "miner_count": miner_count,
+        "total_unpaid_miners": total_unpaid_miners,
+        "paid_this_block": paid_this_block,
         "notes": {
+            "model": "ledger",
             "tx_fees_to_block_finder": true,
             "dust_redistributed_to_node_pool": true,
-            "rolling_window_secs": WINDOW_SECS,
+            "unpaid_shares_carry_forward": true,
+            "inactive_prune_days": 7,
         },
         "miners": miners,
     }))
