@@ -1292,7 +1292,8 @@ function emitShare(quality) {
   const target = Math.min(quality, 1.0) * SPHERE_R;
   particles.push({
     pos: new THREE.Vector3(), dir, target, quality,
-    isBlock: quality >= 1.0, blockClaimed: false,
+    // isBlock/blockClaimed legacy fields retained as no-ops; real block
+    // events arrive via window.__ghostPool.onBlockEvent, not particle state.
     age: 0, parked: false,
   });
   if (particles.length > MAX_PARTICLES) particles.shift();
@@ -1307,11 +1308,10 @@ function samplePoolHashrate() {
 }
 // Fallback random quality — only used when the real-share stream hasn't
 // delivered any shares yet (page just loaded, rate-limit hiccup, etc).
-// Every actual share from the pool will override this.
+// Kept strictly below 1.0 so the fallback can't mimic a real block.
 function sampleQuality() {
   const r = Math.random();
-  if (r < 0.0002) return 1.0 + Math.random() * 0.02;
-  if (r < 0.005)  return 0.90 + Math.random() * 0.09;
+  if (r < 0.005) return 0.90 + Math.random() * 0.08;
   let q = -Math.log(1 - Math.random()) * 0.25;
   if (q > 0.85) q = 0.85;
   return q;
@@ -1482,10 +1482,11 @@ function animate() {
       } else {
         p.pos.copy(p.dir).multiplyScalar(p.target);
         p.parked = true;
-        if (p.isBlock && !p.blockClaimed) {
-          p.blockClaimed = true;
-          if (!flashState) triggerBlockFound();
-        }
+        // (Real block events are dispatched from refreshPool via
+        // window.__ghostPool.onBlockEvent — never from particle state.
+        // The legacy isBlock trigger was firing false positives whenever
+        // a real share happened to land at quality >= 1.0 or the random
+        // fallback emitted a fake "rare" particle.)
       }
     }
     p.age += dt;
