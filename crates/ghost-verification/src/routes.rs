@@ -2124,12 +2124,22 @@ async fn api_pool_recent_shares_handler(
         .filter(|(miner_id, _, _, _)| !is_system_miner(miner_id))
         .map(|(miner_id, hash, ts, _work)| {
             // Leading hex zeros → leading bits (×4). Bitaxe-difficulty
-            // shares today hit ~48, rare block-grade shares push past 72.
-            // Quality scales (leading_bits − 40) / 40 → 0.2–1.0 span,
-            // clamped so tiny outliers don't vanish or overflow.
+            // shares today hit ~48; a genuine mainnet block needs ~80.
+            //
+            // Piecewise radial map:
+            //   bits 40..72   →  inner 85 % of the radius (normal range)
+            //   bits 72..80   →  outer 15 % (near-block / block-grade)
+            //
+            // Keeps ordinary shares spread through the sphere without
+            // letting an unlucky-but-ordinary share masquerade as a near-
+            // block. Outer band is reserved for genuinely exceptional hashes.
             let leading_hex_zeros = hash.chars().take_while(|c| *c == '0').count();
             let leading_bits = (leading_hex_zeros * 4) as f64;
-            let quality = ((leading_bits - 40.0) / 40.0).clamp(0.0, 1.0);
+            let quality = if leading_bits < 72.0 {
+                ((leading_bits - 40.0) / 32.0 * 0.85).clamp(0.0, 0.85)
+            } else {
+                (0.85 + (leading_bits - 72.0) / 8.0 * 0.15).clamp(0.85, 1.0)
+            };
             serde_json::json!({
                 "t": ts,
                 "miner_id_redacted": redact_miner_id(&miner_id),

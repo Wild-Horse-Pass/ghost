@@ -1360,8 +1360,11 @@ async function pollShares(vm) {
     if (typeof d.now_ts === 'number') lastTsByVm[vm] = d.now_ts;
     if (!Array.isArray(d.shares)) return;
     // First poll on this VM with no `since` returns a short look-back.
-    // Cap how many we enqueue at once so the scene doesn't spike.
-    const cap = since ? d.shares.length : Math.min(d.shares.length, 12);
+    // Cap how many we enqueue at once so the scene doesn't spike, AND
+    // so we don't immediately saturate every miner's personal-best bar
+    // — the first poll's batch ideally lands the starting positions,
+    // subsequent real-time polls drive rising bests.
+    const cap = since ? d.shares.length : Math.min(d.shares.length, 6);
     for (let i = 0; i < cap; i++) {
       shareQueue.push(d.shares[i]);
     }
@@ -1369,11 +1372,13 @@ async function pollShares(vm) {
   } catch (e) { /* transient — next poll will catch up */ }
 }
 function pollAll() { POOL_VMS.forEach(pollShares); }
-pollAll();
+// Defer first quasar poll by ~2s so the page-load burst (stats, records,
+// leaderboard, payout) drains first. The quasar can sit empty for a
+// couple of seconds without anyone noticing; the stats tiles can't.
+setTimeout(pollAll, 2000);
 // 6s cadence × 4 VMs = 40 req/min for the share stream. Enough to make
-// the quasar feel live (bitaxes produce ~4–16 shares/s pool-wide so every
-// poll picks up 20–100 new shares) without dominating the rate-limit
-// burst budget alongside the other pool-page polls.
+// the quasar feel live without dominating the rate-limit burst budget
+// alongside the other pool-page polls.
 setInterval(pollAll, 6000);
 
 // Personal-best bar for each miner this round. A share only becomes a
@@ -1474,7 +1479,10 @@ window.__ghostPool.onTipTime = syncFromTipTime;
 // Own one-shot seed: if refreshPool already completed before this module
 // loaded, onTipTime wasn't defined in time. Fetch status ourselves so the
 // HUD clock is correct on first paint regardless of module-vs-fetch order.
-(async () => {
+// Deferred 1.5s so the first-paint burst (stats / leaderboard / payout /
+// records) drains ahead of us — we can tolerate the clock showing 0:00
+// briefly, the tiles can't tolerate missing.
+setTimeout(async () => {
   for (const vm of POOL_VMS) {
     try {
       const r = await fetch('/api/pool/' + vm + '/api/v1/mining/status');
@@ -1486,7 +1494,7 @@ window.__ghostPool.onTipTime = syncFromTipTime;
       }
     } catch (e) { /* try next vm */ }
   }
-})();
+}, 1500);
 function tickRound(dt) {
   if (flashState) {
     flashRemaining -= dt;
