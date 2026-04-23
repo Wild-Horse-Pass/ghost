@@ -965,6 +965,10 @@ h2.section-title {
   padding: 6px 0;
 }
 .mp-meta .row .k { color: var(--dim); }
+.mp-meta .row .k.k-help {
+  border-bottom: 1px dotted var(--rule);
+  cursor: help;
+}
 .mp-meta .row .v { color: var(--fg); word-break: break-all; text-align: right; margin-left: 16px; }
 
 .mp-nodes {

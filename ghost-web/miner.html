@@ -141,7 +141,10 @@
       <div class="row"><span class="k">payout address</span><span class="v" id="mp-addr">—</span></div>
       <div class="row"><span class="k">first share submitted</span><span class="v" id="mp-first">—</span></div>
       <div class="row"><span class="k">last share submitted</span><span class="v" id="mp-last">—</span></div>
-      <div class="row"><span class="k">total work</span><span class="v" id="mp-work">—</span></div>
+      <div class="row">
+        <span class="k k-help" title="Cumulative share work — the sum of share difficulty across every share this miner has submitted. Multiply by 2³² to get total expected hashes computed (e.g. 100M work ≈ 4.3 × 10¹⁷ lifetime hashes).">total work</span>
+        <span class="v" id="mp-work">—</span>
+      </div>
     </div>
 
     <div style="display:flex; justify-content:space-between; align-items:baseline; margin: 40px 0 16px; flex-wrap:wrap; gap:16px">
@@ -255,6 +258,16 @@
   function workToTHs(work, secs) {
     if (!work || secs <= 0) return 0;
     return work * HASH_PER_WORK / secs / 1e12;
+  }
+  // Compact SI suffix formatter for raw numbers (total work, etc.)
+  function formatCompact(n) {
+    if (!isFinite(n) || n <= 0) return '0';
+    if (n < 1000) return n.toFixed(2);
+    if (n < 1e6) return (n / 1e3).toFixed(2) + 'K';
+    if (n < 1e9) return (n / 1e6).toFixed(2) + 'M';
+    if (n < 1e12) return (n / 1e9).toFixed(2) + 'G';
+    if (n < 1e15) return (n / 1e12).toFixed(2) + 'T';
+    return (n / 1e15).toFixed(2) + 'P';
   }
 
   // Decide which view to render from the `?id=` parameter shape:
@@ -552,7 +565,7 @@
       document.getElementById('mp-addr').textContent = payout_address || '—';
       document.getElementById('mp-first').textContent = fmtTs(first_seen === Infinity ? null : first_seen);
       document.getElementById('mp-last').textContent = fmtTs(last_seen || null);
-      document.getElementById('mp-work').textContent = total_work.toLocaleString(undefined, { maximumFractionDigits: 0 });
+      document.getElementById('mp-work').textContent = formatCompact(total_work);
       // Hashrate tile is owned by the history fetch — leaving it untouched
       // here avoids a race where the lookup response paints 0 over a valid
       // value already rendered by loadHistory.
