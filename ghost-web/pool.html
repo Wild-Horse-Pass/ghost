@@ -230,10 +230,12 @@
     <div class="section-label">next block payout</div>
     <h2 class="section-title">In line to get paid.</h2>
     <p class="section-lead">
-      Projected split if a block is found now, based on the last 15 minutes
-      of hashing. The subsidy is distributed proportionally by work — 99%
-      to miners, 0.5% to treasury, 0.5% to the node reward pool. TX fees
-      are paid in full to whichever node builds the winning block.
+      The ledger. Every share you submit accumulates on your unpaid balance.
+      When a block is found the top 1000 miners by unpaid work (filtered to
+      those above the 546-sat dust threshold) get included in the coinbase,
+      proportional to their share. Everyone else keeps their ledger intact
+      and carries it forward to compete for the next block. Unpaid shares
+      expire only if a miner goes dark for 7 days.
     </p>
 
     <div class="payout-summary">
@@ -256,23 +258,22 @@
     </div>
 
     <div class="payout-meta">
-      <span>window <span id="py-window">15 min</span></span>
-      <span>·</span>
       <span>block <span id="py-height">—</span></span>
       <span>·</span>
-      <span><span id="py-miners">—</span> miners</span>
+      <span><span id="py-paid-this">—</span> paid this block</span>
       <span>·</span>
-      <span><span id="py-shares">—</span> recent shares</span>
+      <span><span id="py-miners">—</span> waiting in ledger</span>
     </div>
 
     <div class="lb-table-wrap payout-wrap">
       <table class="lb-table payout-table" id="py-table"><tbody></tbody></table>
     </div>
     <div class="payout-note">
-      Projection rolls on a 15-minute window so active miners stay visible;
-      actual payouts credit whichever round is active when the block is
-      found. Dust below <code>546</code> sats is redirected into the node
-      reward pool at payout time.
+      Ledger model — your unpaid work carries forward across blocks until
+      you're included in a coinbase. Miners below the <code>546</code>-sat
+      dust line are skipped for that block and their ledger stays intact.
+      Unpaid shares for miners who haven't submitted anything in 7 days
+      are dropped into the node reward pool.
     </div>
   </div>
 </section>
@@ -823,55 +824,64 @@
     document.getElementById('py-node-pool').innerHTML = fmtBtc(base.node_reward_pool_sats);
     document.getElementById('py-height').textContent = base.block_height.toLocaleString();
 
-    // Merge miners across VMs. Recent work/shares sum (a bitaxe only
-    // hashes on one node at a time). Lifetime shares also sum because
-    // each VM records only the shares submitted to it.
+    // Merge the ledger across nodes. Each VM has its own local view of
+    // which shares it has seen; summing unpaid_work per miner gives the
+    // pool-wide ledger used for the next coinbase.
     var byMiner = new Map();
+    var waitingTotal = 0;
     results.forEach(function (r) {
-      if (!r || !Array.isArray(r.miners)) return;
+      if (!r) return;
+      waitingTotal = Math.max(waitingTotal, r.total_unpaid_miners || 0);
+      if (!Array.isArray(r.miners)) return;
       r.miners.forEach(function (m) {
         var prev = byMiner.get(m.miner_id_redacted);
         if (!prev) {
           byMiner.set(m.miner_id_redacted, {
             miner_id_redacted: m.miner_id_redacted,
-            work: m.work,
-            recent_shares: m.recent_shares,
-            lifetime_shares: m.lifetime_shares,
+            unpaid_work: m.unpaid_work,
           });
         } else {
-          prev.work += m.work;
-          prev.recent_shares += m.recent_shares;
-          prev.lifetime_shares += m.lifetime_shares;
+          prev.unpaid_work += m.unpaid_work;
         }
       });
     });
 
+    // Re-rank + re-dust-filter after merging. The per-node responses
+    // were already dust-filtered against their own totals; merging may
+    // pull a miner above dust against the combined pool, so we filter
+    // iteratively against the merged totals too.
     var miners = Array.from(byMiner.values())
-      .sort(function (a, b) { return b.work - a.work; })
-      .slice(0, 200);
-    var totalWork = miners.reduce(function (s, m) { return s + m.work; }, 0);
-    var totalRecent = miners.reduce(function (s, m) { return s + m.recent_shares; }, 0);
+      .sort(function (a, b) { return b.unpaid_work - a.unpaid_work; });
     var minerPool = base.miner_pool_sats;
+    for (var iters = 0; iters < 10; iters++) {
+      var total = miners.reduce(function (s, m) { return s + m.unpaid_work; }, 0);
+      if (total <= 0) break;
+      var preLen = miners.length;
+      miners = miners.filter(function (m) {
+        return Math.floor(minerPool * m.unpaid_work / total) >= 546;
+      });
+      if (miners.length === preLen) break;
+    }
+    miners = miners.slice(0, base.ledger_cap || 1000);
+    var totalWork = miners.reduce(function (s, m) { return s + m.unpaid_work; }, 0);
 
-    var windowMins = Math.round((base.window_secs || 900) / 60);
-    document.getElementById('py-window').textContent = windowMins + ' min';
-    document.getElementById('py-miners').textContent = miners.length;
-    document.getElementById('py-shares').textContent = totalRecent.toLocaleString();
+    document.getElementById('py-paid-this').textContent = miners.length.toLocaleString();
+    document.getElementById('py-miners').textContent =
+      Math.max(0, waitingTotal - miners.length).toLocaleString();
 
     var tbody = document.querySelector('#py-table tbody');
     if (!miners.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">no hashing activity in the last 15 minutes</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">no miners on the ledger yet — submit a share to queue for the next payout</td></tr>';
       return;
     }
 
     tbody.innerHTML = miners.map(function (m, i) {
-      var pct = totalWork > 0 ? (m.work / totalWork * 100) : 0;
-      var sats = totalWork > 0 ? Math.floor(minerPool * m.work / totalWork) : 0;
+      var pct = totalWork > 0 ? (m.unpaid_work / totalWork * 100) : 0;
+      var sats = totalWork > 0 ? Math.floor(minerPool * m.unpaid_work / totalWork) : 0;
       return '<tr>' +
         '<td class="lb-rank">' + (i + 1) + '</td>' +
         '<td class="py-miner">' + m.miner_id_redacted.replace(/</g, '&lt;') + '</td>' +
         '<td class="py-pct"><span class="py-bar" style="width:' + Math.max(2, Math.min(100, pct)) + '%"></span><span class="py-pct-v">' + pct.toFixed(2) + '%</span></td>' +
-        '<td class="py-shares">' + m.lifetime_shares.toLocaleString() + '<span class="py-shares-sub"> lifetime</span></td>' +
         '<td class="py-sats">' + fmtBtc(sats) + '</td>' +
       '</tr>';
     }).join('');
