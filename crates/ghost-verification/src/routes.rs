@@ -208,6 +208,11 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // total shares contributed in the requested window. Used by the
         // pool page gamification; same redaction rules as /records.
         .route("/api/v1/pool/leaderboard", get(api_pool_leaderboard_handler))
+        // "Next block payout" projection: current round's top miners,
+        // their work share, and projected sats from the 99% miner pool.
+        // Also reports the fee split (treasury + node reward pool) so the
+        // website can render the full breakdown. DB-only, no mesh.
+        .route("/api/v1/pool/next_payout", get(api_pool_next_payout_handler))
         // M-14: /api/v1/miners/stats moved to internal routes (requires HMAC auth)
         // Exposes individual miner work values, hashrates, and share history
         .route("/api/v1/network/peers", get(peers_handler))
@@ -1899,6 +1904,112 @@ async fn api_miner_lookup_handler(
     };
 
     Json(result)
+}
+
+/// "Next block payout" — project each miner's share of the upcoming
+/// block. We take the max round_id currently present in shares (that's
+/// the round the template is building on), pull the top N miners by
+/// work within it, and compute projected sats = miner_work / total_work
+/// × miner_pool.
+///
+/// The miner pool is 99% of subsidy; the 1% pool fee is split 50/50
+/// between treasury and the node reward pool (constant pre-21-BTC).
+/// TX fees are paid to the node that builds the winning block, not to
+/// miners, so they're reported separately as a note.
+async fn api_pool_next_payout_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Pool economics: 1% fee from subsidy only, split 50/50 today.
+    // If this changes (post-21-BTC decay), it must also change in
+    // bins/ghost-pool/src/treasury.rs — keep the two in sync.
+    const POOL_FEE_BPS: u64 = 100;          // 1.00%
+    const TREASURY_RATE_BPS: u64 = 5000;    // 50% of pool fee
+    const NODE_RATE_BPS: u64 = 5000;        // 50% of pool fee
+    const DUST_THRESHOLD_SATS: u64 = 546;
+    const LIMIT: u32 = 200;
+
+    let health = state.get_health().await;
+    let block_height = health.block_height as u64;
+
+    // Bitcoin halving schedule: 50 BTC >> halvings, zero after halving 64
+    let subsidy_sats: u64 = {
+        let halvings = block_height / 210_000;
+        if halvings >= 64 {
+            0
+        } else {
+            5_000_000_000u64 >> halvings
+        }
+    };
+
+    let pool_fee_sats = subsidy_sats * POOL_FEE_BPS / 10_000;
+    let treasury_sats = pool_fee_sats * TREASURY_RATE_BPS / 10_000;
+    let node_reward_pool_sats = pool_fee_sats.saturating_sub(treasury_sats);
+    let miner_pool_sats = subsidy_sats.saturating_sub(pool_fee_sats);
+
+    let Some(ref db) = state.database else {
+        return Json(serde_json::json!({
+            "block_height": block_height,
+            "subsidy_sats": subsidy_sats,
+            "error": "Database not available",
+        }));
+    };
+
+    let round_id = db.get_max_round_id().unwrap_or(0);
+
+    let rows = db
+        .get_round_miners_with_counts(round_id, LIMIT)
+        .unwrap_or_default();
+
+    let total_work: f64 = rows.iter().map(|(_, w, _)| *w).sum();
+    let share_count: u64 = rows.iter().map(|(_, _, c)| *c).sum();
+    let miner_count = rows.len() as u64;
+
+    let miners: Vec<_> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, (miner_id, work, count))| {
+            let share_pct = if total_work > 0.0 { work / total_work * 100.0 } else { 0.0 };
+            // Proportional projection in u128 to match the payout path's
+            // precision, then cast back. Dust redistribution is noted but
+            // NOT applied here — users see their raw share, with a dust
+            // threshold annotation in the response.
+            let projected_sats = if total_work > 0.0 {
+                (miner_pool_sats as u128 * ((work * 1_000_000.0) as u128) / ((total_work * 1_000_000.0) as u128)) as u64
+            } else {
+                0
+            };
+            serde_json::json!({
+                "rank": i + 1,
+                "miner_id_redacted": redact_miner_id(&miner_id),
+                "work": work,
+                "share_count": count,
+                "share_pct": share_pct,
+                "projected_sats": projected_sats,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "round_id": round_id,
+        "block_height": block_height,
+        "subsidy_sats": subsidy_sats,
+        "pool_fee_bps": POOL_FEE_BPS,
+        "treasury_rate_bps": TREASURY_RATE_BPS,
+        "node_rate_bps": NODE_RATE_BPS,
+        "pool_fee_sats": pool_fee_sats,
+        "treasury_sats": treasury_sats,
+        "node_reward_pool_sats": node_reward_pool_sats,
+        "miner_pool_sats": miner_pool_sats,
+        "dust_threshold_sats": DUST_THRESHOLD_SATS,
+        "total_work": total_work,
+        "share_count": share_count,
+        "miner_count": miner_count,
+        "notes": {
+            "tx_fees_to_block_finder": true,
+            "dust_redistributed_to_node_pool": true,
+        },
+        "miners": miners,
+    }))
 }
 
 /// Workers under a given payout address. Lets users enter just their

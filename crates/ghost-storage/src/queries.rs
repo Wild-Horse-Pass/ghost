@@ -704,6 +704,40 @@ impl Database {
         })
     }
 
+    /// Top miners in a round with share counts. Backs the public
+    /// "next block payout" endpoint: we show the miner's share %, share
+    /// count, and projected sats at the next block find. Ordered by work
+    /// desc so the caller can slice the top N for display.
+    pub fn get_round_miners_with_counts(
+        &self,
+        round_id: u64,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, f64, u64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT miner_id, SUM(work) AS total_work, COUNT(*) AS share_count
+                     FROM shares WHERE round_id = ?1 AND valid = 1
+                     GROUP BY miner_id ORDER BY total_work DESC LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![round_id, limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, u64>(2)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
     /// Time-bucketed share/work history for a single miner. Backs the
     /// per-miner page's hashrate chart. Buckets are aligned on
     /// `(timestamp / bucket_secs) * bucket_secs` so the same ticks line up
