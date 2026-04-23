@@ -196,6 +196,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Backs the individual miner page's hashrate chart. Requires exact
         // miner_id (no enumeration) and returns empty `points` when unknown.
         .route("/api/v1/miners/history", get(api_miner_history_handler))
+        // Workers under a given payout address. Used by the miner lookup UI
+        // when a user enters an address without a `.worker` suffix — returns
+        // a compact summary per worker so the frontend can render a picker.
+        .route("/api/v1/miners/workers", get(api_miners_by_address_handler))
         // Public best-hash records per window (block / day / week / month).
         // Returns this node's best share only; website aggregates across
         // nodes. No auth; enumeration not possible (one response).
@@ -1629,6 +1633,11 @@ struct MinerHistoryQuery {
     window: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct MinersByAddressQuery {
+    address: Option<String>,
+}
+
 /// API v1 miner search handler - search miners by worker name or address
 /// M-13: Returns only aggregate counts, not individual miner details (same pattern as M-11)
 async fn api_miners_search_handler(
@@ -1890,6 +1899,67 @@ async fn api_miner_lookup_handler(
     };
 
     Json(result)
+}
+
+/// Workers under a given payout address. Lets users enter just their
+/// Bitcoin address and see every worker (bitaxe1, bitaxe2, …) attached
+/// to it. Returns a compact summary per worker; the website aggregates
+/// across nodes and uses each worker's `miner_id` as the key to the
+/// individual miner page.
+async fn api_miners_by_address_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<MinersByAddressQuery>,
+) -> impl IntoResponse {
+    let address = params.address.unwrap_or_default();
+    if address.is_empty() {
+        return Json(serde_json::json!({
+            "error": "Missing address parameter",
+        }));
+    }
+
+    let Some(ref db) = state.database else {
+        return Json(serde_json::json!({
+            "address": address,
+            "workers": serde_json::Value::Array(Vec::new()),
+            "error": "Database not available",
+        }));
+    };
+
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let workers = db
+        .get_miners_by_address(&address, 50)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| {
+            let active = (now_s - m.last_seen) < 600;
+            // Extract the worker suffix from `address.worker` for display
+            let worker = m
+                .miner_id
+                .rsplit_once('.')
+                .map(|(_, w)| w.to_string())
+                .unwrap_or_else(|| "".to_string());
+            serde_json::json!({
+                "miner_id": m.miner_id,
+                "worker": worker,
+                "first_seen": m.first_seen,
+                "last_seen": m.last_seen,
+                "active": active,
+                "total_shares": m.total_shares,
+                "total_work": m.total_work,
+                "blocks_won": m.blocks_won,
+                "total_payouts_sats": m.total_payouts_sats,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({
+        "address": address,
+        "workers": workers,
+    }))
 }
 
 /// Per-miner share history, bucketed. Client computes hashrate from

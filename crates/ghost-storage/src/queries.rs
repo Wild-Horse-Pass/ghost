@@ -1747,6 +1747,70 @@ impl Database {
         }
     }
 
+    /// Return every miner whose `miner_id` is of the form `<address>.<worker>`
+    /// for the given address. Uses the `miner_id` primary-key index with a
+    /// prefix-LIKE match, so we never have to decrypt the stored (encrypted)
+    /// payout_address column. Anchored with `.%` so `bc1qabc` can't match
+    /// `bc1qabcdef.worker` by accident. Results are ordered by `last_seen`
+    /// so the most-recently-active worker comes first.
+    pub fn get_miners_by_address(
+        &self,
+        address: &str,
+        limit: u32,
+    ) -> GhostResult<Vec<MinerRecord>> {
+        // Guard: require a plausible full address. Prefix matches on very
+        // short strings can return thousands of rows and leak enumeration.
+        if address.len() < 20 {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("{}.%", address);
+        let miners = self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT miner_id, payout_address, first_seen, last_seen,
+                            connected_node, total_shares, total_work, blocks_won,
+                            total_payouts_sats, avg_hashrate_ths
+                     FROM miners
+                     WHERE miner_id LIKE ?1
+                     ORDER BY last_seen DESC
+                     LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![pattern, limit], |row| {
+                    Ok(MinerRecord {
+                        miner_id: row.get(0)?,
+                        payout_address: row.get(1)?,
+                        first_seen: row.get(2)?,
+                        last_seen: row.get(3)?,
+                        connected_node: row.get(4)?,
+                        total_shares: row.get(5)?,
+                        total_work: row.get(6)?,
+                        blocks_won: row.get(7)?,
+                        total_payouts_sats: row.get(8)?,
+                        avg_hashrate_ths: row.get(9)?,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })?;
+
+        // Decrypt each payout_address column (matches get_miner's behaviour)
+        miners
+            .into_iter()
+            .map(|mut m| {
+                if !m.payout_address.is_empty() {
+                    m.payout_address = self.decrypt_address(&m.payout_address)?;
+                }
+                Ok(m)
+            })
+            .collect()
+    }
+
     /// Truncated SHA-256 of each miner_id whose `last_seen` is within the
     /// window. 16 bytes is enough for ~2^64 entries before birthday collisions
     /// become a concern — comfortable for a mining pool. Used to share a
