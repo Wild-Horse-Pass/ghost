@@ -224,6 +224,56 @@
   </div>
 </section>
 
+<section class="block payout-section">
+  <div class="container">
+    <div class="section-label">next block payout</div>
+    <h2 class="section-title">In line to get paid.</h2>
+    <p class="section-lead">
+      Miners with shares in the current round. When a block is found the
+      subsidy is split proportionally by work — 99% to miners, 0.5% to
+      the treasury, 0.5% to the node reward pool. TX fees are paid in full
+      to whichever node builds the winning block.
+    </p>
+
+    <div class="payout-summary">
+      <div class="ps-tile">
+        <div class="k">block subsidy</div>
+        <div class="v" id="py-subsidy">—</div>
+      </div>
+      <div class="ps-tile">
+        <div class="k">miner pool <span class="sub">99%</span></div>
+        <div class="v accent" id="py-miner-pool">—</div>
+      </div>
+      <div class="ps-tile">
+        <div class="k">treasury <span class="sub">0.5%</span></div>
+        <div class="v" id="py-treasury">—</div>
+      </div>
+      <div class="ps-tile">
+        <div class="k">node reward pool <span class="sub">0.5%</span></div>
+        <div class="v" id="py-node-pool">—</div>
+      </div>
+    </div>
+
+    <div class="payout-meta">
+      <span>round <span id="py-round">—</span></span>
+      <span>·</span>
+      <span>block <span id="py-height">—</span></span>
+      <span>·</span>
+      <span><span id="py-miners">—</span> miners</span>
+      <span>·</span>
+      <span><span id="py-shares">—</span> shares</span>
+    </div>
+
+    <div class="lb-table-wrap payout-wrap">
+      <table class="lb-table payout-table" id="py-table"><tbody></tbody></table>
+    </div>
+    <div class="payout-note">
+      Projections ignore dust redistribution below <code>546</code> sats;
+      those amounts are redirected into the node reward pool at payout time.
+    </div>
+  </div>
+</section>
+
 <section class="block connect-cta" style="border-bottom:none">
   <div class="container">
     <div class="section-label">get started</div>
@@ -715,6 +765,94 @@
   renderLeaderboard(); // show "loading…" row while the first fetch is in flight
   refreshLeaderboard();
   setInterval(refreshLeaderboard, 60000);
+
+  // ───────── Next block payout projection ─────────
+  // Pulls the current round's top miners from every VM, merges by
+  // redacted miner_id, and projects each miner's share of the 99%
+  // miner pool. Also renders the full subsidy split (treasury + node
+  // pool) and the header meta (round id, block height, miner count).
+  function fmtBtc(sats) {
+    if (!sats) return '0<span class="unit"> BTC</span>';
+    var btc = sats / 1e8;
+    if (btc >= 1) return btc.toFixed(4) + '<span class="unit"> BTC</span>';
+    if (btc >= 0.001) return btc.toFixed(6) + '<span class="unit"> BTC</span>';
+    return sats.toLocaleString() + '<span class="unit"> sats</span>';
+  }
+
+  async function refreshPayout() {
+    var results = await Promise.all(POOL_NODES.map(function (n) {
+      return fetch('/api/pool/' + n.id + '/api/v1/pool/next_payout')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; });
+    }));
+
+    // Subsidy / fee split values are derived from the current block height
+    // and are consensus-wide — first non-null response wins
+    var base = results.find(function (r) { return !!r; });
+    if (!base) return;
+
+    // Paint the summary tiles first (miners list may still be merging)
+    document.getElementById('py-subsidy').innerHTML = fmtBtc(base.subsidy_sats);
+    document.getElementById('py-miner-pool').innerHTML = fmtBtc(base.miner_pool_sats);
+    document.getElementById('py-treasury').innerHTML = fmtBtc(base.treasury_sats);
+    document.getElementById('py-node-pool').innerHTML = fmtBtc(base.node_reward_pool_sats);
+    document.getElementById('py-height').textContent = base.block_height.toLocaleString();
+
+    // Merge miners across VMs — each node sees a subset of the round's
+    // miners (a bitaxe only ever hits one node at a time), so this sum
+    // is effectively "pool-wide top miners in the current round"
+    var byMiner = new Map();
+    var maxRound = 0;
+    results.forEach(function (r) {
+      if (!r) return;
+      if (r.round_id > maxRound) maxRound = r.round_id;
+      if (!Array.isArray(r.miners)) return;
+      r.miners.forEach(function (m) {
+        var prev = byMiner.get(m.miner_id_redacted);
+        if (!prev) {
+          byMiner.set(m.miner_id_redacted, {
+            miner_id_redacted: m.miner_id_redacted,
+            work: m.work,
+            share_count: m.share_count,
+          });
+        } else {
+          prev.work += m.work;
+          prev.share_count += m.share_count;
+        }
+      });
+    });
+
+    var miners = Array.from(byMiner.values())
+      .sort(function (a, b) { return b.work - a.work; })
+      .slice(0, 200);
+    var totalWork = miners.reduce(function (s, m) { return s + m.work; }, 0);
+    var totalShares = miners.reduce(function (s, m) { return s + m.share_count; }, 0);
+    var minerPool = base.miner_pool_sats;
+
+    document.getElementById('py-round').textContent = maxRound;
+    document.getElementById('py-miners').textContent = miners.length;
+    document.getElementById('py-shares').textContent = totalShares.toLocaleString();
+
+    var tbody = document.querySelector('#py-table tbody');
+    if (!miners.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">no shares submitted in the current round yet</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = miners.map(function (m, i) {
+      var pct = totalWork > 0 ? (m.work / totalWork * 100) : 0;
+      var sats = totalWork > 0 ? Math.floor(minerPool * m.work / totalWork) : 0;
+      return '<tr>' +
+        '<td class="lb-rank">' + (i + 1) + '</td>' +
+        '<td class="py-miner">' + m.miner_id_redacted.replace(/</g, '&lt;') + '</td>' +
+        '<td class="py-pct"><span class="py-bar" style="width:' + Math.max(2, Math.min(100, pct)) + '%"></span><span class="py-pct-v">' + pct.toFixed(2) + '%</span></td>' +
+        '<td class="py-shares">' + m.share_count.toLocaleString() + '<span class="py-shares-sub"> shares</span></td>' +
+        '<td class="py-sats">' + fmtBtc(sats) + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+  refreshPayout();
+  setInterval(refreshPayout, 30000);
 
   // Miner lookup (client-side fan-out — aggregator endpoint is next up)
   (function () {
