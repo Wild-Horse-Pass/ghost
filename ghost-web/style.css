@@ -738,6 +738,7 @@ h2.section-title {
   gap: 0; border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
 }
+.miner-card .mc-tiles.mc-tiles-4 { grid-template-columns: repeat(4, 1fr); }
 .miner-card .mc-tile {
   padding: 14px 8px; text-align: center;
   border-right: 1px solid var(--rule);
@@ -933,7 +934,7 @@ h2.section-title {
   max-width: 920px;
 }
 .mp-tiles {
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, 1fr);
   gap: 16px; padding: 24px 0;
   border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
@@ -965,7 +966,7 @@ h2.section-title {
   padding: 6px 0;
 }
 .mp-meta .row .k { color: var(--dim); }
-.mp-meta .row .k.k-help {
+.k-help {
   border-bottom: 1px dotted var(--rule);
   cursor: help;
 }
@@ -1093,6 +1094,7 @@ h2.section-title {
   .payout-table .py-pct { min-width: 120px; }
   .mp-hero .mp-worker { font-size: 30px; }
   .mp-tiles { grid-template-columns: repeat(2, 1fr); }
+  .miner-card .mc-tiles.mc-tiles-4 { grid-template-columns: repeat(2, 1fr); }
   .mp-nodes { grid-template-columns: repeat(2, 1fr); }
   .mp-meta { grid-template-columns: 1fr; }
 }

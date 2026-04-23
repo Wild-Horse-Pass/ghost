@@ -745,6 +745,27 @@ impl Database {
         })
     }
 
+    /// Per-miner unpaid summary: how many shares and how much work a
+    /// single miner currently has on their ledger. Used by the lookup
+    /// endpoint so the miner stats page can display unpaid shares next
+    /// to the lifetime figure.
+    pub fn get_miner_unpaid_stats(&self, miner_id: &str) -> GhostResult<(u64, f64)> {
+        self.with_connection(|conn| {
+            let (count, work): (u64, f64) = conn
+                .query_row(
+                    "SELECT COUNT(*), COALESCE(SUM(work), 0)
+                     FROM shares
+                     WHERE miner_id = ?1
+                       AND paid_in_proposal_hash IS NULL
+                       AND valid = 1",
+                    params![miner_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok((count, work))
+        })
+    }
+
     /// Distinct miner_ids with at least one unpaid share up to `cutoff_ts`.
     /// Used by the proposal-accepted hook: each consensus-approving node
     /// hashes these strings and matches against the `PayoutEntry.recipient_id`

@@ -124,7 +124,12 @@
         <div class="sub" id="mp-hashrate-sub">last 10 min</div>
       </div>
       <div class="mp-tile">
-        <div class="k">total shares</div>
+        <div class="k k-help" title="Unpaid shares — what's currently on the ledger, counting toward the next block's coinbase. Resets to zero the moment this miner is paid out. Accumulates again with every new share.">unpaid shares</div>
+        <div class="v" id="mp-unpaid">—</div>
+        <div class="sub">queued for next payout</div>
+      </div>
+      <div class="mp-tile">
+        <div class="k k-help" title="Lifetime shares — the running total of every valid share this miner has ever submitted. Doesn't reset when they're paid; the unpaid counter is what resets.">lifetime shares</div>
         <div class="v" id="mp-shares">—</div>
       </div>
       <div class="mp-tile">
@@ -537,6 +542,7 @@
 
       var first_seen = Infinity, last_seen = 0;
       var total_shares = 0, total_work = 0, blocks_won = 0, total_payouts_sats = 0;
+      var unpaid_shares = 0, unpaid_work = 0;
       var active = false;
       var payout_address = null;
       // Each VM keeps an independent `miners` row for this miner_id — every
@@ -551,6 +557,8 @@
         total_work += d.total_work || 0;
         blocks_won += d.blocks_won || 0;
         total_payouts_sats += d.total_payouts_sats || 0;
+        unpaid_shares += d.unpaid_shares || 0;
+        unpaid_work += d.unpaid_work || 0;
         if (d.active) active = true;
         payout_address = d.payout_address || payout_address;
       });
@@ -559,6 +567,7 @@
       document.getElementById('mp-status').textContent = active ? 'active' : 'inactive';
       document.getElementById('mp-nodeinfo').textContent =
         total_shares.toLocaleString() + ' shares submitted · ' + blocks_won + ' blocks won';
+      document.getElementById('mp-unpaid').textContent = unpaid_shares.toLocaleString();
       document.getElementById('mp-shares').textContent = total_shares.toLocaleString();
       document.getElementById('mp-blocks').textContent = blocks_won;
       document.getElementById('mp-payouts').innerHTML = fmtSats(total_payouts_sats);

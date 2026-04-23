@@ -1869,6 +1869,12 @@ async fn api_miner_lookup_handler(
                     .unwrap_or_default()
                     .as_secs() as i64;
                 let active = (now - m.last_seen) < 600;
+                // Unpaid ledger side of the lookup: shares this miner has
+                // submitted that haven't been committed to a payout yet.
+                // Frontend sums across VMs (each node has its own ledger).
+                let (unpaid_shares, unpaid_work) = db
+                    .get_miner_unpaid_stats(&m.miner_id)
+                    .unwrap_or((0, 0.0));
                 serde_json::json!({
                     "found": true,
                     "miner_id": m.miner_id,
@@ -1881,6 +1887,8 @@ async fn api_miner_lookup_handler(
                     "blocks_won": m.blocks_won,
                     "total_payouts_sats": m.total_payouts_sats,
                     "avg_hashrate_ths": m.avg_hashrate_ths,
+                    "unpaid_shares": unpaid_shares,
+                    "unpaid_work": unpaid_work,
                 })
             }
             Ok(None) => serde_json::json!({

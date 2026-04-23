@@ -985,6 +985,7 @@
       // Aggregate across nodes (same miner_id can appear on multiple)
       var first_seen = Infinity, last_seen = 0;
       var total_shares = 0, total_work = 0, blocks_won = 0, total_payouts_sats = 0;
+      var unpaid_shares = 0;
       var hashrate_sum = 0, active = false;
       var payout_address = null;
       hits.forEach(function (h) {
@@ -995,6 +996,7 @@
         total_work += d.total_work || 0;
         blocks_won += d.blocks_won || 0;
         total_payouts_sats += d.total_payouts_sats || 0;
+        unpaid_shares += d.unpaid_shares || 0;
         if (d.active) active = true;
         // Only sum hashrate from nodes currently active — otherwise stale values distort
         if (d.active && typeof d.avg_hashrate_ths === 'number') hashrate_sum += d.avg_hashrate_ths;
@@ -1010,8 +1012,9 @@
               '<div class="mc-status ' + (active ? 'online' : 'offline') + '">' + (active ? 'active' : 'inactive') + '</div>' +
             '</div>' +
             '<div class="mc-hashrate">' + formatHashrate(ths) + '</div>' +
-            '<div class="mc-tiles">' +
-              '<div class="mc-tile"><div class="k">shares</div><div class="v">' + total_shares.toLocaleString() + '</div></div>' +
+            '<div class="mc-tiles mc-tiles-4">' +
+              '<div class="mc-tile"><div class="k k-help" title="Unpaid shares currently on the ledger, queued for the next block\'s coinbase. Resets when this miner is paid.">unpaid</div><div class="v">' + unpaid_shares.toLocaleString() + '</div></div>' +
+              '<div class="mc-tile"><div class="k k-help" title="Lifetime shares — running total of every valid share this miner has ever submitted. Doesn\'t reset when they\'re paid.">lifetime</div><div class="v">' + total_shares.toLocaleString() + '</div></div>' +
               '<div class="mc-tile"><div class="k">blocks won</div><div class="v">' + blocks_won + '</div></div>' +
               '<div class="mc-tile"><div class="k">payouts</div><div class="v">' + fmtSats(total_payouts_sats) + '</div></div>' +
             '</div>' +
