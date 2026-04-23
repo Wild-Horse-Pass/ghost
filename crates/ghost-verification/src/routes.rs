@@ -2297,8 +2297,13 @@ async fn api_pool_leaderboard_handler(
         // Fetch a larger slice and filter so we still return the caller's
         // requested `limit` after removing system accounts.
         let over_fetch = (limit as usize).saturating_mul(3).max(30) as u32;
+        // 7-day activity filter matches the unpaid-ledger prune rule:
+        // a miner must have submitted at least one share in the last
+        // week to appear on the public lifetime leaderboard. Hides
+        // legacy translator attributions and abandoned wallets.
+        const ACTIVE_SECS: i64 = 7 * 24 * 3600;
         let shares = db
-            .get_leaderboard_lifetime(over_fetch)
+            .get_leaderboard_lifetime(over_fetch, ACTIVE_SECS)
             .unwrap_or_default()
             .into_iter()
             .filter(|(miner_id, _, _)| !is_system_miner(miner_id))

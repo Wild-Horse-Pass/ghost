@@ -901,27 +901,36 @@ impl Database {
     }
 
     /// Lifetime-contribution leaderboard straight from the `miners`
-    /// table. Unlike the windowed variants this doesn't touch the pruned
-    /// shares table, so it's stable across restarts and long outages.
-    /// Ordered by `total_work` desc — same currency as the windowed
-    /// leaderboard so the two columns are directly comparable.
+    /// table. Filters out dormant entries — a miner must have been seen
+    /// within `active_secs` to appear. This is how we hide legacy rows
+    /// from old pool configurations (e.g. pre-`aggregate_channels=false`
+    /// translator attributions) that still have historical work totals
+    /// but haven't had a live share in weeks.
+    ///
+    /// Ordered by `total_work` desc.
     pub fn get_leaderboard_lifetime(
         &self,
         limit: u32,
+        active_secs: i64,
     ) -> GhostResult<Vec<(String, u64, f64)>> {
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let active_cutoff = now_s - active_secs;
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT miner_id, total_shares, total_work
                      FROM miners
-                     WHERE total_shares > 0
+                     WHERE total_shares > 0 AND last_seen >= ?2
                      ORDER BY total_work DESC
                      LIMIT ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let rows = stmt
-                .query_map(params![limit], |row| {
+                .query_map(params![limit, active_cutoff], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, u64>(1)?,
