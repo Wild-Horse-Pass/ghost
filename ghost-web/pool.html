@@ -1417,13 +1417,31 @@ window.__ghostPool.onBlockEvent = function (kind, height) {
 // so the HUD clock shows the truth after a page refresh, not zero.
 // Convert unix seconds → performance.now() frame by computing offset.
 let tipTimeSynced = false;
-window.__ghostPool.onTipTime = function (tipUnixSecs) {
+function syncFromTipTime(tipUnixSecs) {
   if (tipTimeSynced || flashState) return; // don't overwrite during a live event
   const nowUnix = Date.now() / 1000;
   const ageSecs = Math.max(0, nowUnix - tipUnixSecs);
   lastBlockTs = (performance.now() / 1000) - ageSecs;
   tipTimeSynced = true;
-};
+}
+window.__ghostPool.onTipTime = syncFromTipTime;
+
+// Own one-shot seed: if refreshPool already completed before this module
+// loaded, onTipTime wasn't defined in time. Fetch status ourselves so the
+// HUD clock is correct on first paint regardless of module-vs-fetch order.
+(async () => {
+  for (const vm of POOL_VMS) {
+    try {
+      const r = await fetch('/api/pool/' + vm + '/api/v1/mining/status');
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (typeof d.last_block_time === 'number') {
+        syncFromTipTime(d.last_block_time);
+        return;
+      }
+    } catch (e) { /* try next vm */ }
+  }
+})();
 function tickRound(dt) {
   if (flashState) {
     flashRemaining -= dt;
