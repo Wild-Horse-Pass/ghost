@@ -1481,6 +1481,18 @@ async fn api_mining_status_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
     let health = state.get_health().await;
+
+    // Fetch tip timestamp up-front (async). The config lock guard below
+    // is !Send, so we must not hold any await-points after acquiring it.
+    let last_block_time: Option<u64> = if let Some(ref rpc) = state.rpc {
+        match rpc.get_block_hash(health.block_height).await {
+            Ok(hash) => rpc.get_block_header(&hash).await.ok().map(|h| h.time),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     let config = state.dashboard_config.read();
 
     // Aggregate hashrate across all miners. Use the miner's actual elapsed
@@ -1565,7 +1577,8 @@ async fn api_mining_status_handler(
         "pool_name": config.pool_name,
         "blocks_found": state.database.as_ref()
             .and_then(|db| db.get_blocks_found_count().ok())
-            .unwrap_or(0)
+            .unwrap_or(0),
+        "last_block_time": last_block_time
     }))
 }
 

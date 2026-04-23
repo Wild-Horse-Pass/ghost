@@ -587,6 +587,19 @@
         blockEvent = (blocks > prevBlocksFound) ? 'ours' : 'theirs';
       }
 
+      // Pick up the real tip timestamp from whichever VM responded.
+      // Used by the quasar HUD clock so "time since last block" is
+      // real on first page load, not just "time since page open".
+      var tipTime = null;
+      results.forEach(function (r) {
+        if (r && typeof r.last_block_time === 'number') {
+          if (tipTime === null || r.last_block_time > tipTime) tipTime = r.last_block_time;
+        }
+      });
+      if (tipTime !== null && window.__ghostPool && typeof window.__ghostPool.onTipTime === 'function') {
+        window.__ghostPool.onTipTime(tipTime);
+      }
+
       lastStats.hashrate = hashrate;
       lastStats.miners = mesh !== null ? mesh : maxActive;
       lastStats.blocks = blocks;
@@ -1399,6 +1412,17 @@ window.__ghostPool = window.__ghostPool || {};
 window.__ghostPool.onBlockEvent = function (kind, height) {
   if (kind === 'ours') triggerBlockFound();
   else triggerNoBlock();
+};
+// Seed "time since last block" from the chain's actual tip timestamp
+// so the HUD clock shows the truth after a page refresh, not zero.
+// Convert unix seconds → performance.now() frame by computing offset.
+let tipTimeSynced = false;
+window.__ghostPool.onTipTime = function (tipUnixSecs) {
+  if (tipTimeSynced || flashState) return; // don't overwrite during a live event
+  const nowUnix = Date.now() / 1000;
+  const ageSecs = Math.max(0, nowUnix - tipUnixSecs);
+  lastBlockTs = (performance.now() / 1000) - ageSecs;
+  tipTimeSynced = true;
 };
 function tickRound(dt) {
   if (flashState) {
