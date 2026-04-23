@@ -5,10 +5,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ghost Core · Bitcoin Ghost</title>
+  <meta name="description" content="The bootstrap-to-sovereign journey. Live treasury progress, mesh state, and the rules that make Ghost run forever on its own.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css?v=20260422">
+  <link rel="stylesheet" href="/style.css?v=20260423c">
   <script>
     (function () {
       var saved = localStorage.getItem('ghost-theme');
@@ -29,7 +30,6 @@
       </svg>
       <span class="wordmark">bitcoinghost</span>
     </a>
-
     <nav class="primary">
       <a href="/">overview</a>
       <a href="/core.html" class="current">core</a>
@@ -40,7 +40,6 @@
       <a href="/downloads.html">downloads</a>
       <a href="/docs/">docs</a>
     </nav>
-
     <div class="utils">
       <a href="https://github.com/bitcoin-ghost" class="bare icon-btn" aria-label="GitHub">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -54,11 +53,208 @@
 
 <section class="hero">
   <div class="container">
-    <span class="eyebrow">under construction</span>
+    <span class="eyebrow">core</span>
     <h1>Ghost Core.</h1>
-    <p class="lead">Live node count, treasury balance, elder roster, and decentralisation progress — the bootstrap-to-sovereign journey in one page. Page under construction.</p>
-    <div class="hero-actions">
-      <a href="/" class="btn btn-ghost">Back to overview</a>
+    <p class="lead">
+      A fork with a finite bootstrap. The treasury collects 0.5% of every
+      block subsidy until it reaches 21 BTC, then decays over five years
+      to zero. After that, every satoshi of pool fee goes to the node
+      operators. Ghost runs forever on its own.
+    </p>
+  </div>
+</section>
+
+<!-- ───────── Phase journey ───────── -->
+<section class="block journey-section">
+  <div class="container">
+    <div class="section-label" id="phase-label">phase · bootstrap</div>
+    <h2 class="section-title">Bootstrap → Decentralising → Sovereign.</h2>
+    <p class="section-lead">
+      Three phases. One direction. No governance vote needed — the
+      transition is driven mechanically by the treasury balance and a
+      fixed calendar.
+    </p>
+
+    <ol class="phase-stepper" id="phase-stepper">
+      <li data-phase="Bootstrap" class="active">
+        <div class="ps-dot"></div>
+        <div class="ps-body">
+          <div class="ps-title">Bootstrap</div>
+          <div class="ps-desc">Treasury fills to 21 BTC at 0.5% per block. Pool fee split 50/50 between treasury and node reward pool.</div>
+        </div>
+      </li>
+      <li data-phase="Decentralising">
+        <div class="ps-dot"></div>
+        <div class="ps-body">
+          <div class="ps-title">Decentralising</div>
+          <div class="ps-desc">Threshold reached. Treasury's share of each pool fee steps down by 10 percentage points per year over five years.</div>
+        </div>
+      </li>
+      <li data-phase="Sovereign">
+        <div class="ps-dot"></div>
+        <div class="ps-body">
+          <div class="ps-title">Sovereign</div>
+          <div class="ps-desc">Decay complete. 100% of every pool fee goes to the node reward pool. Ghost is fully operator-owned.</div>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ───────── Treasury + mesh tiles ───────── -->
+<section class="block core-tiles-section">
+  <div class="container">
+    <div class="section-label">live state</div>
+    <h2 class="section-title">Where we are right now.</h2>
+
+    <div class="core-tiles">
+      <div class="ct-tile ct-wide">
+        <div class="k">treasury</div>
+        <div class="v" id="ct-treasury">—</div>
+        <div class="sub"><span id="ct-treasury-pct">0.00%</span> of 21 BTC</div>
+        <div class="ct-progress"><div class="ct-progress-bar" id="ct-treasury-bar" style="width:0%"></div></div>
+      </div>
+
+      <div class="ct-tile">
+        <div class="k">current fee split</div>
+        <div class="v" id="ct-split">—</div>
+        <div class="sub" id="ct-split-sub">treasury / node pool</div>
+      </div>
+
+      <div class="ct-tile">
+        <div class="k">decay year</div>
+        <div class="v" id="ct-decay">—</div>
+        <div class="sub">of 5 post-threshold</div>
+      </div>
+
+      <div class="ct-tile">
+        <div class="k">elders registered</div>
+        <div class="v" id="ct-elders">—</div>
+        <div class="sub"><span id="ct-elders-cap">of 101</span></div>
+      </div>
+
+      <div class="ct-tile">
+        <div class="k">block height</div>
+        <div class="v" id="ct-height">—</div>
+        <div class="sub" id="ct-blocks-found">— blocks found by ghost</div>
+      </div>
+
+      <div class="ct-tile">
+        <div class="k">pool hashrate</div>
+        <div class="v" id="ct-hashrate">—</div>
+        <div class="sub" id="ct-miners">— active miners</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── Pending payouts ───────── -->
+<section class="block pending-section">
+  <div class="container">
+    <div class="section-label">pending payouts</div>
+    <h2 class="section-title">Queued for the next coinbase.</h2>
+    <p class="section-lead">
+      Ghost distributes the pool fee atomically every block — nothing
+      held in custody, nothing accrued off-chain. These are the amounts
+      that will land in the next block's coinbase the moment Ghost finds
+      one.
+    </p>
+
+    <div class="core-tiles core-tiles-3">
+      <div class="ct-tile">
+        <div class="k">to miners</div>
+        <div class="v accent" id="ct-to-miners">—</div>
+        <div class="sub">99% of subsidy, proportional to unpaid work</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">to node reward pool</div>
+        <div class="v" id="ct-to-nodes">—</div>
+        <div class="sub" id="ct-to-nodes-sub">0.5% of subsidy · to top 100 nodes</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">to treasury</div>
+        <div class="v" id="ct-to-treasury">—</div>
+        <div class="sub" id="ct-to-treasury-sub">0.5% of subsidy · frozen at 21 BTC</div>
+      </div>
+    </div>
+    <div class="pending-note">
+      Ghost Pay fees also flow into the node reward pool on L2 settlement
+      (feature under integration). Transaction fees from the winning
+      block go in full to whichever node finds it.
+    </div>
+  </div>
+</section>
+
+<!-- ───────── Principles ───────── -->
+<section class="block principles-section">
+  <div class="container">
+    <div class="section-label">principles</div>
+    <h2 class="section-title">What stays true in every phase.</h2>
+
+    <ul class="principles-grid">
+      <li>
+        <div class="pr-title">No pre-mine</div>
+        <div class="pr-body">Every satoshi enters circulation via a mined block. No founder allocation, no insider grant.</div>
+      </li>
+      <li>
+        <div class="pr-title">No foundation, no company</div>
+        <div class="pr-body">Open source under MIT. The protocol is the protocol. No entity can change the rules unilaterally.</div>
+      </li>
+      <li>
+        <div class="pr-title">Non-custodial by design</div>
+        <div class="pr-body">The pool never holds miner funds. Every payout is an on-chain coinbase output direct to the miner's address.</div>
+      </li>
+      <li>
+        <div class="pr-title">Run your own node</div>
+        <div class="pr-body">A home-server laptop with Bitcoin Core can be a Ghost node. No whitelisting, no permission, no minimum stake.</div>
+      </li>
+      <li>
+        <div class="pr-title">Operator-defined policy</div>
+        <div class="pr-body">Every node sets its own mempool policy. There is no canonical "Ghost policy" — the mesh doesn't care what transactions you include.</div>
+      </li>
+      <li>
+        <div class="pr-title">Treasury decays to zero</div>
+        <div class="pr-body">The bootstrap mechanism is designed to extinguish itself. After five years of decay, 100% of the pool fee goes to node operators.</div>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ───────── Roadmap strip ───────── -->
+<section class="block roadmap-section">
+  <div class="container">
+    <div class="section-label">roadmap</div>
+    <h2 class="section-title">Where we've been, where we're going.</h2>
+
+    <div class="roadmap-strip">
+      <div class="rs-col">
+        <div class="rs-head done">shipped</div>
+        <ul>
+          <li>Ghost v1.8.0 mainnet observe mode</li>
+          <li>Four-node BFT mesh live</li>
+          <li>MPC trusted-setup ceremony complete</li>
+          <li>Runestone dead-code filter in Reaper</li>
+          <li>Ledger-style payout model</li>
+        </ul>
+      </div>
+      <div class="rs-col">
+        <div class="rs-head active">active</div>
+        <ul>
+          <li>Per-miner dashboards on bitcoinghost.org</li>
+          <li>Ghost Pay L2 integration with node reward pool</li>
+          <li>Real-share quasar visualisation</li>
+          <li>Operator documentation</li>
+        </ul>
+      </div>
+      <div class="rs-col">
+        <div class="rs-head next">next</div>
+        <ul>
+          <li>Public mining from arbitrary nodes</li>
+          <li>Ghost Tap mobile wallet alpha</li>
+          <li>First mainnet block (fingers crossed)</li>
+          <li>Treasury threshold and decay begins</li>
+        </ul>
+      </div>
     </div>
   </div>
 </section>
@@ -93,6 +289,7 @@
 </footer>
 
 <script>
+  // Theme toggle
   (function () {
     var html = document.documentElement;
     var btn = document.getElementById('theme-toggle');
@@ -107,6 +304,120 @@
       render();
     });
   })();
+
+  var POOL_VMS = ['vm1', 'vm2', 'vm3', 'vm4'];
+
+  function fmtBtc(sats) {
+    if (!sats) return '0<span class="unit"> BTC</span>';
+    var btc = sats / 1e8;
+    if (btc >= 1) return btc.toFixed(4) + '<span class="unit"> BTC</span>';
+    if (btc >= 0.001) return btc.toFixed(6) + '<span class="unit"> BTC</span>';
+    return sats.toLocaleString() + '<span class="unit"> sats</span>';
+  }
+  function fmtHashrate(ths) {
+    if (!isFinite(ths) || ths <= 0) return '0<span class="unit"> TH/s</span>';
+    if (ths < 1) return (ths * 1000).toFixed(1) + '<span class="unit"> GH/s</span>';
+    if (ths < 1000) return ths.toFixed(2) + '<span class="unit"> TH/s</span>';
+    if (ths < 1e6) return (ths / 1000).toFixed(2) + '<span class="unit"> PH/s</span>';
+    return (ths / 1e6).toFixed(2) + '<span class="unit"> EH/s</span>';
+  }
+
+  // Fetches the first VM that responds (falls back through the list).
+  async function fetchAny(path) {
+    for (var i = 0; i < POOL_VMS.length; i++) {
+      try {
+        var r = await fetch('/api/pool/' + POOL_VMS[i] + path);
+        if (r.ok) return await r.json();
+      } catch (e) { /* next */ }
+    }
+    return null;
+  }
+  // Fetches all VMs, returns the array (nulls for failures).
+  async function fetchAll(path) {
+    return Promise.all(POOL_VMS.map(function (vm) {
+      return fetch('/api/pool/' + vm + path)
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; });
+    }));
+  }
+
+  async function refreshTreasury() {
+    var d = await fetchAny('/api/v1/pool/treasury_state');
+    if (!d) return;
+    document.getElementById('ct-treasury').innerHTML = fmtBtc(d.balance_sats);
+    document.getElementById('ct-treasury-pct').textContent = d.progress_pct.toFixed(2) + '%';
+    document.getElementById('ct-treasury-bar').style.width = Math.max(2, Math.min(100, d.progress_pct)) + '%';
+    document.getElementById('ct-decay').textContent = d.decay_year + ' / ' + d.decay_years_total;
+
+    var t = (d.treasury_rate_bps / 100).toFixed(0);
+    var n = (d.node_rate_bps / 100).toFixed(0);
+    document.getElementById('ct-split').innerHTML = t + '% <span class="unit">/</span> ' + n + '%';
+    document.getElementById('ct-split-sub').textContent = 'treasury / node pool';
+
+    // Phase label + stepper highlight
+    document.getElementById('phase-label').textContent = 'phase · ' + d.phase.toLowerCase();
+    document.querySelectorAll('#phase-stepper li').forEach(function (li) {
+      li.classList.toggle('active', li.dataset.phase === d.phase);
+      li.classList.toggle('done', isPhaseBefore(li.dataset.phase, d.phase));
+    });
+  }
+  function isPhaseBefore(a, b) {
+    var order = ['Bootstrap', 'Decentralising', 'Sovereign'];
+    return order.indexOf(a) < order.indexOf(b);
+  }
+
+  async function refreshMesh() {
+    var d = await fetchAny('/api/v1/mesh/status');
+    if (!d) return;
+    document.getElementById('ct-elders').textContent = (d.elders_registered || 0).toLocaleString();
+    document.getElementById('ct-elders-cap').textContent = 'of ' + (d.elders_cap || 101);
+  }
+
+  async function refreshStatus() {
+    // Aggregate across VMs the same way the pool page does
+    var all = await fetchAll('/api/v1/mining/status');
+    var hashrate = 0, maxActive = 0, mesh = null, height = 0, blocksFound = 0;
+    all.forEach(function (r) {
+      if (!r) return;
+      hashrate += r.total_hashrate || 0;
+      var a = r.active_miners || 0;
+      if (a > maxActive) maxActive = a;
+      if (typeof r.mesh_active_miners === 'number' && (mesh === null || r.mesh_active_miners > mesh)) mesh = r.mesh_active_miners;
+      if (r.block_height && r.block_height > height) height = r.block_height;
+      blocksFound = Math.max(blocksFound, r.blocks_found || 0);
+    });
+    document.getElementById('ct-hashrate').innerHTML = fmtHashrate(hashrate);
+    document.getElementById('ct-miners').textContent = (mesh !== null ? mesh : maxActive) + ' active miners';
+    document.getElementById('ct-height').textContent = height ? height.toLocaleString() : '—';
+    document.getElementById('ct-blocks-found').textContent = blocksFound.toLocaleString() + ' blocks found by ghost';
+  }
+
+  async function refreshPayout() {
+    var d = await fetchAny('/api/v1/pool/next_payout');
+    if (!d) return;
+    document.getElementById('ct-to-miners').innerHTML = fmtBtc(d.miner_pool_sats);
+    document.getElementById('ct-to-nodes').innerHTML = fmtBtc(d.node_reward_pool_sats);
+    document.getElementById('ct-to-treasury').innerHTML = fmtBtc(d.treasury_sats);
+    var tBps = d.treasury_rate_bps;
+    var nBps = d.node_rate_bps;
+    document.getElementById('ct-to-nodes-sub').textContent =
+      (nBps / 100).toFixed(0) + '% of pool fee · to top 100 nodes';
+    document.getElementById('ct-to-treasury-sub').textContent =
+      (tBps / 100).toFixed(0) + '% of pool fee · capped at 21 BTC';
+  }
+
+  // Initial load — all parallel, so the page paints in roughly one round-trip.
+  refreshTreasury();
+  refreshMesh();
+  refreshStatus();
+  refreshPayout();
+
+  // Periodic refresh. Treasury + phase move on a block timescale; status
+  // moves every few seconds. Keep the budgets light.
+  setInterval(refreshTreasury, 60000);
+  setInterval(refreshMesh, 60000);
+  setInterval(refreshStatus, 30000);
+  setInterval(refreshPayout, 30000);
 </script>
 
 </body>

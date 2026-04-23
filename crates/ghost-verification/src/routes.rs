@@ -217,6 +217,11 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // lightweight row per share — the caller polls with ?since=<ts>
         // and gets everything accepted since that watermark.
         .route("/api/v1/pool/recent_shares", get(api_pool_recent_shares_handler))
+        // Treasury + decentralisation-phase state for the Core page.
+        // Exposes balance / 21-BTC threshold / decay year / fee split so
+        // the website can render the Bootstrap → Decentralising →
+        // Sovereign journey against live pool state.
+        .route("/api/v1/pool/treasury_state", get(api_pool_treasury_state_handler))
         // M-14: /api/v1/miners/stats moved to internal routes (requires HMAC auth)
         // Exposes individual miner work values, hashrates, and share history
         .route("/api/v1/network/peers", get(peers_handler))
@@ -943,12 +948,16 @@ async fn consensus_state_handler(State(state): State<Arc<VerificationState>>) ->
     let health = state.get_health().await;
 
     // Query database for elder count and peer info
-    let (elder_count, peer_count) = if let Some(ref db) = state.database {
+    let (elder_count, burned_elder_count, peer_count) = if let Some(ref db) = state.database {
         let elders = db.get_elder_count().unwrap_or(0);
+        let burned = db
+            .get_burned_positions()
+            .map(|v| v.len() as u32)
+            .unwrap_or(0);
         let peers = db.get_active_peers(100).map(|p| p.len()).unwrap_or(0) as u32;
-        (elders, peers)
+        (elders, burned, peers)
     } else {
-        (0, health.peer_count)
+        (0, 0, health.peer_count)
     };
 
     // Determine consensus status based on peer connectivity
@@ -967,6 +976,9 @@ async fn consensus_state_handler(State(state): State<Arc<VerificationState>>) ->
         "miner_count": health.miner_count,
         "consensus_status": consensus_status,
         "elder_count": elder_count,
+        "elders_registered": elder_count,
+        "elders_burned": burned_elder_count,
+        "elders_cap": 101u32,
         "bft_threshold": 0.67,
         "quorum_reached": peer_count >= 3
     }))
@@ -2079,6 +2091,91 @@ async fn api_pool_next_payout_handler(
             "inactive_prune_days": 7,
         },
         "miners": miners,
+    }))
+}
+
+/// Decentralisation-phase + treasury state for the public Core page.
+///
+/// The pool collects 0.5% of every block subsidy into the treasury
+/// until it reaches 21 BTC. At that point the treasury balance is
+/// frozen and the fee split begins a five-year linear decay from
+/// 50/50 (treasury/node-pool) to 0/100. The three phases:
+///
+///   * Bootstrap    — pre-threshold. Treasury filling.
+///   * Decentralising — post-threshold, during the 5-year decay.
+///   * Sovereign    — post-decay. 100% of pool fee → node reward pool.
+///
+/// Returns every field the Core page needs to render the journey
+/// stepper, progress bar, and current-split tiles in one round trip.
+async fn api_pool_treasury_state_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Mirror of the constants in ghost-reconciliation::fee_distribution —
+    // kept inline to avoid adding a new crate dependency for one endpoint.
+    // If either side moves, both need to move together.
+    const TREASURY_THRESHOLD_SATS: u64 = 21 * 100_000_000; // 21 BTC
+    // (treasury_bps, node_bps) for year 0 (pre-threshold, then year 1…5).
+    // Year 0 = pre-threshold initial split, same as the first decay row.
+    const DECAY_SCHEDULE_BPS: [(u64, u64); 6] = [
+        (5000, 5000), // pre-threshold / year 0
+        (4000, 6000), // year 1
+        (3000, 7000), // year 2
+        (2000, 8000), // year 3
+        (1000, 9000), // year 4
+        (0, 10000),   // year 5+
+    ];
+
+    let Some(ref db) = state.database else {
+        return Json(serde_json::json!({
+            "error": "Database not available",
+            "threshold_sats": TREASURY_THRESHOLD_SATS,
+        }));
+    };
+
+    let balance_sats = db.get_treasury_balance().unwrap_or(0);
+    let threshold_reached_ts = db.get_treasury_threshold_reached().unwrap_or(None);
+    let threshold_reached = threshold_reached_ts.is_some();
+
+    // Decay year: 0 pre-threshold, 1..=5 after. 365-day years, same as
+    // TreasuryState::years_since_threshold.
+    let decay_year: u32 = match threshold_reached_ts {
+        None => 0,
+        Some(ts) => {
+            let now_s = chrono::Utc::now().timestamp();
+            let elapsed_days = ((now_s - ts).max(0)) / 86_400;
+            ((elapsed_days / 365) as u32 + 1).min(5)
+        }
+    };
+
+    let idx = decay_year as usize;
+    let (treasury_bps, node_bps) = DECAY_SCHEDULE_BPS[idx.min(5)];
+
+    let phase = if !threshold_reached {
+        "Bootstrap"
+    } else if decay_year < 5 {
+        "Decentralising"
+    } else {
+        "Sovereign"
+    };
+
+    let progress_pct = if threshold_reached {
+        100.0
+    } else {
+        (balance_sats as f64 / TREASURY_THRESHOLD_SATS as f64 * 100.0).min(100.0)
+    };
+
+    Json(serde_json::json!({
+        "phase": phase,
+        "balance_sats": balance_sats,
+        "threshold_sats": TREASURY_THRESHOLD_SATS,
+        "threshold_reached": threshold_reached,
+        "threshold_reached_at": threshold_reached_ts,
+        "progress_pct": progress_pct,
+        "decay_year": decay_year,
+        "decay_years_total": 5u32,
+        "treasury_rate_bps": treasury_bps,
+        "node_rate_bps": node_bps,
+        "pool_fee_bps": 100u32,
     }))
 }
 
