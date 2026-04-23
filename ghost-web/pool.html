@@ -1276,11 +1276,41 @@ function qualityColor(t) {
   return QUALITY_STOPS[QUALITY_STOPS.length-1].c.clone();
 }
 const PARTICLE_SPEED = SPHERE_R * 0.9;
-function emitShare(quality) {
+
+// Deterministic 32-bit hash of a string (FNV-ish). Gives each miner_id
+// a stable scalar so the quasar assigns them a consistent latitude on
+// every render.
+function hashString(s) {
+  let h = 0x811c9dc5 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h ^ s.charCodeAt(i)) >>> 0;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h / 0xffffffff;
+}
+
+// Each miner gets a fixed polar angle (latitude) from hash(miner_id),
+// so shares from the same miner always fly along the same meridian.
+// Azimuth is driven by submission time modulo the round length, so a
+// miner's personal-bests trace a latitude circle as the round advances.
+const QUASAR_ROUND_SECS = 600;
+function directionFor(minerIdRedacted, ts) {
+  const polar = (hashString(minerIdRedacted) - 0.5) * Math.PI; // [-π/2, π/2]
+  const azim  = ((ts % QUASAR_ROUND_SECS) / QUASAR_ROUND_SECS) * Math.PI * 2;
+  const cosP = Math.cos(polar);
+  return new THREE.Vector3(cosP * Math.cos(azim), Math.sin(polar), cosP * Math.sin(azim));
+}
+
+// Random direction used by the cold-start fallback (no real share data yet).
+function randomDirection() {
   let u = 2*Math.random()-1, v = 2*Math.random()-1, s;
   while ((s = u*u + v*v) >= 1) { u = 2*Math.random()-1; v = 2*Math.random()-1; }
   const sq = Math.sqrt(1 - s);
-  const dir = new THREE.Vector3(2*u*sq, 2*v*sq, 1 - 2*s);
+  return new THREE.Vector3(2*u*sq, 2*v*sq, 1 - 2*s);
+}
+
+function emitShare(quality, dir) {
+  if (!dir) dir = randomDirection();
   const target = Math.min(quality, 1.0) * SPHERE_R;
   particles.push({
     pos: new THREE.Vector3(), dir, target, quality,
@@ -1346,25 +1376,41 @@ pollAll();
 // burst budget alongside the other pool-page polls.
 setInterval(pollAll, 6000);
 
+// Personal-best bar for each miner this round. A share only becomes a
+// quasar particle when it beats the miner's previous best — cuts the
+// particle rate by ~100× vs one-per-share while keeping every visible
+// dot meaningful (each one is someone's new record). Cleared at
+// round end so every round the bar starts fresh.
+const bestByMiner = new Map();
+
 let shareEmitAccum = 0;
 function tickEmitter(dt) {
   // Pause emission during the end-of-round flash; particles cleared when the
   // flash ends so the next round starts with an empty scene.
   if (flashState) { shareEmitAccum = 0; return; }
 
-  // Drain the real-share queue first — one particle per real share.
-  // Rate-limit to keep frame budgets sane (max ~30 particles per frame).
+  // Drain the real-share queue, keeping only personal-bests per miner.
+  // Cold-start fallback kicks in only if we've never drained a real
+  // share this session.
   let drained = 0;
   while (shareQueue.length && drained < 30) {
     const s = shareQueue.shift();
-    emitShare(s.quality);
-    drained++;
+    const mid = s.miner_id_redacted || 'unknown';
+    const prev = bestByMiner.get(mid) || 0;
+    if (s.quality > prev) {
+      bestByMiner.set(mid, s.quality);
+      emitShare(s.quality, directionFor(mid, s.t || 0));
+      drained++;
+    }
   }
 
-  // If we drained a bunch this frame, skip the hashrate-derived fallback
-  // so we don't double-emit. Otherwise top up from the fallback so the
-  // scene stays alive during fetch stalls.
-  if (drained > 0) { shareEmitAccum = 0; return; }
+  if (drained > 0 || bestByMiner.size > 0) {
+    // We've seen at least some real shares — no fallback needed.
+    shareEmitAccum = 0;
+    return;
+  }
+  // Cold-start: no real shares received yet. Emit low-rate random
+  // particles so the scene isn't empty during the first fetch.
   const sharesPerSec = Math.max(0, samplePoolHashrate() * EMIT_FACTOR);
   shareEmitAccum += sharesPerSec * dt;
   while (shareEmitAccum >= 1) {
@@ -1401,7 +1447,10 @@ function endFlash() {
   flashState = null; banner.classList.remove('show');
   sphereWire.material.color.copy(BASE_SPHERE_COLOR); sphereWire.material.opacity = 0.28;
   // Wipe the scene and start the next round with an empty field.
+  // Personal-best bars reset too so every miner has a fresh shot at
+  // putting their first particle on the board next round.
   particles.length = 0;
+  bestByMiner.clear();
 }
 // Real block events arrive from refreshPool via window.__ghostPool.onBlockEvent
 window.__ghostPool = window.__ghostPool || {};
