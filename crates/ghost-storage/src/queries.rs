@@ -745,6 +745,44 @@ impl Database {
         })
     }
 
+    /// Recent valid shares for live visualisation (quasar). Returns
+    /// `(miner_id, share_hash, timestamp, work)` ordered by timestamp
+    /// ascending, so the caller can append them to a render queue in
+    /// submission order. Capped so a single very-active node can't
+    /// flood the response.
+    pub fn get_recent_valid_shares(
+        &self,
+        since_ts: i64,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, String, i64, f64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT miner_id, share_hash, timestamp, work
+                     FROM shares
+                     WHERE timestamp > ?1 AND valid = 1
+                     ORDER BY timestamp ASC
+                     LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![since_ts, limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, f64>(3)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
     /// Per-miner unpaid summary: how many shares and how much work a
     /// single miner currently has on their ledger. Used by the lookup
     /// endpoint so the miner stats page can display unpaid shares next

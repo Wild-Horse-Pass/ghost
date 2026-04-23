@@ -213,6 +213,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Also reports the fee split (treasury + node reward pool) so the
         // website can render the full breakdown. DB-only, no mesh.
         .route("/api/v1/pool/next_payout", get(api_pool_next_payout_handler))
+        // Tail of recent shares for the live quasar visualisation. One
+        // lightweight row per share — the caller polls with ?since=<ts>
+        // and gets everything accepted since that watermark.
+        .route("/api/v1/pool/recent_shares", get(api_pool_recent_shares_handler))
         // M-14: /api/v1/miners/stats moved to internal routes (requires HMAC auth)
         // Exposes individual miner work values, hashrates, and share history
         .route("/api/v1/network/peers", get(peers_handler))
@@ -1643,6 +1647,12 @@ struct MinersByAddressQuery {
     address: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RecentSharesQuery {
+    since: Option<i64>,
+    limit: Option<u32>,
+}
+
 /// API v1 miner search handler - search miners by worker name or address
 /// M-13: Returns only aggregate counts, not individual miner details (same pattern as M-11)
 async fn api_miners_search_handler(
@@ -2051,6 +2061,70 @@ async fn api_pool_next_payout_handler(
             "inactive_prune_days": 7,
         },
         "miners": miners,
+    }))
+}
+
+/// Tail of recent valid shares for the quasar visualisation. Each
+/// share becomes one particle on the client; quality is normalised
+/// from the share hash's leading zero bits so common pool shares land
+/// in the middle of the colour ramp and rare block-worthy hits
+/// approach 1.0.
+///
+/// Clients poll with `?since=<ts>`; the first call (no since) returns
+/// just the newest few rows so the feed starts caught up rather than
+/// flooding the scene with history.
+async fn api_pool_recent_shares_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<RecentSharesQuery>,
+) -> impl IntoResponse {
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let limit = params.limit.unwrap_or(500).min(2000).max(1);
+    // No watermark → start from a short look-back so the quasar has a
+    // few particles to render immediately instead of waiting for the
+    // next incoming share. 30 seconds is one emit-cycle at most rates.
+    let since_ts = params.since.unwrap_or(now_s - 30);
+
+    let Some(ref db) = state.database else {
+        return Json(serde_json::json!({
+            "now_ts": now_s,
+            "since_ts": since_ts,
+            "shares": serde_json::Value::Array(Vec::new()),
+            "error": "Database not available",
+        }));
+    };
+
+    let rows = db
+        .get_recent_valid_shares(since_ts, limit)
+        .unwrap_or_default();
+
+    let shares: Vec<_> = rows
+        .into_iter()
+        .filter(|(miner_id, _, _, _)| !is_system_miner(miner_id))
+        .map(|(miner_id, hash, ts, _work)| {
+            // Leading hex zeros → leading bits (×4). Bitaxe-difficulty
+            // shares today hit ~48, rare block-grade shares push past 72.
+            // Quality scales (leading_bits − 40) / 40 → 0.2–1.0 span,
+            // clamped so tiny outliers don't vanish or overflow.
+            let leading_hex_zeros = hash.chars().take_while(|c| *c == '0').count();
+            let leading_bits = (leading_hex_zeros * 4) as f64;
+            let quality = ((leading_bits - 40.0) / 40.0).clamp(0.0, 1.0);
+            serde_json::json!({
+                "t": ts,
+                "miner_id_redacted": redact_miner_id(&miner_id),
+                "leading_zero_bits": leading_bits as u64,
+                "quality": quality,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "now_ts": now_s,
+        "since_ts": since_ts,
+        "shares": shares,
     }))
 }
 

@@ -108,7 +108,7 @@
           <span class="sep">·</span>
           <span class="v" id="q-miners">—</span> miners
           <span class="sep">·</span>
-          next block <span class="v" id="q-clock">10:00</span>
+          last block <span class="v" id="q-clock">0:00</span> ago
         </div>
         <div class="qbanner" id="q-banner"><span id="q-banner-text"></span><span class="sub" id="q-banner-sub"></span></div>
         <button class="quasar-expand" id="quasar-expand" type="button" aria-label="Expand to fullscreen">
@@ -575,6 +575,18 @@
           if (mesh === null || r.mesh_active_miners > mesh) mesh = r.mesh_active_miners;
         }
       });
+      // Detect block events by comparing against the previous tick:
+      //   blocks_found increment → we mined a block (green flash)
+      //   block_height increment with blocks_found flat → someone else
+      //     found it, our round ends in a miss
+      // First tick after reload just seeds the watermarks.
+      var prevHeight = lastStats.height;
+      var prevBlocksFound = lastStats.blocks;
+      var blockEvent = null;
+      if (prevHeight && height > prevHeight) {
+        blockEvent = (blocks > prevBlocksFound) ? 'ours' : 'theirs';
+      }
+
       lastStats.hashrate = hashrate;
       lastStats.miners = mesh !== null ? mesh : maxActive;
       lastStats.blocks = blocks;
@@ -583,6 +595,11 @@
       renderMetrics();
       pushHistory(hashrate, lastStats.miners);
       renderCharts();
+
+      if (blockEvent && window.__ghostPool && typeof window.__ghostPool.onBlockEvent === 'function') {
+        window.__ghostPool.onBlockEvent(blockEvent, height);
+      }
+
       dbg('poll ok · ' + okCount + '/4 nodes · ' + hashrate.toFixed(2) + ' TH/s · ' + lastStats.miners + ' miners · history ' + chartHistory.hashrate.length);
     } catch (e) {
       dbg('POLL ERROR: ' + (e && e.message ? e.message : e));
@@ -1275,6 +1292,9 @@ function samplePoolHashrate() {
   }
   return 0;
 }
+// Fallback random quality — only used when the real-share stream hasn't
+// delivered any shares yet (page just loaded, rate-limit hiccup, etc).
+// Every actual share from the pool will override this.
 function sampleQuality() {
   const r = Math.random();
   if (r < 0.0002) return 1.0 + Math.random() * 0.02;
@@ -1284,11 +1304,58 @@ function sampleQuality() {
   return q;
 }
 
+// ───────── Real-share stream ─────────
+// Polls /api/v1/pool/recent_shares on each VM, pushes arriving shares
+// onto an emission queue. tickEmitter drains the queue (one particle
+// per real share with real quality). If the queue runs dry, it falls
+// back to hashrate-derived emission so the scene never looks frozen
+// during a fetch stall.
+const POOL_VMS = ['vm1', 'vm2', 'vm3', 'vm4'];
+const shareQueue = [];
+const lastTsByVm = {};
+const MAX_QUEUE = 2000;
+
+async function pollShares(vm) {
+  const since = lastTsByVm[vm];
+  const qs = since ? ('?since=' + since) : '';
+  try {
+    const r = await fetch('/api/pool/' + vm + '/api/v1/pool/recent_shares' + qs);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (typeof d.now_ts === 'number') lastTsByVm[vm] = d.now_ts;
+    if (!Array.isArray(d.shares)) return;
+    // First poll on this VM with no `since` returns a short look-back.
+    // Cap how many we enqueue at once so the scene doesn't spike.
+    const cap = since ? d.shares.length : Math.min(d.shares.length, 12);
+    for (let i = 0; i < cap; i++) {
+      shareQueue.push(d.shares[i]);
+    }
+    if (shareQueue.length > MAX_QUEUE) shareQueue.splice(0, shareQueue.length - MAX_QUEUE);
+  } catch (e) { /* transient — next poll will catch up */ }
+}
+function pollAll() { POOL_VMS.forEach(pollShares); }
+pollAll();
+setInterval(pollAll, 3000);
+
 let shareEmitAccum = 0;
 function tickEmitter(dt) {
   // Pause emission during the end-of-round flash; particles cleared when the
   // flash ends so the next round starts with an empty scene.
   if (flashState) { shareEmitAccum = 0; return; }
+
+  // Drain the real-share queue first — one particle per real share.
+  // Rate-limit to keep frame budgets sane (max ~30 particles per frame).
+  let drained = 0;
+  while (shareQueue.length && drained < 30) {
+    const s = shareQueue.shift();
+    emitShare(s.quality);
+    drained++;
+  }
+
+  // If we drained a bunch this frame, skip the hashrate-derived fallback
+  // so we don't double-emit. Otherwise top up from the fallback so the
+  // scene stays alive during fetch stalls.
+  if (drained > 0) { shareEmitAccum = 0; return; }
   const sharesPerSec = Math.max(0, samplePoolHashrate() * EMIT_FACTOR);
   shareEmitAccum += sharesPerSec * dt;
   while (shareEmitAccum >= 1) {
@@ -1297,9 +1364,8 @@ function tickEmitter(dt) {
   }
 }
 
-const ROUND_SECONDS = 10 * 60;
 const FLASH_SECONDS = 20;
-let roundRemaining = ROUND_SECONDS;
+let lastBlockTs = performance.now() / 1000;
 let flashState = null;
 let flashRemaining = 0;
 
@@ -1310,16 +1376,16 @@ let blocksFound = 0, blocksMissed = 0;
 
 function triggerBlockFound() {
   flashState = 'block'; flashRemaining = FLASH_SECONDS;
-  roundRemaining = ROUND_SECONDS; blocksFound++;
+  lastBlockTs = performance.now() / 1000; blocksFound++;
   bannerText.textContent = 'Block found.';
   bannerSub.textContent = 'ghost pool · we did it';
   banner.className = 'qbanner block-found show';
 }
 function triggerNoBlock() {
   flashState = 'miss'; flashRemaining = FLASH_SECONDS;
-  roundRemaining = ROUND_SECONDS; blocksMissed++;
-  bannerText.textContent = 'No block this round.';
-  bannerSub.textContent = 'keep going · next round begins now';
+  lastBlockTs = performance.now() / 1000; blocksMissed++;
+  bannerText.textContent = 'Block found elsewhere.';
+  bannerSub.textContent = 'someone else this round · ghost keeps hashing';
   banner.className = 'qbanner no-block show';
 }
 function endFlash() {
@@ -1328,6 +1394,12 @@ function endFlash() {
   // Wipe the scene and start the next round with an empty field.
   particles.length = 0;
 }
+// Real block events arrive from refreshPool via window.__ghostPool.onBlockEvent
+window.__ghostPool = window.__ghostPool || {};
+window.__ghostPool.onBlockEvent = function (kind, height) {
+  if (kind === 'ours') triggerBlockFound();
+  else triggerNoBlock();
+};
 function tickRound(dt) {
   if (flashState) {
     flashRemaining -= dt;
@@ -1339,8 +1411,6 @@ function tickRound(dt) {
     if (flashRemaining <= 0) endFlash();
     return;
   }
-  roundRemaining -= dt;
-  if (roundRemaining <= 0) triggerNoBlock();
 }
 function formatClock(secs) {
   secs = Math.max(0, Math.floor(secs));
@@ -1408,7 +1478,8 @@ function animate() {
 
   qHud.hash.textContent   = samplePoolHashrate().toFixed(2) + ' TH/s';
   qHud.miners.textContent = (window.__ghostPool && window.__ghostPool.getMiners ? window.__ghostPool.getMiners() : 0).toString();
-  qHud.clock.textContent  = flashState ? '—' : formatClock(roundRemaining);
+  const sinceSec = (performance.now() / 1000) - lastBlockTs;
+  qHud.clock.textContent  = flashState ? '—' : formatClock(sinceSec);
 
   requestAnimationFrame(animate);
 }
