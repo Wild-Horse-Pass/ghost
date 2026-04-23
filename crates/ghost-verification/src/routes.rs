@@ -1962,10 +1962,17 @@ async fn api_pool_next_payout_handler(
     // Ledger snapshot: top N by accumulated unpaid work. Mirror of the
     // block-found payout path — same query, same dust filter — so the
     // projection the website shows matches what gets written into the
-    // coinbase when a block is actually found.
-    let top_rows = db
-        .get_top_unpaid_miners(now_s, LEDGER_CAP)
-        .unwrap_or_default();
+    // coinbase when a block is actually found. Translator-proxy accounts
+    // are excluded from the display only; if shares from a real miner
+    // happen to be submitted under a system miner_id they'd still be
+    // paid on-chain but the public view doesn't need to surface them.
+    let top_rows: Vec<(String, f64)> = db
+        .get_top_unpaid_miners(now_s, LEDGER_CAP.saturating_mul(2))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(miner_id, _)| !is_system_miner(miner_id))
+        .take(LEDGER_CAP as usize)
+        .collect();
     let total_unpaid_miners = db.count_unpaid_miners(now_s).unwrap_or(0);
 
     // Iterative dust filter: drop miners whose projected payout < 546 sats,
@@ -2280,10 +2287,15 @@ async fn api_pool_leaderboard_handler(
                 "error": "Database not available",
             }));
         };
+        // Fetch a larger slice and filter so we still return the caller's
+        // requested `limit` after removing system accounts.
+        let over_fetch = (limit as usize).saturating_mul(3).max(30) as u32;
         let shares = db
-            .get_leaderboard_lifetime(limit)
+            .get_leaderboard_lifetime(over_fetch)
             .unwrap_or_default()
             .into_iter()
+            .filter(|(miner_id, _, _)| !is_system_miner(miner_id))
+            .take(limit as usize)
             .map(|(miner_id, share_count, total_work)| {
                 serde_json::json!({
                     "miner_id_redacted": redact_miner_id(&miner_id),
@@ -2327,10 +2339,16 @@ async fn api_pool_leaderboard_handler(
         }));
     };
 
+    // Over-fetch so we can filter out system miners (translator proxies)
+    // and still return `limit` real rows.
+    let over_fetch = (limit as usize).saturating_mul(3).max(30) as u32;
+
     let best_hash = db
-        .get_leaderboard_best_hash(since_ts, limit)
+        .get_leaderboard_best_hash(since_ts, over_fetch)
         .unwrap_or_default()
         .into_iter()
+        .filter(|(miner_id, _, _, _)| !is_system_miner(miner_id))
+        .take(limit as usize)
         .map(|(miner_id, hash, ts, difficulty)| {
             let leading_hex_zeros = hash.chars().take_while(|c| *c == '0').count();
             serde_json::json!({
@@ -2344,9 +2362,11 @@ async fn api_pool_leaderboard_handler(
         .collect::<Vec<_>>();
 
     let shares = db
-        .get_leaderboard_shares(since_ts, limit)
+        .get_leaderboard_shares(since_ts, over_fetch)
         .unwrap_or_default()
         .into_iter()
+        .filter(|(miner_id, _, _)| !is_system_miner(miner_id))
+        .take(limit as usize)
         .map(|(miner_id, share_count, total_work)| {
             serde_json::json!({
                 "miner_id_redacted": redact_miner_id(&miner_id),
@@ -2369,6 +2389,18 @@ async fn api_pool_leaderboard_handler(
 /// Keeps the first 6 and last 4 characters of the address, and leaves the
 /// worker portion intact. If the input doesn't contain a `.`, treats the
 /// whole thing as an address.
+/// Recognise system-level connections that shouldn't appear in public
+/// leaderboards or payout projections — each node runs a local SRI
+/// translator which authenticates as `<addr>.translator-proxy`, and the
+/// historical shares table still holds signet/testnet translator
+/// entries. They outrank real miners on lifetime work just because
+/// they've been up longer, which isn't useful to show.
+fn is_system_miner(miner_id: &str) -> bool {
+    let worker = miner_id.rsplit_once('.').map(|(_, w)| w).unwrap_or("");
+    let lower = worker.to_ascii_lowercase();
+    lower.contains("translator") || lower == "proxy"
+}
+
 fn redact_miner_id(id: &str) -> String {
     let (addr, worker) = match id.find('.') {
         Some(i) => (&id[..i], &id[i..]), // worker has leading '.'

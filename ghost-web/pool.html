@@ -262,7 +262,7 @@
       <span>·</span>
       <span><span id="py-paid-this">—</span> paid this block</span>
       <span>·</span>
-      <span><span id="py-miners">—</span> waiting in ledger</span>
+      <span><span id="py-miners">—</span> on the ledger</span>
     </div>
 
     <div class="lb-table-wrap payout-wrap">
@@ -687,6 +687,13 @@
           .catch(function (e) { console.warn('[lb] fetch failed for', n.id, e); return null; });
       }));
       console.log('[lb] fetched', results);
+      var ok = results.filter(function (r) { return r !== null; }).length;
+      if (ok === 0 && lbState.data) {
+        // Every fetch failed this cycle (rate limit / transient). Keep
+        // the last good view rather than blanking the table.
+        console.warn('[lb] all fetches returned null — preserving last known data');
+        return;
+      }
       var bestByMiner = new Map();
       var sharesByMiner = new Map();
       results.forEach(function (d) {
@@ -713,7 +720,16 @@
       var sharesList = Array.from(sharesByMiner.values())
         .sort(function (a, b) { return b.total_work - a.total_work; })
         .slice(0, 10);
-      lbState.data = { best_hash: bestList, shares: sharesList };
+      // Don't overwrite non-empty data with empty if only a subset of VMs
+      // responded and the intersection happened to be empty.
+      var newData = { best_hash: bestList, shares: sharesList };
+      if ((!bestList.length && !sharesList.length) && lbState.data &&
+          ((lbState.data.best_hash && lbState.data.best_hash.length) ||
+           (lbState.data.shares && lbState.data.shares.length))) {
+        console.warn('[lb] merged result empty while previous had rows — preserving');
+        return;
+      }
+      lbState.data = newData;
       console.log('[lb] merged', { best: bestList.length, shares: sharesList.length });
       renderLeaderboard();
     } catch (err) {
@@ -826,12 +842,15 @@
 
     // Merge the ledger across nodes. Each VM has its own local view of
     // which shares it has seen; summing unpaid_work per miner gives the
-    // pool-wide ledger used for the next coinbase.
+    // pool-wide ledger used for the next coinbase. Unpaid-miner counts
+    // SUM across VMs (a miner on multiple nodes IS multiple ledger
+    // entries from the database's perspective; close enough for the
+    // header tile).
     var byMiner = new Map();
-    var waitingTotal = 0;
+    var totalOnLedger = 0;
     results.forEach(function (r) {
       if (!r) return;
-      waitingTotal = Math.max(waitingTotal, r.total_unpaid_miners || 0);
+      totalOnLedger += r.total_unpaid_miners || 0;
       if (!Array.isArray(r.miners)) return;
       r.miners.forEach(function (m) {
         var prev = byMiner.get(m.miner_id_redacted);
@@ -865,9 +884,15 @@
     miners = miners.slice(0, base.ledger_cap || 1000);
     var totalWork = miners.reduce(function (s, m) { return s + m.unpaid_work; }, 0);
 
+    // "Paid this block" = dust-filtered merged count. "On the ledger" =
+    // everyone with unpaid shares right now (paid + still-waiting).
+    // At Ghost's scale these are usually equal because all active
+    // miners clear dust; the gap shows up once the pool is large
+    // enough that some miners' projected share falls below 546 sats.
+    var mergedUnique = byMiner.size;
+    var onLedger = Math.max(mergedUnique, totalOnLedger);
     document.getElementById('py-paid-this').textContent = miners.length.toLocaleString();
-    document.getElementById('py-miners').textContent =
-      Math.max(0, waitingTotal - miners.length).toLocaleString();
+    document.getElementById('py-miners').textContent = onLedger.toLocaleString();
 
     var tbody = document.querySelector('#py-table tbody');
     if (!miners.length) {
