@@ -704,6 +704,46 @@ impl Database {
         })
     }
 
+    /// Time-bucketed share/work history for a single miner. Backs the
+    /// per-miner page's hashrate chart. Buckets are aligned on
+    /// `(timestamp / bucket_secs) * bucket_secs` so the same ticks line up
+    /// across miners and windows.
+    pub fn get_miner_history(
+        &self,
+        miner_id: &str,
+        since_ts: i64,
+        bucket_secs: i64,
+    ) -> GhostResult<Vec<(i64, u64, f64)>> {
+        let bucket = bucket_secs.max(1);
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT (timestamp / ?3) * ?3 AS bucket,
+                            COUNT(*) AS share_count,
+                            SUM(work) AS total_work
+                     FROM shares
+                     WHERE miner_id = ?1 AND timestamp >= ?2 AND valid = 1
+                     GROUP BY bucket
+                     ORDER BY bucket ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![miner_id, since_ts, bucket], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, f64>(2)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
     /// Get the highest round_id from the shares table
     ///
     /// Returns 0 if no shares exist (fresh install).
@@ -727,19 +767,20 @@ impl Database {
         // Guard: minimum 1 hour retention to prevent accidental wipe
         let retention_secs = retention_secs.max(3600);
 
-        let cutoff_ms = {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64;
-            now_ms - (retention_secs * 1000)
-        };
+        // `shares.timestamp` is stored in Unix SECONDS (despite the old
+        // ShareRecord docstring). Previous code computed the cutoff in ms
+        // which nuked the entire table on every prune tick.
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let cutoff_s = now_s - retention_secs;
 
         self.with_connection(|conn| {
             let deleted = conn
                 .execute(
                     "DELETE FROM shares WHERE timestamp < ?1",
-                    params![cutoff_ms],
+                    params![cutoff_s],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(deleted)
@@ -8750,10 +8791,10 @@ mod tests {
         let max = db.get_max_round_id().expect("Failed to get max round id");
         assert_eq!(max, 0);
 
-        let now_ms = std::time::SystemTime::now()
+        let now_s = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as i64;
+            .as_secs() as i64;
 
         // Insert old share (48 hours ago)
         let old_share = ShareRecord {
@@ -8763,7 +8804,7 @@ mod tests {
             difficulty: 1000.0,
             work: 1000.0,
             share_hash: "hash_old".to_string(),
-            timestamp: now_ms - (48 * 3600 * 1000),
+            timestamp: now_s - (48 * 3600),
             received_by: "node1".to_string(),
             valid: true,
         };
@@ -8778,7 +8819,7 @@ mod tests {
             difficulty: 2000.0,
             work: 2000.0,
             share_hash: "hash_recent".to_string(),
-            timestamp: now_ms - (30 * 60 * 1000),
+            timestamp: now_s - (30 * 60),
             received_by: "node1".to_string(),
             valid: true,
         };

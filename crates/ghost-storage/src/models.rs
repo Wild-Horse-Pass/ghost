@@ -39,7 +39,7 @@ pub struct ShareRecord {
     pub work: f64,
     /// Share hash (hex)
     pub share_hash: String,
-    /// Timestamp (Unix ms)
+    /// Timestamp (Unix seconds)
     pub timestamp: i64,
     /// Node that received the share (hex)
     pub received_by: String,

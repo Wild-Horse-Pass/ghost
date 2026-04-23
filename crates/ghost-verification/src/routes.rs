@@ -192,6 +192,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // mining pools). Enumeration is prevented by exact-match semantics
         // and per-IP nginx rate limiting at the proxy layer.
         .route("/api/v1/miners/lookup", get(api_miner_lookup_handler))
+        // Per-miner time-series: bucketed share count + work over a window.
+        // Backs the individual miner page's hashrate chart. Requires exact
+        // miner_id (no enumeration) and returns empty `points` when unknown.
+        .route("/api/v1/miners/history", get(api_miner_history_handler))
         // Public best-hash records per window (block / day / week / month).
         // Returns this node's best share only; website aggregates across
         // nodes. No auth; enumeration not possible (one response).
@@ -1619,6 +1623,12 @@ struct PoolLeaderboardQuery {
     limit: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+struct MinerHistoryQuery {
+    miner_id: Option<String>,
+    window: Option<String>,
+}
+
 /// API v1 miner search handler - search miners by worker name or address
 /// M-13: Returns only aggregate counts, not individual miner details (same pattern as M-11)
 async fn api_miners_search_handler(
@@ -1880,6 +1890,76 @@ async fn api_miner_lookup_handler(
     };
 
     Json(result)
+}
+
+/// Per-miner share history, bucketed. Client computes hashrate from
+/// `work / bucket_secs`. Returns empty `points` if miner is unknown or
+/// has no shares in window — the per-miner page aggregates responses
+/// from every node so "unknown" on one node is fine.
+///
+/// Buckets: day → 5 min, week → 30 min, month → 2 h. Keeps the point
+/// count bounded (~280–360 points) regardless of window.
+async fn api_miner_history_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<MinerHistoryQuery>,
+) -> impl IntoResponse {
+    let miner_id = params.miner_id.unwrap_or_default();
+    if miner_id.is_empty() {
+        return Json(serde_json::json!({
+            "error": "Missing miner_id parameter",
+        }));
+    }
+
+    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let (window_secs, bucket_secs): (i64, i64) = match window_name.as_str() {
+        "day" => (86_400, 300),
+        "week" => (604_800, 1_800),
+        "month" => (2_592_000, 7_200),
+        _ => {
+            return Json(serde_json::json!({
+                "error": "Invalid window — expected day | week | month",
+                "window": window_name,
+            }));
+        }
+    };
+
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let since_ts = now_s - window_secs;
+
+    let Some(ref db) = state.database else {
+        return Json(serde_json::json!({
+            "miner_id": miner_id,
+            "window": window_name,
+            "bucket_secs": bucket_secs,
+            "since_ts": since_ts,
+            "points": serde_json::Value::Array(Vec::new()),
+            "error": "Database not available",
+        }));
+    };
+
+    let points = db
+        .get_miner_history(&miner_id, since_ts, bucket_secs)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(t, shares, work)| {
+            serde_json::json!({
+                "t": t,
+                "shares": shares,
+                "work": work,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({
+        "miner_id": miner_id,
+        "window": window_name,
+        "bucket_secs": bucket_secs,
+        "since_ts": since_ts,
+        "points": points,
+    }))
 }
 
 /// Public pool records — best (lowest-value, most-leading-zeros) share
