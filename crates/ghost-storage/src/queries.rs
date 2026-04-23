@@ -704,6 +704,93 @@ impl Database {
         })
     }
 
+    /// Rolling-window miner summary with lifetime share counts. Backs
+    /// the "next block payout" projection: the recent work/share numbers
+    /// drive the share% and projected-sats math, while `lifetime_shares`
+    /// (joined from `miners`) gives a stable "who is this" column that
+    /// matches what each miner sees on their individual page.
+    ///
+    /// Using a time window instead of the current `round_id` avoids the
+    /// constant churn — rounds roll on every template (~30s) so a round-
+    /// scoped view shows miners dropping in and out faster than a user
+    /// can read. The projection is approximate; actual payouts credit
+    /// only the round that's active when the block is found.
+    ///
+    /// Returns `(miner_id, recent_work, recent_share_count, lifetime_shares)`.
+    pub fn get_recent_miners_with_lifetime(
+        &self,
+        since_ts: i64,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, f64, u64, u64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.miner_id,
+                            SUM(s.work)       AS total_work,
+                            COUNT(*)          AS share_count,
+                            COALESCE(m.total_shares, 0) AS lifetime_shares
+                     FROM shares s
+                     LEFT JOIN miners m ON s.miner_id = m.miner_id
+                     WHERE s.timestamp >= ?1 AND s.valid = 1
+                     GROUP BY s.miner_id
+                     ORDER BY total_work DESC
+                     LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![since_ts, limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, u64>(2)?,
+                        row.get::<_, u64>(3)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
+    /// Lifetime-contribution leaderboard straight from the `miners`
+    /// table. Unlike the windowed variants this doesn't touch the pruned
+    /// shares table, so it's stable across restarts and long outages.
+    /// Ordered by `total_work` desc — same currency as the windowed
+    /// leaderboard so the two columns are directly comparable.
+    pub fn get_leaderboard_lifetime(
+        &self,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, u64, f64)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT miner_id, total_shares, total_work
+                     FROM miners
+                     WHERE total_shares > 0
+                     ORDER BY total_work DESC
+                     LIMIT ?1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, f64>(2)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })
+    }
+
     /// Top miners in a round with share counts. Backs the public
     /// "next block payout" endpoint: we show the miner's share %, share
     /// count, and projected sats at the next block find. Ordered by work

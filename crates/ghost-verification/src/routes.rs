@@ -1927,6 +1927,11 @@ async fn api_pool_next_payout_handler(
     const NODE_RATE_BPS: u64 = 5000;        // 50% of pool fee
     const DUST_THRESHOLD_SATS: u64 = 546;
     const LIMIT: u32 = 200;
+    // Rounds roll on every template (~30s), so "current round" shares
+    // churn faster than a user can read. The projection uses a wider
+    // rolling window so active miners stay visible; the real payout
+    // still credits only the round that's active at block-find.
+    const WINDOW_SECS: i64 = 900; // 15 minutes
 
     let health = state.get_health().await;
     let block_height = health.block_height as u64;
@@ -1954,20 +1959,24 @@ async fn api_pool_next_payout_handler(
         }));
     };
 
-    let round_id = db.get_max_round_id().unwrap_or(0);
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let since_ts = now_s - WINDOW_SECS;
 
     let rows = db
-        .get_round_miners_with_counts(round_id, LIMIT)
+        .get_recent_miners_with_lifetime(since_ts, LIMIT)
         .unwrap_or_default();
 
-    let total_work: f64 = rows.iter().map(|(_, w, _)| *w).sum();
-    let share_count: u64 = rows.iter().map(|(_, _, c)| *c).sum();
+    let total_work: f64 = rows.iter().map(|(_, w, _, _)| *w).sum();
+    let recent_share_count: u64 = rows.iter().map(|(_, _, c, _)| *c).sum();
     let miner_count = rows.len() as u64;
 
     let miners: Vec<_> = rows
         .into_iter()
         .enumerate()
-        .map(|(i, (miner_id, work, count))| {
+        .map(|(i, (miner_id, work, recent_count, lifetime_shares))| {
             let share_pct = if total_work > 0.0 { work / total_work * 100.0 } else { 0.0 };
             // Proportional projection in u128 to match the payout path's
             // precision, then cast back. Dust redistribution is noted but
@@ -1982,7 +1991,8 @@ async fn api_pool_next_payout_handler(
                 "rank": i + 1,
                 "miner_id_redacted": redact_miner_id(&miner_id),
                 "work": work,
-                "share_count": count,
+                "recent_shares": recent_count,
+                "lifetime_shares": lifetime_shares,
                 "share_pct": share_pct,
                 "projected_sats": projected_sats,
             })
@@ -1990,7 +2000,8 @@ async fn api_pool_next_payout_handler(
         .collect();
 
     Json(serde_json::json!({
-        "round_id": round_id,
+        "window_secs": WINDOW_SECS,
+        "since_ts": since_ts,
         "block_height": block_height,
         "subsidy_sats": subsidy_sats,
         "pool_fee_bps": POOL_FEE_BPS,
@@ -2002,11 +2013,12 @@ async fn api_pool_next_payout_handler(
         "miner_pool_sats": miner_pool_sats,
         "dust_threshold_sats": DUST_THRESHOLD_SATS,
         "total_work": total_work,
-        "share_count": share_count,
+        "recent_share_count": recent_share_count,
         "miner_count": miner_count,
         "notes": {
             "tx_fees_to_block_finder": true,
             "dust_redistributed_to_node_pool": true,
+            "rolling_window_secs": WINDOW_SECS,
         },
         "miners": miners,
     }))
@@ -2247,18 +2259,51 @@ async fn api_pool_leaderboard_handler(
     Query(params): Query<PoolLeaderboardQuery>,
 ) -> impl IntoResponse {
     let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let limit = params.limit.unwrap_or(10).min(50).max(1);
+
+    // "lifetime" queries the `miners` table directly and ignores the
+    // pruned shares timeline. Only the shares-contributed tab is useful
+    // in this mode — best-hash needs an actual share hash which we only
+    // keep in `shares` for a bounded window.
+    if window_name == "lifetime" {
+        let Some(ref db) = state.database else {
+            return Json(serde_json::json!({
+                "window": "lifetime",
+                "error": "Database not available",
+            }));
+        };
+        let shares = db
+            .get_leaderboard_lifetime(limit)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(miner_id, share_count, total_work)| {
+                serde_json::json!({
+                    "miner_id_redacted": redact_miner_id(&miner_id),
+                    "share_count": share_count,
+                    "total_work": total_work,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        return Json(serde_json::json!({
+            "window": "lifetime",
+            "best_hash": serde_json::Value::Array(Vec::new()),
+            "shares": shares,
+            "limit": limit,
+        }));
+    }
+
     let window_secs: i64 = match window_name.as_str() {
         "day" => 86_400,
         "week" => 604_800,
         "month" => 2_592_000,
         _ => {
             return Json(serde_json::json!({
-                "error": "Invalid window — expected day | week | month",
+                "error": "Invalid window — expected day | week | month | lifetime",
                 "window": window_name,
             }));
         }
     };
-    let limit = params.limit.unwrap_or(10).min(50).max(1);
 
     let now_s = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
