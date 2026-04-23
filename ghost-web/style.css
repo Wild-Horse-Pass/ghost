@@ -764,6 +764,67 @@ h2.section-title {
 }
 .miner-card:hover .mc-foot .mc-cta { text-decoration: underline; }
 
+/* Worker grid (address-mode lookup result + miner.html workers list) */
+.worker-group-head {
+  display: flex; justify-content: space-between; align-items: flex-end;
+  padding: 8px 0 16px;
+  gap: 16px;
+}
+.worker-group-count {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--dim); text-transform: uppercase; letter-spacing: 0.12em;
+}
+.worker-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+.worker-card {
+  display: block; text-decoration: none; color: inherit;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  transition: border-color 150ms, transform 150ms;
+}
+.worker-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.worker-card .wc-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 14px;
+}
+.worker-card .wc-name {
+  font-family: var(--font-mono); font-size: 16px; font-weight: 500;
+  color: var(--fg);
+}
+.worker-card .wc-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 10px;
+}
+.worker-card .wc-stat {
+  display: flex; flex-direction: column; align-items: center;
+  border-right: 1px solid var(--rule);
+  padding: 4px;
+}
+.worker-card .wc-stat:last-child { border-right: none; }
+.worker-card .wc-stat .k {
+  font-family: var(--font-mono); font-size: 9px;
+  color: var(--dim); text-transform: uppercase; letter-spacing: 0.14em;
+  margin-bottom: 2px;
+}
+.worker-card .wc-stat .v {
+  font-family: var(--font-mono); font-size: 13px; color: var(--fg);
+}
+.worker-card .wc-foot {
+  display: flex; justify-content: space-between; align-items: center;
+  font-family: var(--font-mono); font-size: 11px; color: var(--fainter);
+}
+.worker-card:hover .wc-foot .mc-cta { text-decoration: underline; }
+
 /* ---- Per-miner page -------------------------------------------------- */
 .mp-hero { padding: 40px 0 24px; }
 .mp-hero .mp-status-row {

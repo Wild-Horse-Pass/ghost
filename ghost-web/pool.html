@@ -738,11 +738,33 @@
       return (s / 1e8).toFixed(8) + ' BTC';
     }
 
+    // Accept three input shapes:
+    //   1. `bc1q...`                 → address only, list all workers
+    //   2. `bc1q....worker`          → single worker card
+    //   3. trailing dot is stripped and treated as (1)
+    function parseQuery(raw) {
+      var q = (raw || '').trim().replace(/\.+$/, '');
+      if (!q) return null;
+      var dot = q.indexOf('.');
+      if (dot < 0) return { kind: 'address', address: q };
+      var worker = q.slice(dot + 1);
+      if (!worker) return { kind: 'address', address: q.slice(0, dot) };
+      return { kind: 'worker', miner_id: q, address: q.slice(0, dot), worker: worker };
+    }
+
     async function lookup() {
-      var q = (input.value || '').trim();
-      if (!q) { out.innerHTML = ''; return; }
-      localStorage.setItem(LAST_KEY, q);
+      var parsed = parseQuery(input.value);
+      if (!parsed) { out.innerHTML = ''; return; }
+      localStorage.setItem(LAST_KEY, input.value.trim());
       out.innerHTML = '<div class="placeholder-panel" style="padding:24px">Searching across the pool…</div>';
+
+      if (parsed.kind === 'address') {
+        await renderWorkers(parsed.address);
+        return;
+      }
+
+      // Single-worker lookup path
+      var q = parsed.miner_id;
       var perNode = await Promise.all(POOL_NODES.map(function (n) {
         var ctl = new AbortController();
         var t = setTimeout(function () { ctl.abort(); }, 5000);
@@ -752,14 +774,13 @@
           .then(function (data) { return { node: n.id.toUpperCase(), data: data }; });
       }));
 
-      // Only keep responses that actually found the miner
       var hits = perNode.filter(function (r) { return r.data && r.data.found === true; });
 
       if (!hits.length) {
         out.innerHTML =
           '<div class="placeholder-panel" style="padding:40px 24px">' +
             'No record for <code>' + q.replace(/</g,'&lt;') + '</code>.<br>' +
-            '<span style="color:var(--fainter); font-size:11px">Miner IDs are exact — paste the full <code>address.worker</code> string your ASIC authorises with.</span>' +
+            '<span style="color:var(--fainter); font-size:11px">Paste your full <code>address.worker</code> string, or just the address to list every worker.</span>' +
           '</div>';
         return;
       }
@@ -784,7 +805,6 @@
       });
 
       var href = '/miner.html?id=' + encodeURIComponent(q);
-      var nodeCount = hits.filter(function (h) { return h.data.active; }).length;
       var render = function (ths) {
         out.innerHTML =
           '<a class="miner-card" href="' + href + '">' +
@@ -799,7 +819,7 @@
               '<div class="mc-tile"><div class="k">payouts</div><div class="v">' + fmtSats(total_payouts_sats) + '</div></div>' +
             '</div>' +
             '<div class="mc-foot">' +
-              '<span>last seen ' + fmtTs(last_seen || null) + ' · on ' + nodeCount + '/' + POOL_NODES.length + ' nodes</span>' +
+              '<span>last share ' + fmtTs(last_seen || null) + '</span>' +
               '<span class="mc-cta">Open full stats →</span>' +
             '</div>' +
           '</a>';
@@ -836,6 +856,77 @@
         }
       } catch (e) { /* keep the 0 hashrate paint — lookup data still useful */ }
     }
+
+    // Address-mode: list every worker under the given payout address.
+    // Merges across nodes (a worker can be active on multiple nodes at
+    // once — we keep the most-recent last_seen and sum shares / blocks /
+    // payouts so the card reflects pool-wide totals).
+    async function renderWorkers(address) {
+      var perNode = await Promise.all(POOL_NODES.map(function (n) {
+        return fetch('/api/pool/' + n.id + '/api/v1/miners/workers?address=' + encodeURIComponent(address))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function () { return null; });
+      }));
+      var byWorker = new Map();
+      perNode.forEach(function (d) {
+        if (!d || !Array.isArray(d.workers)) return;
+        d.workers.forEach(function (w) {
+          var prev = byWorker.get(w.miner_id);
+          if (!prev) {
+            byWorker.set(w.miner_id, Object.assign({}, w));
+          } else {
+            prev.total_shares = Math.max(prev.total_shares, w.total_shares);
+            prev.total_work = Math.max(prev.total_work, w.total_work);
+            prev.blocks_won = Math.max(prev.blocks_won, w.blocks_won);
+            prev.total_payouts_sats = Math.max(prev.total_payouts_sats, w.total_payouts_sats);
+            prev.last_seen = Math.max(prev.last_seen, w.last_seen);
+            prev.first_seen = Math.min(prev.first_seen, w.first_seen);
+            prev.active = prev.active || w.active;
+          }
+        });
+      });
+      var workers = Array.from(byWorker.values())
+        .sort(function (a, b) { return b.last_seen - a.last_seen; });
+
+      if (!workers.length) {
+        out.innerHTML =
+          '<div class="placeholder-panel" style="padding:40px 24px">' +
+            'No workers found under <code>' + address.replace(/</g,'&lt;') + '</code>.<br>' +
+            '<span style="color:var(--fainter); font-size:11px">Addresses are matched exactly. A miner shows up once it has submitted at least one share.</span>' +
+          '</div>';
+        return;
+      }
+
+      var header =
+        '<div class="worker-group-head">' +
+          '<div>' +
+            '<div class="section-label">address</div>' +
+            '<div class="mc-id" style="margin-top:2px">' + address.replace(/</g,'&lt;') + '</div>' +
+          '</div>' +
+          '<div class="worker-group-count">' + workers.length + ' worker' + (workers.length === 1 ? '' : 's') + '</div>' +
+        '</div>';
+
+      var cards = workers.map(function (w) {
+        var href = '/miner.html?id=' + encodeURIComponent(w.miner_id);
+        var status = w.active ? 'online' : 'offline';
+        var statusText = w.active ? 'active' : 'inactive';
+        return '<a class="worker-card" href="' + href + '">' +
+          '<div class="wc-head">' +
+            '<div class="wc-name">' + (w.worker || '(no worker)').replace(/</g, '&lt;') + '</div>' +
+            '<div class="mc-status ' + status + '">' + statusText + '</div>' +
+          '</div>' +
+          '<div class="wc-stats">' +
+            '<div class="wc-stat"><span class="k">shares</span><span class="v">' + w.total_shares.toLocaleString() + '</span></div>' +
+            '<div class="wc-stat"><span class="k">blocks</span><span class="v">' + w.blocks_won + '</span></div>' +
+            '<div class="wc-stat"><span class="k">payouts</span><span class="v">' + fmtSats(w.total_payouts_sats) + '</span></div>' +
+          '</div>' +
+          '<div class="wc-foot">last share ' + fmtTs(w.last_seen) + ' <span class="mc-cta">Open →</span></div>' +
+        '</a>';
+      }).join('');
+
+      out.innerHTML = header + '<div class="worker-grid">' + cards + '</div>';
+    }
+
     btn.addEventListener('click', lookup);
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') lookup(); });
   })();
