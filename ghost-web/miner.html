@@ -526,13 +526,18 @@
       var total_shares = 0, total_work = 0, blocks_won = 0, total_payouts_sats = 0;
       var active = false;
       var payout_address = null;
+      // Each VM keeps an independent `miners` row for this miner_id — every
+      // node a bitaxe ever hashed on holds the shares it submitted *to that
+      // node*. Summing across nodes gives the pool-wide lifetime total,
+      // which is what the pool-page lookup card already does. MAX would
+      // under-report whenever a miner has roamed between nodes.
       hits.forEach(function (d) {
         if (d.first_seen && d.first_seen < first_seen) first_seen = d.first_seen;
         if (d.last_seen && d.last_seen > last_seen) last_seen = d.last_seen;
-        total_shares = Math.max(total_shares, d.total_shares || 0);
-        total_work = Math.max(total_work, d.total_work || 0);
-        blocks_won = Math.max(blocks_won, d.blocks_won || 0);
-        total_payouts_sats = Math.max(total_payouts_sats, d.total_payouts_sats || 0);
+        total_shares += d.total_shares || 0;
+        total_work += d.total_work || 0;
+        blocks_won += d.blocks_won || 0;
+        total_payouts_sats += d.total_payouts_sats || 0;
         if (d.active) active = true;
         payout_address = d.payout_address || payout_address;
       });
