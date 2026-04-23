@@ -1484,8 +1484,13 @@ async fn api_mining_status_handler(
 
     // Fetch tip timestamp up-front (async). The config lock guard below
     // is !Send, so we must not hold any await-points after acquiring it.
+    //
+    // `health.block_height` is the TEMPLATE height (tip + 1 — the block
+    // ghost-pool is currently building). Calling getblockhash(that)
+    // returns "out of range" because Bitcoin Core doesn't have it yet.
+    // `getbestblockhash` returns the actual confirmed tip.
     let last_block_time: Option<u64> = if let Some(ref rpc) = state.rpc {
-        match rpc.get_block_hash(health.block_height).await {
+        match rpc.get_best_block_hash().await {
             Ok(hash) => rpc.get_block_header(&hash).await.ok().map(|h| h.time),
             Err(_) => None,
         }
