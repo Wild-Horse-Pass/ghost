@@ -211,6 +211,7 @@
       <div class="lb-window">
         <label for="lb-window">window</label>
         <select id="lb-window">
+          <option value="lifetime">lifetime</option>
           <option value="day" selected>last day</option>
           <option value="week">last week</option>
           <option value="month">last month</option>
@@ -229,10 +230,10 @@
     <div class="section-label">next block payout</div>
     <h2 class="section-title">In line to get paid.</h2>
     <p class="section-lead">
-      Miners with shares in the current round. When a block is found the
-      subsidy is split proportionally by work — 99% to miners, 0.5% to
-      the treasury, 0.5% to the node reward pool. TX fees are paid in full
-      to whichever node builds the winning block.
+      Projected split if a block is found now, based on the last 15 minutes
+      of hashing. The subsidy is distributed proportionally by work — 99%
+      to miners, 0.5% to treasury, 0.5% to the node reward pool. TX fees
+      are paid in full to whichever node builds the winning block.
     </p>
 
     <div class="payout-summary">
@@ -255,21 +256,23 @@
     </div>
 
     <div class="payout-meta">
-      <span>round <span id="py-round">—</span></span>
+      <span>window <span id="py-window">15 min</span></span>
       <span>·</span>
       <span>block <span id="py-height">—</span></span>
       <span>·</span>
       <span><span id="py-miners">—</span> miners</span>
       <span>·</span>
-      <span><span id="py-shares">—</span> shares</span>
+      <span><span id="py-shares">—</span> recent shares</span>
     </div>
 
     <div class="lb-table-wrap payout-wrap">
       <table class="lb-table payout-table" id="py-table"><tbody></tbody></table>
     </div>
     <div class="payout-note">
-      Projections ignore dust redistribution below <code>546</code> sats;
-      those amounts are redirected into the node reward pool at payout time.
+      Projection rolls on a 15-minute window so active miners stay visible;
+      actual payouts credit whichever round is active when the block is
+      found. Dust below <code>546</code> sats is redirected into the node
+      reward pool at payout time.
     </div>
   </div>
 </section>
@@ -279,8 +282,9 @@
     <div class="section-label">get started</div>
     <h2 class="section-title">Ready to connect?</h2>
     <p class="section-lead">
-      Stratum V1 or V2. Any ASIC. Point it at any Ghost node and you're in
-      the pool.
+      Stratum V1 or V2. Any ASIC. No registration. No KYC. Point and
+      connect to a node offering a public pool or run your own node and
+      build your own block templates to mine.
     </p>
     <div class="hero-actions">
       <a href="/miners.html" class="btn btn-primary">Connection guide <span class="arrow">→</span></a>
@@ -663,12 +667,21 @@
   setInterval(refreshRecords, 60000); // every minute
 
   // ───────── Leaderboards ─────────
-  var lbState = { category: 'best_hash', window: 'day', data: null };
+  // `shares` tab is lifetime by default (stable, matches per-miner pages);
+  // `best_hash` tab uses a time window since a best hash only makes sense
+  // within one.
+  var lbState = {
+    category: 'best_hash',
+    windowByCategory: { best_hash: 'day', shares: 'lifetime' },
+    data: null,
+  };
+  function lbCurrentWindow() { return lbState.windowByCategory[lbState.category]; }
 
   async function refreshLeaderboard() {
     try {
+      var win = lbCurrentWindow();
       var results = await Promise.all(POOL_NODES.map(function (n) {
-        return fetch('/api/pool/' + n.id + '/api/v1/pool/leaderboard?window=' + lbState.window + '&limit=10')
+        return fetch('/api/pool/' + n.id + '/api/v1/pool/leaderboard?window=' + win + '&limit=10')
           .then(function (r) { return r.ok ? r.json() : null; })
           .catch(function (e) { console.warn('[lb] fetch failed for', n.id, e); return null; });
       }));
@@ -746,21 +759,33 @@
   }
 
   (function () {
+    // Sync the window selector + its visibility to the active tab.
+    // Shares tab uses lifetime (and hides the selector since there's no
+    // choice to make); best-hash tab shows day/week/month.
+    function syncWindowSelect() {
+      var select = document.getElementById('lb-window');
+      var wrap = select.parentElement;
+      select.value = lbCurrentWindow();
+      wrap.style.visibility = (lbState.category === 'shares') ? 'hidden' : 'visible';
+    }
     document.querySelectorAll('.lb-tabs button').forEach(function (b) {
       b.addEventListener('click', function () {
         document.querySelectorAll('.lb-tabs button').forEach(function (x) { x.classList.remove('active'); });
         b.classList.add('active');
         lbState.category = b.dataset.lb;
+        lbState.data = null;
+        syncWindowSelect();
         renderLeaderboard();
+        refreshLeaderboard();
       });
     });
     document.getElementById('lb-window').addEventListener('change', function (e) {
-      lbState.window = e.target.value;
-      // Show loading immediately so the table doesn't briefly look empty
+      lbState.windowByCategory[lbState.category] = e.target.value;
       lbState.data = null;
       renderLeaderboard();
       refreshLeaderboard();
     });
+    syncWindowSelect();
   })();
   renderLeaderboard(); // show "loading…" row while the first fetch is in flight
   refreshLeaderboard();
@@ -798,26 +823,25 @@
     document.getElementById('py-node-pool').innerHTML = fmtBtc(base.node_reward_pool_sats);
     document.getElementById('py-height').textContent = base.block_height.toLocaleString();
 
-    // Merge miners across VMs — each node sees a subset of the round's
-    // miners (a bitaxe only ever hits one node at a time), so this sum
-    // is effectively "pool-wide top miners in the current round"
+    // Merge miners across VMs. Recent work/shares sum (a bitaxe only
+    // hashes on one node at a time). Lifetime shares also sum because
+    // each VM records only the shares submitted to it.
     var byMiner = new Map();
-    var maxRound = 0;
     results.forEach(function (r) {
-      if (!r) return;
-      if (r.round_id > maxRound) maxRound = r.round_id;
-      if (!Array.isArray(r.miners)) return;
+      if (!r || !Array.isArray(r.miners)) return;
       r.miners.forEach(function (m) {
         var prev = byMiner.get(m.miner_id_redacted);
         if (!prev) {
           byMiner.set(m.miner_id_redacted, {
             miner_id_redacted: m.miner_id_redacted,
             work: m.work,
-            share_count: m.share_count,
+            recent_shares: m.recent_shares,
+            lifetime_shares: m.lifetime_shares,
           });
         } else {
           prev.work += m.work;
-          prev.share_count += m.share_count;
+          prev.recent_shares += m.recent_shares;
+          prev.lifetime_shares += m.lifetime_shares;
         }
       });
     });
@@ -826,16 +850,17 @@
       .sort(function (a, b) { return b.work - a.work; })
       .slice(0, 200);
     var totalWork = miners.reduce(function (s, m) { return s + m.work; }, 0);
-    var totalShares = miners.reduce(function (s, m) { return s + m.share_count; }, 0);
+    var totalRecent = miners.reduce(function (s, m) { return s + m.recent_shares; }, 0);
     var minerPool = base.miner_pool_sats;
 
-    document.getElementById('py-round').textContent = maxRound;
+    var windowMins = Math.round((base.window_secs || 900) / 60);
+    document.getElementById('py-window').textContent = windowMins + ' min';
     document.getElementById('py-miners').textContent = miners.length;
-    document.getElementById('py-shares').textContent = totalShares.toLocaleString();
+    document.getElementById('py-shares').textContent = totalRecent.toLocaleString();
 
     var tbody = document.querySelector('#py-table tbody');
     if (!miners.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">no shares submitted in the current round yet</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="padding:40px; text-align:center; color:var(--fainter); font-family:var(--font-mono)">no hashing activity in the last 15 minutes</td></tr>';
       return;
     }
 
@@ -846,7 +871,7 @@
         '<td class="lb-rank">' + (i + 1) + '</td>' +
         '<td class="py-miner">' + m.miner_id_redacted.replace(/</g, '&lt;') + '</td>' +
         '<td class="py-pct"><span class="py-bar" style="width:' + Math.max(2, Math.min(100, pct)) + '%"></span><span class="py-pct-v">' + pct.toFixed(2) + '%</span></td>' +
-        '<td class="py-shares">' + m.share_count.toLocaleString() + '<span class="py-shares-sub"> shares</span></td>' +
+        '<td class="py-shares">' + m.lifetime_shares.toLocaleString() + '<span class="py-shares-sub"> lifetime</span></td>' +
         '<td class="py-sats">' + fmtBtc(sats) + '</td>' +
       '</tr>';
     }).join('');
