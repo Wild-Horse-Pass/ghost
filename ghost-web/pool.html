@@ -733,14 +733,8 @@
           .then(function (r) { return r.ok ? r.json() : null; })
           .catch(function (e) { console.warn('[lb] fetch failed for', n.id, e); return null; });
       }));
-      console.log('[lb] fetched', results);
       var ok = results.filter(function (r) { return r !== null; }).length;
-      if (ok === 0 && lbState.data) {
-        // Every fetch failed this cycle (rate limit / transient). Keep
-        // the last good view rather than blanking the table.
-        console.warn('[lb] all fetches returned null — preserving last known data');
-        return;
-      }
+      console.log('[lb] fetched window=' + win + ' ok=' + ok + '/' + results.length);
       var bestByMiner = new Map();
       var sharesByMiner = new Map();
       results.forEach(function (d) {
@@ -767,17 +761,15 @@
       var sharesList = Array.from(sharesByMiner.values())
         .sort(function (a, b) { return b.total_work - a.total_work; })
         .slice(0, 10);
-      // Don't overwrite non-empty data with empty if only a subset of VMs
-      // responded and the intersection happened to be empty.
-      var newData = { best_hash: bestList, shares: sharesList };
-      if ((!bestList.length && !sharesList.length) && lbState.data &&
-          ((lbState.data.best_hash && lbState.data.best_hash.length) ||
-           (lbState.data.shares && lbState.data.shares.length))) {
-        console.warn('[lb] merged result empty while previous had rows — preserving');
+      // If every VM failed AND we still have a good view, keep it. Otherwise
+      // update — even to empty — so a legitimate "no miners yet" state shows
+      // honestly instead of sticking on stale content.
+      if (ok === 0 && lbState.data && (lbState.data.best_hash.length || lbState.data.shares.length)) {
+        console.warn('[lb] all fetches failed — keeping previous view');
         return;
       }
-      lbState.data = newData;
-      console.log('[lb] merged', { best: bestList.length, shares: sharesList.length });
+      lbState.data = { best_hash: bestList, shares: sharesList };
+      console.log('[lb] merged', { best: bestList.length, shares: sharesList.length, category: lbState.category });
       renderLeaderboard();
     } catch (err) {
       console.error('[lb] refresh failed:', err);
