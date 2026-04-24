@@ -3931,6 +3931,67 @@ impl Database {
     }
 
     /// Get total blocks found (distinct block heights from payout proposals)
+    /// Aggregate node metrics for the Core page. Intentionally
+    /// returns only pool-wide counts and a median — never per-node
+    /// data — so Tor operators (and anyone else) aren't individually
+    /// identifiable in the response.
+    ///
+    /// `median_uptime_pct` is None when there are fewer than 3 nodes
+    /// with non-zero uptime — below that the median gives away too much
+    /// about individual operators.
+    pub fn get_node_stats(&self) -> GhostResult<(u64, u64, u64, Option<f64>)> {
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let cutoff_7d = now_s - 7 * 24 * 3600;
+
+        self.with_connection(|conn| {
+            let total: u64 = conn
+                .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let active_7d: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM nodes WHERE last_seen >= ?1",
+                    [cutoff_7d],
+                    |r| r.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let new_7d: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM nodes WHERE first_seen >= ?1",
+                    [cutoff_7d],
+                    |r| r.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // Median uptime across nodes with any uptime data. SQLite
+            // doesn't have a MEDIAN aggregate so we fetch the values
+            // and compute in Rust. Sample size is small (≤ node count).
+            let mut stmt = conn
+                .prepare("SELECT uptime_7d_percent FROM nodes WHERE uptime_7d_percent > 0 ORDER BY uptime_7d_percent ASC")
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            let values: Vec<f64> = stmt
+                .query_map([], |r| r.get::<_, f64>(0))
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            let median = if values.len() < 3 {
+                None
+            } else if values.len() % 2 == 1 {
+                Some(values[values.len() / 2])
+            } else {
+                let a = values[values.len() / 2 - 1];
+                let b = values[values.len() / 2];
+                Some((a + b) / 2.0)
+            };
+
+            Ok((total, active_7d, new_7d, median))
+        })
+    }
+
     /// Cumulative sats paid into the node reward pool via coinbase
     /// across every block Ghost has ever found. Each approved payout
     /// proposal carries a `node_payouts: Vec<PayoutEntry>` in its

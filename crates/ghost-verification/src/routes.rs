@@ -222,6 +222,11 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // the website can render the Bootstrap → Decentralising →
         // Sovereign journey against live pool state.
         .route("/api/v1/pool/treasury_state", get(api_pool_treasury_state_handler))
+        // Aggregate node metrics for the Core page. Returns pool-wide
+        // counts only — no per-node data, no clearnet/tor breakdown,
+        // no identifiers. Tor operators are counted as part of the
+        // aggregate and cannot be singled out.
+        .route("/api/v1/mesh/node_stats", get(api_mesh_node_stats_handler))
         // M-14: /api/v1/miners/stats moved to internal routes (requires HMAC auth)
         // Exposes individual miner work values, hashrates, and share history
         .route("/api/v1/network/peers", get(peers_handler))
@@ -2091,6 +2096,31 @@ async fn api_pool_next_payout_handler(
             "inactive_prune_days": 7,
         },
         "miners": miners,
+    }))
+}
+
+/// Aggregate node metrics for the Core page. Returns only pool-wide
+/// counts and a median — never per-node data — so Tor operators (and
+/// everyone else) remain individually invisible. No clearnet/tor
+/// breakdown exists on purpose; operators who run Tor nodes chose a
+/// privacy setting and we honour it by not publishing the split.
+async fn api_mesh_node_stats_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let Some(ref db) = state.database else {
+        return Json(serde_json::json!({
+            "error": "Database not available",
+        }));
+    };
+
+    let (total, active_7d, new_7d, median_uptime) =
+        db.get_node_stats().unwrap_or((0, 0, 0, None));
+
+    Json(serde_json::json!({
+        "total_nodes": total,
+        "active_7d": active_7d,
+        "new_7d": new_7d,
+        "median_uptime_pct": median_uptime,
     }))
 }
 

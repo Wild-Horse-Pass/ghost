@@ -856,6 +856,31 @@ h2.section-title {
   transition: width 600ms ease-out;
 }
 
+.mesh-chart-wrap { margin-top: 28px; }
+.mesh-chart-wrap .chart-frame {
+  height: 320px;
+  padding: 24px 16px 16px;
+  margin-top: 12px;
+}
+.mesh-chart-head {
+  display: flex; justify-content: space-between; align-items: flex-end;
+  gap: 16px; flex-wrap: wrap;
+}
+.mesh-chart-latest {
+  font-family: var(--font-mono); font-size: 14px;
+  color: var(--fg); text-align: right;
+}
+.mesh-chart-latest .sub {
+  display: block;
+  color: var(--fainter); font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  margin-top: 2px;
+}
+
+@media (max-width: 900px) {
+  .mesh-chart-wrap .chart-frame { height: 240px; padding-top: 16px; }
+}
+
 .pending-section .pending-note {
   margin-top: 14px;
   font-family: var(--font-mono); font-size: 11px;
