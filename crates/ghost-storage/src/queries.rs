@@ -3926,6 +3926,52 @@ impl Database {
     }
 
     /// Get total blocks found (distinct block heights from payout proposals)
+    /// Cumulative sats paid into the node reward pool via coinbase
+    /// across every block Ghost has ever found. Each approved payout
+    /// proposal carries a `node_payouts: Vec<PayoutEntry>` in its
+    /// serialized JSON; we deserialize and sum.
+    ///
+    /// Returns 0 until the pool finds its first block. This number is
+    /// the L1 side of "total paid to node reward pool"; L2 Ghost Pay
+    /// fees are tracked separately.
+    pub fn get_total_node_rewards_paid(&self) -> GhostResult<u64> {
+        use ghost_common::types::{PayoutProposal, PayoutType};
+
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT proposal_json FROM payout_proposals WHERE is_approved = 1")
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut total: u64 = 0;
+            for r in rows {
+                let json = match r {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Skipping malformed payout_proposals row");
+                        continue;
+                    }
+                };
+                match serde_json::from_str::<PayoutProposal>(&json) {
+                    Ok(p) => {
+                        for entry in p.node_payouts.iter() {
+                            if matches!(entry.payout_type, PayoutType::NodeReward) {
+                                total = total.saturating_add(entry.amount);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to deserialize proposal_json");
+                    }
+                }
+            }
+            Ok(total)
+        })
+    }
+
     pub fn get_blocks_found_count(&self) -> GhostResult<u64> {
         self.with_connection(|conn| {
             let count: i64 = conn

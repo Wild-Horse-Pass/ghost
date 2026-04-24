@@ -185,6 +185,43 @@
   </div>
 </section>
 
+<!-- ───────── Cumulative totals ───────── -->
+<section class="block totals-section">
+  <div class="container">
+    <div class="section-label">lifetime totals</div>
+    <h2 class="section-title">Paid into the node reward pool so far.</h2>
+    <p class="section-lead">
+      Running sum of every satoshi that has ever been committed to the
+      node reward pool across Ghost's mainnet history. Coinbase payments
+      are authoritative — aggregated from every approved payout proposal
+      on-chain.
+    </p>
+
+    <div class="core-tiles core-tiles-3">
+      <div class="ct-tile">
+        <div class="k">via coinbase</div>
+        <div class="v accent" id="ct-nr-coinbase">—</div>
+        <div class="sub" id="ct-nr-coinbase-sub">paid across all blocks found</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">via ghost pay (l2)</div>
+        <div class="v" id="ct-nr-l2">—</div>
+        <div class="sub">L2 settlement tracking coming soon</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">total paid</div>
+        <div class="v" id="ct-nr-total">—</div>
+        <div class="sub">cumulative across L1 + L2</div>
+      </div>
+    </div>
+    <div class="pending-note">
+      Treasury's cumulative total is shown above as the live treasury
+      balance — every satoshi the treasury has ever received is still
+      in that address (frozen once it hits 21 BTC).
+    </div>
+  </div>
+</section>
+
 <!-- ───────── Principles ───────── -->
 <section class="block principles-section">
   <div class="container">
@@ -360,6 +397,16 @@
       li.classList.toggle('active', li.dataset.phase === d.phase);
       li.classList.toggle('done', isPhaseBefore(li.dataset.phase, d.phase));
     });
+
+    // Cumulative node-reward totals
+    var coinbase = d.node_rewards_paid_coinbase_sats || 0;
+    var l2 = d.node_rewards_paid_l2_sats; // null until L2 tracking is live
+    var total = d.node_rewards_paid_total_sats || 0;
+    document.getElementById('ct-nr-coinbase').innerHTML = fmtBtc(coinbase);
+    document.getElementById('ct-nr-l2').innerHTML = (l2 === null || typeof l2 === 'undefined')
+      ? '<span class="unit" style="font-size:13px">pending</span>'
+      : fmtBtc(l2);
+    document.getElementById('ct-nr-total').innerHTML = fmtBtc(total);
   }
   function isPhaseBefore(a, b) {
     var order = ['Bootstrap', 'Decentralising', 'Sovereign'];
