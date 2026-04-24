@@ -66,33 +66,74 @@
   </div>
 </section>
 
-<!-- ───────── Why run a node ───────── -->
-<section class="block node-why-section">
+<!-- ───────── What makes Ghost nodes different ───────── -->
+<section class="block node-diff-section">
   <div class="container">
-    <div class="section-label">why run a node</div>
-    <h2 class="section-title">Skin in the game. Signal in the mesh.</h2>
+    <div class="section-label">what makes a ghost node</div>
+    <h2 class="section-title">Bitcoin Core, plus everything Ghost adds.</h2>
     <p class="section-lead">
-      Ghost pays nodes directly out of every block the pool finds. Every
-      block, every settlement, every share of the fee pool routes to
-      operators. The protocol is the protocol — no gatekeepers to suck up.
+      A Ghost node runs alongside your Bitcoin Core daemon. It adds a
+      mesh layer, an incentive layer, and a privacy layer on top of
+      stock Bitcoin — every feature below is built into the Ghost
+      binary, every one toggles in config.
     </p>
 
-    <ul class="principles-grid">
+    <ul class="feature-list node-core-pink">
       <li>
-        <div class="pr-title">Earn sats</div>
-        <div class="pr-body">0.5% of every block subsidy, plus the full node side of each L2 settlement fee, flows to the node reward pool. Paid on-chain, every block, direct to your address.</div>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">BUDS</div>
+          <div class="fl-desc">Tier-based mempool policy dial. Accept or reject transactions by class — T0 financial, T1 data, T2 content, T3 abusive — without forking or recompiling.</div>
+        </div>
       </li>
       <li>
-        <div class="pr-title">Your policy, your node</div>
-        <div class="pr-body">Pick your own mempool policy — Bitcoin-only, standard, permissive, or anything else. The mesh doesn't care which transactions you include; nodes earn identically.</div>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Reaper</div>
+          <div class="fl-desc">Consensus-safe dead-code filter. Rejects inscription envelopes, runestones, drop stuffing, fake multisig, P2TR annex abuse and oversized OP_RETURNs at the policy layer.</div>
+        </div>
       </li>
       <li>
-        <div class="pr-title">Your voice in consensus</div>
-        <div class="pr-body">Every node can propose payouts, vote in the BFT round, and sign checkpoints. The more nodes, the harder the mesh is to capture.</div>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Shroud</div>
+          <div class="fl-desc">Randomised relay delays that defeat timing-correlation attacks used to fingerprint originating nodes and link wallets to IPs.</div>
+        </div>
       </li>
       <li>
-        <div class="pr-title">No permission required</div>
-        <div class="pr-body">No whitelisting, no KYC, no minimum stake. Start the binary, connect peers, pass the uptime gate, and you're in.</div>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Ghost Mode</div>
+          <div class="fl-desc">Blocks-only relay. Your node never announces transactions into the mempool, preventing origin-address leakage from passive network surveillance.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Exorcism</div>
+          <div class="fl-desc">Defensive block storage. Blocks are validated in RAM, then hazeable fields — witness, scriptSig, OP_RETURN, coinbase data — are stripped before disk. Harmful bytes never persist.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Tor or clearnet</div>
+          <div class="fl-desc">Embedded Tor subprocess or clean clearnet P2P routing, configurable per node. The mesh counts both identically — no privacy penalty for running hidden.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Decentralised voting</div>
+          <div class="fl-desc">67% Byzantine-fault-tolerant quorum on payouts and consensus actions, gossiped over a ZMQ mesh. Every node can propose, vote, and sign checkpoints.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Incentivised share system</div>
+          <div class="fl-desc">0.5% of every block subsidy plus the full L2 node side of settlement fees flow to the node reward pool. Paid on-chain, every block, to your address.</div>
+        </div>
       </li>
     </ul>
   </div>
@@ -104,68 +145,49 @@
     <div class="section-label">capabilities</div>
     <h2 class="section-title">Opt into more. Earn more shares.</h2>
     <p class="section-lead">
-      The reward pool is split by capability shares. Every node that meets
-      the uptime gate gets at least one share; each additional capability
-      you opt into — and prove via random peer challenges — adds more.
-      Five capabilities, maximum fifteen shares.
+      The reward pool is split by capability shares. Every node that
+      meets the uptime gate gets at least one share; each capability you
+      opt into — and prove via random peer challenges — adds more. Five
+      capabilities, maximum fifteen shares.
     </p>
 
-    <div class="cap-grid">
-      <div class="cap-card cap-archive">
-        <div class="cap-weight">+5</div>
-        <div class="cap-title">Archive mode</div>
-        <div class="cap-body">
-          Keep the full Bitcoin Ghost chain from genesis and serve block
-          data to peers on request. Verified via random block-retrieval
-          challenges. Heaviest on storage; highest reward.
+    <ul class="feature-list node-core-pink cap-bulleted">
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Archive mode <span class="fl-badge">+5</span></div>
+          <div class="fl-desc">Keep the full Bitcoin Ghost chain from genesis and serve block data to peers. Verified via random block-retrieval challenges. Heaviest on storage; highest reward.</div>
         </div>
-      </div>
-      <div class="cap-card cap-pay">
-        <div class="cap-weight">+4</div>
-        <div class="cap-title">Ghost Pay</div>
-        <div class="cap-body">
-          Run the L2 payment service — accept instant payments, serve
-          light wallets, process settlements. Verified via L2 block
-          lookup challenges. Earns L2 settlement fees on top.
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Ghost Pay <span class="fl-badge">+4</span></div>
+          <div class="fl-desc">Run the L2 payment service — accept instant payments, serve light wallets, process settlements. Verified via L2 block-lookup challenges. Earns L2 settlement fees on top.</div>
         </div>
-      </div>
-      <div class="cap-card cap-mining">
-        <div class="cap-weight">+3</div>
-        <div class="cap-title">Public mining</div>
-        <div class="cap-body">
-          Open your Stratum ports so external ASICs can point at your
-          node. Verified by peers connecting to your stratum endpoint.
-          Adds miner hashrate to the pool.
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Public mining <span class="fl-badge">+3</span></div>
+          <div class="fl-desc">Open your Stratum ports so external ASICs can point at your node. Verified by peers connecting to your stratum endpoint. Adds miner hashrate to the pool.</div>
         </div>
-      </div>
-      <div class="cap-card cap-pure">
-        <div class="cap-weight">+2</div>
-        <div class="cap-title">Bitcoin Pure</div>
-        <div class="cap-body">
-          Include only financial transactions — no inscriptions, no
-          data-heavy OP_RETURN spam. Verified by peers submitting
-          policy-classification challenges. Lower orphan rate.
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Bitcoin Pure <span class="fl-badge">+2</span></div>
+          <div class="fl-desc">Include only financial transactions — no inscriptions, no data-heavy OP_RETURN spam. Verified by peers submitting policy-classification challenges.</div>
         </div>
-      </div>
-      <div class="cap-card cap-elder">
-        <div class="cap-weight">+1</div>
-        <div class="cap-title">Elder</div>
-        <div class="cap-body">
-          One of the first 101 nodes registered on the network with valid
-          proof-of-work. Elder slots are issued in deterministic order;
-          once burned or retired they stay burned.
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Elder <span class="fl-badge">+1</span></div>
+          <div class="fl-desc">One of the first 101 nodes registered with valid proof-of-work. Slots issued in deterministic order; once burned or retired they stay burned.</div>
         </div>
-      </div>
-      <div class="cap-card cap-max">
-        <div class="cap-weight">15</div>
-        <div class="cap-title">Maximum shares</div>
-        <div class="cap-body">
-          Stack every capability and hit 5 + 4 + 3 + 2 + 1 = 15. Nodes
-          with higher share counts take a proportionally larger slice of
-          each block's node reward pool — when they pass the gate.
-        </div>
-      </div>
-    </div>
+      </li>
+    </ul>
   </div>
 </section>
 

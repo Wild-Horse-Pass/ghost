@@ -948,37 +948,45 @@ h2.section-title {
 
 /* ---- Nodes page ------------------------------------------------------ */
 
-/* Capability cards — 5-4-3-2-1 system */
-.cap-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 16px; margin: 24px 0 0;
+/* Ghost-bulleted feature lists. Matches the visual vocabulary of
+   index.html's feature groups but without the bordered card — the
+   little pink ghost sits next to each item like a disc marker. */
+.feature-list {
+  list-style: none; padding: 0; margin: 28px 0 0;
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  gap: 28px 40px;
 }
-.cap-card {
-  padding: 22px 24px;
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  position: relative;
-  display: flex; flex-direction: column; gap: 10px;
+.feature-list li {
+  display: flex; align-items: flex-start; gap: 16px;
 }
-.cap-card .cap-weight {
-  position: absolute; top: 16px; right: 20px;
-  font-family: var(--font-mono); font-size: 22px; font-weight: 500;
-  color: var(--accent);
-  line-height: 1;
+.feature-list .gh-bullet {
+  flex-shrink: 0;
+  width: 26px; height: 26px;
+  margin-top: 2px;
 }
-.cap-card.cap-max .cap-weight { color: var(--fg); }
-.cap-card .cap-title {
-  font-family: var(--font-sans); font-weight: 700; font-size: 16px;
-  color: var(--fg); padding-right: 48px;
+.feature-list .fl-name {
+  font-family: var(--font-sans);
+  font-weight: 700; font-size: 16px;
+  color: var(--fg); margin-bottom: 6px;
+  display: flex; align-items: baseline; gap: 10px;
 }
-.cap-card .cap-body {
+.feature-list .fl-badge {
+  font-family: var(--font-mono); font-size: 11px;
+  font-weight: 500; padding: 2px 8px;
+  border-radius: 3px; letter-spacing: 0.04em;
+}
+.feature-list .fl-desc {
   font-family: var(--font-mono); font-size: 12px;
-  color: var(--dim); line-height: 1.6;
+  color: var(--dim); line-height: 1.7;
 }
-.cap-card.cap-max {
-  background: linear-gradient(135deg, var(--accent-weak), transparent);
-  border-color: var(--accent);
+
+/* Core (nodes) pink variant. Bullets and badges pick up the
+   #ec4899 we use for Ghost Core throughout the site. Titles stay
+   default colour for contrast against the pink markers. */
+.feature-list.node-core-pink .gh-bullet { color: #ec4899; }
+.feature-list.node-core-pink .fl-badge {
+  background: rgba(236, 72, 153, 0.15);
+  color: #ec4899;
 }
 
 /* Hardware requirements table */
@@ -1051,7 +1059,7 @@ h2.section-title {
 }
 
 @media (max-width: 900px) {
-  .cap-grid { grid-template-columns: 1fr; }
+  .feature-list { grid-template-columns: 1fr; gap: 22px; }
   .hw-table th, .hw-table td { padding: 10px 12px; font-size: 12px; }
   .hw-table th:nth-child(4),
   .hw-table td:nth-child(4),
