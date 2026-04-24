@@ -946,6 +946,120 @@ h2.section-title {
   .ct-tile.ct-wide { grid-column: span 1; }
 }
 
+/* ---- Nodes page ------------------------------------------------------ */
+
+/* Capability cards — 5-4-3-2-1 system */
+.cap-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 16px; margin: 24px 0 0;
+}
+.cap-card {
+  padding: 22px 24px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  position: relative;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.cap-card .cap-weight {
+  position: absolute; top: 16px; right: 20px;
+  font-family: var(--font-mono); font-size: 22px; font-weight: 500;
+  color: var(--accent);
+  line-height: 1;
+}
+.cap-card.cap-max .cap-weight { color: var(--fg); }
+.cap-card .cap-title {
+  font-family: var(--font-sans); font-weight: 700; font-size: 16px;
+  color: var(--fg); padding-right: 48px;
+}
+.cap-card .cap-body {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--dim); line-height: 1.6;
+}
+.cap-card.cap-max {
+  background: linear-gradient(135deg, var(--accent-weak), transparent);
+  border-color: var(--accent);
+}
+
+/* Hardware requirements table */
+.hw-table-wrap {
+  margin-top: 24px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  overflow: hidden;
+  overflow-x: auto;
+}
+.hw-table {
+  width: 100%; border-collapse: collapse;
+  font-family: var(--font-mono); font-size: 13px;
+}
+.hw-table thead {
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule);
+}
+.hw-table th {
+  text-align: left;
+  padding: 12px 16px;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--dim);
+  text-transform: uppercase; letter-spacing: 0.14em;
+  font-weight: 500;
+}
+.hw-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  color: var(--fg);
+}
+.hw-table tbody tr:last-child td { border-bottom: none; }
+.hw-table td strong { color: var(--accent); font-weight: 500; }
+
+/* Quickstart numbered steps */
+.quickstart-steps {
+  list-style: none; padding: 0; margin: 24px 0 0;
+  display: flex; flex-direction: column; gap: 0;
+  counter-reset: qs;
+}
+.quickstart-steps li {
+  display: flex; gap: 20px;
+  padding: 20px 0;
+  border-top: 1px solid var(--rule);
+}
+.quickstart-steps li:first-child { border-top: none; padding-top: 0; }
+.quickstart-steps .qs-n {
+  flex-shrink: 0;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-weight: 500; font-size: 14px;
+}
+.quickstart-steps .qs-title {
+  font-family: var(--font-sans); font-weight: 700; font-size: 16px;
+  color: var(--fg); margin-bottom: 6px;
+}
+.quickstart-steps .qs-desc {
+  font-family: var(--font-mono); font-size: 13px;
+  color: var(--dim); line-height: 1.7;
+}
+.quickstart-steps code {
+  background: var(--surface);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--fg); font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .cap-grid { grid-template-columns: 1fr; }
+  .hw-table th, .hw-table td { padding: 10px 12px; font-size: 12px; }
+  .hw-table th:nth-child(4),
+  .hw-table td:nth-child(4),
+  .hw-table th:nth-child(5),
+  .hw-table td:nth-child(5) { display: none; }
+  .quickstart-steps li { gap: 14px; }
+}
+
 /* ---- Next block payout section -------------------------------------- */
 .payout-section { }
 .payout-summary {
