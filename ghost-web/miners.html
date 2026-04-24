@@ -5,10 +5,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Miners · Bitcoin Ghost</title>
+  <meta name="description" content="Point your ASIC at Ghost Pool. 1% fee, ledger-style payouts, no registration, Stratum V1 and V2 supported.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css?v=20260422">
+  <link rel="stylesheet" href="/style.css?v=20260424b">
   <script>
     (function () {
       var saved = localStorage.getItem('ghost-theme');
@@ -29,7 +30,6 @@
       </svg>
       <span class="wordmark">bitcoinghost</span>
     </a>
-
     <nav class="primary">
       <a href="/">overview</a>
       <a href="/core.html">core</a>
@@ -40,7 +40,6 @@
       <a href="/downloads.html">downloads</a>
       <a href="/docs/">docs</a>
     </nav>
-
     <div class="utils">
       <a href="https://github.com/bitcoin-ghost" class="bare icon-btn" aria-label="GitHub">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -54,11 +53,246 @@
 
 <section class="hero">
   <div class="container">
-    <span class="eyebrow">under construction</span>
-    <h1>For miners.</h1>
-    <p class="lead">Connect your ASIC via Stratum V1 or V2, set a payout address, and see your stats. Page under construction.</p>
+    <span class="eyebrow">Miners</span>
+    <h1>Mine on Ghost.</h1>
+    <p class="lead">
+      Point any SHA-256 ASIC at a Ghost node. 1% pool fee, ledger-style
+      payouts, direct to your address. No registration, no KYC.
+    </p>
     <div class="hero-actions">
-      <a href="/" class="btn btn-ghost">Back to overview</a>
+      <a href="#quickstart" class="btn btn-primary">Connect a miner <span class="arrow">→</span></a>
+      <a href="/pool.html#your-miner" class="btn btn-ghost">Your stats</a>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── Why mine at Ghost ───────── -->
+<section class="block miner-why-section">
+  <div class="container">
+    <div class="section-label">why mine at ghost</div>
+    <h2 class="section-title">A better deal for hashers.</h2>
+    <p class="section-lead">
+      Ghost Pool was built on the idea that miners should keep more of
+      what they earn, get paid directly on-chain, and never hand their
+      credentials to an operator.
+    </p>
+
+    <ul class="feature-list pool-cyan">
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">1% fee, subsidy only</div>
+          <div class="fl-desc">The pool takes 1% of the block subsidy — split 50/50 between treasury and the node reward pool. Zero cut of transaction fees.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">100% of TX fees to the winner</div>
+          <div class="fl-desc">When a block is found, transaction fees are paid in full to the node that built the winning template — no haircut to the pool, no hidden skim.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Ledger-style payouts</div>
+          <div class="fl-desc">Every share you submit accumulates on your unpaid ledger until you're paid. Shares never evaporate from template rolls — your work carries forward across blocks.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">On-chain, non-custodial</div>
+          <div class="fl-desc">Payouts land in the coinbase of every block Ghost finds — direct to your Bitcoin address. The pool never takes custody of your sats.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Stratum V1 and V2</div>
+          <div class="fl-desc">Run what your ASIC already speaks. SV1 on port 3333 for legacy hardware, SV2 on 34255 for miners that want template selection and per-miner channels.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Any SHA-256 ASIC</div>
+          <div class="fl-desc">Bitaxe, Whatsminer, Antminer, Avalon — if it hashes double-SHA256 and talks Stratum, it works. No vendor lock-in, no firmware restrictions.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">No registration, no KYC</div>
+          <div class="fl-desc">There's no account to create. Your payout address IS your identity. Plug in, authorise with <code>&lt;your-address&gt;.&lt;worker&gt;</code>, and start hashing.</div>
+        </div>
+      </li>
+      <li>
+        <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
+        <div>
+          <div class="fl-name">Solo or pooled, your call</div>
+          <div class="fl-desc">Run your own node and mine directly against your own templates — or point at someone else's public-mining node and pool up. Same protocol, same payouts either way.</div>
+        </div>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ───────── Payout economics ───────── -->
+<section class="block miner-econ-section">
+  <div class="container">
+    <div class="section-label">payout economics</div>
+    <h2 class="section-title">Where every sat of the block reward goes.</h2>
+    <p class="section-lead">
+      Transparent by construction. No "variance" buffer, no mystery
+      withholdings — the full split is on-chain in every coinbase the
+      pool builds.
+    </p>
+
+    <div class="core-tiles">
+      <div class="ct-tile">
+        <div class="k">to miners</div>
+        <div class="v accent">99%</div>
+        <div class="sub">of block subsidy, proportional to unpaid work</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">to treasury</div>
+        <div class="v">0.5%</div>
+        <div class="sub">of block subsidy, until 21 BTC cap</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">to node reward pool</div>
+        <div class="v">0.5%</div>
+        <div class="sub">of block subsidy, to node operators</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">tx fees</div>
+        <div class="v accent">100%</div>
+        <div class="sub">to whichever node finds the block</div>
+      </div>
+    </div>
+    <div class="pending-note">
+      Ledger model: your share is <strong>unpaid work / total unpaid work</strong>
+      across every active miner. Top 1000 unpaid positions are paid per
+      block; miners below that threshold carry forward until they clear
+      the dust line. See the <a href="/pool.html">Pool</a> page's "In
+      line to get paid" for the live queue.
+    </div>
+  </div>
+</section>
+
+<!-- ───────── Compatibility ───────── -->
+<section class="block miner-hw-section">
+  <div class="container">
+    <div class="section-label">compatibility</div>
+    <h2 class="section-title">Hardware you can point at Ghost.</h2>
+    <p class="section-lead">
+      Any SHA-256d ASIC that speaks Stratum V1 or V2. Here are the
+      configs people actually run.
+    </p>
+
+    <div class="hw-table-wrap">
+      <table class="hw-table">
+        <thead>
+          <tr>
+            <th>Class</th>
+            <th>Protocol</th>
+            <th>Typical rate</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Bitaxe / open-source</strong></td>
+            <td>SV1</td>
+            <td>~1 TH/s</td>
+            <td>Set pool URL in the web UI, authorise as <code>addr.worker</code>. Zero-fuss.</td>
+          </tr>
+          <tr>
+            <td><strong>Antminer / Whatsminer</strong></td>
+            <td>SV1 (SV2 varies)</td>
+            <td>100–300 TH/s</td>
+            <td>Standard pool config. Use SV2 endpoint if firmware supports it; SV1 as a drop-in otherwise.</td>
+          </tr>
+          <tr>
+            <td><strong>SV2 template declarator</strong></td>
+            <td>SV2</td>
+            <td>any</td>
+            <td>Run your own job declarator for template selection and per-worker attribution via the TLV worker-hashrate extension.</td>
+          </tr>
+          <tr>
+            <td><strong>Solo / custom</strong></td>
+            <td>SV1 or SV2</td>
+            <td>any</td>
+            <td>Run ghost-pool on your own node and point local hashers at it. You get 100% of any block you find; pool fee still applies to the subsidy.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── Quickstart ───────── -->
+<section class="block miner-quickstart-section" id="quickstart">
+  <div class="container">
+    <div class="section-label">quickstart</div>
+    <h2 class="section-title">Four steps to your first share.</h2>
+    <p class="section-lead">
+      No account, no forms. Pick an endpoint, set your address, start
+      hashing.
+    </p>
+
+    <ol class="quickstart-steps">
+      <li>
+        <div class="qs-n">1</div>
+        <div class="qs-body">
+          <div class="qs-title">Pick an endpoint</div>
+          <div class="qs-desc">Connect to any public-mining Ghost node. SV1: <code>stratum+tcp://&lt;node-host&gt;:3333</code>. SV2: <code>stratum+tcp://&lt;node-host&gt;:34255</code>. Your own node works too if you're running ghost-pool locally.</div>
+        </div>
+      </li>
+      <li>
+        <div class="qs-n">2</div>
+        <div class="qs-body">
+          <div class="qs-title">Set your credentials</div>
+          <div class="qs-desc">Username is your full payout address plus a worker name: <code>bc1q…yourAddress.bitaxe1</code>. Any string with a <code>.</code> separator works — one address can back many workers. Password field can be anything (<code>x</code> is fine).</div>
+        </div>
+      </li>
+      <li>
+        <div class="qs-n">3</div>
+        <div class="qs-body">
+          <div class="qs-title">Start hashing</div>
+          <div class="qs-desc">Save the config on your miner and kick it over. Shares start flowing within seconds; each one lands on your unpaid ledger straight away.</div>
+        </div>
+      </li>
+      <li>
+        <div class="qs-n">4</div>
+        <div class="qs-body">
+          <div class="qs-title">Watch your stats</div>
+          <div class="qs-desc">Paste your address into the <a href="/pool.html#your-miner">lookup on the pool page</a> to see hashrate, unpaid work, lifetime shares, and projected sats. Each worker gets its own page with a 24-hour hashrate chart.</div>
+        </div>
+      </li>
+    </ol>
+
+    <div class="pending-note">
+      Using the aggregated translator (default in most miners) or running
+      SV2 with the <code>aggregate_channels = false</code> setting both
+      work — in either case your shares are attributed to the exact
+      <code>address.worker</code> string your ASIC authorised with.
+    </div>
+  </div>
+</section>
+
+<!-- ───────── Final CTA ───────── -->
+<section class="block connect-cta" style="border-bottom:none">
+  <div class="container">
+    <div class="section-label">ready?</div>
+    <h2 class="section-title">Start hashing.</h2>
+    <p class="section-lead">
+      Every share, every block, direct to your address. No middleman.
+    </p>
+    <div class="hero-actions" style="margin-top: 24px">
+      <a href="#quickstart" class="btn btn-primary">Quickstart <span class="arrow">→</span></a>
+      <a href="/pool.html#your-miner" class="btn btn-ghost">Look up your miner</a>
     </div>
   </div>
 </section>

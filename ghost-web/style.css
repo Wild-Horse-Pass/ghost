@@ -989,6 +989,22 @@ h2.section-title {
   color: #ec4899;
 }
 
+/* Pool (miners) cyan variant. Same pattern — accents pick up the
+   Ghost Pool cyan (#06b6d4) used across the miners page. */
+.feature-list.pool-cyan .gh-bullet { color: #06b6d4; }
+.feature-list.pool-cyan .fl-badge {
+  background: rgba(6, 182, 212, 0.15);
+  color: #06b6d4;
+}
+
+/* Pay (future) green variant, kept here for symmetry when we add
+   feature lists to the pay page. */
+.feature-list.pay-green .gh-bullet { color: #22c55e; }
+.feature-list.pay-green .fl-badge {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
 /* Hardware requirements table */
 .hw-table-wrap {
   margin-top: 24px;
