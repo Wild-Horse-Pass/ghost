@@ -8384,6 +8384,94 @@ impl Database {
         })
     }
 
+    /// Aggregate Pay-activity counters for the public stats endpoint.
+    /// Returns a struct instead of individual functions so the website
+    /// gets a consistent snapshot in one DB hit — avoids the tiny drift
+    /// that comes from four sequential count queries over a moving
+    /// `now` anchor.
+    ///
+    /// Privacy note: none of these expose per-row data (no payment ids,
+    /// no participants, no addresses) — only counts and one sum.
+    pub fn get_pay_stats(&self, since_ts: i64) -> GhostResult<PayStats> {
+        self.with_connection(|conn| {
+            // L2 payments — accepted_at is a unix timestamp, indexed.
+            let payments_24h: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM accepted_instant_payments WHERE accepted_at >= ?1",
+                    [since_ts],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let payments_total: u64 = conn
+                .query_row("SELECT COUNT(*) FROM accepted_instant_payments", [], |r| r.get(0))
+                .unwrap_or(0);
+
+            // Wraith rounds — created_at is unix seconds.
+            let wraith_rounds_24h: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM wraith_rounds WHERE created_at >= ?1",
+                    [since_ts],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let wraith_rounds_total: u64 = conn
+                .query_row("SELECT COUNT(*) FROM wraith_rounds", [], |r| r.get(0))
+                .unwrap_or(0);
+            let wraith_rounds_active: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM wraith_rounds WHERE status = 'active'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            // Settlement batches — created_at is unix seconds.
+            let settlements_24h: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM reconciliation_state WHERE created_at >= ?1",
+                    [since_ts],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let settlements_total: u64 = conn
+                .query_row("SELECT COUNT(*) FROM reconciliation_state", [], |r| r.get(0))
+                .unwrap_or(0);
+
+            // Undistributed L2 fee pool — sum across all epochs that
+            // haven't been distributed yet. Represents pending fees
+            // queued for the next settlement.
+            let epoch_fee_pool: u64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(fee_total_sats), 0) FROM l2_epoch_fees WHERE distributed = 0",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|v| v.max(0) as u64)
+                .unwrap_or(0);
+
+            // Unspent shielded notes — proxy for "currently shielded" activity.
+            let unspent_notes: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM l2_notes WHERE spent = 0",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            Ok(PayStats {
+                payments_24h,
+                payments_total,
+                wraith_rounds_24h,
+                wraith_rounds_total,
+                wraith_rounds_active,
+                settlements_24h,
+                settlements_total,
+                epoch_fee_pool_sats: epoch_fee_pool,
+                unspent_notes,
+            })
+        })
+    }
+
     /// Get the accumulated fee total for an epoch.
     pub fn get_epoch_fee_total(&self, epoch: u64) -> GhostResult<u64> {
         self.with_connection(|conn| {

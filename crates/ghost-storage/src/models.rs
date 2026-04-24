@@ -531,6 +531,22 @@ pub struct PeerReputationRecord {
 // WRAITH MODELS
 // =============================================================================
 
+/// Aggregate Pay-page stats returned by `Database::get_pay_stats`.
+/// All fields are pool-wide counts or a single sum — no per-payment,
+/// per-participant, or per-note detail is exposed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PayStats {
+    pub payments_24h: u64,
+    pub payments_total: u64,
+    pub wraith_rounds_24h: u64,
+    pub wraith_rounds_total: u64,
+    pub wraith_rounds_active: u64,
+    pub settlements_24h: u64,
+    pub settlements_total: u64,
+    pub epoch_fee_pool_sats: u64,
+    pub unspent_notes: u64,
+}
+
 /// Wraith mixing round record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WraithRoundRecord {

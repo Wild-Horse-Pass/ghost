@@ -1614,6 +1614,10 @@ async fn main() -> Result<()> {
         .route("/api/v1/withdrawals/:id", get(get_withdrawal))
         // Status endpoints
         .route("/api/v1/status", get(get_status))
+        // Public Pay activity stats for bitcoinghost.org/pay.html. All
+        // aggregates, no per-row detail — privacy preserved for both
+        // users and operators.
+        .route("/api/v1/pay/stats", get(pay_stats_handler))
         .route("/health", get(health_check))
         // GhostPay verification endpoint for node capability challenges
         .route("/verify/ghostpay", get(verify_ghostpay))
@@ -2600,6 +2604,35 @@ async fn cancel_withdrawal(
 // ============================================================================
 // Status Handlers
 // ============================================================================
+
+/// Public Pay-activity stats for bitcoinghost.org/pay.html.
+///
+/// Returns aggregates only — no payment ids, no participants, no
+/// note commitments. 24h windows are anchored on wall-clock now; the
+/// single DB hit guarantees a consistent snapshot across fields.
+async fn pay_stats_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let since_24h = now_s - 24 * 3600;
+
+    let stats = state.db.get_pay_stats(since_24h).unwrap_or_default();
+
+    Json(serde_json::json!({
+        "now_ts": now_s,
+        "since_ts": since_24h,
+        "payments_24h": stats.payments_24h,
+        "payments_total": stats.payments_total,
+        "wraith_rounds_24h": stats.wraith_rounds_24h,
+        "wraith_rounds_total": stats.wraith_rounds_total,
+        "wraith_rounds_active": stats.wraith_rounds_active,
+        "settlements_24h": stats.settlements_24h,
+        "settlements_total": stats.settlements_total,
+        "epoch_fee_pool_sats": stats.epoch_fee_pool_sats,
+        "unspent_notes": stats.unspent_notes,
+    }))
+}
 
 /// Get node status
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
