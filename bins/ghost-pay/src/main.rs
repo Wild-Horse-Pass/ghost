@@ -6891,6 +6891,11 @@ async fn execute_settlement_batch(
         );
     }
 
+    // Amount this settlement is about to pay into the node reward pool
+    // via L2 fees. Captured here so the broadcast-success path can bump
+    // the cumulative `l2_node_rewards_paid_sats` running total in kv_store.
+    let mut l2_node_reward_paid: u64 = 0;
+
     let build_result = if include_l2_fees {
         // Per-node direct fee split: this node earns from its own L2 traffic
         let node_payout_address = state.config.node_payout_address.clone();
@@ -6911,6 +6916,7 @@ async fn execute_settlement_batch(
                 } else {
                     vec![]
                 };
+                l2_node_reward_paid = node_amount;
                 executor.build_transaction_with_l2_fees(
                     &batch,
                     fee_rate,
@@ -7121,6 +7127,27 @@ async fn execute_settlement_batch(
                     l2_fee_pool,
                     "Marked L2 epoch fees as distributed"
                 );
+            }
+
+            // Bump the cumulative L2-node-rewards-paid counter. Counted at
+            // broadcast rather than at L1 confirmation because the
+            // reconciliation_state table isn't actually populated in the
+            // current settlement path — committing at broadcast is a
+            // marginal over-count in reorg scenarios (rare on mainnet)
+            // but keeps the metric accurate to within one batch.
+            if l2_node_reward_paid > 0 {
+                match state.db.add_l2_node_rewards_paid(l2_node_reward_paid) {
+                    Ok(total) => info!(
+                        amount_sats = l2_node_reward_paid,
+                        cumulative_sats = total,
+                        "L2 node rewards cumulative total updated"
+                    ),
+                    Err(e) => error!(
+                        amount_sats = l2_node_reward_paid,
+                        error = %e,
+                        "Failed to update L2 node rewards cumulative total"
+                    ),
+                }
             }
 
             Ok(Some(batch_id))

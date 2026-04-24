@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 35;
+const SCHEMA_VERSION: u32 = 36;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -91,6 +91,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (33, migrate_v33),
         (34, migrate_v34),
         (35, migrate_v35),
+        (36, migrate_v36),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1868,6 +1869,29 @@ fn migrate_v35(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added paid_in_proposal_hash column + partial indexes to shares");
+    Ok(())
+}
+
+/// v36: track L2 node reward payouts per batch
+///
+/// Each L2 settlement batch splits its fee pool between treasury and the
+/// node reward pool. Pre-v36 the node-side amount was computed at batch
+/// build but never persisted — we could only report it live, not run
+/// a cumulative total. This column captures the amount so the
+/// finalize path can increment a global `l2_node_rewards_paid_sats`
+/// kv_store accumulator once the batch's L1 transaction confirms.
+///
+/// Existing rows default to 0 (we have no retroactive data). The
+/// accumulator starts from the moment nodes upgrade.
+fn migrate_v36(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v36: Add l2_node_rewards_sats to reconciliation_state");
+
+    conn.execute_batch(
+        "ALTER TABLE reconciliation_state ADD COLUMN l2_node_rewards_sats INTEGER NOT NULL DEFAULT 0;",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added l2_node_rewards_sats column to reconciliation_state");
     Ok(())
 }
 

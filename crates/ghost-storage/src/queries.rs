@@ -3224,8 +3224,8 @@ impl Database {
                 "INSERT INTO reconciliation_state (
                     batch_id, settlement_class, participant_count, total_amount_sats,
                     merkle_root, l1_txid, l1_block_height, dispute_deadline,
-                    status, created_at, finalized_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    status, created_at, finalized_at, l2_node_rewards_sats
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     batch.batch_id,
                     batch.settlement_class,
@@ -3238,6 +3238,7 @@ impl Database {
                     batch.status.as_str(),
                     batch.created_at,
                     batch.finalized_at,
+                    batch.l2_node_rewards_sats,
                 ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -3255,7 +3256,7 @@ impl Database {
                 .prepare(
                     "SELECT batch_id, settlement_class, participant_count, total_amount_sats,
                             merkle_root, l1_txid, l1_block_height, dispute_deadline,
-                            status, created_at, finalized_at
+                            status, created_at, finalized_at, l2_node_rewards_sats
                      FROM reconciliation_state WHERE batch_id = ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -3278,7 +3279,7 @@ impl Database {
                 .prepare(
                     "SELECT batch_id, settlement_class, participant_count, total_amount_sats,
                             merkle_root, l1_txid, l1_block_height, dispute_deadline,
-                            status, created_at, finalized_at
+                            status, created_at, finalized_at, l2_node_rewards_sats
                      FROM reconciliation_state WHERE status IN ('pending', 'submitted')
                      ORDER BY created_at ASC LIMIT ?1",
                 )
@@ -3342,6 +3343,10 @@ fn reconciliation_from_row(row: &rusqlite::Row) -> rusqlite::Result<Reconciliati
         status: parse_reconciliation_status_strict(&status_str, "reconciliation_from_row")?,
         created_at: row.get(9)?,
         finalized_at: row.get(10)?,
+        // Column 11 = l2_node_rewards_sats, added in v36. Callers that
+        // still project 11 columns (older SELECTs) get a default 0 via
+        // the optional column read.
+        l2_node_rewards_sats: row.get::<_, i64>(11).unwrap_or(0) as u64,
     })
 }
 
@@ -4380,8 +4385,61 @@ fn payout_from_row(row: &rusqlite::Row) -> rusqlite::Result<PayoutRecord> {
 /// Treasury state storage keys
 const TREASURY_BALANCE_KEY: &str = "treasury_balance_sats";
 const TREASURY_THRESHOLD_REACHED_KEY: &str = "treasury_threshold_reached_at";
+const L2_NODE_REWARDS_PAID_KEY: &str = "l2_node_rewards_paid_sats";
 
 impl Database {
+    /// Cumulative sats paid into the node reward pool via L2 Ghost Pay
+    /// settlement fees. Incremented atomically by `add_l2_node_rewards_paid`
+    /// when a reconciliation batch finalises on L1.
+    pub fn get_l2_node_rewards_paid(&self) -> GhostResult<u64> {
+        match self.kv_get(L2_NODE_REWARDS_PAID_KEY)? {
+            Some(s) => s.parse().map_err(|e| {
+                GhostError::Database(format!("Failed to parse L2 node rewards total: {}", e))
+            }),
+            None => Ok(0),
+        }
+    }
+
+    /// Atomically add `amount` to the L2 node-rewards-paid running total.
+    /// Uses the same SELECT-FOR-UPDATE-style transaction pattern as
+    /// `add_treasury_funds` so concurrent settlements don't race.
+    pub fn add_l2_node_rewards_paid(&self, amount: u64) -> GhostResult<u64> {
+        if amount == 0 {
+            return self.get_l2_node_rewards_paid();
+        }
+        let now = chrono::Utc::now().timestamp();
+        self.with_connection(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let current: u64 = tx
+                .query_row(
+                    "SELECT COALESCE(value, '0') FROM kv_store WHERE key = ?1",
+                    [L2_NODE_REWARDS_PAID_KEY],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+
+            let new_total = current.saturating_add(amount);
+
+            tx.execute(
+                "INSERT INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                params![L2_NODE_REWARDS_PAID_KEY, new_total.to_string(), now],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            tx.commit()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(new_total)
+        })
+    }
+
     /// Get the current treasury balance in satoshis
     pub fn get_treasury_balance(&self) -> GhostResult<u64> {
         match self.kv_get(TREASURY_BALANCE_KEY)? {

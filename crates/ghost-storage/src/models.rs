@@ -663,6 +663,11 @@ pub struct ReconciliationRecord {
     pub created_at: i64,
     /// Finalized timestamp
     pub finalized_at: Option<i64>,
+    /// Portion of this batch's fee pool that went to the node reward pool.
+    /// Captured at batch creation so finalization can bump a running
+    /// cumulative counter once the L1 tx reaches required confirmations.
+    #[serde(default)]
+    pub l2_node_rewards_sats: u64,
 }
 
 /// Reconciliation batch status

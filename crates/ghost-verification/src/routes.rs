@@ -2164,11 +2164,13 @@ async fn api_pool_treasury_state_handler(
         (balance_sats as f64 / TREASURY_THRESHOLD_SATS as f64 * 100.0).min(100.0)
     };
 
-    // Cumulative totals paid into the node reward pool. Coinbase side
-    // is authoritative (sums every approved PayoutProposal's node_payouts).
-    // L2 side reports null until Ghost Pay settlement tracks a running
-    // total — the infrastructure to accrue that doesn't exist yet.
+    // Cumulative totals paid into the node reward pool.
+    //   * Coinbase: authoritative sum across every approved PayoutProposal
+    //   * L2:       running kv_store accumulator bumped at Ghost Pay
+    //               broadcast-success time in bins/ghost-pay/src/main.rs
     let node_rewards_coinbase = db.get_total_node_rewards_paid().unwrap_or(0);
+    let node_rewards_l2 = db.get_l2_node_rewards_paid().unwrap_or(0);
+    let node_rewards_total = node_rewards_coinbase.saturating_add(node_rewards_l2);
 
     Json(serde_json::json!({
         "phase": phase,
@@ -2183,8 +2185,8 @@ async fn api_pool_treasury_state_handler(
         "node_rate_bps": node_bps,
         "pool_fee_bps": 100u32,
         "node_rewards_paid_coinbase_sats": node_rewards_coinbase,
-        "node_rewards_paid_l2_sats": serde_json::Value::Null,
-        "node_rewards_paid_total_sats": node_rewards_coinbase,
+        "node_rewards_paid_l2_sats": node_rewards_l2,
+        "node_rewards_paid_total_sats": node_rewards_total,
     }))
 }
 

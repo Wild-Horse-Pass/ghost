@@ -206,7 +206,7 @@
       <div class="ct-tile">
         <div class="k">via ghost pay (l2)</div>
         <div class="v" id="ct-nr-l2">—</div>
-        <div class="sub">L2 settlement tracking coming soon</div>
+        <div class="sub" id="ct-nr-l2-sub">from L2 settlement fees</div>
       </div>
       <div class="ct-tile">
         <div class="k">total paid</div>
@@ -400,12 +400,10 @@
 
     // Cumulative node-reward totals
     var coinbase = d.node_rewards_paid_coinbase_sats || 0;
-    var l2 = d.node_rewards_paid_l2_sats; // null until L2 tracking is live
+    var l2 = d.node_rewards_paid_l2_sats || 0;
     var total = d.node_rewards_paid_total_sats || 0;
     document.getElementById('ct-nr-coinbase').innerHTML = fmtBtc(coinbase);
-    document.getElementById('ct-nr-l2').innerHTML = (l2 === null || typeof l2 === 'undefined')
-      ? '<span class="unit" style="font-size:13px">pending</span>'
-      : fmtBtc(l2);
+    document.getElementById('ct-nr-l2').innerHTML = fmtBtc(l2);
     document.getElementById('ct-nr-total').innerHTML = fmtBtc(total);
   }
   function isPhaseBefore(a, b) {
