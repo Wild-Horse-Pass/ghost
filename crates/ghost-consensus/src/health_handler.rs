@@ -887,7 +887,11 @@ impl HealthPingHandler {
                 warn!(error = %e, peer_id = %short_id, "Failed to persist peer info");
             }
 
-            // Register node in nodes table (required for node reward payouts)
+            // Register node in nodes table (required for node reward payouts).
+            // Thread through the peer's gossip'd PoW proof so they're eligible
+            // for elder promotion on our local DB view (without this the mesh
+            // never converges on an elder set — each node sees only itself
+            // as eligible because only its own PoW ever gets stored).
             let capabilities_str = format!(
                 "archive:{},ghost_pay:{},public_mining:{},reaper:{}",
                 ping.capabilities.archive_mode,
@@ -895,11 +899,15 @@ impl HealthPingHandler {
                 ping.capabilities.public_mining,
                 ping.capabilities.reaper
             );
-            if let Err(e) = db.register_node_with_elder_check(
+            let peer_pow_hex = ping.pow_proof.map(|(nonce, difficulty)| {
+                ghost_common::identity::NodeIdProof { nonce, difficulty }.to_hex()
+            });
+            if let Err(e) = db.register_node_with_elder_check_and_pow(
                 &node_id_hex,
                 Some(ping.public_address.as_str()),
                 None, // display_name not available from health ping
                 &capabilities_str,
+                peer_pow_hex.as_deref(),
             ) {
                 debug!(error = %e, peer_id = %short_id, "Failed to register node from health ping");
             }
