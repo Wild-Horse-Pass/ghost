@@ -64,6 +64,96 @@
   </div>
 </section>
 
+<!-- ───────── The mesh ───────── -->
+<section class="block mesh-section">
+  <div class="container">
+    <div class="section-label">the mesh</div>
+    <h2 class="section-title">Nodes keeping Ghost alive.</h2>
+    <p class="section-lead">
+      The mesh is the pool. Every node can propose payouts, validate
+      blocks, vote in BFT consensus. No distinction is drawn between
+      clearnet and Tor nodes — operators choose how to run, the mesh
+      counts them the same way. This page reports only aggregates so
+      individual operators stay invisible.
+    </p>
+
+    <div class="core-tiles">
+      <div class="ct-tile">
+        <div class="k">total known</div>
+        <div class="v" id="ct-node-total">—</div>
+        <div class="sub">all-time registered</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">active in last 7d</div>
+        <div class="v accent" id="ct-node-active">—</div>
+        <div class="sub">last heard from within 7 days</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">new this week</div>
+        <div class="v" id="ct-node-new">—</div>
+        <div class="sub">first seen in last 7 days</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">median 7d uptime</div>
+        <div class="v" id="ct-node-uptime">—</div>
+        <div class="sub">needs ≥3 active nodes to display</div>
+      </div>
+    </div>
+
+    <div class="mesh-chart-wrap">
+      <div class="mesh-chart-head">
+        <div>
+          <div class="section-label">active nodes over time</div>
+        </div>
+        <div class="mesh-chart-latest">
+          <span id="mesh-chart-latest-val">—</span>
+          <span class="sub" id="mesh-chart-window">—</span>
+        </div>
+      </div>
+      <div class="chart-frame">
+        <svg id="mesh-chart"></svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── Cumulative totals ───────── -->
+<section class="block totals-section">
+  <div class="container">
+    <div class="section-label">lifetime totals</div>
+    <h2 class="section-title">Paid into the node reward pool so far.</h2>
+    <p class="section-lead">
+      Running sum of every satoshi that has ever been committed to the
+      node reward pool across Ghost's mainnet history. Coinbase payments
+      are authoritative — aggregated from every approved payout proposal
+      on-chain.
+    </p>
+
+    <div class="core-tiles core-tiles-3">
+      <div class="ct-tile">
+        <div class="k">via coinbase</div>
+        <div class="v accent" id="ct-nr-coinbase">—</div>
+        <div class="sub" id="ct-nr-coinbase-sub">paid across all blocks found</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">via ghost pay (l2)</div>
+        <div class="v" id="ct-nr-l2">—</div>
+        <div class="sub" id="ct-nr-l2-sub">from L2 settlement fees</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">total paid</div>
+        <div class="v" id="ct-nr-total">—</div>
+        <div class="sub">cumulative across L1 + L2</div>
+      </div>
+    </div>
+    <div class="pending-note">
+      Treasury's cumulative total is the live treasury balance shown in
+      the state section below — every satoshi the treasury has ever
+      received is still in that address (frozen once it hits 21 BTC).
+    </div>
+  </div>
+</section>
+
 <!-- ───────── Phase journey ───────── -->
 <section class="block journey-section">
   <div class="container">
@@ -181,96 +271,6 @@
       Ghost Pay fees also flow into the node reward pool on L2 settlement
       (feature under integration). Transaction fees from the winning
       block go in full to whichever node finds it.
-    </div>
-  </div>
-</section>
-
-<!-- ───────── The mesh ───────── -->
-<section class="block mesh-section">
-  <div class="container">
-    <div class="section-label">the mesh</div>
-    <h2 class="section-title">Nodes keeping Ghost alive.</h2>
-    <p class="section-lead">
-      The mesh is the pool. Every node can propose payouts, validate
-      blocks, vote in BFT consensus. No distinction is drawn between
-      clearnet and Tor nodes — operators choose how to run, the mesh
-      counts them the same way. This page reports only aggregates so
-      individual operators stay invisible.
-    </p>
-
-    <div class="core-tiles">
-      <div class="ct-tile">
-        <div class="k">total known</div>
-        <div class="v" id="ct-node-total">—</div>
-        <div class="sub">all-time registered</div>
-      </div>
-      <div class="ct-tile">
-        <div class="k">active in last 7d</div>
-        <div class="v accent" id="ct-node-active">—</div>
-        <div class="sub">last heard from within 7 days</div>
-      </div>
-      <div class="ct-tile">
-        <div class="k">new this week</div>
-        <div class="v" id="ct-node-new">—</div>
-        <div class="sub">first seen in last 7 days</div>
-      </div>
-      <div class="ct-tile">
-        <div class="k">median 7d uptime</div>
-        <div class="v" id="ct-node-uptime">—</div>
-        <div class="sub">needs ≥3 active nodes to display</div>
-      </div>
-    </div>
-
-    <div class="mesh-chart-wrap">
-      <div class="mesh-chart-head">
-        <div>
-          <div class="section-label">active nodes over time</div>
-        </div>
-        <div class="mesh-chart-latest">
-          <span id="mesh-chart-latest-val">—</span>
-          <span class="sub" id="mesh-chart-window">—</span>
-        </div>
-      </div>
-      <div class="chart-frame">
-        <svg id="mesh-chart"></svg>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ───────── Cumulative totals ───────── -->
-<section class="block totals-section">
-  <div class="container">
-    <div class="section-label">lifetime totals</div>
-    <h2 class="section-title">Paid into the node reward pool so far.</h2>
-    <p class="section-lead">
-      Running sum of every satoshi that has ever been committed to the
-      node reward pool across Ghost's mainnet history. Coinbase payments
-      are authoritative — aggregated from every approved payout proposal
-      on-chain.
-    </p>
-
-    <div class="core-tiles core-tiles-3">
-      <div class="ct-tile">
-        <div class="k">via coinbase</div>
-        <div class="v accent" id="ct-nr-coinbase">—</div>
-        <div class="sub" id="ct-nr-coinbase-sub">paid across all blocks found</div>
-      </div>
-      <div class="ct-tile">
-        <div class="k">via ghost pay (l2)</div>
-        <div class="v" id="ct-nr-l2">—</div>
-        <div class="sub" id="ct-nr-l2-sub">from L2 settlement fees</div>
-      </div>
-      <div class="ct-tile">
-        <div class="k">total paid</div>
-        <div class="v" id="ct-nr-total">—</div>
-        <div class="sub">cumulative across L1 + L2</div>
-      </div>
-    </div>
-    <div class="pending-note">
-      Treasury's cumulative total is shown above as the live treasury
-      balance — every satoshi the treasury has ever received is still
-      in that address (frozen once it hits 21 BTC).
     </div>
   </div>
 </section>
