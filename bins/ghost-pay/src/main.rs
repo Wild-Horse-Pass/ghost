@@ -6891,10 +6891,11 @@ async fn execute_settlement_batch(
         );
     }
 
-    // Amount this settlement is about to pay into the node reward pool
-    // via L2 fees. Captured here so the broadcast-success path can bump
-    // the cumulative `l2_node_rewards_paid_sats` running total in kv_store.
+    // Amounts this settlement is about to commit on-chain via the L2
+    // fee split. Captured here so the broadcast-success path can bump
+    // the cumulative kv_store accumulators in one shot.
     let mut l2_node_reward_paid: u64 = 0;
+    let mut l2_treasury_paid: u64 = 0;
 
     let build_result = if include_l2_fees {
         // Per-node direct fee split: this node earns from its own L2 traffic
@@ -6917,6 +6918,7 @@ async fn execute_settlement_batch(
                     vec![]
                 };
                 l2_node_reward_paid = node_amount;
+                l2_treasury_paid = treasury_amount;
                 executor.build_transaction_with_l2_fees(
                     &batch,
                     fee_rate,
@@ -7146,6 +7148,28 @@ async fn execute_settlement_batch(
                         amount_sats = l2_node_reward_paid,
                         error = %e,
                         "Failed to update L2 node rewards cumulative total"
+                    ),
+                }
+            }
+
+            // Bump the treasury running total. Same broadcast-time
+            // commit as the node-reward accumulator; threshold-crossing
+            // is detected inside add_treasury_funds which also stamps
+            // the threshold_reached_at timestamp for the decay schedule.
+            if l2_treasury_paid > 0 {
+                match state.db.add_treasury_funds(
+                    l2_treasury_paid,
+                    ghost_reconciliation::fee_distribution::TREASURY_THRESHOLD_SATS,
+                ) {
+                    Ok(crossed) => info!(
+                        amount_sats = l2_treasury_paid,
+                        threshold_crossed = crossed,
+                        "Treasury balance bumped from L2 settlement"
+                    ),
+                    Err(e) => error!(
+                        amount_sats = l2_treasury_paid,
+                        error = %e,
+                        "Failed to bump treasury balance from L2 settlement"
                     ),
                 }
             }

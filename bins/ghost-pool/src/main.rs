@@ -1000,7 +1000,11 @@ async fn main() -> Result<()> {
                         .iter()
                         .map(|e| e.recipient_id)
                         .collect();
+                    let treasury_amount = proposal.treasury_amount;
                     tokio::spawn(async move {
+                        // (a) Mark paid: reverse-resolve each PayoutEntry's
+                        // recipient_id hash back to our local miner_id
+                        // strings so the ledger entries update correctly.
                         let distinct = match db_mark.get_distinct_unpaid_miner_ids(cutoff_ts) {
                             Ok(v) => v,
                             Err(e) => {
@@ -1024,6 +1028,27 @@ async fn main() -> Result<()> {
                                 "Ledger: marked paid shares for approved proposal"
                             ),
                             Err(e) => tracing::error!(error = %e, "Ledger mark-paid failed"),
+                        }
+
+                        // (b) Bump treasury running total. Every approving
+                        // node applies the same delta against its local
+                        // kv_store so treasury balance stays in sync
+                        // across the mesh without needing extra gossip.
+                        if treasury_amount > 0 {
+                            match db_mark.add_treasury_funds(
+                                treasury_amount,
+                                ghost_reconciliation::fee_distribution::TREASURY_THRESHOLD_SATS,
+                            ) {
+                                Ok(crossed) => tracing::info!(
+                                    amount_sats = treasury_amount,
+                                    threshold_crossed = crossed,
+                                    "Treasury balance bumped from approved L1 payout"
+                                ),
+                                Err(e) => tracing::error!(
+                                    error = %e,
+                                    "Failed to bump treasury balance after payout approval"
+                                ),
+                            }
                         }
                     });
                 } else {
