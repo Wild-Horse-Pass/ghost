@@ -116,6 +116,43 @@
   </div>
 </section>
 
+<!-- ───────── Pending payouts ───────── -->
+<section class="block pending-section">
+  <div class="container">
+    <div class="section-label">pending payouts</div>
+    <h2 class="section-title">Queued for the next coinbase.</h2>
+    <p class="section-lead">
+      Ghost distributes the pool fee atomically every block — nothing
+      held in custody, nothing accrued off-chain. These are the amounts
+      that will land in the next block's coinbase the moment Ghost finds
+      one.
+    </p>
+
+    <div class="core-tiles core-tiles-3">
+      <div class="ct-tile">
+        <div class="k">to miners</div>
+        <div class="v accent" id="ct-to-miners">—</div>
+        <div class="sub">99% of subsidy, proportional to unpaid work</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">to node reward pool</div>
+        <div class="v" id="ct-to-nodes">—</div>
+        <div class="sub" id="ct-to-nodes-sub">0.5% of subsidy · to top 100 nodes</div>
+      </div>
+      <div class="ct-tile">
+        <div class="k">to treasury</div>
+        <div class="v" id="ct-to-treasury">—</div>
+        <div class="sub" id="ct-to-treasury-sub">0.5% of subsidy · frozen at 21 BTC</div>
+      </div>
+    </div>
+    <div class="pending-note">
+      Ghost Pay fees also flow into the node reward pool on L2 settlement
+      (feature under integration). Transaction fees from the winning
+      block go in full to whichever node finds it.
+    </div>
+  </div>
+</section>
+
 <!-- ───────── Cumulative totals ───────── -->
 <section class="block totals-section">
   <div class="container">
@@ -233,43 +270,6 @@
         <div class="v" id="ct-hashrate">—</div>
         <div class="sub" id="ct-miners">— active miners</div>
       </div>
-    </div>
-  </div>
-</section>
-
-<!-- ───────── Pending payouts ───────── -->
-<section class="block pending-section">
-  <div class="container">
-    <div class="section-label">pending payouts</div>
-    <h2 class="section-title">Queued for the next coinbase.</h2>
-    <p class="section-lead">
-      Ghost distributes the pool fee atomically every block — nothing
-      held in custody, nothing accrued off-chain. These are the amounts
-      that will land in the next block's coinbase the moment Ghost finds
-      one.
-    </p>
-
-    <div class="core-tiles core-tiles-3">
-      <div class="ct-tile">
-        <div class="k">to miners</div>
-        <div class="v accent" id="ct-to-miners">—</div>
-        <div class="sub">99% of subsidy, proportional to unpaid work</div>
-      </div>
-      <div class="ct-tile">
-        <div class="k">to node reward pool</div>
-        <div class="v" id="ct-to-nodes">—</div>
-        <div class="sub" id="ct-to-nodes-sub">0.5% of subsidy · to top 100 nodes</div>
-      </div>
-      <div class="ct-tile">
-        <div class="k">to treasury</div>
-        <div class="v" id="ct-to-treasury">—</div>
-        <div class="sub" id="ct-to-treasury-sub">0.5% of subsidy · frozen at 21 BTC</div>
-      </div>
-    </div>
-    <div class="pending-note">
-      Ghost Pay fees also flow into the node reward pool on L2 settlement
-      (feature under integration). Transaction fees from the winning
-      block go in full to whichever node finds it.
     </div>
   </div>
 </section>
