@@ -5,3 +5,4 @@
 
 pub mod chain;
 pub mod gsp;
+pub mod keystore;

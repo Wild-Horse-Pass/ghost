@@ -1,8 +1,8 @@
 //! `wraithd` — Wraith Wallet daemon.
 //!
 //! Long-running process that holds module state and exposes a local IPC surface
-//! to the CLI and GUI. Phase 1: holds a ChainClient (REST → ghost-pay) and a
-//! GspClient (WebSocket → ghost-gsp), and dispatches `chain_status` / `gsp_ping`.
+//! to the CLI and GUI. Phase 0 (closed): IPC + lifecycle + keystore.
+//! Phase 1 (in progress): chain (REST → ghost-pay), gsp (WebSocket → ghost-gsp).
 
 #[cfg(not(unix))]
 fn main() {
@@ -27,27 +27,44 @@ fn main() -> std::io::Result<()> {
 mod unix {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Instant;
 
+    use secrecy::SecretString;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{UnixListener, UnixStream};
+    use tokio::sync::RwLock;
     use wraith_wallet_core::chain::{ChainClient, GhostPayClient};
     use wraith_wallet_core::gsp::GspClient;
+    use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspPingResponse,
-        HealthResponse, Request, Response,
+        HealthResponse, Request, Response, WalletCreateResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
     const DEFAULT_GSP: &str = "ws://127.0.0.1:8900/ws/v1";
     const GHOST_PAY_ENV: &str = "WRAITHD_GHOST_PAY";
     const GSP_ENV: &str = "WRAITHD_GSP";
+    const WALLET_PATH_ENV: &str = "WRAITHD_WALLET";
 
     struct DaemonState {
         started: Instant,
         chain: Arc<dyn ChainClient>,
         gsp: GspClient,
+        wallet: RwLock<Option<Keystore>>,
+        wallet_path: PathBuf,
+    }
+
+    fn default_wallet_path() -> PathBuf {
+        if let Ok(p) = std::env::var(WALLET_PATH_ENV) {
+            return PathBuf::from(p);
+        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        home.join(".wraith").join("wallet").join("keystore.bin")
     }
 
     pub async fn serve() -> std::io::Result<()> {
@@ -55,12 +72,20 @@ mod unix {
         let ghost_pay_url =
             std::env::var(GHOST_PAY_ENV).unwrap_or_else(|_| DEFAULT_GHOST_PAY.to_string());
         let gsp_url = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
-        tracing::info!(ghost_pay = %ghost_pay_url, gsp = %gsp_url, "node endpoints configured");
+        let wallet_path = default_wallet_path();
+        tracing::info!(
+            ghost_pay = %ghost_pay_url,
+            gsp = %gsp_url,
+            wallet = %wallet_path.display(),
+            "node endpoints + wallet path configured",
+        );
 
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             chain: Arc::new(GhostPayClient::new(ghost_pay_url)),
             gsp: GspClient::new(gsp_url),
+            wallet: RwLock::new(None),
+            wallet_path,
         });
 
         // Remove stale socket file if present.
@@ -150,6 +175,71 @@ mod unix {
                     message: format!("gsp: {e}"),
                 }),
             },
+            Request::WalletCreate { passphrase } => {
+                if state.wallet_path.exists() {
+                    Response::Error(ErrorResponse {
+                        message: format!(
+                            "wallet already exists at {}; refusing to overwrite",
+                            state.wallet_path.display()
+                        ),
+                    })
+                } else {
+                    let pass = SecretString::new(passphrase.into());
+                    match Keystore::create() {
+                        Ok((ks, mnemonic)) => match ks.save(&state.wallet_path, &pass) {
+                            Ok(()) => {
+                                *state.wallet.write().await = Some(ks);
+                                Response::WalletCreate(WalletCreateResponse {
+                                    mnemonic,
+                                    path: state.wallet_path.display().to_string(),
+                                })
+                            }
+                            Err(e) => Response::Error(ErrorResponse {
+                                message: format!("save: {e}"),
+                            }),
+                        },
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("create: {e}"),
+                        }),
+                    }
+                }
+            }
+            Request::WalletUnlock { passphrase } => {
+                if !state.wallet_path.exists() {
+                    Response::Error(ErrorResponse {
+                        message: format!(
+                            "no wallet at {}; create one first",
+                            state.wallet_path.display()
+                        ),
+                    })
+                } else {
+                    let pass = SecretString::new(passphrase.into());
+                    match Keystore::load(&state.wallet_path, &pass) {
+                        Ok(ks) => {
+                            *state.wallet.write().await = Some(ks);
+                            Response::WalletUnlocked
+                        }
+                        Err(KeystoreError::Decrypt) => Response::Error(ErrorResponse {
+                            message: "wrong passphrase".to_string(),
+                        }),
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("unlock: {e}"),
+                        }),
+                    }
+                }
+            }
+            Request::WalletLock => {
+                *state.wallet.write().await = None;
+                Response::WalletLocked
+            }
+            Request::WalletStatus => {
+                let unlocked = state.wallet.read().await.is_some();
+                Response::WalletStatus(WalletStatusResponse {
+                    unlocked,
+                    path: state.wallet_path.display().to_string(),
+                    exists_on_disk: state.wallet_path.exists(),
+                })
+            }
         };
 
         Envelope::new(id, response)

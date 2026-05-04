@@ -3,6 +3,11 @@
 //! Wire format: newline-delimited JSON-RPC 2.0. One request per line, one response per line.
 //!
 //! Methods are typed: each `Request::*` variant pairs with a `Response::*` variant of the same name.
+//!
+//! Trust model: the socket is bound at owner-only (0600) permissions, so the
+//! channel is restricted to processes running as the same user as `wraithd`.
+//! Passphrases travel in plaintext over the socket; do **not** log requests
+//! verbatim. Phase 16 hardening tightens this surface.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,12 +26,20 @@ pub fn default_socket_path() -> std::path::PathBuf {
     dir.join(format!("wraithd-{uid}.sock"))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
     Health,
     ChainStatus,
     GspPing,
+    /// Create a new wallet at the daemon's configured path.
+    WalletCreate { passphrase: String },
+    /// Unlock the wallet by reading the file from disk and decrypting with `passphrase`.
+    WalletUnlock { passphrase: String },
+    /// Drop the unlocked keystore from daemon memory.
+    WalletLock,
+    /// Whether a wallet is currently unlocked.
+    WalletStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +48,10 @@ pub enum Response {
     Health(HealthResponse),
     ChainStatus(ChainStatusResponse),
     GspPing(GspPingResponse),
+    WalletCreate(WalletCreateResponse),
+    WalletUnlocked,
+    WalletLocked,
+    WalletStatus(WalletStatusResponse),
     Error(ErrorResponse),
 }
 
@@ -59,6 +76,20 @@ pub struct ChainStatusResponse {
 pub struct GspPingResponse {
     pub server_time: i64,
     pub round_trip_ms: Option<i64>,
+}
+
+/// Returned after creating a fresh wallet — the mnemonic is shown once for backup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletCreateResponse {
+    pub mnemonic: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletStatusResponse {
+    pub unlocked: bool,
+    pub path: String,
+    pub exists_on_disk: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

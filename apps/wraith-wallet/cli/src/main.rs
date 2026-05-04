@@ -25,6 +25,11 @@ enum Command {
         #[command(subcommand)]
         sub: GspCommand,
     },
+    /// Wallet (keystore) commands.
+    Wallet {
+        #[command(subcommand)]
+        sub: WalletCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -37,6 +42,18 @@ enum ChainCommand {
 enum GspCommand {
     /// Open a WebSocket to GSP, send Ping, wait for Pong.
     Ping,
+}
+
+#[derive(Subcommand)]
+enum WalletCommand {
+    /// Create a fresh wallet (generates a new 24-word BIP39 mnemonic).
+    Create,
+    /// Unlock the wallet on disk by passphrase.
+    Unlock,
+    /// Drop the unlocked keystore from daemon memory.
+    Lock,
+    /// Show whether a wallet is unlocked and its on-disk path.
+    Status,
 }
 
 #[cfg(not(unix))]
@@ -64,7 +81,7 @@ mod unix {
     use tokio::net::UnixStream;
     use wraith_wallet_ipc::{default_socket_path, Envelope, Request, Response};
 
-    use crate::{ChainCommand, Command, GspCommand};
+    use crate::{ChainCommand, Command, GspCommand, WalletCommand};
 
     pub async fn run(command: Command) -> std::process::ExitCode {
         let request = match command {
@@ -74,6 +91,24 @@ mod unix {
             },
             Command::Gsp { sub } => match sub {
                 GspCommand::Ping => Request::GspPing,
+            },
+            Command::Wallet { sub } => match sub {
+                WalletCommand::Create => match prompt_new_passphrase() {
+                    Ok(pass) => Request::WalletCreate { passphrase: pass },
+                    Err(e) => {
+                        eprintln!("wraith: {e}");
+                        return std::process::ExitCode::FAILURE;
+                    }
+                },
+                WalletCommand::Unlock => match prompt_passphrase("passphrase: ") {
+                    Ok(pass) => Request::WalletUnlock { passphrase: pass },
+                    Err(e) => {
+                        eprintln!("wraith: {e}");
+                        return std::process::ExitCode::FAILURE;
+                    }
+                },
+                WalletCommand::Lock => Request::WalletLock,
+                WalletCommand::Status => Request::WalletStatus,
             },
         };
 
@@ -105,6 +140,34 @@ mod unix {
                 }
                 std::process::ExitCode::SUCCESS
             }
+            Ok(Response::WalletCreate(c)) => {
+                println!("wallet created at {}", c.path);
+                println!("\nWrite these 24 words down somewhere safe.");
+                println!("They are the ONLY way to recover this wallet if the file is lost.\n");
+                println!("{}\n", c.mnemonic);
+                println!("Wallet is unlocked.");
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletUnlocked) => {
+                println!("wallet unlocked");
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletLocked) => {
+                println!("wallet locked");
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletStatus(s)) => {
+                println!("wallet path: {}", s.path);
+                println!(
+                    "  on disk:  {}",
+                    if s.exists_on_disk { "yes" } else { "no" }
+                );
+                println!(
+                    "  unlocked: {}",
+                    if s.unlocked { "yes" } else { "no" }
+                );
+                std::process::ExitCode::SUCCESS
+            }
             Ok(Response::Error(e)) => {
                 eprintln!("wraithd error: {}", e.message);
                 std::process::ExitCode::FAILURE
@@ -114,6 +177,34 @@ mod unix {
                 std::process::ExitCode::FAILURE
             }
         }
+    }
+
+    fn prompt_passphrase(prompt: &str) -> std::io::Result<String> {
+        use std::io::{BufRead, IsTerminal};
+        if std::io::stdin().is_terminal() {
+            rpassword::prompt_password(prompt)
+        } else {
+            // Non-interactive (piped) — read one line from stdin without echoing.
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line)?;
+            Ok(line.trim_end_matches('\n').trim_end_matches('\r').to_string())
+        }
+    }
+
+    fn prompt_new_passphrase() -> std::io::Result<String> {
+        let pass = prompt_passphrase("new passphrase: ")?;
+        if pass.is_empty() {
+            return Err(std::io::Error::other("passphrase must not be empty"));
+        }
+        // In interactive mode, confirm. In piped mode skip the confirm
+        // (one line in = one passphrase) — typical for scripted use.
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            let again = prompt_passphrase("repeat passphrase: ")?;
+            if pass != again {
+                return Err(std::io::Error::other("passphrases do not match"));
+            }
+        }
+        Ok(pass)
     }
 
     async fn call(request: Request) -> Result<Response, String> {
