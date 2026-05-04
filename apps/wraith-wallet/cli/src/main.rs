@@ -74,6 +74,8 @@ enum WalletCommand {
         /// BIP32 derivation path, e.g. `m/86'/531'/0'/0/0`.
         path: String,
     },
+    /// Show the GSP authentication identity (wallet_id + auth pubkey).
+    AuthInfo,
 }
 
 #[cfg(not(unix))]
@@ -130,6 +132,7 @@ mod unix {
                 WalletCommand::Lock => Request::WalletLock,
                 WalletCommand::Status => Request::WalletStatus,
                 WalletCommand::Derive { path } => Request::WalletDerive { path },
+                WalletCommand::AuthInfo => Request::WalletAuthInfo,
             },
             Command::Light { sub } => match sub {
                 LightCommand::Receive { index } => Request::LightReceive { index },
@@ -195,6 +198,12 @@ mod unix {
             Ok(Response::WalletDerive(d)) => {
                 println!("path:       {}", d.path);
                 println!("public_key: {}", d.public_key_hex);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletAuthInfo(a)) => {
+                println!("wallet_id:      {}", a.wallet_id);
+                println!("auth_public_key: {}", a.auth_public_key_hex);
+                println!("derivation:      {}", a.derivation_path);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::LightReceive(r)) => {

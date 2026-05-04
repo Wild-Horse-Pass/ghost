@@ -35,14 +35,15 @@ mod unix {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::RwLock;
+    use wraith_wallet_core::auth;
     use wraith_wallet_core::chain::{ChainClient, GhostPayClient};
     use wraith_wallet_core::gsp::GspClient;
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_core::light;
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspPingResponse,
-        HealthResponse, LightReceiveResponse, Request, Response, WalletCreateResponse,
-        WalletDeriveResponse, WalletStatusResponse,
+        HealthResponse, LightReceiveResponse, Request, Response, WalletAuthInfoResponse,
+        WalletCreateResponse, WalletDeriveResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -277,6 +278,25 @@ mod unix {
                         }
                         Err(e) => Response::Error(ErrorResponse {
                             message: format!("derive: {e}"),
+                        }),
+                    },
+                }
+            }
+            Request::WalletAuthInfo => {
+                let guard = state.wallet.read().await;
+                match guard.as_ref() {
+                    None => Response::Error(ErrorResponse {
+                        message: "wallet is locked; run `wraith wallet unlock` first"
+                            .to_string(),
+                    }),
+                    Some(ks) => match auth::auth_keypair(ks) {
+                        Ok(kp) => Response::WalletAuthInfo(WalletAuthInfoResponse {
+                            wallet_id: auth::wallet_id_hex(&kp),
+                            auth_public_key_hex: hex::encode(auth::xonly_pubkey_bytes(&kp)),
+                            derivation_path: "m/352'/0'/0'/0/0".to_string(),
+                        }),
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("auth-info: {e}"),
                         }),
                     },
                 }

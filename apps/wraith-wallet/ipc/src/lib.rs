@@ -42,6 +42,8 @@ pub enum Request {
     WalletStatus,
     /// Derive a key at a BIP32 path from the unlocked keystore.
     WalletDerive { path: String },
+    /// Show the GSP auth identity (wallet_id + x-only auth pubkey).
+    WalletAuthInfo,
     /// Derive a BIP86 taproot receive address at index `index`.
     LightReceive { index: u32 },
 }
@@ -57,6 +59,7 @@ pub enum Response {
     WalletLocked,
     WalletStatus(WalletStatusResponse),
     WalletDerive(WalletDeriveResponse),
+    WalletAuthInfo(WalletAuthInfoResponse),
     LightReceive(LightReceiveResponse),
     Error(ErrorResponse),
 }
@@ -111,6 +114,17 @@ pub struct LightReceiveResponse {
     pub address: String,
     pub index: u32,
     pub network: String,
+    pub derivation_path: String,
+}
+
+/// GSP authentication identity for the unlocked wallet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletAuthInfoResponse {
+    /// `SHA256(auth_pubkey)[0..16]` hex.
+    pub wallet_id: String,
+    /// X-only auth public key (32 bytes), hex.
+    pub auth_public_key_hex: String,
+    /// BIP32 path the auth keypair is derived at.
     pub derivation_path: String,
 }
 
