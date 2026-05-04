@@ -54,6 +54,11 @@ enum WalletCommand {
     Lock,
     /// Show whether a wallet is unlocked and its on-disk path.
     Status,
+    /// Derive a public key at a BIP32 path from the unlocked wallet.
+    Derive {
+        /// BIP32 derivation path, e.g. `m/86'/531'/0'/0/0`.
+        path: String,
+    },
 }
 
 #[cfg(not(unix))]
@@ -109,6 +114,7 @@ mod unix {
                 },
                 WalletCommand::Lock => Request::WalletLock,
                 WalletCommand::Status => Request::WalletStatus,
+                WalletCommand::Derive { path } => Request::WalletDerive { path },
             },
         };
 
@@ -166,6 +172,11 @@ mod unix {
                     "  unlocked: {}",
                     if s.unlocked { "yes" } else { "no" }
                 );
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletDerive(d)) => {
+                println!("path:       {}", d.path);
+                println!("public_key: {}", d.public_key_hex);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::Error(e)) => {

@@ -40,6 +40,8 @@ pub enum Request {
     WalletLock,
     /// Whether a wallet is currently unlocked.
     WalletStatus,
+    /// Derive a key at a BIP32 path from the unlocked keystore.
+    WalletDerive { path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +54,7 @@ pub enum Response {
     WalletUnlocked,
     WalletLocked,
     WalletStatus(WalletStatusResponse),
+    WalletDerive(WalletDeriveResponse),
     Error(ErrorResponse),
 }
 
@@ -90,6 +93,14 @@ pub struct WalletStatusResponse {
     pub unlocked: bool,
     pub path: String,
     pub exists_on_disk: bool,
+}
+
+/// Public key derived at a BIP32 path. Private material stays in the daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletDeriveResponse {
+    pub path: String,
+    /// SEC1 compressed (33-byte) public key, hex-encoded.
+    pub public_key_hex: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -42,6 +42,8 @@ pub enum KeystoreError {
     Format(String),
     #[error("bip39 error: {0}")]
     Bip39(String),
+    #[error("bip32 derivation error: {0}")]
+    Bip32(String),
 }
 
 /// In-memory unlocked wallet seed. Mnemonic is zeroized on drop.
@@ -65,6 +67,16 @@ impl Keystore {
             },
             words,
         ))
+    }
+
+    /// Reconstruct a keystore from an existing BIP39 mnemonic (recovery / import).
+    pub fn from_mnemonic(mnemonic: &str) -> Result<Self, KeystoreError> {
+        // Validate the mnemonic is well-formed.
+        Mnemonic::parse_in(Language::English, mnemonic)
+            .map_err(|e| KeystoreError::Bip39(e.to_string()))?;
+        Ok(Self {
+            mnemonic: Zeroizing::new(mnemonic.to_string()),
+        })
     }
 
     /// Save the keystore to `path`, encrypted with `passphrase`.
@@ -136,6 +148,36 @@ impl Keystore {
     pub fn expose_mnemonic(&self) -> &str {
         self.mnemonic.as_str()
     }
+
+    /// Compute the BIP39 seed (64 bytes). Caller is responsible for not leaking it.
+    fn seed_bytes(&self) -> Result<Zeroizing<[u8; 64]>, KeystoreError> {
+        let mnemonic = Mnemonic::parse_in(Language::English, self.mnemonic.as_str())
+            .map_err(|e| KeystoreError::Bip39(e.to_string()))?;
+        // Empty BIP39 passphrase. (BIP39 supports an additional passphrase
+        // separate from the keystore-encryption passphrase; we don't use it.)
+        Ok(Zeroizing::new(mnemonic.to_seed("")))
+    }
+
+    /// Master extended private key derived from the BIP39 seed.
+    pub fn master_xprv(&self) -> Result<bip32::XPrv, KeystoreError> {
+        let seed = self.seed_bytes()?;
+        let seed_slice: &[u8] = &seed[..];
+        bip32::XPrv::new(seed_slice).map_err(|e| KeystoreError::Bip32(e.to_string()))
+    }
+
+    /// Derive an extended private key at `path` (e.g. `"m/86'/531'/0'/0/0"`).
+    pub fn derive_xprv(&self, path: &str) -> Result<bip32::XPrv, KeystoreError> {
+        use bip32::DerivationPath;
+        use std::str::FromStr;
+        let parsed = DerivationPath::from_str(path).map_err(|e| KeystoreError::Bip32(e.to_string()))?;
+        let mut xprv = self.master_xprv()?;
+        for child_number in parsed.into_iter() {
+            xprv = xprv
+                .derive_child(child_number)
+                .map_err(|e| KeystoreError::Bip32(e.to_string()))?;
+        }
+        Ok(xprv)
+    }
 }
 
 struct KdfKey([u8; KEY_LEN]);
@@ -189,6 +231,29 @@ mod tests {
             Err(KeystoreError::Decrypt) => {}
             Err(other) => panic!("expected Decrypt error, got {other:?}"),
             Ok(_) => panic!("expected Decrypt error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn derivation_is_deterministic() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let ks1 = Keystore::from_mnemonic(mnemonic).unwrap();
+        let ks2 = Keystore::from_mnemonic(mnemonic).unwrap();
+
+        let key1 = ks1.derive_xprv("m/86'/531'/0'/0/0").unwrap();
+        let key2 = ks2.derive_xprv("m/86'/531'/0'/0/0").unwrap();
+        assert_eq!(key1.to_bytes(), key2.to_bytes());
+
+        let key3 = ks1.derive_xprv("m/86'/531'/0'/0/1").unwrap();
+        assert_ne!(key1.to_bytes(), key3.to_bytes());
+    }
+
+    #[test]
+    fn from_mnemonic_rejects_garbage() {
+        match Keystore::from_mnemonic("not a real bip39 sentence") {
+            Err(KeystoreError::Bip39(_)) => {}
+            Err(other) => panic!("expected Bip39 error, got {other:?}"),
+            Ok(_) => panic!("expected Bip39 error, got Ok"),
         }
     }
 

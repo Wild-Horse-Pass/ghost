@@ -40,7 +40,8 @@ mod unix {
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspPingResponse,
-        HealthResponse, Request, Response, WalletCreateResponse, WalletStatusResponse,
+        HealthResponse, Request, Response, WalletCreateResponse, WalletDeriveResponse,
+        WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -239,6 +240,27 @@ mod unix {
                     path: state.wallet_path.display().to_string(),
                     exists_on_disk: state.wallet_path.exists(),
                 })
+            }
+            Request::WalletDerive { path } => {
+                let guard = state.wallet.read().await;
+                match guard.as_ref() {
+                    None => Response::Error(ErrorResponse {
+                        message: "wallet is locked; run `wraith wallet unlock` first"
+                            .to_string(),
+                    }),
+                    Some(ks) => match ks.derive_xprv(&path) {
+                        Ok(xprv) => {
+                            let pubkey_bytes = xprv.public_key().to_bytes();
+                            Response::WalletDerive(WalletDeriveResponse {
+                                path,
+                                public_key_hex: hex::encode(pubkey_bytes),
+                            })
+                        }
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("derive: {e}"),
+                        }),
+                    },
+                }
             }
         };
 
