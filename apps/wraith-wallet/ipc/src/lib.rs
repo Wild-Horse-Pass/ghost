@@ -25,12 +25,14 @@ pub fn default_socket_path() -> std::path::PathBuf {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
     Health,
+    ChainStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Response {
     Health(HealthResponse),
+    ChainStatus(ChainStatusResponse),
     Error(ErrorResponse),
 }
 
@@ -38,6 +40,16 @@ pub enum Response {
 pub struct HealthResponse {
     pub daemon_version: String,
     pub uptime_secs: u64,
+}
+
+/// Status of the configured ghost-pay backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainStatusResponse {
+    pub backend_version: String,
+    pub network: String,
+    pub has_keys: bool,
+    pub lock_count: u64,
+    pub active_sessions: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

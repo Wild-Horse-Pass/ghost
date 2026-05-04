@@ -1,9 +1,8 @@
 //! `wraithd` — Wraith Wallet daemon.
 //!
 //! Long-running process that holds module state and exposes a local IPC surface
-//! to the CLI and GUI. Phase 0: accepts JSON-RPC over a Unix socket and answers
-//! `health` requests. Real lifecycle (keystore unlock, module tasks, ghost-pay
-//! client) lands in subsequent phases.
+//! to the CLI and GUI. Phase 1: also holds a ChainClient pointing at the configured
+//! ghost-pay endpoint and answers `chain_status` requests by querying it.
 
 #[cfg(not(unix))]
 fn main() {
@@ -28,17 +27,35 @@ fn main() -> std::io::Result<()> {
 mod unix {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
     use std::time::Instant;
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{UnixListener, UnixStream};
+    use wraith_wallet_core::chain::{ChainClient, GhostPayClient};
     use wraith_wallet_ipc::{
-        default_socket_path, Envelope, ErrorResponse, HealthResponse, Request, Response,
+        default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, HealthResponse, Request,
+        Response,
     };
+
+    const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
+    const GHOST_PAY_ENV: &str = "WRAITHD_GHOST_PAY";
+
+    struct DaemonState {
+        started: Instant,
+        chain: Arc<dyn ChainClient>,
+    }
 
     pub async fn serve() -> std::io::Result<()> {
         let socket_path = default_socket_path();
-        let started = Instant::now();
+        let ghost_pay_url =
+            std::env::var(GHOST_PAY_ENV).unwrap_or_else(|_| DEFAULT_GHOST_PAY.to_string());
+        tracing::info!(ghost_pay = %ghost_pay_url, "ghost-pay endpoint configured");
+
+        let state = Arc::new(DaemonState {
+            started: Instant::now(),
+            chain: Arc::new(GhostPayClient::new(ghost_pay_url)),
+        });
 
         // Remove stale socket file if present.
         if socket_path.exists() {
@@ -61,16 +78,17 @@ mod unix {
 
         loop {
             let (stream, _) = listener.accept().await?;
-            tokio::spawn(handle_connection(stream, started));
+            let state = Arc::clone(&state);
+            tokio::spawn(handle_connection(stream, state));
         }
     }
 
-    async fn handle_connection(stream: UnixStream, started: Instant) {
+    async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            let response = dispatch(&line, started);
+            let response = dispatch(&line, &state).await;
             let mut out = match serde_json::to_string(&response) {
                 Ok(s) => s,
                 Err(e) => {
@@ -86,7 +104,7 @@ mod unix {
         }
     }
 
-    fn dispatch(line: &str, started: Instant) -> Envelope<Response> {
+    async fn dispatch(line: &str, state: &Arc<DaemonState>) -> Envelope<Response> {
         let parsed: Result<Envelope<Request>, _> = serde_json::from_str(line);
         let (id, request) = match parsed {
             Ok(env) => (env.id, env.payload),
@@ -103,8 +121,20 @@ mod unix {
         let response = match request {
             Request::Health => Response::Health(HealthResponse {
                 daemon_version: env!("CARGO_PKG_VERSION").to_string(),
-                uptime_secs: started.elapsed().as_secs(),
+                uptime_secs: state.started.elapsed().as_secs(),
             }),
+            Request::ChainStatus => match state.chain.status().await {
+                Ok(status) => Response::ChainStatus(ChainStatusResponse {
+                    backend_version: status.backend_version,
+                    network: status.network,
+                    has_keys: status.has_keys,
+                    lock_count: status.lock_count,
+                    active_sessions: status.active_sessions,
+                }),
+                Err(e) => Response::Error(ErrorResponse {
+                    message: format!("chain: {e}"),
+                }),
+            },
         };
 
         Envelope::new(id, response)
