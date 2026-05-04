@@ -44,6 +44,9 @@ pub enum Request {
     WalletDerive { path: String },
     /// Show the GSP auth identity (wallet_id + x-only auth pubkey).
     WalletAuthInfo,
+    /// Re-display the BIP39 mnemonic. Requires the passphrase even when the
+    /// wallet is unlocked, to avoid exposing the seed to anyone with IPC access.
+    WalletShowMnemonic { passphrase: String },
     /// Derive a BIP86 taproot receive address at index `index`.
     LightReceive { index: u32 },
 }
@@ -60,6 +63,7 @@ pub enum Response {
     WalletStatus(WalletStatusResponse),
     WalletDerive(WalletDeriveResponse),
     WalletAuthInfo(WalletAuthInfoResponse),
+    WalletShowMnemonic(WalletShowMnemonicResponse),
     LightReceive(LightReceiveResponse),
     Error(ErrorResponse),
 }
@@ -126,6 +130,11 @@ pub struct WalletAuthInfoResponse {
     pub auth_public_key_hex: String,
     /// BIP32 path the auth keypair is derived at.
     pub derivation_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletShowMnemonicResponse {
+    pub mnemonic: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

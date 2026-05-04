@@ -76,6 +76,8 @@ enum WalletCommand {
     },
     /// Show the GSP authentication identity (wallet_id + auth pubkey).
     AuthInfo,
+    /// Re-display the BIP39 mnemonic for backup. Re-prompts for the passphrase.
+    ShowMnemonic,
 }
 
 #[cfg(not(unix))]
@@ -133,6 +135,13 @@ mod unix {
                 WalletCommand::Status => Request::WalletStatus,
                 WalletCommand::Derive { path } => Request::WalletDerive { path },
                 WalletCommand::AuthInfo => Request::WalletAuthInfo,
+                WalletCommand::ShowMnemonic => match prompt_passphrase("passphrase: ") {
+                    Ok(pass) => Request::WalletShowMnemonic { passphrase: pass },
+                    Err(e) => {
+                        eprintln!("wraith: {e}");
+                        return std::process::ExitCode::FAILURE;
+                    }
+                },
             },
             Command::Light { sub } => match sub {
                 LightCommand::Receive { index } => Request::LightReceive { index },
@@ -204,6 +213,11 @@ mod unix {
                 println!("wallet_id:      {}", a.wallet_id);
                 println!("auth_public_key: {}", a.auth_public_key_hex);
                 println!("derivation:      {}", a.derivation_path);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletShowMnemonic(m)) => {
+                println!("WARNING: anyone with these 24 words owns the wallet.\n");
+                println!("{}\n", m.mnemonic);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::LightReceive(r)) => {

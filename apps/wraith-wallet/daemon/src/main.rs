@@ -43,7 +43,8 @@ mod unix {
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspPingResponse,
         HealthResponse, LightReceiveResponse, Request, Response, WalletAuthInfoResponse,
-        WalletCreateResponse, WalletDeriveResponse, WalletStatusResponse,
+        WalletCreateResponse, WalletDeriveResponse, WalletShowMnemonicResponse,
+        WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -280,6 +281,32 @@ mod unix {
                             message: format!("derive: {e}"),
                         }),
                     },
+                }
+            }
+            Request::WalletShowMnemonic { passphrase } => {
+                if !state.wallet_path.exists() {
+                    Response::Error(ErrorResponse {
+                        message: format!(
+                            "no wallet at {}",
+                            state.wallet_path.display()
+                        ),
+                    })
+                } else {
+                    let pass = SecretString::new(passphrase.into());
+                    // Always re-load from disk and re-decrypt; do not trust in-memory unlock
+                    // state. The whole point of this call is to require fresh passphrase
+                    // ownership before exposing the seed.
+                    match Keystore::load(&state.wallet_path, &pass) {
+                        Ok(ks) => Response::WalletShowMnemonic(WalletShowMnemonicResponse {
+                            mnemonic: ks.expose_mnemonic().to_string(),
+                        }),
+                        Err(KeystoreError::Decrypt) => Response::Error(ErrorResponse {
+                            message: "wrong passphrase".to_string(),
+                        }),
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("show-mnemonic: {e}"),
+                        }),
+                    }
                 }
             }
             Request::WalletAuthInfo => {
