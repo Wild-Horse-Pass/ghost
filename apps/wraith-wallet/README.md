@@ -30,4 +30,4 @@ cargo build -p wraith-wallet-cli     # produces `wraith`
 
 ## Status
 
-Phase 0 — workspace skeleton only. See `CLAUDE.md` for the full build plan.
+Phase 0 — workspace skeleton only. Both binaries build and run; no real lifecycle yet.
