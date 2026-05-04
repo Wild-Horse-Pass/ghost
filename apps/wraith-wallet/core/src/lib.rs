@@ -4,3 +4,4 @@
 //! Binaries (`wraithd`, `wraith`) and the GUI shell are thin wrappers over this crate.
 
 pub mod chain;
+pub mod gsp;

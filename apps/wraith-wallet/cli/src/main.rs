@@ -20,12 +20,23 @@ enum Command {
         #[command(subcommand)]
         sub: ChainCommand,
     },
+    /// GSP WebSocket commands.
+    Gsp {
+        #[command(subcommand)]
+        sub: GspCommand,
+    },
 }
 
 #[derive(Subcommand)]
 enum ChainCommand {
     /// Query ghost-pay's `/api/v1/status` via wraithd.
     Status,
+}
+
+#[derive(Subcommand)]
+enum GspCommand {
+    /// Open a WebSocket to GSP, send Ping, wait for Pong.
+    Ping,
 }
 
 #[cfg(not(unix))]
@@ -53,13 +64,16 @@ mod unix {
     use tokio::net::UnixStream;
     use wraith_wallet_ipc::{default_socket_path, Envelope, Request, Response};
 
-    use crate::{ChainCommand, Command};
+    use crate::{ChainCommand, Command, GspCommand};
 
     pub async fn run(command: Command) -> std::process::ExitCode {
         let request = match command {
             Command::Health => Request::Health,
             Command::Chain { sub } => match sub {
                 ChainCommand::Status => Request::ChainStatus,
+            },
+            Command::Gsp { sub } => match sub {
+                GspCommand::Ping => Request::GspPing,
             },
         };
 
@@ -79,6 +93,16 @@ mod unix {
                     s.lock_count,
                     s.active_sessions,
                 );
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::GspPing(p)) => {
+                match p.round_trip_ms {
+                    Some(rtt) => println!(
+                        "gsp ok — server_time {} — round-trip {}ms",
+                        p.server_time, rtt
+                    ),
+                    None => println!("gsp ok — server_time {}", p.server_time),
+                }
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::Error(e)) => {

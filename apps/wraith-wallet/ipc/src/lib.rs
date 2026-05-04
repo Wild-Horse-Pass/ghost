@@ -26,6 +26,7 @@ pub fn default_socket_path() -> std::path::PathBuf {
 pub enum Request {
     Health,
     ChainStatus,
+    GspPing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +34,7 @@ pub enum Request {
 pub enum Response {
     Health(HealthResponse),
     ChainStatus(ChainStatusResponse),
+    GspPing(GspPingResponse),
     Error(ErrorResponse),
 }
 
@@ -50,6 +52,13 @@ pub struct ChainStatusResponse {
     pub has_keys: bool,
     pub lock_count: u64,
     pub active_sessions: u64,
+}
+
+/// GSP WebSocket connectivity probe result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GspPingResponse {
+    pub server_time: i64,
+    pub round_trip_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

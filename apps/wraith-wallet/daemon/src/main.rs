@@ -1,8 +1,8 @@
 //! `wraithd` — Wraith Wallet daemon.
 //!
 //! Long-running process that holds module state and exposes a local IPC surface
-//! to the CLI and GUI. Phase 1: also holds a ChainClient pointing at the configured
-//! ghost-pay endpoint and answers `chain_status` requests by querying it.
+//! to the CLI and GUI. Phase 1: holds a ChainClient (REST → ghost-pay) and a
+//! GspClient (WebSocket → ghost-gsp), and dispatches `chain_status` / `gsp_ping`.
 
 #[cfg(not(unix))]
 fn main() {
@@ -33,28 +33,34 @@ mod unix {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{UnixListener, UnixStream};
     use wraith_wallet_core::chain::{ChainClient, GhostPayClient};
+    use wraith_wallet_core::gsp::GspClient;
     use wraith_wallet_ipc::{
-        default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, HealthResponse, Request,
-        Response,
+        default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspPingResponse,
+        HealthResponse, Request, Response,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
+    const DEFAULT_GSP: &str = "ws://127.0.0.1:8900/ws/v1";
     const GHOST_PAY_ENV: &str = "WRAITHD_GHOST_PAY";
+    const GSP_ENV: &str = "WRAITHD_GSP";
 
     struct DaemonState {
         started: Instant,
         chain: Arc<dyn ChainClient>,
+        gsp: GspClient,
     }
 
     pub async fn serve() -> std::io::Result<()> {
         let socket_path = default_socket_path();
         let ghost_pay_url =
             std::env::var(GHOST_PAY_ENV).unwrap_or_else(|_| DEFAULT_GHOST_PAY.to_string());
-        tracing::info!(ghost_pay = %ghost_pay_url, "ghost-pay endpoint configured");
+        let gsp_url = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
+        tracing::info!(ghost_pay = %ghost_pay_url, gsp = %gsp_url, "node endpoints configured");
 
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             chain: Arc::new(GhostPayClient::new(ghost_pay_url)),
+            gsp: GspClient::new(gsp_url),
         });
 
         // Remove stale socket file if present.
@@ -133,6 +139,15 @@ mod unix {
                 }),
                 Err(e) => Response::Error(ErrorResponse {
                     message: format!("chain: {e}"),
+                }),
+            },
+            Request::GspPing => match state.gsp.ping().await {
+                Ok(p) => Response::GspPing(GspPingResponse {
+                    server_time: p.server_time,
+                    round_trip_ms: p.round_trip_ms,
+                }),
+                Err(e) => Response::Error(ErrorResponse {
+                    message: format!("gsp: {e}"),
                 }),
             },
         };
