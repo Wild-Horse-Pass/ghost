@@ -1,0 +1,15 @@
+[package]
+name = "wraith-wallet-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "wraith"
+path = "src/main.rs"
+
+[dependencies]
+wraith-wallet-ipc = { workspace = true }
+clap = { workspace = true }

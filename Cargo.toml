@@ -65,6 +65,11 @@ members = [
     "apps/ghost-tap/core",
     "apps/ghost-tap/tests/integration",
     "apps/ghost-tap/desktop/src-tauri",
+    # Wraith Wallet (desktop)
+    "apps/wraith-wallet/core",
+    "apps/wraith-wallet/ipc",
+    "apps/wraith-wallet/daemon",
+    "apps/wraith-wallet/cli",
 ]
 exclude = [
     # sv2-apps has its own workspace structure
@@ -108,6 +113,9 @@ ghost-gsp = { path = "crates/ghost-gsp" }
 ghost-light-wallet = { path = "crates/ghost-light-wallet" }
 # Mobile Apps
 ghost-tap-core = { path = "apps/ghost-tap/core" }
+# Wraith Wallet
+wraith-wallet-core = { path = "apps/wraith-wallet/core" }
+wraith-wallet-ipc = { path = "apps/wraith-wallet/ipc" }
 # Async runtime
 tokio = { version = "1.36", features = ["full"] }
 

@@ -1,0 +1,18 @@
+[package]
+name = "wraith-wallet-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "wraithd"
+path = "src/main.rs"
+
+[dependencies]
+wraith-wallet-core = { workspace = true }
+wraith-wallet-ipc = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

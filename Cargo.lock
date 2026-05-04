@@ -9826,6 +9826,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "wraith-wallet-cli"
+version = "1.8.0"
+dependencies = [
+ "clap",
+ "wraith-wallet-ipc",
+]
+
+[[package]]
+name = "wraith-wallet-core"
+version = "1.8.0"
+
+[[package]]
+name = "wraith-wallet-daemon"
+version = "1.8.0"
+dependencies = [
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wraith-wallet-core",
+ "wraith-wallet-ipc",
+]
+
+[[package]]
+name = "wraith-wallet-ipc"
+version = "1.8.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
