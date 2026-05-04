@@ -42,6 +42,8 @@ pub enum Request {
     WalletStatus,
     /// Derive a key at a BIP32 path from the unlocked keystore.
     WalletDerive { path: String },
+    /// Derive a BIP86 taproot receive address at index `index`.
+    LightReceive { index: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +57,7 @@ pub enum Response {
     WalletLocked,
     WalletStatus(WalletStatusResponse),
     WalletDerive(WalletDeriveResponse),
+    LightReceive(LightReceiveResponse),
     Error(ErrorResponse),
 }
 
@@ -101,6 +104,14 @@ pub struct WalletDeriveResponse {
     pub path: String,
     /// SEC1 compressed (33-byte) public key, hex-encoded.
     pub public_key_hex: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightReceiveResponse {
+    pub address: String,
+    pub index: u32,
+    pub network: String,
+    pub derivation_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

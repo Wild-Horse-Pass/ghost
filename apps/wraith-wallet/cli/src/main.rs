@@ -30,6 +30,11 @@ enum Command {
         #[command(subcommand)]
         sub: WalletCommand,
     },
+    /// Light wallet commands (on-chain address derivation, balance, send/receive).
+    Light {
+        #[command(subcommand)]
+        sub: LightCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -42,6 +47,16 @@ enum ChainCommand {
 enum GspCommand {
     /// Open a WebSocket to GSP, send Ping, wait for Pong.
     Ping,
+}
+
+#[derive(Subcommand)]
+enum LightCommand {
+    /// Derive a fresh BIP86 taproot receive address.
+    Receive {
+        /// Address index. Default: 0 (first receive address).
+        #[arg(short, long, default_value_t = 0)]
+        index: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -86,7 +101,7 @@ mod unix {
     use tokio::net::UnixStream;
     use wraith_wallet_ipc::{default_socket_path, Envelope, Request, Response};
 
-    use crate::{ChainCommand, Command, GspCommand, WalletCommand};
+    use crate::{ChainCommand, Command, GspCommand, LightCommand, WalletCommand};
 
     pub async fn run(command: Command) -> std::process::ExitCode {
         let request = match command {
@@ -115,6 +130,9 @@ mod unix {
                 WalletCommand::Lock => Request::WalletLock,
                 WalletCommand::Status => Request::WalletStatus,
                 WalletCommand::Derive { path } => Request::WalletDerive { path },
+            },
+            Command::Light { sub } => match sub {
+                LightCommand::Receive { index } => Request::LightReceive { index },
             },
         };
 
@@ -177,6 +195,13 @@ mod unix {
             Ok(Response::WalletDerive(d)) => {
                 println!("path:       {}", d.path);
                 println!("public_key: {}", d.public_key_hex);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LightReceive(r)) => {
+                println!("{}", r.address);
+                println!("  index:   {}", r.index);
+                println!("  network: {}", r.network);
+                println!("  path:    {}", r.derivation_path);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::Error(e)) => {

@@ -38,10 +38,11 @@ mod unix {
     use wraith_wallet_core::chain::{ChainClient, GhostPayClient};
     use wraith_wallet_core::gsp::GspClient;
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
+    use wraith_wallet_core::light;
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspPingResponse,
-        HealthResponse, Request, Response, WalletCreateResponse, WalletDeriveResponse,
-        WalletStatusResponse,
+        HealthResponse, LightReceiveResponse, Request, Response, WalletCreateResponse,
+        WalletDeriveResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -49,6 +50,7 @@ mod unix {
     const GHOST_PAY_ENV: &str = "WRAITHD_GHOST_PAY";
     const GSP_ENV: &str = "WRAITHD_GSP";
     const WALLET_PATH_ENV: &str = "WRAITHD_WALLET";
+    const NETWORK_ENV: &str = "WRAITHD_NETWORK";
 
     struct DaemonState {
         started: Instant,
@@ -56,6 +58,17 @@ mod unix {
         gsp: GspClient,
         wallet: RwLock<Option<Keystore>>,
         wallet_path: PathBuf,
+        network: bitcoin::Network,
+    }
+
+    fn parse_network(s: &str) -> Option<bitcoin::Network> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "mainnet" | "bitcoin" => Some(bitcoin::Network::Bitcoin),
+            "testnet" => Some(bitcoin::Network::Testnet),
+            "signet" => Some(bitcoin::Network::Signet),
+            "regtest" => Some(bitcoin::Network::Regtest),
+            _ => None,
+        }
     }
 
     fn default_wallet_path() -> PathBuf {
@@ -74,11 +87,16 @@ mod unix {
             std::env::var(GHOST_PAY_ENV).unwrap_or_else(|_| DEFAULT_GHOST_PAY.to_string());
         let gsp_url = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
         let wallet_path = default_wallet_path();
+        let network = std::env::var(NETWORK_ENV)
+            .ok()
+            .and_then(|s| parse_network(&s))
+            .unwrap_or(bitcoin::Network::Signet);
         tracing::info!(
             ghost_pay = %ghost_pay_url,
             gsp = %gsp_url,
             wallet = %wallet_path.display(),
-            "node endpoints + wallet path configured",
+            network = ?network,
+            "node endpoints + wallet path + network configured",
         );
 
         let state = Arc::new(DaemonState {
@@ -87,6 +105,7 @@ mod unix {
             gsp: GspClient::new(gsp_url),
             wallet: RwLock::new(None),
             wallet_path,
+            network,
         });
 
         // Remove stale socket file if present.
@@ -258,6 +277,30 @@ mod unix {
                         }
                         Err(e) => Response::Error(ErrorResponse {
                             message: format!("derive: {e}"),
+                        }),
+                    },
+                }
+            }
+            Request::LightReceive { index } => {
+                let guard = state.wallet.read().await;
+                match guard.as_ref() {
+                    None => Response::Error(ErrorResponse {
+                        message: "wallet is locked; run `wraith wallet unlock` first"
+                            .to_string(),
+                    }),
+                    Some(ks) => match light::receive_address(ks, index, state.network) {
+                        Ok(addr) => Response::LightReceive(LightReceiveResponse {
+                            address: addr.to_string(),
+                            index,
+                            network: format!("{:?}", state.network).to_lowercase(),
+                            derivation_path: format!(
+                                "m/86'/{}'/0'/0/{}",
+                                light::GHOST_COIN_TYPE,
+                                index
+                            ),
+                        }),
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("light receive: {e}"),
                         }),
                     },
                 }
