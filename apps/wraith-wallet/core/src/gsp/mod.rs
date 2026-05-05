@@ -1,9 +1,12 @@
 //! GSP client (REST + WebSocket).
 //!
-//! Phase 1: WebSocket Ping/Pong probe + REST registration / session creation.
-//! Persistent authenticated WebSocket session lands in a subsequent commit on top.
+//! Phase 1: WebSocket Ping/Pong probe + REST registration / session creation +
+//! long-lived authenticated session task (`session` submodule).
 //!
 //! Reuses message types from `ghost-gsp-proto` so the wire format stays in sync with the server.
+
+pub mod session;
+pub use session::{spawn_session, BalanceSnapshot, SessionHandle, SessionPhase, SessionStatus};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

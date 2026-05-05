@@ -60,6 +60,8 @@ enum LightCommand {
         #[arg(short, long, default_value_t = 0)]
         index: u32,
     },
+    /// Show the active wallet's last-known on-chain balance.
+    Balance,
 }
 
 #[derive(Subcommand)]
@@ -129,6 +131,7 @@ mod unix {
             },
             Command::Light { sub } => match sub {
                 LightCommand::Receive { index } => Request::LightReceive { index },
+                LightCommand::Balance => Request::LightBalance,
             },
             Command::Wallet { sub } => match sub {
                 WalletCommand::Create { name } => match prompt_new_passphrase() {
@@ -211,10 +214,35 @@ mod unix {
                     if let Some(id) = s.wallet_id {
                         println!("  wallet_id:     {id}");
                     }
+                    if let Some(p) = s.phase {
+                        let cnt = s.connect_count.unwrap_or(0);
+                        println!("  ws phase:      {p} (connects: {cnt})");
+                    }
+                    if let Some(err) = s.last_error {
+                        println!("  last error:    {err}");
+                    }
                     if let Some(rem) = s.remaining_secs {
                         let hours = rem / 3600;
                         let mins = (rem % 3600) / 60;
                         println!("  expires in:    {hours}h {mins}m ({rem}s)");
+                    }
+                }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LightBalance(b)) => {
+                match b.confirmed_sats {
+                    None => println!("(balance not yet known — session still authenticating?)"),
+                    Some(c) => {
+                        println!("confirmed:   {c} sats");
+                        if let Some(u) = b.unconfirmed_sats {
+                            println!("unconfirmed: {u} sats");
+                        }
+                        if let Some(l) = b.locked_sats {
+                            println!("locked:      {l} sats");
+                        }
+                        if let Some(t) = b.received_at {
+                            println!("as of:       unix {t}");
+                        }
                     }
                 }
                 std::process::ExitCode::SUCCESS

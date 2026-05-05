@@ -35,8 +35,10 @@ pub enum Request {
     /// Register the active wallet's auth identity with the configured GSP and create
     /// a session. Idempotent — already-registered wallets proceed straight to session.
     GspAuth,
-    /// Inspect the daemon's stored GSP session token (if any).
+    /// Inspect the daemon's stored GSP session token + persistent connection state.
     GspSessionStatus,
+    /// Read the active wallet's last-known on-chain balance from the persistent session.
+    LightBalance,
     /// Create a new named wallet on disk and add it to the daemon's unlocked set.
     WalletCreate { name: String, passphrase: String },
     /// Unlock a named wallet by reading from disk + decrypting. Becomes active.
@@ -67,6 +69,7 @@ pub enum Response {
     GspPing(GspPingResponse),
     GspAuth(GspAuthResponse),
     GspSessionStatus(GspSessionStatusResponse),
+    LightBalance(LightBalanceResponse),
     WalletCreate(WalletCreateResponse),
     WalletUnlocked,
     WalletLocked { name: String },
@@ -114,7 +117,7 @@ pub struct GspAuthResponse {
     pub expires_at: i64,
 }
 
-/// Snapshot of the daemon's stored GSP session token (if any).
+/// Snapshot of the daemon's stored GSP session token + live connection state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GspSessionStatusResponse {
     pub have_token: bool,
@@ -123,6 +126,21 @@ pub struct GspSessionStatusResponse {
     pub wallet_id: Option<String>,
     pub expires_at: Option<i64>,
     pub remaining_secs: Option<i64>,
+    /// One of: "disconnected", "connecting", "authenticating", "authenticated", "backoff".
+    pub phase: Option<String>,
+    /// Number of successful WS connects (1 = first connect, >1 = reconnects).
+    pub connect_count: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+/// Active-wallet balance snapshot. `None` fields mean "no data yet"
+/// (session not authenticated or first BalanceUpdate not received).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightBalanceResponse {
+    pub confirmed_sats: Option<u64>,
+    pub unconfirmed_sats: Option<u64>,
+    pub locked_sats: Option<u64>,
+    pub received_at: Option<i64>,
 }
 
 /// Returned after creating a fresh wallet — the mnemonic is shown once for backup.

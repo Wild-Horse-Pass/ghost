@@ -47,12 +47,15 @@ mod unix {
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_core::light;
     use ghost_gsp_proto::SessionToken;
-    use wraith_wallet_core::gsp::GspError;
+    use wraith_wallet_core::gsp::{
+        spawn_session, GspError, SessionHandle, SessionPhase, SessionStatus,
+    };
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspAuthResponse,
-        GspPingResponse, GspSessionStatusResponse, HealthResponse, LightReceiveResponse, Request,
-        Response, WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse,
-        WalletListEntry, WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
+        GspPingResponse, GspSessionStatusResponse, HealthResponse, LightBalanceResponse,
+        LightReceiveResponse, Request, Response, WalletAuthInfoResponse, WalletCreateResponse,
+        WalletDeriveResponse, WalletListEntry, WalletListResponse, WalletShowMnemonicResponse,
+        WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -62,17 +65,20 @@ mod unix {
     const WALLETS_DIR_ENV: &str = "WRAITHD_WALLETS_DIR";
     const NETWORK_ENV: &str = "WRAITHD_NETWORK";
 
-    /// A `SessionToken` paired with the wallet name that produced it, so the daemon
-    /// can drop the session when its wallet is locked or another wallet is selected.
+    /// A `SessionToken` paired with the wallet name that produced it AND a live
+    /// `SessionHandle` running the persistent authenticated WebSocket. Dropping
+    /// the `StoredSession` aborts the session task (via `SessionHandle::Drop`).
     struct StoredSession {
         wallet_name: String,
         token: SessionToken,
+        handle: SessionHandle,
     }
 
     struct DaemonState {
         started: Instant,
         chain: Arc<dyn ChainClient>,
         gsp: GspClient,
+        gsp_url: String,
         wallets_dir: PathBuf,
         wallets: RwLock<HashMap<String, Keystore>>,
         active: RwLock<Option<String>>,
@@ -165,7 +171,8 @@ mod unix {
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             chain: Arc::new(GhostPayClient::new(ghost_pay_url)),
-            gsp: GspClient::new(gsp_url),
+            gsp: GspClient::new(gsp_url.clone()),
+            gsp_url,
             wallets_dir,
             wallets: RwLock::new(HashMap::new()),
             active: RwLock::new(None),
@@ -265,11 +272,16 @@ mod unix {
 
         let token_prefix: String = token.token.chars().take(12).collect();
         let expires_at = token.expires_at;
+        let jwt_for_session = token.token.clone();
 
-        // 4. Stash the token. Keyed by wallet so future ops know whose session this is.
+        // 4. Stash the token + spawn a persistent authenticated session task.
+        //    Replacing an existing slot drops the old SessionHandle, which aborts
+        //    its task before the new one starts.
+        let handle = spawn_session(state.gsp_url.clone(), jwt_for_session);
         *state.session.write().await = Some(StoredSession {
             wallet_name: active_name,
             token,
+            handle,
         });
 
         Ok(GspAuthResponse {
@@ -278,6 +290,16 @@ mod unix {
             token_prefix,
             expires_at,
         })
+    }
+
+    fn phase_label(p: SessionPhase) -> &'static str {
+        match p {
+            SessionPhase::Disconnected => "disconnected",
+            SessionPhase::Connecting => "connecting",
+            SessionPhase::Authenticating => "authenticating",
+            SessionPhase::Authenticated => "authenticated",
+            SessionPhase::Backoff => "backoff",
+        }
     }
 
     /// Snapshot the active wallet's name + keystore for read-only use.
@@ -350,20 +372,54 @@ mod unix {
             Request::GspSessionStatus => {
                 let guard = state.session.read().await;
                 match guard.as_ref() {
-                    Some(s) => Response::GspSessionStatus(GspSessionStatusResponse {
-                        have_token: true,
-                        wallet_name: Some(s.wallet_name.clone()),
-                        wallet_id: Some(s.token.wallet_id.0.clone()),
-                        expires_at: Some(s.token.expires_at),
-                        remaining_secs: Some(s.token.remaining_secs()),
-                    }),
+                    Some(s) => {
+                        let snap: SessionStatus = s.handle.snapshot().await;
+                        Response::GspSessionStatus(GspSessionStatusResponse {
+                            have_token: true,
+                            wallet_name: Some(s.wallet_name.clone()),
+                            wallet_id: Some(s.token.wallet_id.0.clone()),
+                            expires_at: Some(s.token.expires_at),
+                            remaining_secs: Some(s.token.remaining_secs()),
+                            phase: Some(phase_label(snap.phase).to_string()),
+                            connect_count: Some(snap.connect_count),
+                            last_error: snap.last_error,
+                        })
+                    }
                     None => Response::GspSessionStatus(GspSessionStatusResponse {
                         have_token: false,
                         wallet_name: None,
                         wallet_id: None,
                         expires_at: None,
                         remaining_secs: None,
+                        phase: None,
+                        connect_count: None,
+                        last_error: None,
                     }),
+                }
+            }
+            Request::LightBalance => {
+                let guard = state.session.read().await;
+                match guard.as_ref() {
+                    None => Response::Error(ErrorResponse {
+                        message: "no GSP session — run `wraith gsp auth` first".to_string(),
+                    }),
+                    Some(s) => {
+                        let snap = s.handle.snapshot().await;
+                        match snap.last_balance {
+                            None => Response::LightBalance(LightBalanceResponse {
+                                confirmed_sats: None,
+                                unconfirmed_sats: None,
+                                locked_sats: None,
+                                received_at: None,
+                            }),
+                            Some(b) => Response::LightBalance(LightBalanceResponse {
+                                confirmed_sats: Some(b.confirmed_sats),
+                                unconfirmed_sats: Some(b.unconfirmed_sats),
+                                locked_sats: Some(b.locked_sats),
+                                received_at: Some(b.received_at),
+                            }),
+                        }
+                    }
                 }
             }
             Request::WalletCreate { name, passphrase } => {
