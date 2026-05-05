@@ -196,11 +196,47 @@ mod unix {
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
         tracing::info!(path = %socket_path.display(), "wraithd listening");
 
+        // Watch for SIGTERM / SIGINT (Ctrl-C) so we can drop the listener, kill
+        // any active session task, and remove the socket file before exiting.
+        let mut sigterm = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )?;
+        let mut sigint = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::interrupt(),
+        )?;
+
         loop {
-            let (stream, _) = listener.accept().await?;
-            let state = Arc::clone(&state);
-            tokio::spawn(handle_connection(stream, state));
+            tokio::select! {
+                accept = listener.accept() => {
+                    match accept {
+                        Ok((stream, _)) => {
+                            let state = Arc::clone(&state);
+                            tokio::spawn(handle_connection(stream, state));
+                        }
+                        Err(e) => {
+                            tracing::warn!(?e, "accept failed");
+                        }
+                    }
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("SIGTERM received, shutting down");
+                    break;
+                }
+                _ = sigint.recv() => {
+                    tracing::info!("SIGINT received, shutting down");
+                    break;
+                }
+            }
         }
+
+        // Drop the active GSP session (SessionHandle::Drop aborts the task).
+        *state.session.write().await = None;
+        // Wallets clear on drop (zeroized).
+        state.wallets.write().await.clear();
+        // Remove the socket so the next startup doesn't see a stale file.
+        let _ = fs::remove_file(&socket_path);
+        tracing::info!("wraithd stopped");
+        Ok(())
     }
 
     async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
