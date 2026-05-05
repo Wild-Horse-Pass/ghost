@@ -153,8 +153,11 @@ mod unix {
 
     pub async fn serve() -> std::io::Result<()> {
         let socket_path = default_socket_path();
-        let ghost_pay_url =
+        // WRAITHD_GHOST_PAY accepts a comma-separated list of fallback URLs.
+        // The chain client tries them in order on each request.
+        let ghost_pay_raw =
             std::env::var(GHOST_PAY_ENV).unwrap_or_else(|_| DEFAULT_GHOST_PAY.to_string());
+        let ghost_pay_urls = wraith_wallet_core::chain::GhostPayClient::parse_urls(&ghost_pay_raw);
         let gsp_url = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
         let wallets_dir = default_wallets_dir();
         let network = std::env::var(NETWORK_ENV)
@@ -162,7 +165,7 @@ mod unix {
             .and_then(|s| parse_network(&s))
             .unwrap_or(bitcoin::Network::Signet);
         tracing::info!(
-            ghost_pay = %ghost_pay_url,
+            ghost_pay = ?ghost_pay_urls,
             gsp = %gsp_url,
             wallets_dir = %wallets_dir.display(),
             network = ?network,
@@ -171,7 +174,7 @@ mod unix {
 
         let state = Arc::new(DaemonState {
             started: Instant::now(),
-            chain: Arc::new(GhostPayClient::new(ghost_pay_url)),
+            chain: Arc::new(GhostPayClient::with_urls(ghost_pay_urls)),
             gsp: GspClient::new(gsp_url.clone()),
             gsp_url,
             wallets_dir,
