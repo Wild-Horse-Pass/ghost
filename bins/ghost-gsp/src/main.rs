@@ -109,6 +109,12 @@ struct Args {
     /// TLS private key PEM file path (required with --tls-cert)
     #[arg(long)]
     tls_key: Option<std::path::PathBuf>,
+
+    /// Disable TLS entirely and serve plain HTTP / WebSocket. Dev convenience for
+    /// running a local GSP without dealing with self-signed cert distribution.
+    /// **Refused on mainnet.**
+    #[arg(long, default_value_t = false)]
+    insecure_http: bool,
 }
 
 /// Configuration file format
@@ -326,6 +332,16 @@ fn resolve_jwt_secret(
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Install the rustls process-level CryptoProvider exactly once before any
+    // ServerConfig::builder() construction. Required since rustls 0.23 does not
+    // auto-pick a provider from feature flags (mirrors the ghost-pay fix).
+    if rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .is_err()
+    {
+        // Already installed (test harness / re-init); nothing to do.
+    }
+
     // Setup logging
     let level = match args.log_level.to_lowercase().as_str() {
         "trace" => Level::TRACE,
@@ -371,39 +387,55 @@ async fn main() -> Result<()> {
     let data_dir = args.data_dir.unwrap_or(config_file.storage.data_dir);
     let pay_node_url = args.pay_node_url.unwrap_or(config_file.proxy.pay_node_url);
 
+    // Create data directory before any code (e.g. JWT secret persistence)
+    // tries to write into it.
+    std::fs::create_dir_all(&data_dir)?;
+
     // M-18/L-24: JWT secret handling with proper error handling and persistence
     let configured_secret = args.jwt_secret.or(config_file.security.jwt_secret);
     let jwt_secret = resolve_jwt_secret(configured_secret, network, &data_dir)?;
-
-    // Create data directory
-    std::fs::create_dir_all(&data_dir)?;
 
     info!("Listen address: {}", listen_addr);
     info!("Network: {:?}", network);
     info!("Data directory: {}", data_dir.display());
     info!("Pay node URL: {}", pay_node_url);
 
-    // Build TLS config for HTTPS
+    // Build TLS config for HTTPS, unless --insecure-http was given (dev only).
+    if args.insecure_http {
+        if matches!(network, Network::Bitcoin) {
+            return Err(anyhow::anyhow!(
+                "--insecure-http is refused on mainnet. Provide --tls-cert + --tls-key \
+                 or run with an identity-derived cert."
+            ));
+        }
+        tracing::warn!(
+            "TLS disabled (--insecure-http). Serving plain HTTP/WebSocket — dev mode only."
+        );
+    }
     let has_explicit_cert = args.tls_cert.is_some();
     let tls_cfg = ghost_common::config::TlsConfig {
         cert_path: args.tls_cert,
         key_path: args.tls_key,
     };
-    let tls_server_config = match ghost_common::tls::build_server_config(&tls_cfg) {
-        Ok(tls) => {
-            if has_explicit_cert {
-                info!("TLS configured with operator-provided certificate");
-            } else {
-                info!("TLS configured with self-signed certificate (development only)");
+    let tls_server_config = if args.insecure_http {
+        None
+    } else {
+        match ghost_common::tls::build_server_config(&tls_cfg) {
+            Ok(tls) => {
+                if has_explicit_cert {
+                    info!("TLS configured with operator-provided certificate");
+                } else {
+                    info!("TLS configured with self-signed certificate (development only)");
+                }
+                Some(tls)
             }
-            Some(tls)
-        }
-        Err(e) => {
-            if has_explicit_cert {
-                return Err(anyhow::anyhow!("Failed to build TLS config: {}", e));
+            Err(e) => {
+                if has_explicit_cert {
+                    return Err(anyhow::anyhow!("Failed to build TLS config: {}", e));
+                }
+                tracing::warn!(error = %e, "Failed to generate self-signed cert, using plain HTTP");
+                None
             }
-            tracing::warn!(error = %e, "Failed to generate self-signed cert, using plain HTTP");
-            None
         }
     };
 
