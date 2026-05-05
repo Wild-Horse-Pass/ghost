@@ -12,6 +12,11 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Don't auto-spawn `wraithd` if it isn't running. Fail with a
+    /// "daemon not running" error instead.
+    #[arg(long, global = true)]
+    no_spawn: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -138,7 +143,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    runtime.block_on(unix::run(cli.command, cli.json))
+    runtime.block_on(unix::run(cli.command, cli.json, cli.no_spawn))
 }
 
 #[cfg(unix)]
@@ -151,7 +156,28 @@ mod unix {
         ChainCommand, Command, GspCommand, LightCommand, LocksCommand, WalletCommand,
     };
 
-    pub async fn run(command: Command, json: bool) -> std::process::ExitCode {
+    pub async fn run(
+        command: Command,
+        json: bool,
+        no_spawn: bool,
+    ) -> std::process::ExitCode {
+        // Make sure wraithd is up before constructing the request — the request
+        // build for some subcommands (eg. wallet create) prompts for a passphrase,
+        // and we want to fail fast on "no daemon" instead of after the user types it.
+        if !no_spawn {
+            if let Err(e) = ensure_daemon().await {
+                if json {
+                    let body = serde_json::json!({
+                        "error": { "message": format!("auto-spawn: {e}") }
+                    });
+                    println!("{body}");
+                } else {
+                    eprintln!("wraith: auto-spawn failed: {e}");
+                }
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+
         let request = match command {
             Command::Health => Request::Health,
             Command::Chain { sub } => match sub {
@@ -462,6 +488,64 @@ mod unix {
                 std::process::ExitCode::FAILURE
             }
         }
+    }
+
+    /// Connect to the wraithd socket; if absent, find `wraithd` next to ourselves
+    /// and spawn it detached. Polls the socket up to ~3 s.
+    async fn ensure_daemon() -> Result<(), String> {
+        let socket = default_socket_path();
+
+        // Fast path: already up.
+        if UnixStream::connect(&socket).await.is_ok() {
+            return Ok(());
+        }
+
+        // Find `wraithd` next to ourselves.
+        let me = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+        let dir = me
+            .parent()
+            .ok_or_else(|| "current_exe has no parent dir".to_string())?;
+        let daemon_bin = dir.join("wraithd");
+        if !daemon_bin.is_file() {
+            return Err(format!(
+                "wraithd binary not found at {} (is it built?)",
+                daemon_bin.display()
+            ));
+        }
+
+        // Spawn detached. Stdin/out/err → /dev/null so the daemon doesn't keep our
+        // terminal alive; environment is inherited so WRAITHD_* vars work.
+        let mut cmd = std::process::Command::new(&daemon_bin);
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        // Detach into a new session so SIGHUP from the controlling terminal
+        // doesn't kill it when the user closes the shell.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+
+        cmd.spawn()
+            .map_err(|e| format!("spawn wraithd: {e}"))?;
+
+        // Poll for the socket. ~3s budget at 60ms each.
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            if UnixStream::connect(&socket).await.is_ok() {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "wraithd did not bind {} within 3s",
+            socket.display()
+        ))
     }
 
     fn io_err(e: std::io::Error) -> std::process::ExitCode {
