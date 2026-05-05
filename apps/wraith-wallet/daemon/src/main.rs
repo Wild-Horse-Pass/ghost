@@ -46,12 +46,13 @@ mod unix {
     use wraith_wallet_core::gsp::GspClient;
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_core::light;
+    use ghost_gsp_proto::SessionToken;
     use wraith_wallet_core::gsp::GspError;
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspAuthResponse,
-        GspPingResponse, HealthResponse, LightReceiveResponse, Request, Response,
-        WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletListEntry,
-        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
+        GspPingResponse, GspSessionStatusResponse, HealthResponse, LightReceiveResponse, Request,
+        Response, WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse,
+        WalletListEntry, WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -61,6 +62,13 @@ mod unix {
     const WALLETS_DIR_ENV: &str = "WRAITHD_WALLETS_DIR";
     const NETWORK_ENV: &str = "WRAITHD_NETWORK";
 
+    /// A `SessionToken` paired with the wallet name that produced it, so the daemon
+    /// can drop the session when its wallet is locked or another wallet is selected.
+    struct StoredSession {
+        wallet_name: String,
+        token: SessionToken,
+    }
+
     struct DaemonState {
         started: Instant,
         chain: Arc<dyn ChainClient>,
@@ -68,6 +76,7 @@ mod unix {
         wallets_dir: PathBuf,
         wallets: RwLock<HashMap<String, Keystore>>,
         active: RwLock<Option<String>>,
+        session: RwLock<Option<StoredSession>>,
         network: bitcoin::Network,
     }
 
@@ -160,6 +169,7 @@ mod unix {
             wallets_dir,
             wallets: RwLock::new(HashMap::new()),
             active: RwLock::new(None),
+            session: RwLock::new(None),
             network,
         });
 
@@ -205,10 +215,12 @@ mod unix {
         }
     }
 
-    /// `GspAuth` orchestration: register-if-needed + session.
+    /// `GspAuth` orchestration: register-if-needed + session. Stores the resulting
+    /// `SessionToken` in `state.session` so subsequent commits can use it to open
+    /// a persistent authenticated WebSocket.
     async fn gsp_auth(state: &Arc<DaemonState>) -> Result<GspAuthResponse, String> {
-        // 1. Get the auth keypair from the active wallet.
-        let kp = {
+        // 1. Get the auth keypair + active wallet name.
+        let (active_name, kp) = {
             let active = state
                 .active
                 .read()
@@ -219,7 +231,8 @@ mod unix {
             let ks = wallets
                 .get(&active)
                 .ok_or_else(|| format!("active wallet '{active}' is not unlocked"))?;
-            auth::auth_keypair(ks).map_err(|e| format!("auth keypair: {e}"))?
+            let kp = auth::auth_keypair(ks).map_err(|e| format!("auth keypair: {e}"))?;
+            (active, kp)
         };
         let wallet_id = auth::wallet_id_hex(&kp);
 
@@ -251,11 +264,19 @@ mod unix {
             .map_err(|e| format!("session: {e}"))?;
 
         let token_prefix: String = token.token.chars().take(12).collect();
+        let expires_at = token.expires_at;
+
+        // 4. Stash the token. Keyed by wallet so future ops know whose session this is.
+        *state.session.write().await = Some(StoredSession {
+            wallet_name: active_name,
+            token,
+        });
+
         Ok(GspAuthResponse {
             wallet_id,
             already_registered,
             token_prefix,
-            expires_at: token.expires_at,
+            expires_at,
         })
     }
 
@@ -326,6 +347,25 @@ mod unix {
                 Ok(r) => Response::GspAuth(r),
                 Err(message) => Response::Error(ErrorResponse { message }),
             },
+            Request::GspSessionStatus => {
+                let guard = state.session.read().await;
+                match guard.as_ref() {
+                    Some(s) => Response::GspSessionStatus(GspSessionStatusResponse {
+                        have_token: true,
+                        wallet_name: Some(s.wallet_name.clone()),
+                        wallet_id: Some(s.token.wallet_id.0.clone()),
+                        expires_at: Some(s.token.expires_at),
+                        remaining_secs: Some(s.token.remaining_secs()),
+                    }),
+                    None => Response::GspSessionStatus(GspSessionStatusResponse {
+                        have_token: false,
+                        wallet_name: None,
+                        wallet_id: None,
+                        expires_at: None,
+                        remaining_secs: None,
+                    }),
+                }
+            }
             Request::WalletCreate { name, passphrase } => {
                 if let Err(e) = validate_wallet_name(&name) {
                     Response::Error(ErrorResponse { message: e })
@@ -414,6 +454,14 @@ mod unix {
                     if active.as_deref() == Some(target.as_str()) {
                         *active = None;
                     }
+                    // Drop any GSP session bound to the wallet we just locked.
+                    let mut session = state.session.write().await;
+                    if session
+                        .as_ref()
+                        .is_some_and(|s| s.wallet_name == target)
+                    {
+                        *session = None;
+                    }
                     Response::WalletLocked { name: target }
                 }
             }
@@ -458,6 +506,14 @@ mod unix {
                     })
                 } else {
                     *state.active.write().await = Some(name.clone());
+                    // Drop any GSP session that belongs to a different wallet.
+                    let mut session = state.session.write().await;
+                    if session
+                        .as_ref()
+                        .is_some_and(|s| s.wallet_name != name)
+                    {
+                        *session = None;
+                    }
                     Response::WalletSelected { name }
                 }
             }

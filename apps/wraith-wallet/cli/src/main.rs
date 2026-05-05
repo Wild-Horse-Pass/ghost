@@ -49,6 +49,8 @@ enum GspCommand {
     Ping,
     /// Register the active wallet with GSP (idempotent) and create a session.
     Auth,
+    /// Show the daemon's stored GSP session token.
+    SessionStatus,
 }
 
 #[derive(Subcommand)]
@@ -123,6 +125,7 @@ mod unix {
             Command::Gsp { sub } => match sub {
                 GspCommand::Ping => Request::GspPing,
                 GspCommand::Auth => Request::GspAuth,
+                GspCommand::SessionStatus => Request::GspSessionStatus,
             },
             Command::Light { sub } => match sub {
                 LightCommand::Receive { index } => Request::LightReceive { index },
@@ -195,6 +198,25 @@ mod unix {
                 println!("  wallet_id:    {}", a.wallet_id);
                 println!("  token (prefix): {}...", a.token_prefix);
                 println!("  expires_at:   {}", a.expires_at);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::GspSessionStatus(s)) => {
+                if !s.have_token {
+                    println!("(no session — run `wraith gsp auth`)");
+                } else {
+                    println!("session active");
+                    if let Some(n) = s.wallet_name {
+                        println!("  wallet:        {n}");
+                    }
+                    if let Some(id) = s.wallet_id {
+                        println!("  wallet_id:     {id}");
+                    }
+                    if let Some(rem) = s.remaining_secs {
+                        let hours = rem / 3600;
+                        let mins = (rem % 3600) / 60;
+                        println!("  expires in:    {hours}h {mins}m ({rem}s)");
+                    }
+                }
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::WalletCreate(c)) => {

@@ -35,6 +35,8 @@ pub enum Request {
     /// Register the active wallet's auth identity with the configured GSP and create
     /// a session. Idempotent — already-registered wallets proceed straight to session.
     GspAuth,
+    /// Inspect the daemon's stored GSP session token (if any).
+    GspSessionStatus,
     /// Create a new named wallet on disk and add it to the daemon's unlocked set.
     WalletCreate { name: String, passphrase: String },
     /// Unlock a named wallet by reading from disk + decrypting. Becomes active.
@@ -64,6 +66,7 @@ pub enum Response {
     ChainStatus(ChainStatusResponse),
     GspPing(GspPingResponse),
     GspAuth(GspAuthResponse),
+    GspSessionStatus(GspSessionStatusResponse),
     WalletCreate(WalletCreateResponse),
     WalletUnlocked,
     WalletLocked { name: String },
@@ -109,6 +112,17 @@ pub struct GspAuthResponse {
     /// Truncated JWT (first 12 chars) for visibility — full token stays in the daemon.
     pub token_prefix: String,
     pub expires_at: i64,
+}
+
+/// Snapshot of the daemon's stored GSP session token (if any).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GspSessionStatusResponse {
+    pub have_token: bool,
+    /// Wallet name the token belongs to (the wallet that was active at `gsp_auth` time).
+    pub wallet_name: Option<String>,
+    pub wallet_id: Option<String>,
+    pub expires_at: Option<i64>,
+    pub remaining_secs: Option<i64>,
 }
 
 /// Returned after creating a fresh wallet — the mnemonic is shown once for backup.
