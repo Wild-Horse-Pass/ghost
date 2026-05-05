@@ -70,6 +70,21 @@ pub fn make_proof(keypair: &Keypair, action: &str) -> Result<WalletProof, AuthEr
     Ok(proof)
 }
 
+/// Sign arbitrary `data` with the auth keypair using BIP-340 Schnorr.
+///
+/// Mirrors `ghost-light-wallet::signing::sign_data`: applies tagged hash
+/// `"Ghost/Data/v1"` over the input bytes before signing. Used to sign the
+/// `sighash` returned by ghost-pay's `PreparePayment` flow.
+pub fn sign_data(keypair: &Keypair, data: &[u8]) -> [u8; 64] {
+    let h = tagged_hash("Ghost/Data/v1", data);
+    let msg = Message::from_digest(h);
+    let secp = Secp256k1::new();
+    let sig = secp.sign_schnorr_no_aux_rand(&msg, keypair);
+    let mut out = [0u8; 64];
+    out.copy_from_slice(sig.as_ref());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

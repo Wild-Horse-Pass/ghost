@@ -20,7 +20,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use ghost_gsp_proto::{ClientMessage, ServerMessage, TransactionInfo, UtxoInfo};
+use ghost_gsp_proto::{
+    ClientMessage, PaymentMode, PreparedPayment, ServerMessage, TransactionInfo, UtxoInfo,
+    WalletProof,
+};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -109,6 +112,50 @@ impl SessionHandle {
             .map_err(|_| "session task closed".to_string())?;
         rx.await.map_err(|_| "reply dropped".to_string())?
     }
+
+    /// Issue `PreparePayment` and await the matching `PaymentPrepared` reply.
+    pub async fn prepare_payment(
+        &self,
+        recipient: String,
+        amount_sats: u64,
+        mode: PaymentMode,
+        proof: WalletProof,
+        memo: Option<String>,
+    ) -> Result<PreparedPayment, String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::PreparePayment {
+                recipient,
+                amount_sats,
+                mode,
+                proof,
+                memo,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| "session task closed".to_string())?;
+        rx.await.map_err(|_| "reply dropped".to_string())?
+    }
+
+    /// Issue `SubmitSignedPayment` and await the matching `PaymentSubmitted` reply.
+    pub async fn submit_signed_payment(
+        &self,
+        payment_id: String,
+        signature_hex: String,
+        public_key_hex: String,
+    ) -> Result<SubmittedPaymentResult, String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::SubmitSignedPayment {
+                payment_id,
+                signature: signature_hex,
+                public_key: public_key_hex,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| "session task closed".to_string())?;
+        rx.await.map_err(|_| "reply dropped".to_string())?
+    }
 }
 
 impl Drop for SessionHandle {
@@ -126,6 +173,8 @@ enum PendingReply {
     Utxos(oneshot::Sender<Result<UtxosResult, String>>),
     Transactions(oneshot::Sender<Result<TransactionsResult, String>>),
     GhostLocks(oneshot::Sender<Result<GhostLocksResult, String>>),
+    PaymentPrepared(oneshot::Sender<Result<PreparedPayment, String>>),
+    PaymentSubmitted(oneshot::Sender<Result<SubmittedPaymentResult, String>>),
 }
 
 /// Commands the daemon can send into the session task.
@@ -142,6 +191,26 @@ pub enum SessionCommand {
     GetGhostLocks {
         reply: oneshot::Sender<Result<GhostLocksResult, String>>,
     },
+    PreparePayment {
+        recipient: String,
+        amount_sats: u64,
+        mode: PaymentMode,
+        proof: WalletProof,
+        memo: Option<String>,
+        reply: oneshot::Sender<Result<PreparedPayment, String>>,
+    },
+    SubmitSignedPayment {
+        payment_id: String,
+        signature: String,
+        public_key: String,
+        reply: oneshot::Sender<Result<SubmittedPaymentResult, String>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SubmittedPaymentResult {
+    pub payment_id: String,
+    pub txid: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +363,12 @@ async fn run(
                 PendingReply::GhostLocks(tx) => {
                     let _ = tx.send(Err("session disconnected".into()));
                 }
+                PendingReply::PaymentPrepared(tx) => {
+                    let _ = tx.send(Err("session disconnected".into()));
+                }
+                PendingReply::PaymentSubmitted(tx) => {
+                    let _ = tx.send(Err("session disconnected".into()));
+                }
             }
         }
 
@@ -376,6 +451,49 @@ async fn run_main_loop(
                             ));
                         }
                         pending.push_back(PendingReply::GhostLocks(reply));
+                    }
+                    SessionCommand::PreparePayment {
+                        recipient,
+                        amount_sats,
+                        mode,
+                        proof,
+                        memo,
+                        reply,
+                    } => {
+                        let msg = ClientMessage::PreparePayment {
+                            recipient,
+                            amount_sats,
+                            mode,
+                            proof,
+                            memo,
+                            encrypted_metadata: None,
+                        };
+                        if let Err(e) = send_client(ws, &msg).await {
+                            let _ = reply.send(Err(format!("send PreparePayment: {e}")));
+                            return MainLoopOutcome::Disconnect(format!(
+                                "send PreparePayment: {e}"
+                            ));
+                        }
+                        pending.push_back(PendingReply::PaymentPrepared(reply));
+                    }
+                    SessionCommand::SubmitSignedPayment {
+                        payment_id,
+                        signature,
+                        public_key,
+                        reply,
+                    } => {
+                        let msg = ClientMessage::SubmitSignedPayment {
+                            payment_id,
+                            signature,
+                            public_key,
+                        };
+                        if let Err(e) = send_client(ws, &msg).await {
+                            let _ = reply.send(Err(format!("send SubmitSignedPayment: {e}")));
+                            return MainLoopOutcome::Disconnect(format!(
+                                "send SubmitSignedPayment: {e}"
+                            ));
+                        }
+                        pending.push_back(PendingReply::PaymentSubmitted(reply));
                     }
                 }
             }
@@ -480,6 +598,56 @@ async fn handle_message(
             tracing::debug!("gsp session: unmatched GhostLocks message");
         }
 
+        // Response to PreparePayment.
+        ServerMessage::PaymentPrepared {
+            success,
+            payment,
+            error,
+        } => {
+            if let Some(idx) = pending
+                .iter()
+                .position(|p| matches!(p, PendingReply::PaymentPrepared(_)))
+            {
+                if let Some(PendingReply::PaymentPrepared(tx)) = pending.remove(idx) {
+                    let result = if success {
+                        match payment {
+                            Some(p) => Ok(p),
+                            None => Err("server reported success but no payment".into()),
+                        }
+                    } else {
+                        Err(error.unwrap_or_else(|| "PaymentPrepared failed".into()))
+                    };
+                    let _ = tx.send(result);
+                    return;
+                }
+            }
+            tracing::debug!("gsp session: unmatched PaymentPrepared message");
+        }
+
+        // Response to SubmitSignedPayment.
+        ServerMessage::PaymentSubmitted {
+            success,
+            payment_id,
+            txid,
+            error,
+        } => {
+            if let Some(idx) = pending
+                .iter()
+                .position(|p| matches!(p, PendingReply::PaymentSubmitted(_)))
+            {
+                if let Some(PendingReply::PaymentSubmitted(tx)) = pending.remove(idx) {
+                    let result = if success {
+                        Ok(SubmittedPaymentResult { payment_id, txid })
+                    } else {
+                        Err(error.unwrap_or_else(|| "PaymentSubmitted failed".into()))
+                    };
+                    let _ = tx.send(result);
+                    return;
+                }
+            }
+            tracing::debug!("gsp session: unmatched PaymentSubmitted message");
+        }
+
         // Server-side error — surface it on the head of the pending queue.
         ServerMessage::Error {
             code,
@@ -497,6 +665,12 @@ async fn handle_message(
                         let _ = tx.send(Err(err));
                     }
                     PendingReply::GhostLocks(tx) => {
+                        let _ = tx.send(Err(err));
+                    }
+                    PendingReply::PaymentPrepared(tx) => {
+                        let _ = tx.send(Err(err));
+                    }
+                    PendingReply::PaymentSubmitted(tx) => {
                         let _ = tx.send(Err(err));
                     }
                 }

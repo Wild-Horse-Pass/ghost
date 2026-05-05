@@ -48,6 +48,14 @@ pub enum Request {
     LightHistory { limit: u32, offset: u32 },
     /// List the active wallet's Ghost Locks via the persistent GSP session.
     LocksList,
+    /// Prepare + sign + submit an on-chain / L2 payment.
+    /// Mode is one of: "ghostpay" (default), "wraith", "confidential".
+    LightSend {
+        recipient: String,
+        amount_sats: u64,
+        mode: String,
+        memo: Option<String>,
+    },
     /// Create a new named wallet on disk and add it to the daemon's unlocked set.
     WalletCreate { name: String, passphrase: String },
     /// Unlock a named wallet by reading from disk + decrypting. Becomes active.
@@ -88,6 +96,7 @@ pub enum Response {
     LightUtxos(LightUtxosResponse),
     LightHistory(LightHistoryResponse),
     LocksList(LocksListResponse),
+    LightSent(LightSentResponse),
     WalletCreate(WalletCreateResponse),
     WalletUnlocked,
     WalletLocked { name: String },
@@ -216,6 +225,19 @@ pub struct LockEntry {
 pub struct LocksListResponse {
     pub locks: Vec<LockEntry>,
     pub total_locked_sats: u64,
+}
+
+/// Result of `LightSend` (PreparePayment + sign + SubmitSignedPayment).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightSentResponse {
+    pub payment_id: String,
+    /// On-chain txid if the server broadcast the transaction. May be `None`
+    /// for L2 payments that don't surface as a chain tx (e.g. ghostpay mode).
+    pub txid: Option<String>,
+    pub recipient: String,
+    pub amount_sats: u64,
+    pub fee_sats: u64,
+    pub mode: String,
 }
 
 /// Returned after creating a fresh wallet — the mnemonic is shown once for backup.

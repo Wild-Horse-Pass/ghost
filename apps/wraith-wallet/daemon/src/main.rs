@@ -46,15 +46,15 @@ mod unix {
     use wraith_wallet_core::gsp::GspClient;
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_core::light;
-    use ghost_gsp_proto::SessionToken;
+    use ghost_gsp_proto::{PaymentMode, SessionToken};
     use wraith_wallet_core::gsp::{
         spawn_session, GspError, SessionHandle, SessionPhase, SessionStatus,
     };
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspAuthResponse,
         GspPingResponse, GspSessionStatusResponse, HealthResponse, LightBalanceResponse,
-        LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightUtxoEntry,
-        LightUtxosResponse, LockEntry, LocksListResponse, Request, Response,
+        LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightSentResponse,
+        LightUtxoEntry, LightUtxosResponse, LockEntry, LocksListResponse, Request, Response,
         WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletListEntry,
         WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
     };
@@ -329,6 +329,89 @@ mod unix {
         })
     }
 
+    fn parse_payment_mode(s: &str) -> Result<PaymentMode, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "ghostpay" | "ghost-pay" | "ghost_pay" => Ok(PaymentMode::GhostPay),
+            "wraith" => Ok(PaymentMode::Wraith),
+            "confidential" => Ok(PaymentMode::Confidential),
+            other => Err(format!(
+                "unknown payment mode '{other}' (try ghostpay, wraith, confidential)"
+            )),
+        }
+    }
+
+    /// `LightSend` orchestration: PreparePayment → sign sighash with auth key → SubmitSignedPayment.
+    /// Mirrors `ghost-light-wallet::payments::send::sign_and_submit` so wire format matches.
+    async fn light_send(
+        state: &Arc<DaemonState>,
+        recipient: String,
+        amount_sats: u64,
+        mode_str: String,
+        memo: Option<String>,
+    ) -> Result<LightSentResponse, String> {
+        let mode = parse_payment_mode(&mode_str)?;
+        let mode_label = format!("{mode}");
+
+        let session = state.session.read().await;
+        let session = session
+            .as_ref()
+            .ok_or_else(|| "no GSP session — run `wraith gsp auth` first".to_string())?;
+
+        // Get the auth keypair from the active wallet (must match the session's wallet).
+        let kp = {
+            let wallets = state.wallets.read().await;
+            let ks = wallets
+                .get(&session.wallet_name)
+                .ok_or_else(|| {
+                    format!(
+                        "wallet '{}' (the session's wallet) is not unlocked",
+                        session.wallet_name
+                    )
+                })?;
+            wraith_wallet_core::auth::auth_keypair(ks)
+                .map_err(|e| format!("auth keypair: {e}"))?
+        };
+
+        // 1. Sign a fresh `prepare_payment` proof.
+        let proof = wraith_wallet_core::auth::make_proof(&kp, "prepare_payment")
+            .map_err(|e| format!("prepare_payment proof: {e}"))?;
+
+        // 2. PreparePayment over the persistent session.
+        let prepared = session
+            .handle
+            .prepare_payment(recipient.clone(), amount_sats, mode, proof, memo.clone())
+            .await
+            .map_err(|e| format!("PreparePayment: {e}"))?;
+
+        // 3. Sign the sighash with the auth key + tagged hash "Ghost/Data/v1"
+        //    (matches ghost-light-wallet::signing::sign_data).
+        let sighash_bytes = prepared
+            .sighash_bytes()
+            .map_err(|e| format!("decoding sighash hex: {e}"))?;
+        let signature = wraith_wallet_core::auth::sign_data(&kp, &sighash_bytes);
+        let pubkey = wraith_wallet_core::auth::xonly_pubkey_bytes(&kp);
+
+        // 4. SubmitSignedPayment.
+        let result = session
+            .handle
+            .submit_signed_payment(
+                prepared.payment_id.clone(),
+                hex::encode(signature),
+                hex::encode(pubkey),
+            )
+            .await
+            .map_err(|e| format!("SubmitSignedPayment: {e}"))?;
+
+        Ok(LightSentResponse {
+            payment_id: result.payment_id,
+            txid: result.txid,
+            recipient,
+            amount_sats: prepared.amount_sats,
+            fee_sats: prepared.fee_sats,
+            mode: mode_label,
+        })
+    }
+
     fn phase_label(p: SessionPhase) -> &'static str {
         match p {
             SessionPhase::Disconnected => "disconnected",
@@ -523,6 +606,15 @@ mod unix {
                     },
                 }
             }
+            Request::LightSend {
+                recipient,
+                amount_sats,
+                mode,
+                memo,
+            } => match light_send(state, recipient, amount_sats, mode, memo).await {
+                Ok(r) => Response::LightSent(r),
+                Err(message) => Response::Error(ErrorResponse { message }),
+            },
             Request::LocksList => {
                 let guard = state.session.read().await;
                 match guard.as_ref() {

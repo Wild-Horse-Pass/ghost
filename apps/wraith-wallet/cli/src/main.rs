@@ -92,6 +92,19 @@ enum LightCommand {
         #[arg(short, long, default_value_t = 0)]
         offset: u32,
     },
+    /// Send a payment. Mode is one of `ghostpay` (default), `wraith`, or `confidential`.
+    Send {
+        /// Recipient: a Bitcoin address or a Ghost ID.
+        recipient: String,
+        /// Amount in satoshis.
+        amount_sats: u64,
+        /// Payment mode.
+        #[arg(long, default_value = "ghostpay")]
+        mode: String,
+        /// Optional memo, included with the payment metadata.
+        #[arg(long)]
+        memo: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -209,6 +222,17 @@ mod unix {
                 LightCommand::History { limit, offset } => {
                     Request::LightHistory { limit, offset }
                 }
+                LightCommand::Send {
+                    recipient,
+                    amount_sats,
+                    mode,
+                    memo,
+                } => Request::LightSend {
+                    recipient,
+                    amount_sats,
+                    mode,
+                    memo,
+                },
             },
             Command::Locks { sub } => match sub {
                 LocksCommand::List => Request::LocksList,
@@ -372,6 +396,20 @@ mod unix {
                         h.total_count
                     );
                 }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LightSent(s)) => {
+                println!("payment submitted");
+                println!("  payment_id: {}", s.payment_id);
+                if let Some(tx) = &s.txid {
+                    println!("  txid:       {tx}");
+                } else {
+                    println!("  txid:       (L2 — no on-chain txid)");
+                }
+                println!("  recipient:  {}", s.recipient);
+                println!("  amount:     {} sats", s.amount_sats);
+                println!("  fee:        {} sats", s.fee_sats);
+                println!("  mode:       {}", s.mode);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::LocksList(r)) => {
