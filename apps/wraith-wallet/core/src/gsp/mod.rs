@@ -1,14 +1,17 @@
-//! GSP WebSocket client.
+//! GSP client (REST + WebSocket).
 //!
-//! Phase 1 first WS slice: connectivity probe via `Ping`/`Pong` round-trip.
-//! Auth (`Authenticate` with JWT), subscriptions, and persistent sessions land in subsequent commits.
+//! Phase 1: WebSocket Ping/Pong probe + REST registration / session creation.
+//! Persistent authenticated WebSocket session lands in a subsequent commit on top.
 //!
 //! Reuses message types from `ghost-gsp-proto` so the wire format stays in sync with the server.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use ghost_gsp_proto::{ClientMessage, ServerMessage};
+use ghost_gsp_proto::{
+    ClientMessage, RegisterRequest, RegisterResponse, ServerMessage, SessionRequest,
+    SessionResponse, SessionToken, WalletId, WalletProof,
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +22,10 @@ pub enum GspError {
     Unexpected(String),
     #[error("encoding error: {0}")]
     Encoding(String),
+    #[error("server returned error: {0}")]
+    Server(String),
+    #[error("missing field in response: {0}")]
+    MissingField(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,17 +37,26 @@ pub struct PingResult {
 }
 
 pub struct GspClient {
-    url: String,
+    ws_url: String,
+    /// HTTP base URL derived from `ws_url`. e.g. `ws://host:port/ws/v1` → `http://host:port`.
+    http_base: String,
+    http: reqwest::Client,
 }
 
 impl GspClient {
-    pub fn new(url: impl Into<String>) -> Self {
-        Self { url: url.into() }
+    pub fn new(ws_url: impl Into<String>) -> Self {
+        let ws = ws_url.into();
+        let http_base = derive_http_base(&ws);
+        Self {
+            ws_url: ws,
+            http_base,
+            http: reqwest::Client::new(),
+        }
     }
 
     /// Open a WebSocket, send `Ping`, wait for `Pong`, close. Single-shot.
     pub async fn ping(&self) -> Result<PingResult, GspError> {
-        let (mut ws, _) = connect_async(&self.url)
+        let (mut ws, _) = connect_async(&self.ws_url)
             .await
             .map_err(|e| GspError::Transport(e.to_string()))?;
 
@@ -55,8 +71,6 @@ impl GspClient {
             .await
             .map_err(|e| GspError::Transport(e.to_string()))?;
 
-        // Drain messages until we see a Pong. GSP may push unsolicited frames
-        // (e.g. errors before auth) — ignore those and keep reading for the Pong.
         loop {
             let frame = ws
                 .next()
@@ -88,11 +102,86 @@ impl GspClient {
                 });
             }
 
-            // Anything else (Error, AuthResult, push notifications) is unexpected
-            // for an unauth'd ping flow — log via error and surface.
             return Err(GspError::Unexpected(format!("{parsed:?}")));
         }
     }
+
+    /// `POST /api/v1/register` — register the wallet identified by the proof's pubkey.
+    pub async fn register(
+        &self,
+        proof: WalletProof,
+        display_name: Option<String>,
+    ) -> Result<WalletId, GspError> {
+        let url = format!("{}/api/v1/register", self.http_base);
+        let body = RegisterRequest {
+            proof,
+            display_name,
+        };
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GspError::Transport(e.to_string()))?;
+        let status = resp.status();
+        let body: RegisterResponse = resp
+            .json()
+            .await
+            .map_err(|e| GspError::Encoding(e.to_string()))?;
+        if !status.is_success() || !body.success {
+            return Err(GspError::Server(body.error.unwrap_or_else(|| {
+                format!("register failed with status {status}")
+            })));
+        }
+        body.wallet_id.ok_or(GspError::MissingField("wallet_id"))
+    }
+
+    /// `POST /api/v1/session` — create a session, returning the JWT.
+    pub async fn create_session(
+        &self,
+        proof: WalletProof,
+        session_nonce: Option<String>,
+    ) -> Result<SessionToken, GspError> {
+        let url = format!("{}/api/v1/session", self.http_base);
+        let body = SessionRequest {
+            proof,
+            session_nonce,
+        };
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GspError::Transport(e.to_string()))?;
+        let status = resp.status();
+        let body: SessionResponse = resp
+            .json()
+            .await
+            .map_err(|e| GspError::Encoding(e.to_string()))?;
+        if !status.is_success() || !body.success {
+            return Err(GspError::Server(body.error.unwrap_or_else(|| {
+                format!("session failed with status {status}")
+            })));
+        }
+        body.token.ok_or(GspError::MissingField("token"))
+    }
+}
+
+fn derive_http_base(ws_url: &str) -> String {
+    let (scheme, rest) = if let Some(r) = ws_url.strip_prefix("wss://") {
+        ("https", r)
+    } else if let Some(r) = ws_url.strip_prefix("ws://") {
+        ("http", r)
+    } else {
+        // Already an http(s) URL? trim any trailing path.
+        let r = ws_url.trim_start_matches("http://").trim_start_matches("https://");
+        let s = if ws_url.starts_with("https://") { "https" } else { "http" };
+        (s, r)
+    };
+    let host_and_port = rest.split('/').next().unwrap_or(rest);
+    format!("{scheme}://{host_and_port}")
 }
 
 fn now_unix_ms() -> i64 {
@@ -100,4 +189,16 @@ fn now_unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_http_base_strips_path() {
+        assert_eq!(derive_http_base("ws://127.0.0.1:8900/ws/v1"), "http://127.0.0.1:8900");
+        assert_eq!(derive_http_base("wss://gsp.example.com/ws/v1"), "https://gsp.example.com");
+        assert_eq!(derive_http_base("ws://localhost:9000"), "http://localhost:9000");
+    }
 }

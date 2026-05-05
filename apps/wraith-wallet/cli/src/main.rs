@@ -47,6 +47,8 @@ enum ChainCommand {
 enum GspCommand {
     /// Open a WebSocket to GSP, send Ping, wait for Pong.
     Ping,
+    /// Register the active wallet with GSP (idempotent) and create a session.
+    Auth,
 }
 
 #[derive(Subcommand)]
@@ -120,6 +122,7 @@ mod unix {
             },
             Command::Gsp { sub } => match sub {
                 GspCommand::Ping => Request::GspPing,
+                GspCommand::Auth => Request::GspAuth,
             },
             Command::Light { sub } => match sub {
                 LightCommand::Receive { index } => Request::LightReceive { index },
@@ -181,6 +184,17 @@ mod unix {
                     ),
                     None => println!("gsp ok — server_time {}", p.server_time),
                 }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::GspAuth(a)) => {
+                if a.already_registered {
+                    println!("(already registered) — session created");
+                } else {
+                    println!("registered + session created");
+                }
+                println!("  wallet_id:    {}", a.wallet_id);
+                println!("  token (prefix): {}...", a.token_prefix);
+                println!("  expires_at:   {}", a.expires_at);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::WalletCreate(c)) => {

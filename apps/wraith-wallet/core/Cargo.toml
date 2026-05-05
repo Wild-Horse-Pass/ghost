@@ -31,3 +31,4 @@ zeroize = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = "3"
+axum = { workspace = true }

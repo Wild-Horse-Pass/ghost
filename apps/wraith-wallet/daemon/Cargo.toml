@@ -20,3 +20,4 @@ tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 secrecy = { workspace = true }
 hex = { workspace = true }
+rand = { workspace = true }

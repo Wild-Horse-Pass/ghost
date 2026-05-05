@@ -46,11 +46,12 @@ mod unix {
     use wraith_wallet_core::gsp::GspClient;
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_core::light;
+    use wraith_wallet_core::gsp::GspError;
     use wraith_wallet_ipc::{
-        default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspPingResponse,
-        HealthResponse, LightReceiveResponse, Request, Response, WalletAuthInfoResponse,
-        WalletCreateResponse, WalletDeriveResponse, WalletListEntry, WalletListResponse,
-        WalletShowMnemonicResponse, WalletStatusResponse,
+        default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspAuthResponse,
+        GspPingResponse, HealthResponse, LightReceiveResponse, Request, Response,
+        WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletListEntry,
+        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -204,6 +205,60 @@ mod unix {
         }
     }
 
+    /// `GspAuth` orchestration: register-if-needed + session.
+    async fn gsp_auth(state: &Arc<DaemonState>) -> Result<GspAuthResponse, String> {
+        // 1. Get the auth keypair from the active wallet.
+        let kp = {
+            let active = state
+                .active
+                .read()
+                .await
+                .clone()
+                .ok_or_else(|| "no active wallet".to_string())?;
+            let wallets = state.wallets.read().await;
+            let ks = wallets
+                .get(&active)
+                .ok_or_else(|| format!("active wallet '{active}' is not unlocked"))?;
+            auth::auth_keypair(ks).map_err(|e| format!("auth keypair: {e}"))?
+        };
+        let wallet_id = auth::wallet_id_hex(&kp);
+
+        // 2. Register (idempotent — treat "already registered" server errors as success).
+        let register_proof =
+            auth::make_proof(&kp, "register").map_err(|e| format!("register proof: {e}"))?;
+        let already_registered = match state.gsp.register(register_proof, None).await {
+            Ok(_) => false,
+            Err(GspError::Server(msg))
+                if msg.to_ascii_lowercase().contains("already") =>
+            {
+                true
+            }
+            Err(e) => return Err(format!("register: {e}")),
+        };
+
+        // 3. Generate session_nonce + sign session proof + create session.
+        use rand::RngCore;
+        let mut nonce_bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let session_nonce = hex::encode(nonce_bytes);
+
+        let session_proof =
+            auth::make_proof(&kp, "session").map_err(|e| format!("session proof: {e}"))?;
+        let token = state
+            .gsp
+            .create_session(session_proof, Some(session_nonce))
+            .await
+            .map_err(|e| format!("session: {e}"))?;
+
+        let token_prefix: String = token.token.chars().take(12).collect();
+        Ok(GspAuthResponse {
+            wallet_id,
+            already_registered,
+            token_prefix,
+            expires_at: token.expires_at,
+        })
+    }
+
     /// Snapshot the active wallet's name + keystore for read-only use.
     /// Returns Err with a user-friendly message if no wallet is active.
     async fn with_active_wallet<F, R>(state: &DaemonState, f: F) -> Result<R, String>
@@ -266,6 +321,10 @@ mod unix {
                 Err(e) => Response::Error(ErrorResponse {
                     message: format!("gsp: {e}"),
                 }),
+            },
+            Request::GspAuth => match gsp_auth(state).await {
+                Ok(r) => Response::GspAuth(r),
+                Err(message) => Response::Error(ErrorResponse { message }),
             },
             Request::WalletCreate { name, passphrase } => {
                 if let Err(e) = validate_wallet_name(&name) {
