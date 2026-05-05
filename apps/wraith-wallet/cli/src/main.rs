@@ -7,6 +7,11 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(version, about = "Wraith Wallet CLI", long_about = None)]
 struct Cli {
+    /// Print the response as JSON instead of human-readable output.
+    /// Errors are printed as JSON too (`{"error": {"message": "..."}}`).
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -107,7 +112,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    runtime.block_on(unix::run(cli.command))
+    runtime.block_on(unix::run(cli.command, cli.json))
 }
 
 #[cfg(unix)]
@@ -118,7 +123,7 @@ mod unix {
 
     use crate::{ChainCommand, Command, GspCommand, LightCommand, WalletCommand};
 
-    pub async fn run(command: Command) -> std::process::ExitCode {
+    pub async fn run(command: Command, json: bool) -> std::process::ExitCode {
         let request = match command {
             Command::Health => Request::Health,
             Command::Chain { sub } => match sub {
@@ -164,7 +169,16 @@ mod unix {
             },
         };
 
-        match call(request).await {
+        let result = call(request).await;
+
+        // --json: emit the full Response (or a synthesized {"error": {...}} on
+        // transport failure) and exit. SUCCESS for any non-Error variant,
+        // FAILURE for Error / transport problems.
+        if json {
+            return print_json(&result);
+        }
+
+        match result {
             Ok(Response::Health(h)) => {
                 println!(
                     "wraithd ok — version {} — uptime {}s",
@@ -338,6 +352,27 @@ mod unix {
     fn io_err(e: std::io::Error) -> std::process::ExitCode {
         eprintln!("wraith: {e}");
         std::process::ExitCode::FAILURE
+    }
+
+    fn print_json(result: &Result<Response, String>) -> std::process::ExitCode {
+        match result {
+            Ok(resp) => {
+                let s = serde_json::to_string(resp).unwrap_or_else(|e| {
+                    format!("{{\"error\":{{\"message\":\"serialise: {e}\"}}}}")
+                });
+                println!("{s}");
+                if matches!(resp, Response::Error(_)) {
+                    std::process::ExitCode::FAILURE
+                } else {
+                    std::process::ExitCode::SUCCESS
+                }
+            }
+            Err(e) => {
+                let body = serde_json::json!({ "error": { "message": e } });
+                println!("{body}");
+                std::process::ExitCode::FAILURE
+            }
+        }
     }
 
     fn prompt_passphrase(prompt: &str) -> std::io::Result<String> {
