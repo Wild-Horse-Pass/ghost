@@ -168,16 +168,35 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 struct StorageConfig {
     #[serde(default = "default_data_dir")]
     data_dir: PathBuf,
 }
 
-#[derive(Debug, Deserialize, Default)]
+impl Default for StorageConfig {
+    fn default() -> Self {
+        // Match the serde defaults — `derive(Default)` would produce empty values,
+        // bypassing `default = "default_data_dir"` (which only fires on deserialize).
+        Self {
+            data_dir: default_data_dir(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct ProxyConfig {
     #[serde(default = "default_pay_node_url")]
     pay_node_url: String,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        // Match the serde defaults — see StorageConfig::default for why this matters.
+        Self {
+            pay_node_url: default_pay_node_url(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
