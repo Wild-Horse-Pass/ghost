@@ -15,12 +15,13 @@
 //! Shutdown: the daemon drops the `SessionHandle`, which closes a `watch` channel
 //! the task listens on. The task exits at the next opportunity.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use ghost_gsp_proto::{ClientMessage, ServerMessage};
-use tokio::sync::{watch, RwLock};
+use ghost_gsp_proto::{ClientMessage, ServerMessage, UtxoInfo};
+use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -58,6 +59,7 @@ pub struct BalanceSnapshot {
 /// Daemon-side handle to a running session task. Drop to stop the task.
 pub struct SessionHandle {
     status: Arc<RwLock<SessionStatus>>,
+    cmd_tx: mpsc::Sender<SessionCommand>,
     shutdown_tx: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
 }
@@ -65,6 +67,19 @@ pub struct SessionHandle {
 impl SessionHandle {
     pub async fn snapshot(&self) -> SessionStatus {
         self.status.read().await.clone()
+    }
+
+    /// Issue `GetUtxos` over the persistent session and await the matching `Utxos` reply.
+    pub async fn get_utxos(&self, min_confirmations: u32) -> Result<UtxosResult, String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::GetUtxos {
+                min_confirmations,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| "session task closed".to_string())?;
+        rx.await.map_err(|_| "reply dropped".to_string())?
     }
 }
 
@@ -77,20 +92,43 @@ impl Drop for SessionHandle {
     }
 }
 
+/// Bag of replies the session task is waiting to deliver. Pending requests are
+/// matched FIFO against incoming server messages of the corresponding shape.
+enum PendingReply {
+    Utxos(oneshot::Sender<Result<UtxosResult, String>>),
+}
+
+/// Commands the daemon can send into the session task.
+pub enum SessionCommand {
+    GetUtxos {
+        min_confirmations: u32,
+        reply: oneshot::Sender<Result<UtxosResult, String>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct UtxosResult {
+    pub utxos: Vec<UtxoInfo>,
+    pub total_sats: u64,
+}
+
 /// Spawn a long-lived authenticated session task. Returns a handle.
 pub fn spawn_session(ws_url: String, jwt_token: String) -> SessionHandle {
     let status = Arc::new(RwLock::new(SessionStatus::default()));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (cmd_tx, cmd_rx) = mpsc::channel::<SessionCommand>(32);
 
     let task = tokio::spawn(run(
         ws_url,
         jwt_token,
         status.clone(),
         shutdown_rx,
+        cmd_rx,
     ));
 
     SessionHandle {
         status,
+        cmd_tx,
         shutdown_tx,
         task: Some(task),
     }
@@ -105,6 +143,7 @@ async fn run(
     jwt_token: String,
     status: Arc<RwLock<SessionStatus>>,
     mut shutdown: watch::Receiver<bool>,
+    mut cmd_rx: mpsc::Receiver<SessionCommand>,
 ) {
     let mut backoff = BACKOFF_INITIAL;
     loop {
@@ -177,12 +216,30 @@ async fn run(
         // bootstrap: ask for current balance
         let _ = send_client(&mut ws, &ClientMessage::GetBalance { max_k: None }).await;
 
-        // === main loop: drain messages + keepalive ===
+        // === main loop: drain messages + keepalive + commands ===
         let mut keepalive = tokio::time::interval(Duration::from_secs(KEEPALIVE_SECS));
         keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         keepalive.tick().await; // discard immediate tick
 
-        let outcome = run_main_loop(&mut ws, &status, &mut shutdown, &mut keepalive).await;
+        let mut pending: VecDeque<PendingReply> = VecDeque::new();
+        let outcome = run_main_loop(
+            &mut ws,
+            &status,
+            &mut shutdown,
+            &mut keepalive,
+            &mut cmd_rx,
+            &mut pending,
+        )
+        .await;
+
+        // On disconnect, fail any pending replies so callers don't hang.
+        for p in pending.drain(..) {
+            match p {
+                PendingReply::Utxos(tx) => {
+                    let _ = tx.send(Err("session disconnected".into()));
+                }
+            }
+        }
 
         let _ = ws.close(None).await;
         match outcome {
@@ -211,6 +268,8 @@ async fn run_main_loop(
     status: &Arc<RwLock<SessionStatus>>,
     shutdown: &mut watch::Receiver<bool>,
     keepalive: &mut tokio::time::Interval,
+    cmd_rx: &mut mpsc::Receiver<SessionCommand>,
+    pending: &mut VecDeque<PendingReply>,
 ) -> MainLoopOutcome {
     loop {
         tokio::select! {
@@ -226,6 +285,22 @@ async fn run_main_loop(
                 };
                 if let Err(e) = send_client(ws, &ping).await {
                     return MainLoopOutcome::Disconnect(format!("send keepalive: {e}"));
+                }
+            }
+            cmd = cmd_rx.recv() => {
+                let Some(cmd) = cmd else {
+                    // Sender dropped (shouldn't happen — handle owns it). Treat as shutdown.
+                    return MainLoopOutcome::Shutdown;
+                };
+                match cmd {
+                    SessionCommand::GetUtxos { min_confirmations, reply } => {
+                        let msg = ClientMessage::GetUtxos { min_confirmations };
+                        if let Err(e) = send_client(ws, &msg).await {
+                            let _ = reply.send(Err(format!("send GetUtxos: {e}")));
+                            return MainLoopOutcome::Disconnect(format!("send GetUtxos: {e}"));
+                        }
+                        pending.push_back(PendingReply::Utxos(reply));
+                    }
                 }
             }
             frame = ws.next() => {
@@ -250,14 +325,19 @@ async fn run_main_loop(
                         continue;
                     }
                 };
-                handle_push(parsed, status).await;
+                handle_message(parsed, status, pending).await;
             }
         }
     }
 }
 
-async fn handle_push(msg: ServerMessage, status: &Arc<RwLock<SessionStatus>>) {
+async fn handle_message(
+    msg: ServerMessage,
+    status: &Arc<RwLock<SessionStatus>>,
+    pending: &mut VecDeque<PendingReply>,
+) {
     match msg {
+        // Push: balance update.
         ServerMessage::BalanceUpdate {
             confirmed,
             unconfirmed,
@@ -272,9 +352,39 @@ async fn handle_push(msg: ServerMessage, status: &Arc<RwLock<SessionStatus>>) {
             tracing::debug!(?snap, "gsp session: balance update");
             status.write().await.last_balance = Some(snap);
         }
+
+        // Response to GetUtxos.
+        ServerMessage::Utxos { utxos, total_sats } => {
+            // Match against the head of the pending queue if it's expecting Utxos.
+            if let Some(idx) = pending.iter().position(|p| matches!(p, PendingReply::Utxos(_))) {
+                if let Some(PendingReply::Utxos(tx)) = pending.remove(idx) {
+                    let _ = tx.send(Ok(UtxosResult { utxos, total_sats }));
+                    return;
+                }
+            }
+            tracing::debug!("gsp session: unmatched Utxos message (no pending)");
+        }
+
+        // Server-side error — surface it on the head of the pending queue.
+        ServerMessage::Error {
+            code,
+            message,
+            request_id,
+        } => {
+            tracing::warn!(%code, %message, ?request_id, "gsp session: server error");
+            if let Some(p) = pending.pop_front() {
+                match p {
+                    PendingReply::Utxos(tx) => {
+                        let _ = tx.send(Err(format!("{code}: {message}")));
+                    }
+                }
+            }
+        }
+
         ServerMessage::Pong { .. } => {
             tracing::trace!("gsp session: pong");
         }
+
         other => {
             tracing::trace!(?other, "gsp session: unhandled push");
         }

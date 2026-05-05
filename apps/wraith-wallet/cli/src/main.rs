@@ -67,6 +67,12 @@ enum LightCommand {
     },
     /// Show the active wallet's last-known on-chain balance.
     Balance,
+    /// List the active wallet's UTXOs.
+    Utxos {
+        /// Minimum number of confirmations. Default 1.
+        #[arg(short = 'c', long, default_value_t = 1)]
+        min_confirmations: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -137,6 +143,9 @@ mod unix {
             Command::Light { sub } => match sub {
                 LightCommand::Receive { index } => Request::LightReceive { index },
                 LightCommand::Balance => Request::LightBalance,
+                LightCommand::Utxos { min_confirmations } => Request::LightUtxos {
+                    min_confirmations,
+                },
             },
             Command::Wallet { sub } => match sub {
                 WalletCommand::Create { name } => match prompt_new_passphrase() {
@@ -239,6 +248,25 @@ mod unix {
                         let hours = rem / 3600;
                         let mins = (rem % 3600) / 60;
                         println!("  expires in:    {hours}h {mins}m ({rem}s)");
+                    }
+                }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LightUtxos(u)) => {
+                if u.utxos.is_empty() {
+                    println!("(no utxos)");
+                } else {
+                    for x in &u.utxos {
+                        let spendable = if x.spendable { " " } else { " *" };
+                        println!(
+                            "{}:{}  {} sats  ({} confs, {}){}",
+                            x.txid, x.vout, x.amount_sats, x.confirmations, x.script_type,
+                            spendable
+                        );
+                    }
+                    println!("\ntotal: {} sats ({} utxos)", u.total_sats, u.utxos.len());
+                    if u.utxos.iter().any(|x| !x.spendable) {
+                        println!("  * = not currently spendable");
                     }
                 }
                 std::process::ExitCode::SUCCESS

@@ -53,9 +53,9 @@ mod unix {
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspAuthResponse,
         GspPingResponse, GspSessionStatusResponse, HealthResponse, LightBalanceResponse,
-        LightReceiveResponse, Request, Response, WalletAuthInfoResponse, WalletCreateResponse,
-        WalletDeriveResponse, WalletListEntry, WalletListResponse, WalletShowMnemonicResponse,
-        WalletStatusResponse,
+        LightReceiveResponse, LightUtxoEntry, LightUtxosResponse, Request, Response,
+        WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletListEntry,
+        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -420,6 +420,37 @@ mod unix {
                             }),
                         }
                     }
+                }
+            }
+            Request::LightUtxos { min_confirmations } => {
+                let guard = state.session.read().await;
+                match guard.as_ref() {
+                    None => Response::Error(ErrorResponse {
+                        message: "no GSP session — run `wraith gsp auth` first".to_string(),
+                    }),
+                    Some(s) => match s.handle.get_utxos(min_confirmations).await {
+                        Ok(result) => {
+                            let utxos = result
+                                .utxos
+                                .into_iter()
+                                .map(|u| LightUtxoEntry {
+                                    txid: u.txid,
+                                    vout: u.vout,
+                                    amount_sats: u.amount_sats,
+                                    confirmations: u.confirmations,
+                                    script_type: u.script_type,
+                                    spendable: u.spendable,
+                                })
+                                .collect();
+                            Response::LightUtxos(LightUtxosResponse {
+                                utxos,
+                                total_sats: result.total_sats,
+                            })
+                        }
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("light utxos: {e}"),
+                        }),
+                    },
                 }
             }
             Request::WalletCreate { name, passphrase } => {

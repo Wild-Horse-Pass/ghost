@@ -39,6 +39,11 @@ pub enum Request {
     GspSessionStatus,
     /// Read the active wallet's last-known on-chain balance from the persistent session.
     LightBalance,
+    /// List the active wallet's UTXOs via the persistent GSP session.
+    LightUtxos {
+        /// Minimum number of confirmations. Default 1.
+        min_confirmations: u32,
+    },
     /// Create a new named wallet on disk and add it to the daemon's unlocked set.
     WalletCreate { name: String, passphrase: String },
     /// Unlock a named wallet by reading from disk + decrypting. Becomes active.
@@ -70,6 +75,7 @@ pub enum Response {
     GspAuth(GspAuthResponse),
     GspSessionStatus(GspSessionStatusResponse),
     LightBalance(LightBalanceResponse),
+    LightUtxos(LightUtxosResponse),
     WalletCreate(WalletCreateResponse),
     WalletUnlocked,
     WalletLocked { name: String },
@@ -141,6 +147,22 @@ pub struct LightBalanceResponse {
     pub unconfirmed_sats: Option<u64>,
     pub locked_sats: Option<u64>,
     pub received_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightUtxoEntry {
+    pub txid: String,
+    pub vout: u32,
+    pub amount_sats: u64,
+    pub confirmations: u32,
+    pub script_type: String,
+    pub spendable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightUtxosResponse {
+    pub utxos: Vec<LightUtxoEntry>,
+    pub total_sats: u64,
 }
 
 /// Returned after creating a fresh wallet — the mnemonic is shown once for backup.
