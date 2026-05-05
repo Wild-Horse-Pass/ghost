@@ -66,6 +66,12 @@ pub enum Request {
     WalletAuthInfo,
     /// Re-display a wallet's BIP39 mnemonic. Always re-prompts the passphrase.
     WalletShowMnemonic { name: String, passphrase: String },
+    /// Copy the on-disk encrypted keystore for `name` to `to_path` (a regular file).
+    /// The file is already encrypted with the wallet passphrase.
+    WalletExport { name: String, to_path: String },
+    /// Read an encrypted keystore from `from_path` and install it as wallet `name`.
+    /// Refuses if `name` already exists on disk.
+    WalletRestore { name: String, from_path: String },
     /// Derive a BIP86 taproot receive address at index `index` from the active wallet.
     LightReceive { index: u32 },
 }
@@ -91,6 +97,8 @@ pub enum Response {
     WalletDerive(WalletDeriveResponse),
     WalletAuthInfo(WalletAuthInfoResponse),
     WalletShowMnemonic(WalletShowMnemonicResponse),
+    WalletExported { name: String, path: String, bytes: u64 },
+    WalletRestored { name: String, path: String, bytes: u64 },
     LightReceive(LightReceiveResponse),
     Error(ErrorResponse),
 }

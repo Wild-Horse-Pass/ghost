@@ -725,6 +725,107 @@ mod unix {
                     Err(message) => Response::Error(ErrorResponse { message }),
                 }
             }
+            Request::WalletExport { name, to_path } => {
+                if let Err(e) = validate_wallet_name(&name) {
+                    Response::Error(ErrorResponse { message: e })
+                } else {
+                    let src = keystore_path(&state.wallets_dir, &name);
+                    if !src.is_file() {
+                        Response::Error(ErrorResponse {
+                            message: format!("no wallet '{name}' at {}", src.display()),
+                        })
+                    } else {
+                        let dst = std::path::PathBuf::from(&to_path);
+                        if dst.exists() {
+                            Response::Error(ErrorResponse {
+                                message: format!(
+                                    "refusing to overwrite existing file at {}",
+                                    dst.display()
+                                ),
+                            })
+                        } else {
+                            if let Some(parent) = dst.parent() {
+                                if let Err(e) = std::fs::create_dir_all(parent) {
+                                    return Envelope::new(
+                                        id,
+                                        Response::Error(ErrorResponse {
+                                            message: format!("create parent dir: {e}"),
+                                        }),
+                                    );
+                                }
+                            }
+                            match std::fs::copy(&src, &dst) {
+                                Ok(bytes) => {
+                                    // Match the keystore's own owner-only permissions.
+                                    use std::os::unix::fs::PermissionsExt;
+                                    let _ = std::fs::set_permissions(
+                                        &dst,
+                                        std::fs::Permissions::from_mode(0o600),
+                                    );
+                                    Response::WalletExported {
+                                        name,
+                                        path: dst.display().to_string(),
+                                        bytes,
+                                    }
+                                }
+                                Err(e) => Response::Error(ErrorResponse {
+                                    message: format!("copy: {e}"),
+                                }),
+                            }
+                        }
+                    }
+                }
+            }
+            Request::WalletRestore { name, from_path } => {
+                if let Err(e) = validate_wallet_name(&name) {
+                    Response::Error(ErrorResponse { message: e })
+                } else {
+                    let src = std::path::PathBuf::from(&from_path);
+                    if !src.is_file() {
+                        Response::Error(ErrorResponse {
+                            message: format!("no file at {}", src.display()),
+                        })
+                    } else {
+                        let dst = keystore_path(&state.wallets_dir, &name);
+                        if dst.exists() {
+                            Response::Error(ErrorResponse {
+                                message: format!(
+                                    "wallet '{name}' already exists at {}; refusing to overwrite",
+                                    dst.display()
+                                ),
+                            })
+                        } else {
+                            if let Some(parent) = dst.parent() {
+                                if let Err(e) = std::fs::create_dir_all(parent) {
+                                    return Envelope::new(
+                                        id,
+                                        Response::Error(ErrorResponse {
+                                            message: format!("create wallet dir: {e}"),
+                                        }),
+                                    );
+                                }
+                            }
+                            match std::fs::copy(&src, &dst) {
+                                Ok(bytes) => {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    let _ = std::fs::set_permissions(
+                                        &dst,
+                                        std::fs::Permissions::from_mode(0o600),
+                                    );
+                                    Response::WalletRestored {
+                                        name,
+                                        path: dst.display().to_string(),
+                                        bytes,
+                                    }
+                                }
+                                Err(e) => Response::Error(ErrorResponse {
+                                    message: format!("copy: {e}"),
+                                }),
+                            }
+                        }
+                    }
+                }
+            }
             Request::WalletShowMnemonic { name, passphrase } => {
                 if let Err(e) = validate_wallet_name(&name) {
                     Response::Error(ErrorResponse { message: e })

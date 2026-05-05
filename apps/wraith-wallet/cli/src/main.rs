@@ -120,6 +120,18 @@ enum WalletCommand {
     AuthInfo,
     /// Re-display the BIP39 mnemonic for a named wallet.
     ShowMnemonic { name: String },
+    /// Copy the encrypted keystore for `name` to a backup file.
+    Export {
+        name: String,
+        /// Destination path for the backup. Refuses to overwrite existing files.
+        to: String,
+    },
+    /// Install an encrypted keystore from a backup file as wallet `name`.
+    Restore {
+        name: String,
+        /// Source path of the backup file.
+        from: String,
+    },
 }
 
 #[cfg(not(unix))]
@@ -229,6 +241,10 @@ mod unix {
                     },
                     Err(e) => return io_err(e),
                 },
+                WalletCommand::Export { name, to } => Request::WalletExport { name, to_path: to },
+                WalletCommand::Restore { name, from } => {
+                    Request::WalletRestore { name, from_path: from }
+                }
             },
         };
 
@@ -470,6 +486,15 @@ mod unix {
             Ok(Response::WalletShowMnemonic(m)) => {
                 println!("WARNING: anyone with these 24 words owns the wallet.\n");
                 println!("{}\n", m.mnemonic);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletExported { name, path, bytes }) => {
+                println!("exported wallet '{name}' → {path} ({bytes} bytes)");
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletRestored { name, path, bytes }) => {
+                println!("restored wallet '{name}' from backup → {path} ({bytes} bytes)");
+                println!("run `wraith wallet unlock {name}` to use it");
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::LightReceive(r)) => {
