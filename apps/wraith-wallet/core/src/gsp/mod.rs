@@ -55,6 +55,10 @@ impl GspClient {
     }
 
     /// Open a WebSocket, send `Ping`, wait for `Pong`, close. Single-shot.
+    ///
+    /// For plain `ws://` this works directly. For `wss://` against a real cert
+    /// it works too. For `wss://` against a self-signed dev cert, run the GSP
+    /// with `--insecure-http` so the wallet can use plain `ws://`.
     pub async fn ping(&self) -> Result<PingResult, GspError> {
         let (mut ws, _) = connect_async(&self.ws_url)
             .await
@@ -125,11 +129,16 @@ impl GspClient {
             .await
             .map_err(|e| GspError::Transport(e.to_string()))?;
         let status = resp.status();
-        let body: RegisterResponse = resp
-            .json()
+        let text = resp
+            .text()
             .await
             .map_err(|e| GspError::Encoding(e.to_string()))?;
-        if !status.is_success() || !body.success {
+        if !status.is_success() {
+            return Err(GspError::Server(extract_error(&text, status)));
+        }
+        let body: RegisterResponse = serde_json::from_str(&text)
+            .map_err(|e| GspError::Encoding(e.to_string()))?;
+        if !body.success {
             return Err(GspError::Server(body.error.unwrap_or_else(|| {
                 format!("register failed with status {status}")
             })));
@@ -156,16 +165,43 @@ impl GspClient {
             .await
             .map_err(|e| GspError::Transport(e.to_string()))?;
         let status = resp.status();
-        let body: SessionResponse = resp
-            .json()
+        let text = resp
+            .text()
             .await
             .map_err(|e| GspError::Encoding(e.to_string()))?;
-        if !status.is_success() || !body.success {
+        if !status.is_success() {
+            return Err(GspError::Server(extract_error(&text, status)));
+        }
+        let body: SessionResponse = serde_json::from_str(&text)
+            .map_err(|e| GspError::Encoding(e.to_string()))?;
+        if !body.success {
             return Err(GspError::Server(body.error.unwrap_or_else(|| {
                 format!("session failed with status {status}")
             })));
         }
         body.token.ok_or(GspError::MissingField("token"))
+    }
+}
+
+/// Pull a useful message out of an error response. Handles both
+/// the structured `{"error": {"code", "message"}, "success": false}` shape
+/// the GSP returns on 4xx, and any unstructured plaintext fallback.
+fn extract_error(text: &str, status: reqwest::StatusCode) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(msg) = v.pointer("/error/message").and_then(|m| m.as_str()) {
+            return msg.to_string();
+        }
+        if let Some(code) = v.pointer("/error/code").and_then(|c| c.as_str()) {
+            return code.to_string();
+        }
+        if let Some(s) = v.pointer("/error").and_then(|m| m.as_str()) {
+            return s.to_string();
+        }
+    }
+    if text.is_empty() {
+        format!("status {status}")
+    } else {
+        format!("status {status}: {text}")
     }
 }
 
