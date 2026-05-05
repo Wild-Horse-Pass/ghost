@@ -53,7 +53,8 @@ mod unix {
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspAuthResponse,
         GspPingResponse, GspSessionStatusResponse, HealthResponse, LightBalanceResponse,
-        LightReceiveResponse, LightUtxoEntry, LightUtxosResponse, Request, Response,
+        LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightUtxoEntry,
+        LightUtxosResponse, LockEntry, LocksListResponse, Request, Response,
         WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletListEntry,
         WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
     };
@@ -449,6 +450,74 @@ mod unix {
                         }
                         Err(e) => Response::Error(ErrorResponse {
                             message: format!("light utxos: {e}"),
+                        }),
+                    },
+                }
+            }
+            Request::LightHistory { limit, offset } => {
+                let guard = state.session.read().await;
+                match guard.as_ref() {
+                    None => Response::Error(ErrorResponse {
+                        message: "no GSP session — run `wraith gsp auth` first".to_string(),
+                    }),
+                    Some(s) => match s.handle.get_transactions(limit, offset).await {
+                        Ok(result) => {
+                            let transactions = result
+                                .transactions
+                                .into_iter()
+                                .map(|t| LightHistoryEntry {
+                                    txid: t.txid,
+                                    block_height: t.block_height,
+                                    timestamp: t.timestamp,
+                                    amount_sats: t.amount_sats,
+                                    fee_sats: t.fee_sats,
+                                    tx_type: t.tx_type,
+                                    confirmations: t.confirmations,
+                                    memo: t.memo,
+                                })
+                                .collect();
+                            Response::LightHistory(LightHistoryResponse {
+                                transactions,
+                                total_count: result.total_count,
+                            })
+                        }
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("light history: {e}"),
+                        }),
+                    },
+                }
+            }
+            Request::LocksList => {
+                let guard = state.session.read().await;
+                match guard.as_ref() {
+                    None => Response::Error(ErrorResponse {
+                        message: "no GSP session — run `wraith gsp auth` first".to_string(),
+                    }),
+                    Some(s) => match s.handle.get_ghost_locks().await {
+                        Ok(result) => {
+                            let locks = result
+                                .locks
+                                .into_iter()
+                                .map(|l| LockEntry {
+                                    lock_id: l.lock_id,
+                                    status: format!("{:?}", l.status).to_lowercase(),
+                                    capacity_sats: l.capacity_sats,
+                                    balance_sats: l.balance_sats,
+                                    denomination: l.denomination,
+                                    timelock_tier: l.timelock_tier,
+                                    funding_address: l.funding_address,
+                                    funding_txid: l.funding_txid,
+                                    funding_vout: l.funding_vout,
+                                    creation_height: l.creation_height,
+                                })
+                                .collect();
+                            Response::LocksList(LocksListResponse {
+                                locks,
+                                total_locked_sats: result.total_locked_sats,
+                            })
+                        }
+                        Err(e) => Response::Error(ErrorResponse {
+                            message: format!("locks list: {e}"),
                         }),
                     },
                 }

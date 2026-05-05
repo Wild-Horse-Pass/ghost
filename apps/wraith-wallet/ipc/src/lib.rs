@@ -44,6 +44,10 @@ pub enum Request {
         /// Minimum number of confirmations. Default 1.
         min_confirmations: u32,
     },
+    /// List the active wallet's transaction history via the persistent GSP session.
+    LightHistory { limit: u32, offset: u32 },
+    /// List the active wallet's Ghost Locks via the persistent GSP session.
+    LocksList,
     /// Create a new named wallet on disk and add it to the daemon's unlocked set.
     WalletCreate { name: String, passphrase: String },
     /// Unlock a named wallet by reading from disk + decrypting. Becomes active.
@@ -76,6 +80,8 @@ pub enum Response {
     GspSessionStatus(GspSessionStatusResponse),
     LightBalance(LightBalanceResponse),
     LightUtxos(LightUtxosResponse),
+    LightHistory(LightHistoryResponse),
+    LocksList(LocksListResponse),
     WalletCreate(WalletCreateResponse),
     WalletUnlocked,
     WalletLocked { name: String },
@@ -163,6 +169,45 @@ pub struct LightUtxoEntry {
 pub struct LightUtxosResponse {
     pub utxos: Vec<LightUtxoEntry>,
     pub total_sats: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightHistoryEntry {
+    pub txid: String,
+    pub block_height: Option<u32>,
+    pub timestamp: i64,
+    /// Net satoshi change (positive = received, negative = sent).
+    pub amount_sats: i64,
+    pub fee_sats: Option<u64>,
+    pub tx_type: String,
+    pub confirmations: u32,
+    pub memo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightHistoryResponse {
+    pub transactions: Vec<LightHistoryEntry>,
+    pub total_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockEntry {
+    pub lock_id: String,
+    pub status: String,
+    pub capacity_sats: u64,
+    pub balance_sats: u64,
+    pub denomination: String,
+    pub timelock_tier: String,
+    pub funding_address: String,
+    pub funding_txid: Option<String>,
+    pub funding_vout: Option<u32>,
+    pub creation_height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocksListResponse {
+    pub locks: Vec<LockEntry>,
+    pub total_locked_sats: u64,
 }
 
 /// Returned after creating a fresh wallet — the mnemonic is shown once for backup.

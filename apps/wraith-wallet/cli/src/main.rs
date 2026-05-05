@@ -40,6 +40,11 @@ enum Command {
         #[command(subcommand)]
         sub: LightCommand,
     },
+    /// Ghost Locks (custody primitive) commands.
+    Locks {
+        #[command(subcommand)]
+        sub: LocksCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -73,6 +78,21 @@ enum LightCommand {
         #[arg(short = 'c', long, default_value_t = 1)]
         min_confirmations: u32,
     },
+    /// Show the active wallet's transaction history.
+    History {
+        /// Maximum number of transactions to return.
+        #[arg(short, long, default_value_t = 50)]
+        limit: u32,
+        /// Pagination offset.
+        #[arg(short, long, default_value_t = 0)]
+        offset: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum LocksCommand {
+    /// List all Ghost Locks for the active wallet.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -127,7 +147,9 @@ mod unix {
     use tokio::net::UnixStream;
     use wraith_wallet_ipc::{default_socket_path, Envelope, Request, Response};
 
-    use crate::{ChainCommand, Command, GspCommand, LightCommand, WalletCommand};
+    use crate::{
+        ChainCommand, Command, GspCommand, LightCommand, LocksCommand, WalletCommand,
+    };
 
     pub async fn run(command: Command, json: bool) -> std::process::ExitCode {
         let request = match command {
@@ -146,6 +168,12 @@ mod unix {
                 LightCommand::Utxos { min_confirmations } => Request::LightUtxos {
                     min_confirmations,
                 },
+                LightCommand::History { limit, offset } => {
+                    Request::LightHistory { limit, offset }
+                }
+            },
+            Command::Locks { sub } => match sub {
+                LocksCommand::List => Request::LocksList,
             },
             Command::Wallet { sub } => match sub {
                 WalletCommand::Create { name } => match prompt_new_passphrase() {
@@ -268,6 +296,65 @@ mod unix {
                     if u.utxos.iter().any(|x| !x.spendable) {
                         println!("  * = not currently spendable");
                     }
+                }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LightHistory(h)) => {
+                if h.transactions.is_empty() {
+                    println!("(no transactions)");
+                } else {
+                    for t in &h.transactions {
+                        let dir = if t.amount_sats >= 0 { "+" } else { "" };
+                        let height = t
+                            .block_height
+                            .map(|h| h.to_string())
+                            .unwrap_or_else(|| "(mempool)".into());
+                        let memo = t.memo.as_deref().unwrap_or("");
+                        println!(
+                            "{}  {dir}{}  {}  height {}  ({} confs){}",
+                            t.txid,
+                            t.amount_sats,
+                            t.tx_type,
+                            height,
+                            t.confirmations,
+                            if memo.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  — {memo}")
+                            }
+                        );
+                    }
+                    println!(
+                        "\n{} of {} transactions",
+                        h.transactions.len(),
+                        h.total_count
+                    );
+                }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LocksList(r)) => {
+                if r.locks.is_empty() {
+                    println!("(no locks)");
+                } else {
+                    for l in &r.locks {
+                        println!(
+                            "{}  {}  {} / {} sats  ({})",
+                            &l.lock_id[..16.min(l.lock_id.len())],
+                            l.status,
+                            l.balance_sats,
+                            l.capacity_sats,
+                            l.denomination,
+                        );
+                        println!("  funding: {}", l.funding_address);
+                        if let (Some(txid), Some(vout)) = (&l.funding_txid, l.funding_vout) {
+                            println!("  outpoint: {txid}:{vout}");
+                        }
+                    }
+                    println!(
+                        "\n{} locks  total: {} sats",
+                        r.locks.len(),
+                        r.total_locked_sats
+                    );
                 }
                 std::process::ExitCode::SUCCESS
             }

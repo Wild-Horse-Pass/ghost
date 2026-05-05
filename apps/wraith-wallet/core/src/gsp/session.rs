@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use ghost_gsp_proto::{ClientMessage, ServerMessage, UtxoInfo};
+use ghost_gsp_proto::{ClientMessage, ServerMessage, TransactionInfo, UtxoInfo};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -81,6 +81,34 @@ impl SessionHandle {
             .map_err(|_| "session task closed".to_string())?;
         rx.await.map_err(|_| "reply dropped".to_string())?
     }
+
+    /// Issue `GetTransactions` and await the matching `Transactions` reply.
+    pub async fn get_transactions(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<TransactionsResult, String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::GetTransactions {
+                limit,
+                offset,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| "session task closed".to_string())?;
+        rx.await.map_err(|_| "reply dropped".to_string())?
+    }
+
+    /// Issue `GetGhostLocks` and await the matching `GhostLocks` reply.
+    pub async fn get_ghost_locks(&self) -> Result<GhostLocksResult, String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::GetGhostLocks { reply: tx })
+            .await
+            .map_err(|_| "session task closed".to_string())?;
+        rx.await.map_err(|_| "reply dropped".to_string())?
+    }
 }
 
 impl Drop for SessionHandle {
@@ -96,6 +124,8 @@ impl Drop for SessionHandle {
 /// matched FIFO against incoming server messages of the corresponding shape.
 enum PendingReply {
     Utxos(oneshot::Sender<Result<UtxosResult, String>>),
+    Transactions(oneshot::Sender<Result<TransactionsResult, String>>),
+    GhostLocks(oneshot::Sender<Result<GhostLocksResult, String>>),
 }
 
 /// Commands the daemon can send into the session task.
@@ -104,12 +134,32 @@ pub enum SessionCommand {
         min_confirmations: u32,
         reply: oneshot::Sender<Result<UtxosResult, String>>,
     },
+    GetTransactions {
+        limit: u32,
+        offset: u32,
+        reply: oneshot::Sender<Result<TransactionsResult, String>>,
+    },
+    GetGhostLocks {
+        reply: oneshot::Sender<Result<GhostLocksResult, String>>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct UtxosResult {
     pub utxos: Vec<UtxoInfo>,
     pub total_sats: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransactionsResult {
+    pub transactions: Vec<TransactionInfo>,
+    pub total_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct GhostLocksResult {
+    pub locks: Vec<ghost_gsp_proto::GhostLockInfo>,
+    pub total_locked_sats: u64,
 }
 
 /// Spawn a long-lived authenticated session task. Returns a handle.
@@ -238,6 +288,12 @@ async fn run(
                 PendingReply::Utxos(tx) => {
                     let _ = tx.send(Err("session disconnected".into()));
                 }
+                PendingReply::Transactions(tx) => {
+                    let _ = tx.send(Err("session disconnected".into()));
+                }
+                PendingReply::GhostLocks(tx) => {
+                    let _ = tx.send(Err("session disconnected".into()));
+                }
             }
         }
 
@@ -301,6 +357,26 @@ async fn run_main_loop(
                         }
                         pending.push_back(PendingReply::Utxos(reply));
                     }
+                    SessionCommand::GetTransactions { limit, offset, reply } => {
+                        let msg = ClientMessage::GetTransactions { limit, offset };
+                        if let Err(e) = send_client(ws, &msg).await {
+                            let _ = reply.send(Err(format!("send GetTransactions: {e}")));
+                            return MainLoopOutcome::Disconnect(format!(
+                                "send GetTransactions: {e}"
+                            ));
+                        }
+                        pending.push_back(PendingReply::Transactions(reply));
+                    }
+                    SessionCommand::GetGhostLocks { reply } => {
+                        let msg = ClientMessage::GetGhostLocks;
+                        if let Err(e) = send_client(ws, &msg).await {
+                            let _ = reply.send(Err(format!("send GetGhostLocks: {e}")));
+                            return MainLoopOutcome::Disconnect(format!(
+                                "send GetGhostLocks: {e}"
+                            ));
+                        }
+                        pending.push_back(PendingReply::GhostLocks(reply));
+                    }
                 }
             }
             frame = ws.next() => {
@@ -355,7 +431,6 @@ async fn handle_message(
 
         // Response to GetUtxos.
         ServerMessage::Utxos { utxos, total_sats } => {
-            // Match against the head of the pending queue if it's expecting Utxos.
             if let Some(idx) = pending.iter().position(|p| matches!(p, PendingReply::Utxos(_))) {
                 if let Some(PendingReply::Utxos(tx)) = pending.remove(idx) {
                     let _ = tx.send(Ok(UtxosResult { utxos, total_sats }));
@@ -363,6 +438,46 @@ async fn handle_message(
                 }
             }
             tracing::debug!("gsp session: unmatched Utxos message (no pending)");
+        }
+
+        // Response to GetTransactions.
+        ServerMessage::Transactions {
+            transactions,
+            total_count,
+        } => {
+            if let Some(idx) = pending
+                .iter()
+                .position(|p| matches!(p, PendingReply::Transactions(_)))
+            {
+                if let Some(PendingReply::Transactions(tx)) = pending.remove(idx) {
+                    let _ = tx.send(Ok(TransactionsResult {
+                        transactions,
+                        total_count,
+                    }));
+                    return;
+                }
+            }
+            tracing::debug!("gsp session: unmatched Transactions message");
+        }
+
+        // Response to GetGhostLocks.
+        ServerMessage::GhostLocks {
+            locks,
+            total_locked_sats,
+        } => {
+            if let Some(idx) = pending
+                .iter()
+                .position(|p| matches!(p, PendingReply::GhostLocks(_)))
+            {
+                if let Some(PendingReply::GhostLocks(tx)) = pending.remove(idx) {
+                    let _ = tx.send(Ok(GhostLocksResult {
+                        locks,
+                        total_locked_sats,
+                    }));
+                    return;
+                }
+            }
+            tracing::debug!("gsp session: unmatched GhostLocks message");
         }
 
         // Server-side error — surface it on the head of the pending queue.
@@ -373,9 +488,16 @@ async fn handle_message(
         } => {
             tracing::warn!(%code, %message, ?request_id, "gsp session: server error");
             if let Some(p) = pending.pop_front() {
+                let err = format!("{code}: {message}");
                 match p {
                     PendingReply::Utxos(tx) => {
-                        let _ = tx.send(Err(format!("{code}: {message}")));
+                        let _ = tx.send(Err(err));
+                    }
+                    PendingReply::Transactions(tx) => {
+                        let _ = tx.send(Err(err));
+                    }
+                    PendingReply::GhostLocks(tx) => {
+                        let _ = tx.send(Err(err));
                     }
                 }
             }
