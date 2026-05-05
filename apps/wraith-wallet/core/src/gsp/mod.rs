@@ -40,30 +40,68 @@ pub struct PingResult {
 }
 
 pub struct GspClient {
-    ws_url: String,
-    /// HTTP base URL derived from `ws_url`. e.g. `ws://host:port/ws/v1` → `http://host:port`.
-    http_base: String,
+    /// Ordered list of WebSocket URLs. Tried in sequence on single-shot calls
+    /// (ping/register/create_session) and rotated across by the persistent
+    /// session task on reconnect.
+    ws_urls: Vec<String>,
+    /// HTTP base URLs derived 1:1 from `ws_urls`.
+    /// e.g. `ws://host:port/ws/v1` → `http://host:port`.
+    http_bases: Vec<String>,
     http: reqwest::Client,
 }
 
 impl GspClient {
     pub fn new(ws_url: impl Into<String>) -> Self {
-        let ws = ws_url.into();
-        let http_base = derive_http_base(&ws);
+        Self::with_urls(vec![ws_url.into()])
+    }
+
+    pub fn with_urls(ws_urls: Vec<String>) -> Self {
+        let urls = if ws_urls.is_empty() {
+            vec!["ws://127.0.0.1:8900/ws/v1".to_string()]
+        } else {
+            ws_urls
+        };
+        let http_bases = urls.iter().map(|u| derive_http_base(u)).collect();
         Self {
-            ws_url: ws,
-            http_base,
+            ws_urls: urls,
+            http_bases,
             http: reqwest::Client::new(),
         }
     }
 
+    /// Parse a comma-separated WS URL list. Trims whitespace and drops empties.
+    pub fn parse_urls(s: &str) -> Vec<String> {
+        s.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Read-only access to the configured WS URLs (in failover order).
+    pub fn ws_urls(&self) -> &[String] {
+        &self.ws_urls
+    }
+
     /// Open a WebSocket, send `Ping`, wait for `Pong`, close. Single-shot.
     ///
-    /// For plain `ws://` this works directly. For `wss://` against a real cert
-    /// it works too. For `wss://` against a self-signed dev cert, run the GSP
-    /// with `--insecure-http` so the wallet can use plain `ws://`.
+    /// Tries each configured WS URL in order; first successful Pong wins.
     pub async fn ping(&self) -> Result<PingResult, GspError> {
-        let (mut ws, _) = connect_async(&self.ws_url)
+        let mut last_err: Option<GspError> = None;
+        for url in &self.ws_urls {
+            match self.try_ping(url).await {
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    tracing::debug!(url = %url, error = %e, "gsp ping endpoint failed, trying next");
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| GspError::Transport("no endpoints configured".into())))
+    }
+
+    async fn try_ping(&self, ws_url: &str) -> Result<PingResult, GspError> {
+        let (mut ws, _) = connect_async(ws_url)
             .await
             .map_err(|e| GspError::Transport(e.to_string()))?;
 
@@ -114,20 +152,41 @@ impl GspClient {
     }
 
     /// `POST /api/v1/register` — register the wallet identified by the proof's pubkey.
+    /// Tries each configured HTTP base in order; first 2xx wins.
     pub async fn register(
         &self,
         proof: WalletProof,
         display_name: Option<String>,
     ) -> Result<WalletId, GspError> {
-        let url = format!("{}/api/v1/register", self.http_base);
         let body = RegisterRequest {
             proof,
             display_name,
         };
+        let mut last_err: Option<GspError> = None;
+        for base in &self.http_bases {
+            let url = format!("{base}/api/v1/register");
+            match self.try_register(&url, &body).await {
+                Ok(id) => return Ok(id),
+                Err(GspError::Transport(t)) => {
+                    tracing::debug!(url = %url, error = %t, "register endpoint transport failed, trying next");
+                    last_err = Some(GspError::Transport(t));
+                }
+                // 4xx server errors aren't a failover signal — surface immediately.
+                Err(other) => return Err(other),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| GspError::Transport("no endpoints configured".into())))
+    }
+
+    async fn try_register(
+        &self,
+        url: &str,
+        body: &RegisterRequest,
+    ) -> Result<WalletId, GspError> {
         let resp = self
             .http
-            .post(&url)
-            .json(&body)
+            .post(url)
+            .json(body)
             .send()
             .await
             .map_err(|e| GspError::Transport(e.to_string()))?;
@@ -150,20 +209,40 @@ impl GspClient {
     }
 
     /// `POST /api/v1/session` — create a session, returning the JWT.
+    /// Tries each configured HTTP base in order on transport failure.
     pub async fn create_session(
         &self,
         proof: WalletProof,
         session_nonce: Option<String>,
     ) -> Result<SessionToken, GspError> {
-        let url = format!("{}/api/v1/session", self.http_base);
         let body = SessionRequest {
             proof,
             session_nonce,
         };
+        let mut last_err: Option<GspError> = None;
+        for base in &self.http_bases {
+            let url = format!("{base}/api/v1/session");
+            match self.try_create_session(&url, &body).await {
+                Ok(t) => return Ok(t),
+                Err(GspError::Transport(t)) => {
+                    tracing::debug!(url = %url, error = %t, "session endpoint transport failed, trying next");
+                    last_err = Some(GspError::Transport(t));
+                }
+                Err(other) => return Err(other),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| GspError::Transport("no endpoints configured".into())))
+    }
+
+    async fn try_create_session(
+        &self,
+        url: &str,
+        body: &SessionRequest,
+    ) -> Result<SessionToken, GspError> {
         let resp = self
             .http
-            .post(&url)
-            .json(&body)
+            .post(url)
+            .json(body)
             .send()
             .await
             .map_err(|e| GspError::Transport(e.to_string()))?;

@@ -79,7 +79,8 @@ mod unix {
         started: Instant,
         chain: Arc<dyn ChainClient>,
         gsp: GspClient,
-        gsp_url: String,
+        /// GSP WS URLs in failover order — passed to spawn_session at gsp_auth time.
+        gsp_urls: Vec<String>,
         wallets_dir: PathBuf,
         wallets: RwLock<HashMap<String, Keystore>>,
         active: RwLock<Option<String>>,
@@ -153,12 +154,13 @@ mod unix {
 
     pub async fn serve() -> std::io::Result<()> {
         let socket_path = default_socket_path();
-        // WRAITHD_GHOST_PAY accepts a comma-separated list of fallback URLs.
-        // The chain client tries them in order on each request.
+        // Both env vars accept a comma-separated list of URLs. Endpoints are tried
+        // in order; failover is sticky-during-outage but resets to primary on success.
         let ghost_pay_raw =
             std::env::var(GHOST_PAY_ENV).unwrap_or_else(|_| DEFAULT_GHOST_PAY.to_string());
         let ghost_pay_urls = wraith_wallet_core::chain::GhostPayClient::parse_urls(&ghost_pay_raw);
-        let gsp_url = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
+        let gsp_raw = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
+        let gsp_urls = wraith_wallet_core::gsp::GspClient::parse_urls(&gsp_raw);
         let wallets_dir = default_wallets_dir();
         let network = std::env::var(NETWORK_ENV)
             .ok()
@@ -166,7 +168,7 @@ mod unix {
             .unwrap_or(bitcoin::Network::Signet);
         tracing::info!(
             ghost_pay = ?ghost_pay_urls,
-            gsp = %gsp_url,
+            gsp = ?gsp_urls,
             wallets_dir = %wallets_dir.display(),
             network = ?network,
             "node endpoints + wallets dir + network configured",
@@ -175,8 +177,8 @@ mod unix {
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             chain: Arc::new(GhostPayClient::with_urls(ghost_pay_urls)),
-            gsp: GspClient::new(gsp_url.clone()),
-            gsp_url,
+            gsp: GspClient::with_urls(gsp_urls.clone()),
+            gsp_urls,
             wallets_dir,
             wallets: RwLock::new(HashMap::new()),
             active: RwLock::new(None),
@@ -317,7 +319,7 @@ mod unix {
         // 4. Stash the token + spawn a persistent authenticated session task.
         //    Replacing an existing slot drops the old SessionHandle, which aborts
         //    its task before the new one starts.
-        let handle = spawn_session(state.gsp_url.clone(), jwt_for_session);
+        let handle = spawn_session(state.gsp_urls.clone(), jwt_for_session);
         *state.session.write().await = Some(StoredSession {
             wallet_name: active_name,
             token,

@@ -232,13 +232,16 @@ pub struct GhostLocksResult {
 }
 
 /// Spawn a long-lived authenticated session task. Returns a handle.
-pub fn spawn_session(ws_url: String, jwt_token: String) -> SessionHandle {
+///
+/// `ws_urls` is the failover list — the task tries them in order and rotates
+/// on each reconnect attempt. Pass `vec![single_url]` for the single-endpoint case.
+pub fn spawn_session(ws_urls: Vec<String>, jwt_token: String) -> SessionHandle {
     let status = Arc::new(RwLock::new(SessionStatus::default()));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (cmd_tx, cmd_rx) = mpsc::channel::<SessionCommand>(32);
 
     let task = tokio::spawn(run(
-        ws_url,
+        ws_urls,
         jwt_token,
         status.clone(),
         shutdown_rx,
@@ -258,27 +261,41 @@ const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
 async fn run(
-    ws_url: String,
+    ws_urls: Vec<String>,
     jwt_token: String,
     status: Arc<RwLock<SessionStatus>>,
     mut shutdown: watch::Receiver<bool>,
     mut cmd_rx: mpsc::Receiver<SessionCommand>,
 ) {
+    if ws_urls.is_empty() {
+        tracing::error!("gsp session: no ws urls configured, exiting");
+        return;
+    }
     let mut backoff = BACKOFF_INITIAL;
+    let mut url_idx: usize = 0;
     loop {
         if *shutdown.borrow() {
             tracing::debug!("gsp session: shutdown requested, exiting");
             return;
         }
 
+        let ws_url = &ws_urls[url_idx % ws_urls.len()];
+
         // === connect ===
         set_phase(&status, SessionPhase::Connecting).await;
-        let (mut ws, _) = match connect_async(&ws_url).await {
+        let (mut ws, _) = match connect_async(ws_url).await {
             Ok(p) => p,
             Err(e) => {
                 let msg = e.to_string();
-                tracing::warn!(error = %msg, backoff = ?backoff, "gsp session: connect failed");
+                tracing::warn!(
+                    url = %ws_url,
+                    error = %msg,
+                    backoff = ?backoff,
+                    "gsp session: connect failed, will rotate endpoint"
+                );
                 set_error(&status, SessionPhase::Backoff, msg).await;
+                // Advance to next URL for the next attempt.
+                url_idx = url_idx.wrapping_add(1);
                 if sleep_or_shutdown(backoff, &mut shutdown).await {
                     return;
                 }
@@ -286,7 +303,10 @@ async fn run(
                 continue;
             }
         };
+        // On a successful connect, reset backoff AND prefer the primary URL again
+        // (so failover is sticky-during-outage, not permanent).
         backoff = BACKOFF_INITIAL;
+        url_idx = 0;
 
         // === authenticate ===
         set_phase(&status, SessionPhase::Authenticating).await;
