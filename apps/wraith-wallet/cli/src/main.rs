@@ -51,9 +51,8 @@ enum GspCommand {
 
 #[derive(Subcommand)]
 enum LightCommand {
-    /// Derive a fresh BIP86 taproot receive address.
+    /// Derive a fresh BIP86 taproot receive address from the active wallet.
     Receive {
-        /// Address index. Default: 0 (first receive address).
         #[arg(short, long, default_value_t = 0)]
         index: u32,
     },
@@ -61,23 +60,24 @@ enum LightCommand {
 
 #[derive(Subcommand)]
 enum WalletCommand {
-    /// Create a fresh wallet (generates a new 24-word BIP39 mnemonic).
-    Create,
-    /// Unlock the wallet on disk by passphrase.
-    Unlock,
-    /// Drop the unlocked keystore from daemon memory.
-    Lock,
-    /// Show whether a wallet is unlocked and its on-disk path.
+    /// Create a fresh wallet under the given name (generates a new BIP39 mnemonic).
+    Create { name: String },
+    /// Unlock the named wallet (becomes active).
+    Unlock { name: String },
+    /// Lock a wallet by name, or the active one if no name is given.
+    Lock { name: Option<String> },
+    /// List all on-disk wallets with unlocked / active status.
+    List,
+    /// Set the active wallet (must already be unlocked).
+    Select { name: String },
+    /// Show the active wallet's path and unlocked state.
     Status,
-    /// Derive a public key at a BIP32 path from the unlocked wallet.
-    Derive {
-        /// BIP32 derivation path, e.g. `m/86'/531'/0'/0/0`.
-        path: String,
-    },
-    /// Show the GSP authentication identity (wallet_id + auth pubkey).
+    /// Derive a public key at a BIP32 path from the active wallet.
+    Derive { path: String },
+    /// Show the GSP authentication identity (wallet_id + auth pubkey) of the active wallet.
     AuthInfo,
-    /// Re-display the BIP39 mnemonic for backup. Re-prompts for the passphrase.
-    ShowMnemonic,
+    /// Re-display the BIP39 mnemonic for a named wallet.
+    ShowMnemonic { name: String },
 }
 
 #[cfg(not(unix))]
@@ -88,6 +88,11 @@ fn main() {
 
 #[cfg(unix)]
 fn main() -> std::process::ExitCode {
+    // Restore default SIGPIPE so `wraith ... | head -1` exits cleanly instead of
+    // panicking when the consumer closes the pipe early.
+    // Safety: setting SIG_DFL is always sound; we do it before spawning threads.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
@@ -116,35 +121,37 @@ mod unix {
             Command::Gsp { sub } => match sub {
                 GspCommand::Ping => Request::GspPing,
             },
+            Command::Light { sub } => match sub {
+                LightCommand::Receive { index } => Request::LightReceive { index },
+            },
             Command::Wallet { sub } => match sub {
-                WalletCommand::Create => match prompt_new_passphrase() {
-                    Ok(pass) => Request::WalletCreate { passphrase: pass },
-                    Err(e) => {
-                        eprintln!("wraith: {e}");
-                        return std::process::ExitCode::FAILURE;
-                    }
+                WalletCommand::Create { name } => match prompt_new_passphrase() {
+                    Ok(pass) => Request::WalletCreate {
+                        name,
+                        passphrase: pass,
+                    },
+                    Err(e) => return io_err(e),
                 },
-                WalletCommand::Unlock => match prompt_passphrase("passphrase: ") {
-                    Ok(pass) => Request::WalletUnlock { passphrase: pass },
-                    Err(e) => {
-                        eprintln!("wraith: {e}");
-                        return std::process::ExitCode::FAILURE;
-                    }
+                WalletCommand::Unlock { name } => match prompt_passphrase("passphrase: ") {
+                    Ok(pass) => Request::WalletUnlock {
+                        name,
+                        passphrase: pass,
+                    },
+                    Err(e) => return io_err(e),
                 },
-                WalletCommand::Lock => Request::WalletLock,
+                WalletCommand::Lock { name } => Request::WalletLock { name },
+                WalletCommand::List => Request::WalletList,
+                WalletCommand::Select { name } => Request::WalletSelect { name },
                 WalletCommand::Status => Request::WalletStatus,
                 WalletCommand::Derive { path } => Request::WalletDerive { path },
                 WalletCommand::AuthInfo => Request::WalletAuthInfo,
-                WalletCommand::ShowMnemonic => match prompt_passphrase("passphrase: ") {
-                    Ok(pass) => Request::WalletShowMnemonic { passphrase: pass },
-                    Err(e) => {
-                        eprintln!("wraith: {e}");
-                        return std::process::ExitCode::FAILURE;
-                    }
+                WalletCommand::ShowMnemonic { name } => match prompt_passphrase("passphrase: ") {
+                    Ok(pass) => Request::WalletShowMnemonic {
+                        name,
+                        passphrase: pass,
+                    },
+                    Err(e) => return io_err(e),
                 },
-            },
-            Command::Light { sub } => match sub {
-                LightCommand::Receive { index } => Request::LightReceive { index },
             },
         };
 
@@ -177,31 +184,57 @@ mod unix {
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::WalletCreate(c)) => {
-                println!("wallet created at {}", c.path);
+                println!("wallet '{}' created at {}", c.name, c.path);
                 println!("\nWrite these 24 words down somewhere safe.");
                 println!("They are the ONLY way to recover this wallet if the file is lost.\n");
                 println!("{}\n", c.mnemonic);
-                println!("Wallet is unlocked.");
+                println!("Wallet '{}' is unlocked and active.", c.name);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::WalletUnlocked) => {
-                println!("wallet unlocked");
+                println!("wallet unlocked and selected as active");
                 std::process::ExitCode::SUCCESS
             }
-            Ok(Response::WalletLocked) => {
-                println!("wallet locked");
+            Ok(Response::WalletLocked { name }) => {
+                println!("wallet '{name}' locked");
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletList(l)) => {
+                if l.wallets.is_empty() {
+                    println!("(no wallets)");
+                } else {
+                    for w in l.wallets {
+                        let mark = if w.active {
+                            "*"
+                        } else if w.unlocked {
+                            "+"
+                        } else {
+                            " "
+                        };
+                        println!("{mark} {} ({})", w.name, w.path);
+                    }
+                    println!("\n  * = active   + = unlocked");
+                }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletSelected { name }) => {
+                println!("active wallet is now '{name}'");
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::WalletStatus(s)) => {
-                println!("wallet path: {}", s.path);
-                println!(
-                    "  on disk:  {}",
-                    if s.exists_on_disk { "yes" } else { "no" }
-                );
-                println!(
-                    "  unlocked: {}",
-                    if s.unlocked { "yes" } else { "no" }
-                );
+                match s.active {
+                    Some(n) => {
+                        println!("active: {n}");
+                        if let Some(p) = s.path {
+                            println!("  path:     {p}");
+                        }
+                        println!(
+                            "  unlocked: {}",
+                            if s.unlocked { "yes" } else { "no" }
+                        );
+                    }
+                    None => println!("(no active wallet)"),
+                }
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::WalletDerive(d)) => {
@@ -238,12 +271,16 @@ mod unix {
         }
     }
 
+    fn io_err(e: std::io::Error) -> std::process::ExitCode {
+        eprintln!("wraith: {e}");
+        std::process::ExitCode::FAILURE
+    }
+
     fn prompt_passphrase(prompt: &str) -> std::io::Result<String> {
         use std::io::{BufRead, IsTerminal};
         if std::io::stdin().is_terminal() {
             rpassword::prompt_password(prompt)
         } else {
-            // Non-interactive (piped) — read one line from stdin without echoing.
             let mut line = String::new();
             std::io::stdin().lock().read_line(&mut line)?;
             Ok(line.trim_end_matches('\n').trim_end_matches('\r').to_string())
@@ -255,8 +292,6 @@ mod unix {
         if pass.is_empty() {
             return Err(std::io::Error::other("passphrase must not be empty"));
         }
-        // In interactive mode, confirm. In piped mode skip the confirm
-        // (one line in = one passphrase) — typical for scripted use.
         if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             let again = prompt_passphrase("repeat passphrase: ")?;
             if pass != again {

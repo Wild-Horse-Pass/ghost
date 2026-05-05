@@ -32,22 +32,25 @@ pub enum Request {
     Health,
     ChainStatus,
     GspPing,
-    /// Create a new wallet at the daemon's configured path.
-    WalletCreate { passphrase: String },
-    /// Unlock the wallet by reading the file from disk and decrypting with `passphrase`.
-    WalletUnlock { passphrase: String },
-    /// Drop the unlocked keystore from daemon memory.
-    WalletLock,
-    /// Whether a wallet is currently unlocked.
+    /// Create a new named wallet on disk and add it to the daemon's unlocked set.
+    WalletCreate { name: String, passphrase: String },
+    /// Unlock a named wallet by reading from disk + decrypting. Becomes active.
+    WalletUnlock { name: String, passphrase: String },
+    /// Drop a named wallet from the unlocked set (or the active one if name is None).
+    WalletLock { name: Option<String> },
+    /// List all on-disk wallets with unlocked / active status.
+    WalletList,
+    /// Set the active wallet (must already be unlocked).
+    WalletSelect { name: String },
+    /// Status of the active wallet (or "no active wallet" if none).
     WalletStatus,
-    /// Derive a key at a BIP32 path from the unlocked keystore.
+    /// Derive a key at a BIP32 path from the active wallet's keystore.
     WalletDerive { path: String },
-    /// Show the GSP auth identity (wallet_id + x-only auth pubkey).
+    /// Show the GSP auth identity (wallet_id + x-only auth pubkey) of the active wallet.
     WalletAuthInfo,
-    /// Re-display the BIP39 mnemonic. Requires the passphrase even when the
-    /// wallet is unlocked, to avoid exposing the seed to anyone with IPC access.
-    WalletShowMnemonic { passphrase: String },
-    /// Derive a BIP86 taproot receive address at index `index`.
+    /// Re-display a wallet's BIP39 mnemonic. Always re-prompts the passphrase.
+    WalletShowMnemonic { name: String, passphrase: String },
+    /// Derive a BIP86 taproot receive address at index `index` from the active wallet.
     LightReceive { index: u32 },
 }
 
@@ -59,7 +62,9 @@ pub enum Response {
     GspPing(GspPingResponse),
     WalletCreate(WalletCreateResponse),
     WalletUnlocked,
-    WalletLocked,
+    WalletLocked { name: String },
+    WalletList(WalletListResponse),
+    WalletSelected { name: String },
     WalletStatus(WalletStatusResponse),
     WalletDerive(WalletDeriveResponse),
     WalletAuthInfo(WalletAuthInfoResponse),
@@ -94,15 +99,31 @@ pub struct GspPingResponse {
 /// Returned after creating a fresh wallet — the mnemonic is shown once for backup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletCreateResponse {
+    pub name: String,
     pub mnemonic: String,
     pub path: String,
 }
 
+/// Status of the active wallet, or `None` if no wallet is active.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletStatusResponse {
+    pub active: Option<String>,
+    pub path: Option<String>,
     pub unlocked: bool,
+}
+
+/// One entry in `WalletListResponse::wallets`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletListEntry {
+    pub name: String,
     pub path: String,
-    pub exists_on_disk: bool,
+    pub unlocked: bool,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletListResponse {
+    pub wallets: Vec<WalletListEntry>,
 }
 
 /// Public key derived at a BIP32 path. Private material stays in the daemon.

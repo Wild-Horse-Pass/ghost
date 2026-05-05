@@ -1,8 +1,13 @@
 //! `wraithd` — Wraith Wallet daemon.
 //!
 //! Long-running process that holds module state and exposes a local IPC surface
-//! to the CLI and GUI. Phase 0 (closed): IPC + lifecycle + keystore.
+//! to the CLI and GUI. Phase 0 (closed): IPC + lifecycle + multi-wallet keystore.
 //! Phase 1 (in progress): chain (REST → ghost-pay), gsp (WebSocket → ghost-gsp).
+//!
+//! Wallet layout: `~/.wraith/wallets/<name>/keystore.bin`. The "active" wallet is
+//! tracked in memory only — it is set on `WalletCreate`, `WalletUnlock`, or
+//! `WalletSelect`, and lost when the daemon restarts. Wallet-scoped commands
+//! (`WalletDerive`, `WalletAuthInfo`, `LightReceive`) target the active wallet.
 
 #[cfg(not(unix))]
 fn main() {
@@ -25,9 +30,10 @@ fn main() -> std::io::Result<()> {
 
 #[cfg(unix)]
 mod unix {
+    use std::collections::HashMap;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -43,24 +49,35 @@ mod unix {
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspPingResponse,
         HealthResponse, LightReceiveResponse, Request, Response, WalletAuthInfoResponse,
-        WalletCreateResponse, WalletDeriveResponse, WalletShowMnemonicResponse,
-        WalletStatusResponse,
+        WalletCreateResponse, WalletDeriveResponse, WalletListEntry, WalletListResponse,
+        WalletShowMnemonicResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
     const DEFAULT_GSP: &str = "ws://127.0.0.1:8900/ws/v1";
     const GHOST_PAY_ENV: &str = "WRAITHD_GHOST_PAY";
     const GSP_ENV: &str = "WRAITHD_GSP";
-    const WALLET_PATH_ENV: &str = "WRAITHD_WALLET";
+    const WALLETS_DIR_ENV: &str = "WRAITHD_WALLETS_DIR";
     const NETWORK_ENV: &str = "WRAITHD_NETWORK";
 
     struct DaemonState {
         started: Instant,
         chain: Arc<dyn ChainClient>,
         gsp: GspClient,
-        wallet: RwLock<Option<Keystore>>,
-        wallet_path: PathBuf,
+        wallets_dir: PathBuf,
+        wallets: RwLock<HashMap<String, Keystore>>,
+        active: RwLock<Option<String>>,
         network: bitcoin::Network,
+    }
+
+    fn default_wallets_dir() -> PathBuf {
+        if let Ok(p) = std::env::var(WALLETS_DIR_ENV) {
+            return PathBuf::from(p);
+        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        home.join(".wraith").join("wallets")
     }
 
     fn parse_network(s: &str) -> Option<bitcoin::Network> {
@@ -73,14 +90,48 @@ mod unix {
         }
     }
 
-    fn default_wallet_path() -> PathBuf {
-        if let Ok(p) = std::env::var(WALLET_PATH_ENV) {
-            return PathBuf::from(p);
+    /// Reject names that would let a caller traverse outside `wallets_dir` or
+    /// produce ambiguous on-disk paths.
+    fn validate_wallet_name(name: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("wallet name must not be empty".into());
         }
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        home.join(".wraith").join("wallet").join("keystore.bin")
+        if name.len() > 64 {
+            return Err("wallet name too long (max 64 chars)".into());
+        }
+        let allowed = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+        if !name.chars().all(allowed) {
+            return Err(
+                "wallet name must be ascii alphanumeric, '-', or '_' only".into(),
+            );
+        }
+        Ok(())
+    }
+
+    fn keystore_path(wallets_dir: &Path, name: &str) -> PathBuf {
+        wallets_dir.join(name).join("keystore.bin")
+    }
+
+    /// Enumerate every directory under `wallets_dir` that contains a `keystore.bin`.
+    fn list_on_disk(wallets_dir: &Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(wallets_dir) else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        for entry in entries.flatten() {
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if validate_wallet_name(&name).is_err() {
+                continue;
+            }
+            if keystore_path(wallets_dir, &name).is_file() {
+                names.push(name);
+            }
+        }
+        names.sort();
+        names
     }
 
     pub async fn serve() -> std::io::Result<()> {
@@ -88,7 +139,7 @@ mod unix {
         let ghost_pay_url =
             std::env::var(GHOST_PAY_ENV).unwrap_or_else(|_| DEFAULT_GHOST_PAY.to_string());
         let gsp_url = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
-        let wallet_path = default_wallet_path();
+        let wallets_dir = default_wallets_dir();
         let network = std::env::var(NETWORK_ENV)
             .ok()
             .and_then(|s| parse_network(&s))
@@ -96,21 +147,21 @@ mod unix {
         tracing::info!(
             ghost_pay = %ghost_pay_url,
             gsp = %gsp_url,
-            wallet = %wallet_path.display(),
+            wallets_dir = %wallets_dir.display(),
             network = ?network,
-            "node endpoints + wallet path + network configured",
+            "node endpoints + wallets dir + network configured",
         );
 
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             chain: Arc::new(GhostPayClient::new(ghost_pay_url)),
             gsp: GspClient::new(gsp_url),
-            wallet: RwLock::new(None),
-            wallet_path,
+            wallets_dir,
+            wallets: RwLock::new(HashMap::new()),
+            active: RwLock::new(None),
             network,
         });
 
-        // Remove stale socket file if present.
         if socket_path.exists() {
             tracing::warn!(
                 path = %socket_path.display(),
@@ -118,15 +169,12 @@ mod unix {
             );
             fs::remove_file(&socket_path)?;
         }
-
         if let Some(parent) = socket_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
         let listener = UnixListener::bind(&socket_path)?;
-        // Restrict socket to owner only.
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
-
         tracing::info!(path = %socket_path.display(), "wraithd listening");
 
         loop {
@@ -139,7 +187,6 @@ mod unix {
     async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
-
         while let Ok(Some(line)) = lines.next_line().await {
             let response = dispatch(&line, &state).await;
             let mut out = match serde_json::to_string(&response) {
@@ -155,6 +202,29 @@ mod unix {
                 return;
             }
         }
+    }
+
+    /// Snapshot the active wallet's name + keystore for read-only use.
+    /// Returns Err with a user-friendly message if no wallet is active.
+    async fn with_active_wallet<F, R>(state: &DaemonState, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&str, &Keystore) -> Result<R, String>,
+    {
+        let active = state
+            .active
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| {
+                "no active wallet; run `wraith wallet unlock <name>` or \
+                 `wraith wallet select <name>` first"
+                    .to_string()
+            })?;
+        let wallets = state.wallets.read().await;
+        let ks = wallets
+            .get(&active)
+            .ok_or_else(|| format!("active wallet '{active}' is not unlocked"))?;
+        f(&active, ks)
     }
 
     async fn dispatch(line: &str, state: &Arc<DaemonState>) -> Envelope<Response> {
@@ -177,12 +247,12 @@ mod unix {
                 uptime_secs: state.started.elapsed().as_secs(),
             }),
             Request::ChainStatus => match state.chain.status().await {
-                Ok(status) => Response::ChainStatus(ChainStatusResponse {
-                    backend_version: status.backend_version,
-                    network: status.network,
-                    has_keys: status.has_keys,
-                    lock_count: status.lock_count,
-                    active_sessions: status.active_sessions,
+                Ok(s) => Response::ChainStatus(ChainStatusResponse {
+                    backend_version: s.backend_version,
+                    network: s.network,
+                    has_keys: s.has_keys,
+                    lock_count: s.lock_count,
+                    active_sessions: s.active_sessions,
                 }),
                 Err(e) => Response::Error(ErrorResponse {
                     message: format!("chain: {e}"),
@@ -197,159 +267,238 @@ mod unix {
                     message: format!("gsp: {e}"),
                 }),
             },
-            Request::WalletCreate { passphrase } => {
-                if state.wallet_path.exists() {
-                    Response::Error(ErrorResponse {
-                        message: format!(
-                            "wallet already exists at {}; refusing to overwrite",
-                            state.wallet_path.display()
-                        ),
-                    })
+            Request::WalletCreate { name, passphrase } => {
+                if let Err(e) = validate_wallet_name(&name) {
+                    Response::Error(ErrorResponse { message: e })
                 } else {
-                    let pass = SecretString::new(passphrase.into());
-                    match Keystore::create() {
-                        Ok((ks, mnemonic)) => match ks.save(&state.wallet_path, &pass) {
-                            Ok(()) => {
-                                *state.wallet.write().await = Some(ks);
-                                Response::WalletCreate(WalletCreateResponse {
-                                    mnemonic,
-                                    path: state.wallet_path.display().to_string(),
-                                })
-                            }
+                    let path = keystore_path(&state.wallets_dir, &name);
+                    if path.exists() {
+                        Response::Error(ErrorResponse {
+                            message: format!(
+                                "wallet '{name}' already exists at {}; refusing to overwrite",
+                                path.display()
+                            ),
+                        })
+                    } else {
+                        let pass = SecretString::new(passphrase.into());
+                        match Keystore::create() {
+                            Ok((ks, mnemonic)) => match ks.save(&path, &pass) {
+                                Ok(()) => {
+                                    state.wallets.write().await.insert(name.clone(), ks);
+                                    *state.active.write().await = Some(name.clone());
+                                    Response::WalletCreate(WalletCreateResponse {
+                                        name,
+                                        mnemonic,
+                                        path: path.display().to_string(),
+                                    })
+                                }
+                                Err(e) => Response::Error(ErrorResponse {
+                                    message: format!("save: {e}"),
+                                }),
+                            },
                             Err(e) => Response::Error(ErrorResponse {
-                                message: format!("save: {e}"),
+                                message: format!("create: {e}"),
                             }),
-                        },
-                        Err(e) => Response::Error(ErrorResponse {
-                            message: format!("create: {e}"),
-                        }),
+                        }
                     }
                 }
             }
-            Request::WalletUnlock { passphrase } => {
-                if !state.wallet_path.exists() {
+            Request::WalletUnlock { name, passphrase } => {
+                if let Err(e) = validate_wallet_name(&name) {
+                    Response::Error(ErrorResponse { message: e })
+                } else {
+                    let path = keystore_path(&state.wallets_dir, &name);
+                    if !path.exists() {
+                        Response::Error(ErrorResponse {
+                            message: format!("no wallet '{name}' at {}", path.display()),
+                        })
+                    } else {
+                        let pass = SecretString::new(passphrase.into());
+                        match Keystore::load(&path, &pass) {
+                            Ok(ks) => {
+                                state.wallets.write().await.insert(name.clone(), ks);
+                                *state.active.write().await = Some(name.clone());
+                                Response::WalletUnlocked
+                            }
+                            Err(KeystoreError::Decrypt) => Response::Error(ErrorResponse {
+                                message: "wrong passphrase".to_string(),
+                            }),
+                            Err(e) => Response::Error(ErrorResponse {
+                                message: format!("unlock: {e}"),
+                            }),
+                        }
+                    }
+                }
+            }
+            Request::WalletLock { name } => {
+                let target = match name {
+                    Some(n) => n,
+                    None => match state.active.read().await.clone() {
+                        Some(n) => n,
+                        None => {
+                            return Envelope::new(
+                                id,
+                                Response::Error(ErrorResponse {
+                                    message: "no active wallet to lock".to_string(),
+                                }),
+                            );
+                        }
+                    },
+                };
+                let removed = state.wallets.write().await.remove(&target).is_some();
+                if !removed {
+                    Response::Error(ErrorResponse {
+                        message: format!("wallet '{target}' is not unlocked"),
+                    })
+                } else {
+                    let mut active = state.active.write().await;
+                    if active.as_deref() == Some(target.as_str()) {
+                        *active = None;
+                    }
+                    Response::WalletLocked { name: target }
+                }
+            }
+            Request::WalletList => {
+                let on_disk = list_on_disk(&state.wallets_dir);
+                let unlocked = state.wallets.read().await;
+                let active = state.active.read().await.clone();
+                let mut wallets: Vec<WalletListEntry> = on_disk
+                    .into_iter()
+                    .map(|name| WalletListEntry {
+                        path: keystore_path(&state.wallets_dir, &name).display().to_string(),
+                        unlocked: unlocked.contains_key(&name),
+                        active: active.as_deref() == Some(name.as_str()),
+                        name,
+                    })
+                    .collect();
+                // Surface unlocked-but-not-on-disk wallets too (shouldn't happen, but
+                // defensive — eg if disk file was deleted under us).
+                for name in unlocked.keys() {
+                    if !wallets.iter().any(|e| &e.name == name) {
+                        wallets.push(WalletListEntry {
+                            name: name.clone(),
+                            path: keystore_path(&state.wallets_dir, name)
+                                .display()
+                                .to_string(),
+                            unlocked: true,
+                            active: active.as_deref() == Some(name.as_str()),
+                        });
+                    }
+                }
+                Response::WalletList(WalletListResponse { wallets })
+            }
+            Request::WalletSelect { name } => {
+                if let Err(e) = validate_wallet_name(&name) {
+                    Response::Error(ErrorResponse { message: e })
+                } else if !state.wallets.read().await.contains_key(&name) {
                     Response::Error(ErrorResponse {
                         message: format!(
-                            "no wallet at {}; create one first",
-                            state.wallet_path.display()
+                            "wallet '{name}' is not unlocked; \
+                             run `wraith wallet unlock {name}` first"
                         ),
                     })
                 } else {
-                    let pass = SecretString::new(passphrase.into());
-                    match Keystore::load(&state.wallet_path, &pass) {
-                        Ok(ks) => {
-                            *state.wallet.write().await = Some(ks);
-                            Response::WalletUnlocked
-                        }
-                        Err(KeystoreError::Decrypt) => Response::Error(ErrorResponse {
-                            message: "wrong passphrase".to_string(),
-                        }),
-                        Err(e) => Response::Error(ErrorResponse {
-                            message: format!("unlock: {e}"),
-                        }),
-                    }
+                    *state.active.write().await = Some(name.clone());
+                    Response::WalletSelected { name }
                 }
-            }
-            Request::WalletLock => {
-                *state.wallet.write().await = None;
-                Response::WalletLocked
             }
             Request::WalletStatus => {
-                let unlocked = state.wallet.read().await.is_some();
+                let active = state.active.read().await.clone();
+                let unlocked = active
+                    .as_deref()
+                    .map(|n| state.wallets.try_read().is_ok_and(|g| g.contains_key(n)))
+                    .unwrap_or(false);
+                let path = active
+                    .as_ref()
+                    .map(|n| keystore_path(&state.wallets_dir, n).display().to_string());
                 Response::WalletStatus(WalletStatusResponse {
+                    active,
+                    path,
                     unlocked,
-                    path: state.wallet_path.display().to_string(),
-                    exists_on_disk: state.wallet_path.exists(),
                 })
             }
             Request::WalletDerive { path } => {
-                let guard = state.wallet.read().await;
-                match guard.as_ref() {
-                    None => Response::Error(ErrorResponse {
-                        message: "wallet is locked; run `wraith wallet unlock` first"
-                            .to_string(),
-                    }),
-                    Some(ks) => match ks.derive_xprv(&path) {
-                        Ok(xprv) => {
-                            let pubkey_bytes = xprv.public_key().to_bytes();
-                            Response::WalletDerive(WalletDeriveResponse {
-                                path,
-                                public_key_hex: hex::encode(pubkey_bytes),
-                            })
-                        }
-                        Err(e) => Response::Error(ErrorResponse {
-                            message: format!("derive: {e}"),
-                        }),
-                    },
-                }
-            }
-            Request::WalletShowMnemonic { passphrase } => {
-                if !state.wallet_path.exists() {
-                    Response::Error(ErrorResponse {
-                        message: format!(
-                            "no wallet at {}",
-                            state.wallet_path.display()
-                        ),
-                    })
-                } else {
-                    let pass = SecretString::new(passphrase.into());
-                    // Always re-load from disk and re-decrypt; do not trust in-memory unlock
-                    // state. The whole point of this call is to require fresh passphrase
-                    // ownership before exposing the seed.
-                    match Keystore::load(&state.wallet_path, &pass) {
-                        Ok(ks) => Response::WalletShowMnemonic(WalletShowMnemonicResponse {
-                            mnemonic: ks.expose_mnemonic().to_string(),
-                        }),
-                        Err(KeystoreError::Decrypt) => Response::Error(ErrorResponse {
-                            message: "wrong passphrase".to_string(),
-                        }),
-                        Err(e) => Response::Error(ErrorResponse {
-                            message: format!("show-mnemonic: {e}"),
-                        }),
+                match with_active_wallet(state, |_, ks| {
+                    ks.derive_xprv(&path)
+                        .map(|x| hex::encode(x.public_key().to_bytes()))
+                        .map_err(|e| format!("derive: {e}"))
+                })
+                .await
+                {
+                    Ok(public_key_hex) => {
+                        Response::WalletDerive(WalletDeriveResponse {
+                            path,
+                            public_key_hex,
+                        })
                     }
+                    Err(message) => Response::Error(ErrorResponse { message }),
                 }
             }
             Request::WalletAuthInfo => {
-                let guard = state.wallet.read().await;
-                match guard.as_ref() {
-                    None => Response::Error(ErrorResponse {
-                        message: "wallet is locked; run `wraith wallet unlock` first"
-                            .to_string(),
-                    }),
-                    Some(ks) => match auth::auth_keypair(ks) {
-                        Ok(kp) => Response::WalletAuthInfo(WalletAuthInfoResponse {
-                            wallet_id: auth::wallet_id_hex(&kp),
-                            auth_public_key_hex: hex::encode(auth::xonly_pubkey_bytes(&kp)),
+                match with_active_wallet(state, |_, ks| {
+                    let kp = auth::auth_keypair(ks).map_err(|e| format!("auth-info: {e}"))?;
+                    Ok::<_, String>((
+                        auth::wallet_id_hex(&kp),
+                        hex::encode(auth::xonly_pubkey_bytes(&kp)),
+                    ))
+                })
+                .await
+                {
+                    Ok((wallet_id, auth_public_key_hex)) => {
+                        Response::WalletAuthInfo(WalletAuthInfoResponse {
+                            wallet_id,
+                            auth_public_key_hex,
                             derivation_path: "m/352'/0'/0'/0/0".to_string(),
-                        }),
-                        Err(e) => Response::Error(ErrorResponse {
-                            message: format!("auth-info: {e}"),
-                        }),
-                    },
+                        })
+                    }
+                    Err(message) => Response::Error(ErrorResponse { message }),
+                }
+            }
+            Request::WalletShowMnemonic { name, passphrase } => {
+                if let Err(e) = validate_wallet_name(&name) {
+                    Response::Error(ErrorResponse { message: e })
+                } else {
+                    let path = keystore_path(&state.wallets_dir, &name);
+                    if !path.exists() {
+                        Response::Error(ErrorResponse {
+                            message: format!("no wallet '{name}' at {}", path.display()),
+                        })
+                    } else {
+                        let pass = SecretString::new(passphrase.into());
+                        match Keystore::load(&path, &pass) {
+                            Ok(ks) => Response::WalletShowMnemonic(WalletShowMnemonicResponse {
+                                mnemonic: ks.expose_mnemonic().to_string(),
+                            }),
+                            Err(KeystoreError::Decrypt) => Response::Error(ErrorResponse {
+                                message: "wrong passphrase".to_string(),
+                            }),
+                            Err(e) => Response::Error(ErrorResponse {
+                                message: format!("show-mnemonic: {e}"),
+                            }),
+                        }
+                    }
                 }
             }
             Request::LightReceive { index } => {
-                let guard = state.wallet.read().await;
-                match guard.as_ref() {
-                    None => Response::Error(ErrorResponse {
-                        message: "wallet is locked; run `wraith wallet unlock` first"
-                            .to_string(),
+                let network = state.network;
+                match with_active_wallet(state, |_, ks| {
+                    light::receive_address(ks, index, network)
+                        .map(|a| a.to_string())
+                        .map_err(|e| format!("light receive: {e}"))
+                })
+                .await
+                {
+                    Ok(address) => Response::LightReceive(LightReceiveResponse {
+                        address,
+                        index,
+                        network: format!("{:?}", state.network).to_lowercase(),
+                        derivation_path: format!(
+                            "m/86'/{}'/0'/0/{}",
+                            light::GHOST_COIN_TYPE,
+                            index
+                        ),
                     }),
-                    Some(ks) => match light::receive_address(ks, index, state.network) {
-                        Ok(addr) => Response::LightReceive(LightReceiveResponse {
-                            address: addr.to_string(),
-                            index,
-                            network: format!("{:?}", state.network).to_lowercase(),
-                            derivation_path: format!(
-                                "m/86'/{}'/0'/0/{}",
-                                light::GHOST_COIN_TYPE,
-                                index
-                            ),
-                        }),
-                        Err(e) => Response::Error(ErrorResponse {
-                            message: format!("light receive: {e}"),
-                        }),
-                    },
+                    Err(message) => Response::Error(ErrorResponse { message }),
                 }
             }
         };

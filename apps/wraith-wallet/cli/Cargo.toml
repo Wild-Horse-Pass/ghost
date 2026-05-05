@@ -16,3 +16,6 @@ clap = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 rpassword = "7"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
