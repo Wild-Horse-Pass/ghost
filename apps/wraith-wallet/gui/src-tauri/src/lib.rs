@@ -27,6 +27,81 @@ async fn daemon_doctor() -> Result<serde_json::Value, String> {
     Ok(serde_json::to_value(&resp).map_err(|e| e.to_string())?)
 }
 
+#[tauri::command]
+async fn wallet_list() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletList).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn wallet_status() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletStatus).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn wallet_unlock(name: String, passphrase: String) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletUnlock { name, passphrase }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn wallet_lock(name: Option<String>) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletLock { name }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn wallet_select(name: String) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletSelect { name }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn wallet_create(name: String, passphrase: String) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletCreate { name, passphrase }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn light_balance() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LightBalance).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn light_receive(index: u32) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LightReceive { index }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn light_history(limit: u32, offset: u32) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LightHistory { limit, offset }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn light_send(
+    recipient: String,
+    amount_sats: u64,
+    mode: String,
+    memo: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LightSend {
+        recipient,
+        amount_sats,
+        mode,
+        memo,
+    })
+    .await?;
+    to_value(&resp)
+}
+
+fn to_value(resp: &Response) -> Result<serde_json::Value, String> {
+    serde_json::to_value(resp).map_err(|e| e.to_string())
+}
+
 /// Send a request to the running wraithd daemon over its local IPC socket.
 /// Returns the parsed [`Response`] payload (without the JSON-RPC envelope).
 #[cfg(unix)]
@@ -74,7 +149,20 @@ pub fn run() {
         )
         .init();
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![daemon_health, daemon_doctor])
+        .invoke_handler(tauri::generate_handler![
+            daemon_health,
+            daemon_doctor,
+            wallet_list,
+            wallet_status,
+            wallet_unlock,
+            wallet_lock,
+            wallet_select,
+            wallet_create,
+            light_balance,
+            light_receive,
+            light_history,
+            light_send,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running wraith-wallet-gui");
 }

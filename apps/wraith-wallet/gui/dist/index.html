@@ -4,17 +4,62 @@
     <meta charset="utf-8" />
     <title>Wraith Wallet</title>
     <style>
+      :root {
+        --bg: #0e0f12;
+        --panel: #181a1f;
+        --border: #232328;
+        --border-soft: #1c1d22;
+        --fg: #d8d8d8;
+        --fg-mute: #9ca3af;
+        --accent: #1d4ed8;
+        --accent-hover: #1e3a8a;
+        --pass: #4ade80;
+        --fail: #f87171;
+        --skip: #9ca3af;
+      }
+      * { box-sizing: border-box; }
       body {
         margin: 0;
         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
           Roboto, sans-serif;
-        background: #0e0f12;
-        color: #d8d8d8;
+        background: var(--bg);
+        color: var(--fg);
       }
       header {
-        padding: 16px 20px;
-        border-bottom: 1px solid #232328;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--border);
+      }
+      header .title {
         font-weight: 600;
+        font-size: 15px;
+      }
+      header .spacer { flex: 1; }
+      header .status {
+        color: var(--fg-mute);
+        font-size: 12px;
+      }
+      nav {
+        display: flex;
+        gap: 4px;
+        padding: 0 20px;
+        border-bottom: 1px solid var(--border);
+      }
+      nav button {
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--fg-mute);
+        padding: 10px 14px;
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      nav button.active {
+        color: var(--fg);
+        border-bottom-color: var(--accent);
       }
       main {
         padding: 20px;
@@ -22,13 +67,21 @@
         flex-direction: column;
         gap: 16px;
       }
-      .row {
-        display: flex;
-        gap: 12px;
-        align-items: center;
+      .row { display: flex; gap: 12px; align-items: center; }
+      .col { display: flex; flex-direction: column; gap: 8px; }
+      label { font-size: 12px; color: var(--fg-mute); }
+      input, select {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font: inherit;
+        font-size: 13px;
+        min-width: 160px;
       }
-      button {
-        background: #1d4ed8;
+      button.primary {
+        background: var(--accent);
         border: none;
         color: white;
         padding: 8px 16px;
@@ -36,98 +89,387 @@
         font: inherit;
         cursor: pointer;
       }
-      button:hover {
-        background: #1e3a8a;
+      button.primary:hover { background: var(--accent-hover); }
+      button.ghost {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--fg);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
       }
+      button.ghost:hover { background: var(--panel); }
       pre {
-        background: #181a1f;
+        background: var(--panel);
         padding: 12px;
         border-radius: 6px;
         font-family: ui-monospace, "Menlo", "Consolas", monospace;
-        font-size: 13px;
+        font-size: 12px;
         color: #c8c8c8;
         overflow: auto;
         margin: 0;
+        max-height: 200px;
       }
       .check {
         display: grid;
-        grid-template-columns: 80px 140px 1fr;
+        grid-template-columns: 80px 160px 1fr;
         gap: 12px;
         align-items: center;
         padding: 6px 0;
-        border-bottom: 1px solid #1c1d22;
+        border-bottom: 1px solid var(--border-soft);
       }
-      .pass { color: #4ade80; font-weight: 600; }
-      .fail { color: #f87171; font-weight: 600; }
-      .skip { color: #9ca3af; font-weight: 600; }
+      .pass { color: var(--pass); font-weight: 600; }
+      .fail { color: var(--fail); font-weight: 600; }
+      .skip { color: var(--skip); font-weight: 600; }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .hide { display: none !important; }
+      .balance { font-size: 28px; font-weight: 600; }
+      .balance .units { font-size: 14px; color: var(--fg-mute); margin-left: 6px; }
+      .addr {
+        font-family: ui-monospace, "Menlo", "Consolas", monospace;
+        word-break: break-all;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        padding: 10px;
+        border-radius: 6px;
+        font-size: 12px;
+      }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td {
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      th { color: var(--fg-mute); font-weight: 500; font-size: 12px; }
+      .err {
+        background: #2a1517;
+        border: 1px solid #5a2125;
+        color: #fca5a5;
+        padding: 10px 12px;
+        border-radius: 6px;
+        font-size: 13px;
+      }
     </style>
   </head>
   <body>
-    <header>Wraith Wallet</header>
+    <header>
+      <div class="title">Wraith Wallet</div>
+      <select id="wallet-picker"></select>
+      <button class="ghost" id="wallet-unlock-btn">unlock</button>
+      <button class="ghost" id="wallet-lock-btn">lock</button>
+      <div class="spacer"></div>
+      <div class="status" id="status">connecting...</div>
+    </header>
+    <nav>
+      <button data-tab="home" class="active">home</button>
+      <button data-tab="receive">receive</button>
+      <button data-tab="send">send</button>
+      <button data-tab="history">history</button>
+      <button data-tab="doctor">doctor</button>
+    </nav>
     <main>
-      <div class="row">
-        <button id="health">daemon health</button>
-        <button id="doctor">doctor</button>
-        <span id="version" style="color: #9ca3af; margin-left: auto;"></span>
-      </div>
-      <div id="checks"></div>
+      <div id="err" class="err hide"></div>
+
+      <!-- HOME -->
+      <section data-view="home" class="col">
+        <div class="panel">
+          <label>balance (active wallet)</label>
+          <div id="balance" class="balance">— <span class="units">sats</span></div>
+          <div style="margin-top: 10px;">
+            <button class="ghost" id="balance-refresh">refresh</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- RECEIVE -->
+      <section data-view="receive" class="col hide">
+        <div class="panel col">
+          <label>derive address at index</label>
+          <div class="row">
+            <input type="number" id="receive-index" value="0" min="0" />
+            <button class="primary" id="receive-go">show</button>
+          </div>
+          <div id="receive-out"></div>
+        </div>
+      </section>
+
+      <!-- SEND -->
+      <section data-view="send" class="col hide">
+        <div class="panel col">
+          <div class="col">
+            <label>recipient</label>
+            <input id="send-to" placeholder="bc1q… / sp… / l2:…" />
+          </div>
+          <div class="row">
+            <div class="col" style="flex: 1;">
+              <label>amount (sats)</label>
+              <input type="number" id="send-amount" min="1" />
+            </div>
+            <div class="col">
+              <label>mode</label>
+              <select id="send-mode">
+                <option value="onchain">onchain</option>
+                <option value="l2">l2</option>
+                <option value="silent">silent</option>
+              </select>
+            </div>
+          </div>
+          <div class="col">
+            <label>memo (optional)</label>
+            <input id="send-memo" />
+          </div>
+          <div>
+            <button class="primary" id="send-go">send</button>
+          </div>
+          <div id="send-out"></div>
+        </div>
+      </section>
+
+      <!-- HISTORY -->
+      <section data-view="history" class="col hide">
+        <div class="panel">
+          <div class="row" style="margin-bottom: 8px;">
+            <button class="ghost" id="history-refresh">refresh</button>
+          </div>
+          <table>
+            <thead>
+              <tr><th>height</th><th>direction</th><th>amount</th><th>txid</th></tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- DOCTOR -->
+      <section data-view="doctor" class="col hide">
+        <div class="panel">
+          <div class="row" style="margin-bottom: 8px;">
+            <button class="ghost" id="doctor-refresh">re-run</button>
+          </div>
+          <div id="doctor-checks"></div>
+        </div>
+      </section>
+
       <pre id="raw"></pre>
     </main>
 
     <script type="module">
       const { invoke } = window.__TAURI__.core;
+      const $ = (s) => document.querySelector(s);
+      const els = {
+        status: $("#status"),
+        err: $("#err"),
+        raw: $("#raw"),
+        picker: $("#wallet-picker"),
+        balance: $("#balance"),
+        receiveIndex: $("#receive-index"),
+        receiveOut: $("#receive-out"),
+        sendTo: $("#send-to"),
+        sendAmount: $("#send-amount"),
+        sendMode: $("#send-mode"),
+        sendMemo: $("#send-memo"),
+        sendOut: $("#send-out"),
+        historyBody: $("#history-body"),
+        doctorChecks: $("#doctor-checks"),
+      };
 
-      const health = document.getElementById("health");
-      const doctor = document.getElementById("doctor");
-      const checks = document.getElementById("checks");
-      const raw = document.getElementById("raw");
-      const versionLabel = document.getElementById("version");
-
-      async function show(label, value) {
-        raw.textContent = label + "\n" + JSON.stringify(value, null, 2);
+      function showErr(msg) {
+        els.err.textContent = msg;
+        els.err.classList.remove("hide");
+      }
+      function clearErr() {
+        els.err.classList.add("hide");
+        els.err.textContent = "";
+      }
+      function showRaw(label, value) {
+        els.raw.textContent = label + "\n" + JSON.stringify(value, null, 2);
       }
 
-      async function renderHealth() {
+      async function refreshHealth() {
         try {
           const v = await invoke("daemon_health");
-          versionLabel.textContent = `daemon v${v.daemon_version} — uptime ${v.uptime_secs}s`;
-          checks.innerHTML = "";
-          show("daemon_health", v);
+          els.status.textContent = `daemon v${v.daemon_version} · uptime ${v.uptime_secs}s`;
         } catch (e) {
-          versionLabel.textContent = "daemon not reachable";
-          show("daemon_health (error)", e);
+          els.status.textContent = "daemon not reachable";
+          showErr(String(e));
         }
       }
 
-      async function renderDoctor() {
+      async function refreshWalletList() {
+        try {
+          const v = await invoke("wallet_list");
+          const wallets = v.wallets || [];
+          els.picker.innerHTML = "";
+          for (const w of wallets) {
+            const opt = document.createElement("option");
+            opt.value = w.name;
+            const flags = [
+              w.unlocked ? "unlocked" : "locked",
+              w.active ? "active" : null,
+            ].filter(Boolean).join(", ");
+            opt.textContent = `${w.name} (${flags})`;
+            els.picker.append(opt);
+          }
+        } catch (e) {
+          showErr(String(e));
+        }
+      }
+
+      async function refreshBalance() {
+        try {
+          const v = await invoke("light_balance");
+          const sats = v.confirmed_sats ?? 0;
+          els.balance.firstChild.nodeValue = Number(sats).toLocaleString() + " ";
+          showRaw("light_balance", v);
+        } catch (e) {
+          els.balance.firstChild.nodeValue = "— ";
+          showRaw("light_balance (error)", e);
+        }
+      }
+
+      async function showAddress() {
+        clearErr();
+        try {
+          const idx = Number(els.receiveIndex.value || 0);
+          const v = await invoke("light_receive", { index: idx });
+          const addr = v.address || "?";
+          els.receiveOut.innerHTML = "";
+          const div = document.createElement("div");
+          div.className = "addr";
+          div.textContent = addr;
+          els.receiveOut.append(div);
+          showRaw("light_receive", v);
+        } catch (e) {
+          showErr(String(e));
+        }
+      }
+
+      async function sendPayment() {
+        clearErr();
+        try {
+          const v = await invoke("light_send", {
+            recipient: els.sendTo.value,
+            amountSats: Number(els.sendAmount.value || 0),
+            mode: els.sendMode.value,
+            memo: els.sendMemo.value || null,
+          });
+          els.sendOut.innerHTML = "";
+          const ok = document.createElement("div");
+          ok.className = "addr";
+          ok.textContent = JSON.stringify(v, null, 2);
+          els.sendOut.append(ok);
+          showRaw("light_send", v);
+        } catch (e) {
+          showErr(String(e));
+        }
+      }
+
+      async function refreshHistory() {
+        clearErr();
+        try {
+          const v = await invoke("light_history", { limit: 50, offset: 0 });
+          const items = v.items || [];
+          els.historyBody.innerHTML = "";
+          for (const it of items) {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td>${it.block_height ?? "—"}</td><td>${it.direction ?? "—"}</td><td>${(it.amount_sats ?? 0).toLocaleString()}</td><td style="font-family:ui-monospace;font-size:11px;">${it.txid ?? ""}</td>`;
+            els.historyBody.append(tr);
+          }
+          if (items.length === 0) {
+            els.historyBody.innerHTML = `<tr><td colspan="4" style="color:#9ca3af;">no transactions yet</td></tr>`;
+          }
+          showRaw("light_history", v);
+        } catch (e) {
+          showErr(String(e));
+        }
+      }
+
+      async function refreshDoctor() {
         try {
           const v = await invoke("daemon_doctor");
-          checks.innerHTML = "";
-          for (const c of v.checks ?? []) {
+          els.doctorChecks.innerHTML = "";
+          const checks = v.checks || [];
+          for (const c of checks) {
             const row = document.createElement("div");
             row.className = "check";
             const status = document.createElement("span");
             status.className = c.status;
-            status.textContent = c.status.toUpperCase();
+            status.textContent = (c.status || "").toUpperCase();
             const name = document.createElement("span");
             name.textContent = c.name;
             const detail = document.createElement("span");
-            detail.textContent = c.detail;
+            detail.textContent = c.detail || "";
             detail.style.color = "#9ca3af";
             row.append(status, name, detail);
-            checks.append(row);
+            els.doctorChecks.append(row);
           }
-          show("daemon_doctor", v);
+          showRaw("daemon_doctor", v);
         } catch (e) {
-          show("daemon_doctor (error)", e);
+          showErr(String(e));
         }
       }
 
-      health.addEventListener("click", renderHealth);
-      doctor.addEventListener("click", renderDoctor);
+      async function doUnlock() {
+        clearErr();
+        const name = els.picker.value || prompt("wallet name");
+        if (!name) return;
+        const passphrase = prompt(`passphrase for ${name}`);
+        if (passphrase == null) return;
+        try {
+          await invoke("wallet_unlock", { name, passphrase });
+          await invoke("wallet_select", { name });
+          await refreshWalletList();
+          await refreshBalance();
+        } catch (e) {
+          showErr(String(e));
+        }
+      }
+      async function doLock() {
+        clearErr();
+        const name = els.picker.value || null;
+        try {
+          await invoke("wallet_lock", { name });
+          await refreshWalletList();
+        } catch (e) {
+          showErr(String(e));
+        }
+      }
 
-      // First load → run health automatically
-      renderHealth();
+      // Tab switcher
+      document.querySelectorAll("nav button").forEach((b) => {
+        b.addEventListener("click", () => {
+          document.querySelectorAll("nav button").forEach((x) =>
+            x.classList.remove("active"));
+          b.classList.add("active");
+          const tab = b.dataset.tab;
+          document.querySelectorAll("[data-view]").forEach((v) => {
+            v.classList.toggle("hide", v.dataset.view !== tab);
+          });
+          if (tab === "history") refreshHistory();
+          if (tab === "doctor") refreshDoctor();
+        });
+      });
+
+      $("#balance-refresh").addEventListener("click", refreshBalance);
+      $("#receive-go").addEventListener("click", showAddress);
+      $("#send-go").addEventListener("click", sendPayment);
+      $("#history-refresh").addEventListener("click", refreshHistory);
+      $("#doctor-refresh").addEventListener("click", refreshDoctor);
+      $("#wallet-unlock-btn").addEventListener("click", doUnlock);
+      $("#wallet-lock-btn").addEventListener("click", doLock);
+
+      (async function init() {
+        await refreshHealth();
+        await refreshWalletList();
+        await refreshBalance();
+      })();
     </script>
   </body>
 </html>
