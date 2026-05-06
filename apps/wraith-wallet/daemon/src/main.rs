@@ -71,6 +71,7 @@ mod unix {
     /// When set, all REST traffic to ghost-pay and ghost-gsp goes through it.
     /// The persistent WebSocket session does **not** yet honour this proxy.
     const TOR_PROXY_ENV: &str = "WRAITHD_TOR_PROXY";
+    const SOCKET_ENV: &str = "WRAITHD_SOCKET";
 
     /// A `SessionToken` paired with the wallet name that produced it AND a live
     /// `SessionHandle` running the persistent authenticated WebSocket. Dropping
@@ -173,7 +174,14 @@ mod unix {
     }
 
     pub async fn serve() -> std::io::Result<()> {
-        let socket_path = default_socket_path();
+        // WRAITHD_SOCKET override lets operators run multiple daemons (one
+        // per wallet "profile") without socket-path collisions, and lets
+        // integration tests bind their own ephemeral socket. Falls back to
+        // the OS-default path so the common case is unchanged.
+        let socket_path = match std::env::var(SOCKET_ENV) {
+            Ok(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => default_socket_path(),
+        };
         // Both env vars accept a comma-separated list of URLs. Endpoints are tried
         // in order; failover is sticky-during-outage but resets to primary on success.
         let ghost_pay_raw =

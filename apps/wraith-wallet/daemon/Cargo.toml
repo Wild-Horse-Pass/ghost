@@ -23,3 +23,9 @@ serde_json = { workspace = true }
 secrecy = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+wraith-wallet-ipc = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
