@@ -8,7 +8,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, WindowEvent,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -317,6 +321,75 @@ pub fn run() {
         .init();
     tauri::Builder::default()
         .manage(Arc::new(WatchState::new()))
+        .setup(|app| {
+            // Build a minimal tray menu — show / hide / quit. Daemon ("wraithd")
+            // runs as a separate process, so quitting the GUI never stops the
+            // wallet itself; the menu wording reflects that.
+            let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
+            let hide = MenuItem::with_id(app, "hide", "Hide window", true, None::<&str>)?;
+            let quit_gui = MenuItem::with_id(
+                app,
+                "quit_gui",
+                "Quit GUI (daemon keeps running)",
+                true,
+                None::<&str>,
+            )?;
+            let menu = Menu::with_items(app, &[&show, &hide, &quit_gui])?;
+
+            let _tray = TrayIconBuilder::with_id("wraith-tray")
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Wraith Wallet")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "hide" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                    }
+                    "quit_gui" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // Single-click on the tray icon toggles the main window —
+                    // matches the muscle memory most desktop wallets train.
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        if let Some(w) = tray.app_handle().get_webview_window("main") {
+                            if w.is_visible().unwrap_or(false) {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.show();
+                                let _ = w.unminimize();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Closing the window hides it instead of exiting; the user has to
+            // pick "Quit GUI" from the tray to actually terminate this process.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             daemon_health,
             daemon_doctor,
