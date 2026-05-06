@@ -135,7 +135,7 @@ impl GspClient {
         let payload =
             serde_json::to_string(&request).map_err(|e| GspError::Encoding(e.to_string()))?;
 
-        ws.send(Message::Text(payload.into()))
+        ws.send(Message::Text(payload))
             .await
             .map_err(|e| GspError::Transport(e.to_string()))?;
 

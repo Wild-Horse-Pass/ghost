@@ -223,7 +223,7 @@ mod tests {
     fn create_save_load_roundtrip() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("k.bin");
-        let pass = SecretString::new("correct horse battery staple".to_string().into());
+        let pass = SecretString::new("correct horse battery staple".to_string());
 
         let (ks, mnemonic) = Keystore::create().unwrap();
         ks.save(&path, &pass).unwrap();
@@ -238,8 +238,8 @@ mod tests {
     fn wrong_passphrase_fails() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("k.bin");
-        let good = SecretString::new("good".to_string().into());
-        let bad = SecretString::new("bad".to_string().into());
+        let good = SecretString::new("good".to_string());
+        let bad = SecretString::new("bad".to_string());
 
         let (ks, _) = Keystore::create().unwrap();
         ks.save(&path, &good).unwrap();
@@ -294,7 +294,7 @@ mod tests {
     fn wrong_version_fails() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("k.bin");
-        let pass = SecretString::new("p".to_string().into());
+        let pass = SecretString::new("p".to_string());
 
         let (ks, _) = Keystore::create().unwrap();
         ks.save(&path, &pass).unwrap();

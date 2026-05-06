@@ -513,6 +513,7 @@ const KEEPALIVE_SECS: u64 = 30;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     ws_urls: Vec<String>,
     jwt_token: String,
@@ -1349,7 +1350,7 @@ async fn send_client(
     msg: &ClientMessage,
 ) -> Result<(), String> {
     let json = serde_json::to_string(msg).map_err(|e| format!("encode: {e}"))?;
-    ws.send(Message::Text(json.into()))
+    ws.send(Message::Text(json))
         .await
         .map_err(|e| format!("send: {e}"))
 }

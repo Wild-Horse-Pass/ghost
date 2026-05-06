@@ -807,7 +807,7 @@ mod unix {
     /// tests) still fire roughly on time, while production-default 900s
     /// thresholds keep the cheap 30s cadence.
     async fn idle_lock_task(state: Arc<DaemonState>) {
-        let tick_secs = std::cmp::min(30, std::cmp::max(1, state.idle_lock_secs / 2));
+        let tick_secs = (state.idle_lock_secs / 2).clamp(1, 30);
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -1237,7 +1237,7 @@ mod unix {
                             ),
                         })
                     } else {
-                        let pass = SecretString::new(passphrase.into());
+                        let pass = SecretString::new(passphrase);
                         match Keystore::create() {
                             Ok((ks, mnemonic)) => match ks.save(&path, &pass) {
                                 Ok(()) => {
@@ -1277,7 +1277,7 @@ mod unix {
                             ),
                         })
                     } else {
-                        let pass = SecretString::new(passphrase.into());
+                        let pass = SecretString::new(passphrase);
                         match Keystore::from_mnemonic(&mnemonic) {
                             Ok(ks) => match ks.save(&path, &pass) {
                                 Ok(()) => {
@@ -1309,7 +1309,7 @@ mod unix {
                             message: format!("no wallet '{name}' at {}", path.display()),
                         })
                     } else {
-                        let pass = SecretString::new(passphrase.into());
+                        let pass = SecretString::new(passphrase);
                         match Keystore::load(&path, &pass) {
                             Ok(ks) => {
                                 state.wallets.write().await.insert(name.clone(), ks);
@@ -1595,7 +1595,7 @@ mod unix {
                             message: format!("no wallet '{name}' at {}", path.display()),
                         })
                     } else {
-                        let pass = SecretString::new(passphrase.into());
+                        let pass = SecretString::new(passphrase);
                         match Keystore::load(&path, &pass) {
                             Ok(ks) => Response::WalletShowMnemonic(WalletShowMnemonicResponse {
                                 mnemonic: ks.expose_mnemonic().to_string(),

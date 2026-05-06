@@ -39,7 +39,7 @@ impl WatchState {
 #[tauri::command]
 async fn daemon_health() -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::Health).await?;
-    Ok(serde_json::to_value(&resp).map_err(|e| e.to_string())?)
+    serde_json::to_value(&resp).map_err(|e| e.to_string())
 }
 
 /// Tauri command: round-trip the daemon's `Doctor` summary so the GUI can
@@ -47,7 +47,7 @@ async fn daemon_health() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn daemon_doctor() -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::Doctor).await?;
-    Ok(serde_json::to_value(&resp).map_err(|e| e.to_string())?)
+    serde_json::to_value(&resp).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
