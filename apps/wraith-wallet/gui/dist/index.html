@@ -156,6 +156,27 @@
         border-radius: 6px;
         font-size: 13px;
       }
+      .modal-bg {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.65);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+      }
+      .modal {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 20px;
+        min-width: 360px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .modal h3 { margin: 0; font-size: 14px; font-weight: 600; }
+      .modal .row { justify-content: flex-end; }
     </style>
   </head>
   <body>
@@ -259,6 +280,8 @@
 
       <pre id="raw"></pre>
     </main>
+
+    <div id="modal-root"></div>
 
     <script type="module">
       const { invoke } = window.__TAURI__.core;
@@ -416,11 +439,57 @@
         }
       }
 
+      function passphraseDialog(walletName) {
+        // Replaces window.prompt(): keystrokes are masked, the event loop
+        // doesn't freeze (which prompt() does on some Linux WebKit builds),
+        // and Esc cancels cleanly.
+        return new Promise((resolve) => {
+          const root = $("#modal-root");
+          const bg = document.createElement("div");
+          bg.className = "modal-bg";
+          const m = document.createElement("div");
+          m.className = "modal";
+          const h = document.createElement("h3");
+          h.textContent = `Unlock ${walletName}`;
+          const input = document.createElement("input");
+          input.type = "password";
+          input.placeholder = "passphrase";
+          input.autofocus = true;
+          const row = document.createElement("div");
+          row.className = "row";
+          const cancel = document.createElement("button");
+          cancel.className = "ghost";
+          cancel.textContent = "cancel";
+          const ok = document.createElement("button");
+          ok.className = "primary";
+          ok.textContent = "unlock";
+          row.append(cancel, ok);
+          m.append(h, input, row);
+          bg.append(m);
+          root.append(bg);
+          setTimeout(() => input.focus(), 0);
+
+          function done(value) {
+            root.removeChild(bg);
+            resolve(value);
+          }
+          cancel.addEventListener("click", () => done(null));
+          ok.addEventListener("click", () => done(input.value));
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") done(input.value);
+            if (e.key === "Escape") done(null);
+          });
+        });
+      }
+
       async function doUnlock() {
         clearErr();
-        const name = els.picker.value || prompt("wallet name");
-        if (!name) return;
-        const passphrase = prompt(`passphrase for ${name}`);
+        const name = els.picker.value;
+        if (!name) {
+          showErr("no wallet selected; create one with `wraith wallet create` first");
+          return;
+        }
+        const passphrase = await passphraseDialog(name);
         if (passphrase == null) return;
         try {
           await invoke("wallet_unlock", { name, passphrase });
