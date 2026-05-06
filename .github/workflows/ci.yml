@@ -58,7 +58,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev
+          sudo apt-get install -y \
+            libsqlite3-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
 
       # Build
       - name: Build
@@ -71,6 +76,19 @@ jobs:
       # Run integration tests
       - name: Run integration tests
         run: cargo test --test integration
+
+      # Run wraith-wallet integration tests (separate from --lib --bins).
+      # These spin up the real wraithd binary against a tempdir socket, plus
+      # in-process mock GSPs — locks the wallet IPC and streaming push-channel
+      # contracts. Linux only: macOS runners can't bind Unix sockets the same
+      # way (shorter sun_path limit) and we don't need cross-platform coverage
+      # here; the unit + lib tests above already do.
+      - name: Run wraith-wallet integration tests
+        if: runner.os == 'Linux'
+        run: |
+          cargo test -p wraith-wallet-ipc
+          cargo test -p wraith-wallet-core --tests
+          cargo test -p wraith-wallet-daemon --tests
 
   # Documentation
   docs:
