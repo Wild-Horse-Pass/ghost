@@ -672,22 +672,27 @@ mod unix {
             ),
         });
 
-        // 2. ghost-pay /api/v1/status round-trip.
+        // 2. ghost-pay /api/v1/status round-trip + latency.
+        let t0 = std::time::Instant::now();
         match state.chain.status().await {
-            Ok(s) => checks.push(DoctorCheck {
-                name: "ghost-pay".into(),
-                status: "pass".into(),
-                detail: format!(
-                    "v{} ({}); locks={}, sessions={}",
-                    s.backend_version, s.network, s.lock_count, s.active_sessions
-                ),
-            }),
+            Ok(s) => {
+                let rtt = t0.elapsed().as_millis();
+                checks.push(DoctorCheck {
+                    name: "ghost-pay".into(),
+                    status: "pass".into(),
+                    detail: format!(
+                        "v{} ({}) — locks={}, sessions={} — round-trip {rtt}ms",
+                        s.backend_version, s.network, s.lock_count, s.active_sessions
+                    ),
+                });
+            }
             Err(e) => {
                 all_pass = false;
+                let rtt = t0.elapsed().as_millis();
                 checks.push(DoctorCheck {
                     name: "ghost-pay".into(),
                     status: "fail".into(),
-                    detail: format!("{e}"),
+                    detail: format!("{e} (after {rtt}ms)"),
                 });
             }
         }
