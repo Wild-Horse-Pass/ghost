@@ -246,6 +246,29 @@ async fn wallet_lifecycle_round_trip() {
         other => panic!("duplicate import must yield Error, got {other:?}"),
     }
 
+    // 8.5 (phase 13): signer-info surfaces on unlocked wallets but not on
+    //     locked ones. The trait is what hardware backings will plug into;
+    //     this test pins the wire shape today so a HW backend can simply
+    //     swap the keystore-side mapping without IPC churn later.
+    match rpc(&socket, 100, Request::WalletList).await {
+        Response::WalletList(l) => {
+            for w in &l.wallets {
+                if w.unlocked {
+                    let sig = w.signer.as_ref().expect("unlocked → signer info present");
+                    assert_eq!(sig.kind, "software", "v1 daemon ships software signer");
+                    assert!(!sig.interactive, "software signer is non-interactive");
+                    assert!(!sig.label.is_empty(), "label populated");
+                } else {
+                    assert!(
+                        w.signer.is_none(),
+                        "locked wallet must NOT carry signer info"
+                    );
+                }
+            }
+        }
+        other => panic!("expected WalletList, got {other:?}"),
+    }
+
     // 9. WalletList sees both alpha + beta.
     match rpc(&socket, 10, Request::WalletList).await {
         Response::WalletList(l) => {

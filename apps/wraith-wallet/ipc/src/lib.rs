@@ -452,6 +452,9 @@ pub struct WalletStatusResponse {
     pub active: Option<String>,
     pub path: Option<String>,
     pub unlocked: bool,
+    /// Phase 13: signer info for the active wallet, when one is unlocked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<SignerInfoIpc>,
 }
 
 /// One entry in `WalletListResponse::wallets`.
@@ -461,6 +464,28 @@ pub struct WalletListEntry {
     pub path: String,
     pub unlocked: bool,
     pub active: bool,
+    /// Phase 13: which kind of signer backs this wallet, when unlocked.
+    /// Hardware wallets surface here as `Some({kind: "ledger", …})`. None
+    /// for locked wallets — we don't load the keystore just to peek at
+    /// kind metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<SignerInfoIpc>,
+}
+
+/// Wire-format mirror of `wraith-wallet-core::signer::SignerInfo`. Crosses the
+/// IPC boundary so clients can render "Software" vs "Ledger Nano X" without
+/// pulling the core crate in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignerInfoIpc {
+    /// `"software"` for the in-memory keystore; vendor identifier for
+    /// hardware (e.g. `"ledger"`, `"coldcard"`).
+    pub kind: String,
+    /// Free-form human-readable label — model name, serial, etc.
+    pub label: String,
+    /// True when signing requires user approval on a separate device.
+    /// The GUI uses this to decide whether to show a "confirm on device"
+    /// banner during sends.
+    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -658,6 +683,7 @@ mod tests {
                     path: "/tmp/x".into(),
                     unlocked: false,
                     active: false,
+                    signer: None,
                 }],
             }),
         ];

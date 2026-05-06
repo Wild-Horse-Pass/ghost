@@ -50,15 +50,16 @@ mod unix {
     };
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_core::light;
+    use wraith_wallet_core::signer::{Signer, SoftwareSigner};
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, DaemonEnvResponse, DetectedPaymentEntry,
         DoctorCheck, DoctorResponse, Envelope, ErrorResponse, GspAuthResponse, GspPingResponse,
         GspSessionStatusResponse, HealthResponse, LightBalanceResponse, LightDetectedResponse,
         LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightSentResponse,
         LightUtxoEntry, LightUtxosResponse, LockEntry, LocksConfirmedResponse, LocksJumpedResponse,
-        LocksListResponse, LocksPreparedResponse, Request, Response, WalletAuthInfoResponse,
-        WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
-        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
+        LocksListResponse, LocksPreparedResponse, Request, Response, SignerInfoIpc,
+        WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse,
+        WalletListEntry, WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -815,6 +816,20 @@ mod unix {
         f(&active, ks)
     }
 
+    /// Phase 13: lift a keystore's signer-info into the wire format. The
+    /// daemon currently always wraps unlocked keystores in `SoftwareSigner`,
+    /// so this is a constant; a future hardware-aware version of the daemon
+    /// would dispatch on the keystore's tagged variant instead.
+    fn signer_info_for_unlocked(ks: &Keystore) -> SignerInfoIpc {
+        let signer = SoftwareSigner::new(ks);
+        let info = signer.info();
+        SignerInfoIpc {
+            kind: info.kind,
+            label: info.label,
+            interactive: info.interactive,
+        }
+    }
+
     /// Phase 9 Shroud helper: pick a uniform random delay in `[0, max_ms]`,
     /// or `None` when shroud is disabled (`max_ms == 0`).
     ///
@@ -1417,18 +1432,22 @@ mod unix {
                 let active = state.active.read().await.clone();
                 let mut wallets: Vec<WalletListEntry> = on_disk
                     .into_iter()
-                    .map(|name| WalletListEntry {
-                        path: keystore_path(&state.wallets_dir, &name)
-                            .display()
-                            .to_string(),
-                        unlocked: unlocked.contains_key(&name),
-                        active: active.as_deref() == Some(name.as_str()),
-                        name,
+                    .map(|name| {
+                        let signer = unlocked.get(&name).map(signer_info_for_unlocked);
+                        WalletListEntry {
+                            path: keystore_path(&state.wallets_dir, &name)
+                                .display()
+                                .to_string(),
+                            unlocked: unlocked.contains_key(&name),
+                            active: active.as_deref() == Some(name.as_str()),
+                            name,
+                            signer,
+                        }
                     })
                     .collect();
                 // Surface unlocked-but-not-on-disk wallets too (shouldn't happen, but
                 // defensive — eg if disk file was deleted under us).
-                for name in unlocked.keys() {
+                for (name, ks) in unlocked.iter() {
                     if !wallets.iter().any(|e| &e.name == name) {
                         wallets.push(WalletListEntry {
                             name: name.clone(),
@@ -1437,6 +1456,7 @@ mod unix {
                                 .to_string(),
                             unlocked: true,
                             active: active.as_deref() == Some(name.as_str()),
+                            signer: Some(signer_info_for_unlocked(ks)),
                         });
                     }
                 }
@@ -1464,10 +1484,15 @@ mod unix {
             }
             Request::WalletStatus => {
                 let active = state.active.read().await.clone();
+                let wallets = state.wallets.read().await;
                 let unlocked = active
                     .as_deref()
-                    .map(|n| state.wallets.try_read().is_ok_and(|g| g.contains_key(n)))
+                    .map(|n| wallets.contains_key(n))
                     .unwrap_or(false);
+                let signer = active
+                    .as_deref()
+                    .and_then(|n| wallets.get(n))
+                    .map(signer_info_for_unlocked);
                 let path = active
                     .as_ref()
                     .map(|n| keystore_path(&state.wallets_dir, n).display().to_string());
@@ -1475,6 +1500,7 @@ mod unix {
                     active,
                     path,
                     unlocked,
+                    signer,
                 })
             }
             Request::WalletDerive { path } => {

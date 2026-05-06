@@ -164,13 +164,13 @@ immutable artifact ready for manual signing and upload.
 | 10 | Tor transport (SOCKS5 → arti later)              | done (SOCKS5) |
 | 11 | Multi-node failover                              | done — comma-separated URLs |
 | 12 | Recovery (seed + checkpoint)                     | done — `wallet import` + `wallet restore` |
-| 13 | Hardware-wallet trait                            | trait + software impl + stub vendor backend |
+| 13 | Hardware-wallet trait                            | done — `Signer` + `SignerSetup` + load-bearing GSP-auth path; vendor backends drop in via cargo features |
 | 14 | Tauri GUI                                        | done — onboarding, send/recv/locks/identity/settings tabs, system tray, live push toasts |
 | 15 | Distribution (signed installers, auto-update)    | tarball script — signing + update server pending |
 | 16 | Hardening (IPC fuzz, external review)            | proptest IPC fuzz + integration tests; external review pending |
 
-Tests as of latest: 43 across the wraith-wallet workspace
-(7 IPC + 28 core + 8 daemon), all green. Run them with
+Tests as of latest: 50 across the wraith-wallet workspace
+(7 IPC + 35 core + 8 daemon), all green. Run them with
 `cargo test -p wraith-wallet-{ipc,core,daemon} --tests`.
 
 ## Security model

@@ -335,6 +335,8 @@
       <!-- IDENTITY -->
       <section data-view="identity" class="col hide">
         <div class="panel col">
+          <label>Signer</label>
+          <div id="identity-signer" class="addr">—</div>
           <label>Ghost ID (silent-payment receive identity)</label>
           <div id="identity-ghost-id" class="addr">—</div>
           <label>Scan public key</label>
@@ -469,6 +471,10 @@
             const flags = [
               w.unlocked ? "unlocked" : "locked",
               w.active ? "active" : null,
+              // Phase 13 signer badge: "sw" / "hw:ledger" / "hw:coldcard" / …
+              // Hidden when locked since we don't load keystores just to peek.
+              w.signer && w.signer.kind === "software" ? "sw" : null,
+              w.signer && w.signer.kind !== "software" ? `hw:${w.signer.kind}` : null,
             ].filter(Boolean).join(", ");
             opt.textContent = `${w.name} (${flags})`;
             if (w.active) activeName = w.name;
@@ -1297,6 +1303,19 @@
         const setText = (id, value) => {
           $("#" + id).textContent = value;
         };
+        // Signer info comes from wallet_status — refreshes per-wallet,
+        // free when the active wallet is unlocked.
+        try {
+          const s = await invoke("wallet_status");
+          if (s && s.signer) {
+            const tail = s.signer.interactive ? " (requires confirmation on device)" : "";
+            setText("identity-signer", `${s.signer.kind} — ${s.signer.label}${tail}`);
+          } else {
+            setText("identity-signer", "—");
+          }
+        } catch {
+          setText("identity-signer", "—");
+        }
         try {
           const v = await invoke("wallet_ghost_id");
           setText("identity-ghost-id", v.ghost_id || "—");

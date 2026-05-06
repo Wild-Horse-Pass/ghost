@@ -4,12 +4,54 @@
 //! keystore and a future hardware wallet (Coldcard, Ledger, Trezor, …). All
 //! signing-relevant code can hold a `&dyn Signer` and stay agnostic.
 //!
-//! Phase 13 first slice: trait definition + a thin software implementation
-//! over [`Keystore`]. Existing call sites in [`auth`](crate::auth) and
-//! [`light`](crate::light) keep using `Keystore` directly for now — they'll
-//! migrate to `Signer` when a real hardware backend lands. Hardware-specific
-//! impls (e.g. `LedgerSigner`) live in their own crates and are gated behind
-//! cargo features.
+//! ## Status (phase 13)
+//!
+//! 1. [`Signer`] is the per-signature-operation contract: pubkey at path,
+//!    Schnorr sign of a 32-byte digest. Object-safe.
+//! 2. [`SignerSetup`] is the once-per-wallet contract: get an xpub for
+//!    enrolment, ask the device to display an address for verification.
+//!    Hardware backings need this; software fakes it.
+//! 3. [`SoftwareSigner`] implements both over an unlocked [`Keystore`].
+//! 4. [`HardwareSignerStub`] is a placeholder that returns
+//!    [`SignerError::Unsupported`] for everything — replaced by real
+//!    vendor crates when they land.
+//!
+//! [`auth::xonly_pubkey_signer`](crate::auth::xonly_pubkey_signer),
+//! [`auth::wallet_id_hex_signer`](crate::auth::wallet_id_hex_signer),
+//! [`auth::make_proof_signer`](crate::auth::make_proof_signer), and
+//! [`auth::sign_data_signer`](crate::auth::sign_data_signer) are the
+//! Signer-aware GSP-auth helpers. The daemon currently calls the
+//! keypair-based variants in `auth::*` because the `Keystore` is what
+//! it has on hand; the trait is wired and tested so the swap is a
+//! local refactor when a hardware vendor lands.
+//!
+//! ## Adding a hardware vendor
+//!
+//! 1. Create a crate `wraith-wallet-signer-<vendor>` (e.g.
+//!    `wraith-wallet-signer-ledger`) that depends on the vendor's USB SDK
+//!    and on `wraith-wallet-core` for the trait definitions.
+//! 2. Implement [`Signer`] *and* [`SignerSetup`] on a struct that owns
+//!    the device handle. The trait methods translate to APDU calls or
+//!    similar. `info().interactive` should return `true` so the GUI
+//!    knows to show a "confirm on device" banner.
+//! 3. Add an optional dep + a feature flag in
+//!    `apps/wraith-wallet/core/Cargo.toml`:
+//!    ```toml
+//!    [features]
+//!    ledger = ["dep:wraith-wallet-signer-ledger"]
+//!    [dependencies]
+//!    wraith-wallet-signer-ledger = { version = "...", optional = true }
+//!    ```
+//! 4. Extend the daemon: store a tagged `BackingSigner` enum on the
+//!    keystore-or-equivalent, and dispatch `signer_info_for_unlocked`
+//!    accordingly. The IPC schema doesn't need to change — the
+//!    [`SignerInfo`] -> `SignerInfoIpc` conversion already carries the
+//!    vendor kind.
+//! 5. Add a `Request::WalletEnrollHardware { vendor }` IPC variant for
+//!    first-time enrolment. The daemon calls
+//!    `vendor::scan_for_devices()` -> `SignerSetup::get_xpub_at()` to
+//!    populate a hardware-backed keystore on disk that stores
+//!    only the xpub + vendor metadata.
 
 use bitcoin::secp256k1::{Keypair, Message, Secp256k1, XOnlyPublicKey};
 
@@ -61,6 +103,28 @@ pub trait Signer: Send + Sync {
         path: &str,
         message_digest: &[u8; 32],
     ) -> Result<[u8; 64], SignerError>;
+}
+
+/// Setup-time operations that don't fit `Signer` because they happen
+/// once per wallet (or once per address verification) rather than per
+/// signature.
+///
+/// A hardware backing's [`SignerSetup::display_address_at`] is what makes
+/// "verify your address on the device screen" possible — without it,
+/// receive flows on a HW wallet are blind. Software backings implement
+/// it as a no-op since there's nothing to display on.
+pub trait SignerSetup: Signer {
+    /// Get the BIP32 xpub at `path`. Used during wallet enrolment to
+    /// register the public side of a hardware-backed wallet without ever
+    /// reading the seed.
+    fn get_xpub_at(&self, path: &str) -> Result<String, SignerError>;
+
+    /// Ask the device to display the address derived at `path` so the user
+    /// can verify it on a trusted screen. Returns once the user confirms
+    /// (or rejects) on-device. No-op for software backings — there's no
+    /// trusted screen, so the wallet's own UI is already the source of
+    /// truth.
+    fn display_address_at(&self, path: &str) -> Result<(), SignerError>;
 }
 
 /// Software signer backed by an unlocked [`Keystore`].
@@ -128,6 +192,24 @@ impl<'a> Signer for SoftwareSigner<'a> {
     }
 }
 
+impl<'a> SignerSetup for SoftwareSigner<'a> {
+    fn get_xpub_at(&self, path: &str) -> Result<String, SignerError> {
+        let xprv = self.keystore.derive_xprv(path)?;
+        // bip32::XPub serialises to a base58-checked string the same way
+        // bitcoind / electrum print xpubs, so the value here is comparable
+        // across implementations and copy-pasteable into other tooling.
+        // Use the mainnet xpub prefix; clients can recompute for testnet
+        // / regtest from the BIP32 path if needed.
+        Ok(xprv.public_key().to_string(bip32::Prefix::XPUB))
+    }
+
+    fn display_address_at(&self, _path: &str) -> Result<(), SignerError> {
+        // No-op: software backing has no trusted screen to display on.
+        // The wallet's own UI is already the source of truth.
+        Ok(())
+    }
+}
+
 /// Placeholder hardware signer. Currently rejects every operation with
 /// [`SignerError::Unsupported`]. Real vendor backends (Coldcard, Ledger,
 /// Trezor, …) implement [`Signer`] in their own crates and are wired in
@@ -159,6 +241,20 @@ impl Signer for HardwareSignerStub {
     }
 
     fn sign_schnorr_at(&self, _: &str, _: &[u8; 32]) -> Result<[u8; 64], SignerError> {
+        Err(SignerError::Unsupported(
+            "hardware signer not yet implemented",
+        ))
+    }
+}
+
+impl SignerSetup for HardwareSignerStub {
+    fn get_xpub_at(&self, _path: &str) -> Result<String, SignerError> {
+        Err(SignerError::Unsupported(
+            "hardware signer not yet implemented",
+        ))
+    }
+
+    fn display_address_at(&self, _path: &str) -> Result<(), SignerError> {
         Err(SignerError::Unsupported(
             "hardware signer not yet implemented",
         ))
@@ -244,5 +340,49 @@ mod tests {
         let signer = SoftwareSigner::new(&ks);
         let dyn_signer: &dyn Signer = &signer;
         let _ = dyn_signer.info();
+    }
+
+    #[test]
+    fn software_signer_setup_xpub_round_trips() {
+        let ks = Keystore::from_mnemonic(VECTOR_MNEMONIC).unwrap();
+        let signer = SoftwareSigner::new(&ks);
+        let setup: &dyn SignerSetup = &signer;
+        let xpub = setup.get_xpub_at("m/86'/531'/0'").unwrap();
+        // Standard xpub envelopes start with "xpub" / "tpub" / "ypub" / etc.
+        // and are 111 base58 characters. We don't pin the prefix (depends on
+        // the keystore's network config) but length + base58-ness are fair.
+        assert_eq!(xpub.len(), 111, "BIP32 xpub serialises to 111 b58 chars");
+        assert!(
+            xpub.chars().all(|c| c.is_ascii_alphanumeric()),
+            "xpub must be base58-printable, got {xpub:?}"
+        );
+    }
+
+    #[test]
+    fn software_signer_display_address_is_noop() {
+        let ks = Keystore::from_mnemonic(VECTOR_MNEMONIC).unwrap();
+        let signer = SoftwareSigner::new(&ks);
+        let setup: &dyn SignerSetup = &signer;
+        // Software backing has no trusted screen — display_address_at must
+        // succeed silently rather than fail with Unsupported. Hardware
+        // backings will swap this for a "confirm on device" prompt.
+        setup.display_address_at("m/86'/531'/0'/0/0").unwrap();
+    }
+
+    #[test]
+    fn hardware_stub_setup_returns_unsupported() {
+        let stub = HardwareSignerStub {
+            vendor: "ledger".into(),
+            label: "Nano X".into(),
+        };
+        let setup: &dyn SignerSetup = &stub;
+        assert!(matches!(
+            setup.get_xpub_at("m/86'/531'/0'"),
+            Err(SignerError::Unsupported(_))
+        ));
+        assert!(matches!(
+            setup.display_address_at("m/86'/531'/0'/0/0"),
+            Err(SignerError::Unsupported(_))
+        ));
     }
 }
