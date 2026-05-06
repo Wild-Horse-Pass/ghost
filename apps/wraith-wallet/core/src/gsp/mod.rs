@@ -56,17 +56,41 @@ impl GspClient {
     }
 
     pub fn with_urls(ws_urls: Vec<String>) -> Self {
+        Self::with_urls_and_proxy(ws_urls, None)
+            .expect("default reqwest client always builds")
+    }
+
+    /// Same as [`with_urls`] but routes REST traffic (register, session) through
+    /// the given SOCKS5 proxy (e.g. `socks5h://127.0.0.1:9050` for Tor).
+    ///
+    /// **Note:** the persistent WebSocket session does **not** currently honour
+    /// this proxy — `tokio-tungstenite` needs a separate custom connector for
+    /// SOCKS5. Use Tor for REST today, treat WS as direct. Full WS-over-Tor
+    /// support is a follow-up.
+    pub fn with_urls_and_proxy(
+        ws_urls: Vec<String>,
+        proxy_url: Option<&str>,
+    ) -> Result<Self, GspError> {
         let urls = if ws_urls.is_empty() {
             vec!["ws://127.0.0.1:8900/ws/v1".to_string()]
         } else {
             ws_urls
         };
         let http_bases = urls.iter().map(|u| derive_http_base(u)).collect();
-        Self {
+        let mut builder = reqwest::Client::builder();
+        if let Some(p) = proxy_url {
+            let proxy = reqwest::Proxy::all(p)
+                .map_err(|e| GspError::Transport(format!("proxy: {e}")))?;
+            builder = builder.proxy(proxy);
+        }
+        let http = builder
+            .build()
+            .map_err(|e| GspError::Transport(format!("http client: {e}")))?;
+        Ok(Self {
             ws_urls: urls,
             http_bases,
-            http: reqwest::Client::new(),
-        }
+            http,
+        })
     }
 
     /// Parse a comma-separated WS URL list. Trims whitespace and drops empties.

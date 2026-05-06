@@ -42,7 +42,7 @@ mod unix {
     use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::RwLock;
     use wraith_wallet_core::auth;
-    use wraith_wallet_core::chain::{ChainClient, GhostPayClient};
+    use wraith_wallet_core::chain::ChainClient;
     use wraith_wallet_core::gsp::GspClient;
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_core::light;
@@ -66,6 +66,10 @@ mod unix {
     const GSP_ENV: &str = "WRAITHD_GSP";
     const WALLETS_DIR_ENV: &str = "WRAITHD_WALLETS_DIR";
     const NETWORK_ENV: &str = "WRAITHD_NETWORK";
+    /// Optional SOCKS5 proxy (e.g. `socks5h://127.0.0.1:9050` for Tor).
+    /// When set, all REST traffic to ghost-pay and ghost-gsp goes through it.
+    /// The persistent WebSocket session does **not** yet honour this proxy.
+    const TOR_PROXY_ENV: &str = "WRAITHD_TOR_PROXY";
 
     /// A `SessionToken` paired with the wallet name that produced it AND a live
     /// `SessionHandle` running the persistent authenticated WebSocket. Dropping
@@ -173,6 +177,7 @@ mod unix {
         let ghost_pay_urls = wraith_wallet_core::chain::GhostPayClient::parse_urls(&ghost_pay_raw);
         let gsp_raw = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
         let gsp_urls = wraith_wallet_core::gsp::GspClient::parse_urls(&gsp_raw);
+        let tor_proxy = std::env::var(TOR_PROXY_ENV).ok();
         let wallets_dir = default_wallets_dir();
         let network = std::env::var(NETWORK_ENV)
             .ok()
@@ -183,13 +188,25 @@ mod unix {
             gsp = ?gsp_urls,
             wallets_dir = %wallets_dir.display(),
             network = ?network,
+            tor_proxy = ?tor_proxy,
             "node endpoints + wallets dir + network configured",
         );
 
+        let chain = wraith_wallet_core::chain::GhostPayClient::with_urls_and_proxy(
+            ghost_pay_urls,
+            tor_proxy.as_deref(),
+        )
+        .map_err(|e| std::io::Error::other(format!("ghost-pay client: {e}")))?;
+        let gsp = wraith_wallet_core::gsp::GspClient::with_urls_and_proxy(
+            gsp_urls.clone(),
+            tor_proxy.as_deref(),
+        )
+        .map_err(|e| std::io::Error::other(format!("gsp client: {e}")))?;
+
         let state = Arc::new(DaemonState {
             started: Instant::now(),
-            chain: Arc::new(GhostPayClient::with_urls(ghost_pay_urls)),
-            gsp: GspClient::with_urls(gsp_urls.clone()),
+            chain: Arc::new(chain),
+            gsp,
             gsp_urls,
             wallets_dir,
             wallets: RwLock::new(HashMap::new()),

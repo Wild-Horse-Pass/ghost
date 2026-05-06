@@ -23,15 +23,38 @@ impl GhostPayClient {
     /// Construct from a list of base URLs. They will be tried in order on
     /// each request until one succeeds.
     pub fn with_urls(base_urls: Vec<String>) -> Self {
+        Self::with_urls_and_proxy(base_urls, None)
+            .expect("default reqwest client always builds")
+    }
+
+    /// Same as [`with_urls`] but routes every request through a SOCKS5 proxy
+    /// (e.g. `socks5h://127.0.0.1:9050` for Tor). Pass `None` for direct
+    /// connections.
+    ///
+    /// `socks5h://` (note the `h`) does DNS through the proxy — preferred
+    /// for Tor so hostnames don't leak to your local resolver.
+    pub fn with_urls_and_proxy(
+        base_urls: Vec<String>,
+        proxy_url: Option<&str>,
+    ) -> Result<Self, ChainError> {
         let urls = if base_urls.is_empty() {
             vec!["http://127.0.0.1:8800".to_string()]
         } else {
             base_urls
         };
-        Self {
-            base_urls: urls,
-            http: Client::new(),
+        let mut builder = Client::builder();
+        if let Some(p) = proxy_url {
+            let proxy = reqwest::Proxy::all(p)
+                .map_err(|e| ChainError::Transport(format!("proxy: {e}")))?;
+            builder = builder.proxy(proxy);
         }
+        let http = builder
+            .build()
+            .map_err(|e| ChainError::Transport(format!("http client: {e}")))?;
+        Ok(Self {
+            base_urls: urls,
+            http,
+        })
     }
 
     /// Parse a comma-separated URL list, trimming whitespace and dropping
