@@ -1028,7 +1028,7 @@ mod unix {
                         Response::WalletAuthInfo(WalletAuthInfoResponse {
                             wallet_id,
                             auth_public_key_hex,
-                            derivation_path: "m/352'/0'/0'/0/0".to_string(),
+                            derivation_path: auth::AUTH_DERIVATION_PATH.to_string(),
                         })
                     }
                     Err(message) => Response::Error(ErrorResponse { message }),

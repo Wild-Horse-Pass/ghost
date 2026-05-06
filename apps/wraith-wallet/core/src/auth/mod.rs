@@ -4,7 +4,9 @@
 //! used to authenticate to a Ghost Service Provider. Mirrors the shape consumed by
 //! `crates/ghost-gsp/src/auth/proof.rs` on the server.
 //!
-//! Auth keypair derivation path: `m/352'/0'/0'/0/0` (per ghost-gsp-proto/auth.rs).
+//! Auth keypair derivation path: `m/352'/0'/0'/2'` — matches `ghost-light-wallet`'s
+//! canonical layout (same seed across implementations → same wallet_id).
+//! The path comment in `ghost-gsp-proto/auth.rs` (`m/352'/0'/0'/0/0`) is stale.
 //! Wallet ID: `SHA256(x_only_pubkey)[0..16]` as hex.
 //! Signature: BIP-340 Schnorr over `tagged_hash("GhostGSP/proof", message)`.
 
@@ -14,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::keystore::{Keystore, KeystoreError};
 
-const AUTH_DERIVATION_PATH: &str = "m/352'/0'/0'/0/0";
+pub const AUTH_DERIVATION_PATH: &str = "m/352'/0'/0'/2'";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
