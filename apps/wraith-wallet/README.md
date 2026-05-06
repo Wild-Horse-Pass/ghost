@@ -87,6 +87,32 @@ subcommands.
 | `WRAITHD_TOR_PROXY`  | SOCKS5(h) URL for Tor                      | (unset = direct) |
 | `WRAITHD_IDLE_LOCK_SECS` | Auto-lock wallets after this many seconds of no IPC activity (0 = disabled) | `900` |
 
+## Release
+
+`scripts/release-wraith.sh` builds release binaries, generates shell completions,
+and packs everything into a versioned tarball:
+
+```sh
+bash scripts/release-wraith.sh
+# produces: dist/wraith-wallet-<version>-<host-triple>.tar.gz
+#         + dist/wraith-wallet-<version>-<host-triple>.tar.gz.sha256
+```
+
+The tarball layout:
+
+```
+wraith-wallet-<version>/
+  bin/{wraithd, wraith, wraith-gui}
+  completions/{wraith.bash, _wraith, wraith.fish}
+  README.md
+  LICENSE
+  BUILDINFO.txt    # version + triple + commit + rustc + build timestamp
+```
+
+Signing + auto-update tooling are Phase 15 follow-ups; the tarball above is
+what a release-engineer would run on a build host to produce a clean,
+immutable artifact ready for manual signing and upload.
+
 ## Phase status
 
 | # | Phase | Status |
