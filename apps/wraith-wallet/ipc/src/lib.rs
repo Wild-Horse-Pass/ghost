@@ -594,6 +594,44 @@ mod tests {
         }
     }
 
+    proptest::proptest! {
+        // Parsing the IPC envelope from arbitrary bytes must NEVER panic.
+        // The dispatch loop catches malformed JSON and returns an Error
+        // envelope, but only if the underlying parser doesn't blow up first.
+        // 4096 cases is plenty to catch obvious panics; raise via the
+        // PROPTEST_CASES env var for ad-hoc deeper sweeps.
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 4096,
+            .. proptest::test_runner::Config::default()
+        })]
+
+        #[test]
+        fn arbitrary_bytes_never_panic_envelope_request(bytes in proptest::collection::vec(0u8..=255, 0..1024)) {
+            let _ = serde_json::from_slice::<Envelope<Request>>(&bytes);
+        }
+
+        #[test]
+        fn arbitrary_strings_never_panic_envelope_request(s in ".{0,1024}") {
+            let _ = serde_json::from_str::<Envelope<Request>>(&s);
+        }
+
+        // Round-trip stability: anything we ourselves serialise must
+        // deserialise back to an equal value (via JSON-shape comparison,
+        // since Request doesn't impl PartialEq). This catches accidental
+        // schema drift introduced by serde annotations.
+        #[test]
+        fn well_formed_envelopes_round_trip(id in 0u64..=u64::MAX) {
+            let env = Envelope::new(id, Request::Health);
+            let s = serde_json::to_string(&env).unwrap();
+            let back: Envelope<Request> = serde_json::from_str(&s).unwrap();
+            proptest::prop_assert_eq!(back.id, id);
+            proptest::prop_assert_eq!(
+                serde_json::to_value(&env.payload).unwrap(),
+                serde_json::to_value(&back.payload).unwrap()
+            );
+        }
+    }
+
     #[test]
     fn passphrase_field_serialises_and_does_not_leak_into_other_variants() {
         // Sanity: a freshly-serialised WalletUnlock contains the passphrase
