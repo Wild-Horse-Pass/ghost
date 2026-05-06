@@ -177,6 +177,23 @@
       }
       .modal h3 { margin: 0; font-size: 14px; font-weight: 600; }
       .modal .row { justify-content: flex-end; }
+      .toast {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        background: #143822;
+        border: 1px solid #1f5d39;
+        color: #bbf7d0;
+        padding: 12px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        z-index: 50;
+        animation: toast-in 0.2s ease-out;
+      }
+      @keyframes toast-in {
+        from { transform: translateY(20px); opacity: 0; }
+        to   { transform: translateY(0);    opacity: 1; }
+      }
     </style>
   </head>
   <body>
@@ -285,6 +302,7 @@
 
     <script type="module">
       const { invoke } = window.__TAURI__.core;
+      const { listen } = window.__TAURI__.event;
       const $ = (s) => document.querySelector(s);
       const els = {
         status: $("#status"),
@@ -534,10 +552,42 @@
       $("#wallet-unlock-btn").addEventListener("click", doUnlock);
       $("#wallet-lock-btn").addEventListener("click", doLock);
 
+      function showToast(message) {
+        const t = document.createElement("div");
+        t.className = "toast";
+        t.textContent = message;
+        document.body.append(t);
+        setTimeout(() => t.remove(), 5000);
+      }
+
+      // Listen for live BIP-352 detections coming off the daemon's
+      // WatchPayments stream. Show a toast and refresh the balance + history
+      // panels so the user sees the new funds without re-clicking.
+      listen("wraith://payment-detected", (ev) => {
+        const p = ev.payload || {};
+        const sat = (p.amount_sats ?? "?").toString();
+        showToast(`Payment received: ${sat} sat (vout ${p.vout})`);
+        refreshBalance();
+        refreshHistory();
+      });
+      listen("wraith://watch-error", (ev) => {
+        const m = (ev.payload && ev.payload.message) || "watch error";
+        showErr(`watch: ${m}`);
+      });
+
       (async function init() {
         await refreshHealth();
         await refreshWalletList();
         await refreshBalance();
+        // Start the live subscription. Idempotent on the daemon side, so
+        // calling it on every init() is fine.
+        try {
+          await invoke("start_watch");
+        } catch (e) {
+          // Don't surface as a hard error — the user can still use the GUI
+          // in poll-only mode.
+          console.warn("start_watch failed:", e);
+        }
       })();
     </script>
   </body>

@@ -6,10 +6,29 @@
 //! React/Tauri/Vite migration can layer on top once the protocol surface
 //! is fleshed out.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use wraith_wallet_ipc::{default_socket_path, Envelope, Request, Response};
+
+/// Coordinates the long-lived watch task so we don't accidentally spawn a
+/// second one if the frontend calls `start_watch()` twice. Frontends that need
+/// per-window subscriptions should manage that themselves; this is a
+/// daemon-wide singleton from the Rust side's perspective.
+struct WatchState {
+    running: AtomicBool,
+}
+
+impl WatchState {
+    fn new() -> Self {
+        Self {
+            running: AtomicBool::new(false),
+        }
+    }
+}
 
 /// Tauri command: ask the daemon for its health and return a JSON-serializable
 /// summary. Used by the frontend to render a "daemon up" badge.
@@ -102,6 +121,90 @@ fn to_value(resp: &Response) -> Result<serde_json::Value, String> {
     serde_json::to_value(resp).map_err(|e| e.to_string())
 }
 
+/// Start the daemon watch subscription if it isn't already running.
+/// Forwards each `PaymentDetected` push to the frontend as a Tauri event
+/// named `wraith://payment-detected`. Idempotent — safe to call from
+/// multiple windows.
+#[tauri::command]
+async fn start_watch(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<WatchState>>,
+) -> Result<(), String> {
+    if state
+        .running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(()); // already running
+    }
+    let app = app.clone();
+    let state = state.inner().clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_watch_loop(&app).await {
+            // Surface the failure to the frontend so it can show a banner.
+            let _ = app.emit(
+                "wraith://watch-error",
+                serde_json::json!({ "message": e }),
+            );
+        }
+        state.running.store(false, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn run_watch_loop(app: &AppHandle) -> Result<(), String> {
+    let socket = default_socket_path();
+    let stream = UnixStream::connect(&socket)
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    let (reader, mut writer) = stream.into_split();
+    let mut line = serde_json::to_string(&Envelope::new(1, Request::WatchPayments))
+        .map_err(|e| format!("serialise: {e}"))?;
+    line.push('\n');
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+    let mut reader = BufReader::new(reader);
+    loop {
+        let mut buf = String::new();
+        match reader.read_line(&mut buf).await {
+            Ok(0) => return Ok(()), // daemon closed
+            Ok(_) => {
+                let env: Envelope<Response> = match serde_json::from_str(&buf) {
+                    Ok(e) => e,
+                    Err(_) => continue, // skip bad lines, keep stream alive
+                };
+                match env.payload {
+                    Response::Watching => {}
+                    Response::PaymentDetected(d) => {
+                        let _ = app.emit(
+                            "wraith://payment-detected",
+                            serde_json::json!({
+                                "txid": d.txid,
+                                "block_height": d.block_height,
+                                "vout": d.vout,
+                                "amount_sats": d.amount_sats,
+                                "k": d.k,
+                                "received_at": d.received_at,
+                            }),
+                        );
+                    }
+                    Response::Error(e) => return Err(e.message),
+                    _ => {}
+                }
+            }
+            Err(e) => return Err(format!("read: {e}")),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn run_watch_loop(_: &AppHandle) -> Result<(), String> {
+    Err("watch only supported on unix".to_string())
+}
+
 /// Send a request to the running wraithd daemon over its local IPC socket.
 /// Returns the parsed [`Response`] payload (without the JSON-RPC envelope).
 #[cfg(unix)]
@@ -149,6 +252,7 @@ pub fn run() {
         )
         .init();
     tauri::Builder::default()
+        .manage(Arc::new(WatchState::new()))
         .invoke_handler(tauri::generate_handler![
             daemon_health,
             daemon_doctor,
@@ -162,6 +266,7 @@ pub fn run() {
             light_receive,
             light_history,
             light_send,
+            start_watch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running wraith-wallet-gui");
