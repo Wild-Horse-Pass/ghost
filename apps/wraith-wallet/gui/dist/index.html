@@ -177,6 +177,34 @@
       }
       .modal h3 { margin: 0; font-size: 14px; font-weight: 600; }
       .modal .row { justify-content: flex-end; }
+      .modal.wide { min-width: 500px; max-width: 540px; }
+      .mnemonic {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 14px;
+        font-family: ui-monospace, "Menlo", "Consolas", monospace;
+        font-size: 13px;
+        line-height: 1.6;
+        word-spacing: 6px;
+        user-select: all;
+      }
+      .checkbox {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-size: 13px;
+        color: var(--fg-mute);
+      }
+      .step-hint {
+        color: var(--fg-mute);
+        font-size: 12px;
+        margin: 0;
+      }
+      .danger {
+        color: #fca5a5;
+        font-size: 12px;
+      }
       .toast {
         position: fixed;
         right: 20px;
@@ -202,6 +230,7 @@
       <select id="wallet-picker"></select>
       <button class="ghost" id="wallet-unlock-btn">unlock</button>
       <button class="ghost" id="wallet-lock-btn">lock</button>
+      <button class="ghost" id="wallet-new-btn">+ new</button>
       <div class="spacer"></div>
       <div class="status" id="status">connecting...</div>
     </header>
@@ -457,6 +486,189 @@
         }
       }
 
+      // Generic in-window modal builder. Returns a Promise that resolves to
+      // whatever value the caller passes to `done()` from inside `build()`.
+      // build() receives the modal root node + a `done(value)` callback.
+      function modal(build) {
+        return new Promise((resolve) => {
+          const root = $("#modal-root");
+          const bg = document.createElement("div");
+          bg.className = "modal-bg";
+          const m = document.createElement("div");
+          m.className = "modal wide";
+          bg.append(m);
+          root.append(bg);
+
+          function done(value) {
+            root.removeChild(bg);
+            resolve(value);
+          }
+          build(m, done);
+        });
+      }
+
+      // Step A: collect name + passphrase. Resolves to {name, passphrase} or null.
+      async function onboardingCollectCredentials(existingWallets) {
+        return modal((m, done) => {
+          const heading = existingWallets.length === 0
+            ? "Create your first wallet"
+            : "Create a new wallet";
+          const h = document.createElement("h3");
+          h.textContent = heading;
+          const hint = document.createElement("p");
+          hint.className = "step-hint";
+          hint.textContent =
+            "wraithd will generate a fresh BIP-39 mnemonic and encrypt it with " +
+            "Argon2id + AES-256-GCM under the passphrase you choose.";
+          const nameLabel = document.createElement("label");
+          nameLabel.textContent = "wallet name";
+          const name = document.createElement("input");
+          name.placeholder = "default";
+          const passLabel = document.createElement("label");
+          passLabel.textContent = "passphrase (min 12 chars)";
+          const pass = document.createElement("input");
+          pass.type = "password";
+          const confirmLabel = document.createElement("label");
+          confirmLabel.textContent = "confirm passphrase";
+          const confirm = document.createElement("input");
+          confirm.type = "password";
+          const errLine = document.createElement("div");
+          errLine.className = "danger";
+          const row = document.createElement("div");
+          row.className = "row";
+          const cancel = document.createElement("button");
+          cancel.className = "ghost";
+          cancel.textContent = "cancel";
+          const ok = document.createElement("button");
+          ok.className = "primary";
+          ok.textContent = "create";
+          row.append(cancel, ok);
+          m.append(h, hint, nameLabel, name, passLabel, pass, confirmLabel, confirm, errLine, row);
+          setTimeout(() => name.focus(), 0);
+
+          function submit() {
+            const n = name.value.trim() || "default";
+            if (existingWallets.some((w) => w.name === n)) {
+              errLine.textContent = `wallet "${n}" already exists`;
+              return;
+            }
+            if (pass.value.length < 12) {
+              errLine.textContent = "passphrase must be at least 12 characters";
+              return;
+            }
+            if (pass.value !== confirm.value) {
+              errLine.textContent = "passphrases don't match";
+              return;
+            }
+            done({ name: n, passphrase: pass.value });
+          }
+          cancel.addEventListener("click", () => done(null));
+          ok.addEventListener("click", submit);
+          [name, pass, confirm].forEach((el) => {
+            el.addEventListener("keydown", (e) => {
+              if (e.key === "Enter") submit();
+              if (e.key === "Escape") done(null);
+            });
+          });
+        });
+      }
+
+      // Step B: show the mnemonic and require explicit confirmation that the
+      // user has written it down. Resolves to true on confirm, false on cancel.
+      async function onboardingShowMnemonic(name, passphrase) {
+        let mnemonic;
+        try {
+          const v = await invoke("wallet_show_mnemonic", { name, passphrase });
+          mnemonic = v.mnemonic;
+        } catch (e) {
+          showErr(`reveal mnemonic: ${e}`);
+          return false;
+        }
+        return modal((m, done) => {
+          const h = document.createElement("h3");
+          h.textContent = "Back up your mnemonic";
+          const hint = document.createElement("p");
+          hint.className = "step-hint";
+          hint.textContent =
+            "Write these 12 words down on paper. Anyone with this mnemonic can spend " +
+            "all of your funds — wraithd cannot recover it for you.";
+          const seed = document.createElement("div");
+          seed.className = "mnemonic";
+          seed.textContent = mnemonic;
+          const copyBtn = document.createElement("button");
+          copyBtn.className = "ghost";
+          copyBtn.textContent = "copy to clipboard";
+          copyBtn.addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(mnemonic);
+              copyBtn.textContent = "copied — clear the clipboard once you've saved it";
+            } catch {
+              copyBtn.textContent = "clipboard access denied";
+            }
+          });
+          const checkbox = document.createElement("label");
+          checkbox.className = "checkbox";
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          const cbText = document.createElement("span");
+          cbText.textContent =
+            "I have written down all 12 words and stored them somewhere safe.";
+          checkbox.append(cb, cbText);
+          const row = document.createElement("div");
+          row.className = "row";
+          const cancel = document.createElement("button");
+          cancel.className = "ghost";
+          cancel.textContent = "later";
+          const ok = document.createElement("button");
+          ok.className = "primary";
+          ok.textContent = "continue";
+          ok.disabled = true;
+          cb.addEventListener("change", () => {
+            ok.disabled = !cb.checked;
+          });
+          row.append(cancel, ok);
+          m.append(h, hint, seed, copyBtn, checkbox, row);
+          cancel.addEventListener("click", () => done(false));
+          ok.addEventListener("click", () => done(true));
+        });
+      }
+
+      async function onboardingFlow() {
+        clearErr();
+        let existing = [];
+        try {
+          const v = await invoke("wallet_list");
+          existing = v.wallets || [];
+        } catch (e) {
+          showErr(String(e));
+          return;
+        }
+        const creds = await onboardingCollectCredentials(existing);
+        if (!creds) return;
+        try {
+          await invoke("wallet_create", { name: creds.name, passphrase: creds.passphrase });
+        } catch (e) {
+          showErr(`create wallet: ${e}`);
+          return;
+        }
+        const confirmed = await onboardingShowMnemonic(creds.name, creds.passphrase);
+        if (!confirmed) {
+          // User can come back to "wallet show-mnemonic" via the CLI; we don't
+          // delete the wallet on cancel, just leave it locked.
+          await refreshWalletList();
+          return;
+        }
+        try {
+          await invoke("wallet_unlock", { name: creds.name, passphrase: creds.passphrase });
+          await invoke("wallet_select", { name: creds.name });
+        } catch (e) {
+          showErr(`unlock new wallet: ${e}`);
+        }
+        await refreshWalletList();
+        await refreshBalance();
+        showToast(`Wallet "${creds.name}" ready.`);
+      }
+
       function passphraseDialog(walletName) {
         // Replaces window.prompt(): keystrokes are masked, the event loop
         // doesn't freeze (which prompt() does on some Linux WebKit builds),
@@ -551,6 +763,7 @@
       $("#doctor-refresh").addEventListener("click", refreshDoctor);
       $("#wallet-unlock-btn").addEventListener("click", doUnlock);
       $("#wallet-lock-btn").addEventListener("click", doLock);
+      $("#wallet-new-btn").addEventListener("click", () => onboardingFlow());
 
       function showToast(message) {
         const t = document.createElement("div");
@@ -578,6 +791,17 @@
       (async function init() {
         await refreshHealth();
         await refreshWalletList();
+        // Fresh install path: if no wallets exist yet, kick off the
+        // onboarding flow automatically. Already-set-up users hit refresh
+        // and balance instead.
+        try {
+          const v = await invoke("wallet_list");
+          if ((v.wallets || []).length === 0) {
+            await onboardingFlow();
+          }
+        } catch {
+          // wallet_list errored — let the rest of init surface the failure.
+        }
         await refreshBalance();
         // Start the live subscription. Idempotent on the daemon side, so
         // calling it on every init() is fine.

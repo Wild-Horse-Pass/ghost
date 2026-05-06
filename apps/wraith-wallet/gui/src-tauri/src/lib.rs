@@ -83,6 +83,15 @@ async fn wallet_create(name: String, passphrase: String) -> Result<serde_json::V
 }
 
 #[tauri::command]
+async fn wallet_show_mnemonic(
+    name: String,
+    passphrase: String,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletShowMnemonic { name, passphrase }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
 async fn light_balance() -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::LightBalance).await?;
     to_value(&resp)
@@ -262,6 +271,7 @@ pub fn run() {
             wallet_lock,
             wallet_select,
             wallet_create,
+            wallet_show_mnemonic,
             light_balance,
             light_receive,
             light_history,
