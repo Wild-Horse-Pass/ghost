@@ -369,6 +369,49 @@ async fn wallet_lifecycle_round_trip() {
     child.kill().await.ok();
 }
 
+/// Phase 9 Shroud relay: the configured WRAITHD_SHROUD_MAX_MS env var is
+/// reflected in the DaemonEnv response, and 0 disables it. Locks the wire
+/// shape — the GUI Settings panel and `wraith env` both rely on it.
+#[tokio::test]
+async fn shroud_max_ms_surfaces_in_daemon_env() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket = tmp.path().join("wraithd.sock");
+    let wallets = tmp.path().join("wallets");
+    std::fs::create_dir_all(&wallets).expect("mkdir wallets");
+    let mut child = Command::new(wraithd_binary())
+        .env("WRAITHD_SOCKET", &socket)
+        .env("WRAITHD_WALLETS_DIR", &wallets)
+        .env("WRAITHD_SHROUD_MAX_MS", "1234")
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn wraithd");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if socket.exists() {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert!(socket.exists(), "socket never appeared");
+
+    match rpc(&socket, 1, Request::DaemonEnv).await {
+        Response::DaemonEnv(e) => {
+            assert_eq!(
+                e.shroud_max_ms, 1234,
+                "WRAITHD_SHROUD_MAX_MS must round-trip through DaemonEnv"
+            );
+        }
+        other => panic!("expected DaemonEnv, got {other:?}"),
+    }
+
+    child.kill().await.ok();
+}
+
 /// Auto-lock: with WRAITHD_IDLE_LOCK_SECS=2 the daemon should lock all
 /// unlocked wallets after ~2s of no user-facing IPC activity. Health and
 /// DaemonEnv should NOT count as activity (would defeat the feature).
@@ -425,9 +468,10 @@ async fn idle_lock_locks_wallets_after_threshold() {
 
     // Sleep past the idle threshold without sending any IPC traffic. Health
     // wouldn't have counted, but to keep the test deterministic we just wait.
-    // Threshold = 2s, tick = min(30, 2/2) = 1s. 4s gives ~2 ticks of slack on
-    // a slow CI runner.
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    // Threshold = 2s, tick = min(30, 2/2) = 1s. 6s gives the auto-lock task
+    // ~4 chances to fire — generous slack for parallel-test CI hosts where
+    // the tokio scheduler doesn't always wake on the dot.
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     // WalletList now: should show the wallet as locked. (The list call itself
     // re-bumps the timer, but the auto-lock has already happened.)

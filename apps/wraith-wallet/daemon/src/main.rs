@@ -74,6 +74,12 @@ mod unix {
     const SOCKET_ENV: &str = "WRAITHD_SOCKET";
     const IDLE_LOCK_ENV: &str = "WRAITHD_IDLE_LOCK_SECS";
     const DEFAULT_IDLE_LOCK_SECS: u64 = 900;
+    /// Default outbound-broadcast shroud window in milliseconds. Matches the
+    /// 0–5 s window ghost-core uses for its Shroud relay layer; the wallet's
+    /// shroud sits one hop earlier in the path (wallet → ghost-pay) and
+    /// shares the same constant for symmetry.
+    const SHROUD_ENV: &str = "WRAITHD_SHROUD_MAX_MS";
+    const DEFAULT_SHROUD_MAX_MS: u64 = 5000;
 
     /// A `SessionToken` paired with the wallet name that produced it AND a live
     /// `SessionHandle` running the persistent authenticated WebSocket. Dropping
@@ -107,6 +113,10 @@ mod unix {
         last_activity: std::sync::atomic::AtomicU64,
         /// Idle threshold in seconds. If 0, auto-lock is disabled.
         idle_lock_secs: u64,
+        /// Phase 9 shroud relay: max ms the wallet holds a signed payment
+        /// before submitting to ghost-pay. Each send picks a uniform random
+        /// delay in [0, this]. 0 = disabled (broadcast immediately).
+        shroud_max_ms: u64,
     }
 
     fn default_wallets_dir() -> PathBuf {
@@ -228,6 +238,10 @@ mod unix {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_IDLE_LOCK_SECS);
+        let shroud_max_ms = std::env::var(SHROUD_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_SHROUD_MAX_MS);
 
         let state = Arc::new(DaemonState {
             started: Instant::now(),
@@ -244,6 +258,7 @@ mod unix {
             socket_path: socket_path.clone(),
             last_activity: std::sync::atomic::AtomicU64::new(now_unix_secs()),
             idle_lock_secs,
+            shroud_max_ms,
         });
 
         // Auto-lock task. Wakes every 30 s. If idle_lock_secs is 0 the task
@@ -543,6 +558,7 @@ mod unix {
         amount_sats: u64,
         mode_str: String,
         memo: Option<String>,
+        shroud_override_ms: Option<u64>,
     ) -> Result<LightSentResponse, String> {
         let mode = parse_payment_mode(&mode_str)?;
         let mode_label = format!("{mode}");
@@ -583,7 +599,23 @@ mod unix {
         let signature = wraith_wallet_core::auth::sign_data(&kp, &sighash_bytes);
         let pubkey = wraith_wallet_core::auth::xonly_pubkey_bytes(&kp);
 
-        // 4. SubmitSignedPayment.
+        // 4. Phase 9 Shroud: hold the signed payment for a uniform random
+        //    delay in [0, max] before submitting. Breaks the timing seam
+        //    between (wallet → ghost-pay HTTP) and (ghost-pay → P2P broadcast)
+        //    that an observer with both vantage points could otherwise
+        //    correlate to identify origin.
+        let max_ms = shroud_override_ms.unwrap_or(state.shroud_max_ms);
+        let shroud_delay_ms = shroud_pick_delay(max_ms);
+        if let Some(chosen) = shroud_delay_ms {
+            tracing::debug!(
+                shroud_max_ms = max_ms,
+                chosen_ms = chosen,
+                "shroud relay: holding signed payment before broadcast"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(chosen)).await;
+        }
+
+        // 5. SubmitSignedPayment.
         let result = session
             .handle
             .submit_signed_payment(
@@ -601,6 +633,7 @@ mod unix {
             amount_sats: prepared.amount_sats,
             fee_sats: prepared.fee_sats,
             mode: mode_label,
+            shroud_delay_ms,
         })
     }
 
@@ -780,6 +813,23 @@ mod unix {
             .get(&active)
             .ok_or_else(|| format!("active wallet '{active}' is not unlocked"))?;
         f(&active, ks)
+    }
+
+    /// Phase 9 Shroud helper: pick a uniform random delay in `[0, max_ms]`,
+    /// or `None` when shroud is disabled (`max_ms == 0`).
+    ///
+    /// Pulled out of `light_send` so the bound + disabled-path semantics can
+    /// be unit-tested without standing up a GSP mock.
+    pub(crate) fn shroud_pick_delay(max_ms: u64) -> Option<u64> {
+        if max_ms == 0 {
+            None
+        } else {
+            use rand::Rng;
+            // Inclusive on both ends — using `..=max_ms` lets a `max=1` config
+            // still produce both 0 and 1, which matters for tests that want
+            // to bound the delay from above.
+            Some(rand::thread_rng().gen_range(0..=max_ms))
+        }
     }
 
     fn now_unix_secs() -> u64 {
@@ -1038,6 +1088,7 @@ mod unix {
                     tor_proxy: state.tor_proxy.clone(),
                     socket_path: state.socket_path.display().to_string(),
                     idle_lock_secs: state.idle_lock_secs,
+                    shroud_max_ms: state.shroud_max_ms,
                 })
             }
             Request::LightHistory { limit, offset } => {
@@ -1078,7 +1129,8 @@ mod unix {
                 amount_sats,
                 mode,
                 memo,
-            } => match light_send(state, recipient, amount_sats, mode, memo).await {
+                shroud_max_ms,
+            } => match light_send(state, recipient, amount_sats, mode, memo, shroud_max_ms).await {
                 Ok(r) => Response::LightSent(r),
                 Err(message) => Response::Error(ErrorResponse { message }),
             },
@@ -1635,5 +1687,48 @@ mod unix {
         };
 
         Envelope::new(id, response)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::shroud_pick_delay;
+
+        #[test]
+        fn shroud_disabled_when_max_is_zero() {
+            for _ in 0..100 {
+                assert_eq!(shroud_pick_delay(0), None);
+            }
+        }
+
+        #[test]
+        fn shroud_delay_is_within_bounds() {
+            // Sample across a few distributions to make sure the gen_range
+            // semantics are inclusive on both ends and never overshoot.
+            for max in [1u64, 10, 100, 5000, 60_000] {
+                for _ in 0..256 {
+                    let d = shroud_pick_delay(max).expect("non-zero max yields Some");
+                    assert!(d <= max, "delay {d} must not exceed max {max}");
+                }
+            }
+        }
+
+        #[test]
+        fn shroud_max_one_emits_both_zero_and_one() {
+            // With max_ms=1 we sample {0, 1}; over 1000 picks both should
+            // appear. Probability of all-zeros or all-ones is 2 * 2^-1000.
+            let mut saw_zero = false;
+            let mut saw_one = false;
+            for _ in 0..1000 {
+                match shroud_pick_delay(1) {
+                    Some(0) => saw_zero = true,
+                    Some(1) => saw_one = true,
+                    other => panic!("unexpected delay: {other:?}"),
+                }
+                if saw_zero && saw_one {
+                    return;
+                }
+            }
+            panic!("did not see both 0 and 1 across 1000 samples");
+        }
     }
 }

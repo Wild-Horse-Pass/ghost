@@ -296,6 +296,10 @@
             <label>memo (optional)</label>
             <input id="send-memo" />
           </div>
+          <label class="checkbox">
+            <input type="checkbox" id="send-immediate" />
+            <span>broadcast immediately (skip shroud delay)</span>
+          </label>
           <div>
             <button class="primary" id="send-go">send</button>
           </div>
@@ -533,6 +537,9 @@
         const amount = Number(els.sendAmount.value || 0);
         const mode = els.sendMode.value;
         const memo = els.sendMemo.value || null;
+        const immediate = $("#send-immediate").checked;
+        // null = use daemon default, 0 = bypass shroud entirely.
+        const shroudMaxMs = immediate ? 0 : null;
         if (!recipient) {
           showErr("recipient is required");
           return;
@@ -579,19 +586,34 @@
           ok.addEventListener("click", () => done(true));
         });
         if (!confirmed) return;
+        // Surface the shroud wait visually so the user understands why "send"
+        // doesn't seem to do anything for a few seconds. Only show when shroud
+        // is actually going to fire (not when --immediate skipped it).
+        const shroudIndicator = immediate ? null : (() => {
+          const t = document.createElement("div");
+          t.className = "toast";
+          t.textContent = "Shrouding broadcast — holding payment for up to 5s…";
+          document.body.append(t);
+          return t;
+        })();
         try {
           const v = await invoke("light_send", {
             recipient,
             amountSats: amount,
             mode,
             memo,
+            shroudMaxMs,
           });
+          if (shroudIndicator) shroudIndicator.remove();
           els.sendOut.innerHTML = "";
           const ok = document.createElement("div");
           ok.className = "addr";
           ok.textContent = JSON.stringify(v, null, 2);
           els.sendOut.append(ok);
-          showToast(`Sent ${amount.toLocaleString()} sat`);
+          const tail = v.shroud_delay_ms != null
+            ? ` (shrouded ${v.shroud_delay_ms} ms)`
+            : "";
+          showToast(`Sent ${amount.toLocaleString()} sat${tail}`);
           showRaw("light_send", v);
           // Refresh balance + history so the user sees the deduction.
           refreshBalance();
@@ -599,6 +621,7 @@
             refreshHistory();
           }
         } catch (e) {
+          if (shroudIndicator) shroudIndicator.remove();
           showErr(String(e));
         }
       }
@@ -1335,6 +1358,10 @@
             v.idle_lock_secs === 0
               ? "disabled"
               : `${v.idle_lock_secs}s of idle then locks all wallets`;
+          const shroud =
+            v.shroud_max_ms === 0
+              ? "disabled (immediate broadcast)"
+              : `0–${v.shroud_max_ms} ms random delay before each send`;
           const rows = [
             ["network", v.network],
             ["socket", v.socket_path],
@@ -1343,6 +1370,7 @@
             ["gsp", (v.gsp_urls || []).join(", ")],
             ["tor proxy", v.tor_proxy || "(direct)"],
             ["idle lock", idle],
+            ["shroud", shroud],
           ];
           for (const [k, val] of rows) {
             const tr = document.createElement("tr");

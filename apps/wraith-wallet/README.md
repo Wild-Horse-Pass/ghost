@@ -118,6 +118,7 @@ subcommands.
 | `WRAITHD_NETWORK`    | `signet` / `mainnet` / `regtest`           | `signet` |
 | `WRAITHD_TOR_PROXY`  | SOCKS5(h) URL for Tor                      | (unset = direct) |
 | `WRAITHD_IDLE_LOCK_SECS` | Auto-lock wallets after this many seconds of no IPC activity (0 = disabled) | `900` |
+| `WRAITHD_SHROUD_MAX_MS` | Shroud relay window: hold each signed payment a uniform random delay in `[0, this]` ms before submitting to ghost-pay (0 = immediate) | `5000` |
 
 ## Release
 
@@ -159,7 +160,7 @@ immutable artifact ready for manual signing and upload.
 | 6  | Locks (prepare / confirm / jump)                 | done — CLI + GUI |
 | 7  | TAP / L2 payments                                | done — with confirm dialog |
 | 8  | Silent payments (BIP-352, candidate-tx push)     | done — with live `wraith light watch` |
-| 9  | Shroud relay                                     | pending |
+| 9  | Shroud relay                                     | done — wallet-side outbound-broadcast delay |
 | 10 | Tor transport (SOCKS5 → arti later)              | done (SOCKS5) |
 | 11 | Multi-node failover                              | done — comma-separated URLs |
 | 12 | Recovery (seed + checkpoint)                     | done — `wallet import` + `wallet restore` |
@@ -168,8 +169,8 @@ immutable artifact ready for manual signing and upload.
 | 15 | Distribution (signed installers, auto-update)    | tarball script — signing + update server pending |
 | 16 | Hardening (IPC fuzz, external review)            | proptest IPC fuzz + integration tests; external review pending |
 
-Tests as of latest: 39 across the wraith-wallet workspace
-(7 IPC + 28 core + 4 daemon), all green. Run them with
+Tests as of latest: 43 across the wraith-wallet workspace
+(7 IPC + 28 core + 8 daemon), all green. Run them with
 `cargo test -p wraith-wallet-{ipc,core,daemon} --tests`.
 
 ## Security model
@@ -184,6 +185,14 @@ Tests as of latest: 39 across the wraith-wallet workspace
 - Network boundary: the wallet only ever talks to `ghost-pay` (REST) and
   `ghost-gsp` (REST + WebSocket). It never reaches past them to a Bitcoin
   node directly. Tor routing optional via `WRAITHD_TOR_PROXY`.
+- Shroud relay (Phase 9): every signed payment is held for a uniform
+  random delay in `[0, WRAITHD_SHROUD_MAX_MS]` (default 5 s) before being
+  submitted to ghost-pay. Breaks the timing seam between the wallet's
+  HTTP POST and the eventual P2P broadcast that an observer with both
+  vantage points could otherwise correlate. Stacks with ghost-core's
+  own Shroud and ghost-pool's mesh-forwarding shroud — three independent
+  random delays compose. Bypass per-call with `wraith light send …
+  --immediate` or override with `--shroud-max-ms <ms>`.
 
 ## Hard rules
 

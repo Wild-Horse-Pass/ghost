@@ -88,11 +88,21 @@ pub enum Request {
     },
     /// Prepare + sign + submit an on-chain / L2 payment.
     /// Mode is one of: "ghostpay" (default), "wraith", "confidential".
+    ///
+    /// `shroud_max_ms` overrides the daemon's default outbound-broadcast
+    /// shroud window for *this one* payment.
+    ///
+    /// * `None` (default) — use the daemon-wide setting from `WRAITHD_SHROUD_MAX_MS`.
+    /// * `Some(0)` — bypass shroud, broadcast immediately. Use only when
+    ///   latency matters more than origin privacy.
+    /// * `Some(n)` — pick a uniform random delay in `[0, n]` ms.
     LightSend {
         recipient: String,
         amount_sats: u64,
         mode: String,
         memo: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shroud_max_ms: Option<u64>,
     },
     /// Create a new named wallet on disk and add it to the daemon's unlocked set.
     WalletCreate {
@@ -404,6 +414,10 @@ pub struct DaemonEnvResponse {
     pub socket_path: String,
     /// Idle-lock threshold in seconds; 0 means auto-lock is disabled.
     pub idle_lock_secs: u64,
+    /// Phase 9 Shroud relay: max wallet-side outbound-broadcast delay in
+    /// milliseconds. 0 means the wallet broadcasts immediately. The actual
+    /// delay applied to each send is uniform random in `[0, this]`.
+    pub shroud_max_ms: u64,
 }
 
 /// Result of `LightSend` (PreparePayment + sign + SubmitSignedPayment).
@@ -417,6 +431,11 @@ pub struct LightSentResponse {
     pub amount_sats: u64,
     pub fee_sats: u64,
     pub mode: String,
+    /// Actual milliseconds the wallet held the signed payment before
+    /// submitting to ghost-pay (Phase 9 Shroud relay). `None` when shroud
+    /// was disabled (max=0) for this send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shroud_delay_ms: Option<u64>,
 }
 
 /// Returned after creating a fresh wallet — the mnemonic is shown once for backup.
@@ -565,6 +584,7 @@ mod tests {
             Request::LightSend {
                 recipient: "bc1qxyz".into(),
                 amount_sats: 100_000,
+                shroud_max_ms: None,
                 mode: "onchain".into(),
                 memo: Some("test".into()),
             },
@@ -630,6 +650,7 @@ mod tests {
                 tor_proxy: None,
                 socket_path: "/tmp/wraithd.sock".into(),
                 idle_lock_secs: 900,
+                shroud_max_ms: 5000,
             }),
             Response::WalletList(WalletListResponse {
                 wallets: vec![WalletListEntry {

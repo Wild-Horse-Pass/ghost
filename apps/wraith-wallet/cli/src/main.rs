@@ -131,6 +131,15 @@ enum LightCommand {
         /// Optional memo, included with the payment metadata.
         #[arg(long)]
         memo: Option<String>,
+        /// Skip the wallet's outbound-broadcast shroud delay for this send.
+        /// Equivalent to --shroud-max-ms=0. Use only when latency matters
+        /// more than origin-timing privacy.
+        #[arg(long, conflicts_with = "shroud_max_ms")]
+        immediate: bool,
+        /// Override the daemon's default shroud window (ms) for this send.
+        /// `0` disables; `n` picks a uniform random delay in `[0, n]`.
+        #[arg(long, value_name = "MS")]
+        shroud_max_ms: Option<u64>,
     },
 }
 
@@ -303,11 +312,14 @@ mod unix {
                     amount_sats,
                     mode,
                     memo,
+                    immediate,
+                    shroud_max_ms,
                 } => Request::LightSend {
                     recipient,
                     amount_sats,
                     mode,
                     memo,
+                    shroud_max_ms: if immediate { Some(0) } else { shroud_max_ms },
                 },
             },
             Command::Locks { sub } => match sub {
@@ -585,6 +597,10 @@ mod unix {
                 println!("  amount:     {} sats", s.amount_sats);
                 println!("  fee:        {} sats", s.fee_sats);
                 println!("  mode:       {}", s.mode);
+                match s.shroud_delay_ms {
+                    Some(ms) => println!("  shroud:     held {ms} ms before broadcast"),
+                    None => println!("  shroud:     disabled (immediate)"),
+                }
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::LocksPrepared(r)) => {
@@ -774,6 +790,11 @@ mod unix {
                     println!("idle lock:    disabled");
                 } else {
                     println!("idle lock:    {}s", e.idle_lock_secs);
+                }
+                if e.shroud_max_ms == 0 {
+                    println!("shroud:       disabled (immediate broadcast)");
+                } else {
+                    println!("shroud:       0–{} ms random delay", e.shroud_max_ms);
                 }
                 std::process::ExitCode::SUCCESS
             }

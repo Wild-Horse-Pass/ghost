@@ -207,12 +207,14 @@ async fn light_send(
     amount_sats: u64,
     mode: String,
     memo: Option<String>,
+    shroud_max_ms: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::LightSend {
         recipient,
         amount_sats,
         mode,
         memo,
+        shroud_max_ms,
     })
     .await?;
     to_value(&resp)
