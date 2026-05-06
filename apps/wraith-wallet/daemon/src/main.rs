@@ -51,9 +51,9 @@ mod unix {
         spawn_session, GspError, SessionHandle, SessionPhase, SessionStatus,
     };
     use wraith_wallet_ipc::{
-        default_socket_path, ChainStatusResponse, DetectedPaymentEntry, DoctorCheck, DoctorResponse,
-        Envelope, ErrorResponse, GspAuthResponse, GspPingResponse, GspSessionStatusResponse,
-        HealthResponse, LightBalanceResponse, LightDetectedResponse,
+        default_socket_path, ChainStatusResponse, DaemonEnvResponse, DetectedPaymentEntry,
+        DoctorCheck, DoctorResponse, Envelope, ErrorResponse, GspAuthResponse, GspPingResponse,
+        GspSessionStatusResponse, HealthResponse, LightBalanceResponse, LightDetectedResponse,
         LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightSentResponse,
         LightUtxoEntry, LightUtxosResponse, LockEntry, LocksConfirmedResponse, LocksJumpedResponse,
         LocksListResponse, LocksPreparedResponse, Request, Response, WalletAuthInfoResponse,
@@ -86,6 +86,8 @@ mod unix {
         started: Instant,
         chain: Arc<dyn ChainClient>,
         gsp: GspClient,
+        /// Ghost-pay base URLs in failover order — surfaced to clients via DaemonEnv.
+        ghost_pay_urls: Vec<String>,
         /// GSP WS URLs in failover order — passed to spawn_session at gsp_auth time.
         gsp_urls: Vec<String>,
         /// Optional SOCKS5 proxy for both REST and WS (e.g. socks5h://127.0.0.1:9050).
@@ -96,6 +98,8 @@ mod unix {
         active: RwLock<Option<String>>,
         session: RwLock<Option<StoredSession>>,
         network: bitcoin::Network,
+        /// Absolute IPC socket path. Surfaced via DaemonEnv for diagnostics.
+        socket_path: PathBuf,
     }
 
     fn default_wallets_dir() -> PathBuf {
@@ -205,7 +209,7 @@ mod unix {
         );
 
         let chain = wraith_wallet_core::chain::GhostPayClient::with_urls_and_proxy(
-            ghost_pay_urls,
+            ghost_pay_urls.clone(),
             tor_proxy.as_deref(),
         )
         .map_err(|e| std::io::Error::other(format!("ghost-pay client: {e}")))?;
@@ -219,6 +223,7 @@ mod unix {
             started: Instant::now(),
             chain: Arc::new(chain),
             gsp,
+            ghost_pay_urls,
             gsp_urls,
             tor_proxy: tor_proxy.clone(),
             wallets_dir,
@@ -226,6 +231,7 @@ mod unix {
             active: RwLock::new(None),
             session: RwLock::new(None),
             network,
+            socket_path: socket_path.clone(),
         });
 
         if socket_path.exists() {
@@ -938,6 +944,24 @@ mod unix {
                           handled in handle_connection, not dispatch"
                     .to_string(),
             }),
+            Request::DaemonEnv => {
+                let network = match state.network {
+                    bitcoin::Network::Bitcoin => "mainnet",
+                    bitcoin::Network::Signet => "signet",
+                    bitcoin::Network::Testnet => "testnet",
+                    bitcoin::Network::Regtest => "regtest",
+                    _ => "unknown",
+                }
+                .to_string();
+                Response::DaemonEnv(DaemonEnvResponse {
+                    ghost_pay_urls: state.ghost_pay_urls.clone(),
+                    gsp_urls: state.gsp_urls.clone(),
+                    network,
+                    wallets_dir: state.wallets_dir.display().to_string(),
+                    tor_proxy: state.tor_proxy.clone(),
+                    socket_path: state.socket_path.display().to_string(),
+                })
+            }
             Request::LightHistory { limit, offset } => {
                 let guard = state.session.read().await;
                 match guard.as_ref() {

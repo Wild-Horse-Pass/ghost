@@ -243,6 +243,7 @@
       <button data-tab="identity">identity</button>
       <button data-tab="history">history</button>
       <button data-tab="doctor">doctor</button>
+      <button data-tab="settings">settings</button>
     </nav>
     <main>
       <div id="err" class="err hide"></div>
@@ -369,6 +370,23 @@
             <button class="ghost" id="doctor-refresh">re-run</button>
           </div>
           <div id="doctor-checks"></div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section data-view="settings" class="col hide">
+        <div class="panel col">
+          <p class="step-hint">
+            Read-only snapshot of the environment <code>wraithd</code> was started with.
+            To change anything here, set the matching <code>WRAITHD_*</code> env var
+            and restart the daemon.
+          </p>
+          <table>
+            <tbody id="settings-body"></tbody>
+          </table>
+          <div class="row">
+            <button class="ghost" id="settings-refresh">refresh</button>
+          </div>
         </div>
       </section>
 
@@ -918,6 +936,7 @@
         if (tab === "doctor") refreshDoctor();
         if (tab === "locks") refreshLocks();
         if (tab === "identity") refreshIdentity();
+        if (tab === "settings") refreshSettings();
       }
       document.querySelectorAll("nav button").forEach((b) => {
         b.addEventListener("click", () => selectTab(b.dataset.tab));
@@ -1224,6 +1243,33 @@
 
       $("#locks-prepare-btn").addEventListener("click", () => prepareLockFlow());
       $("#locks-refresh").addEventListener("click", () => refreshLocks());
+      async function refreshSettings() {
+        clearErr();
+        const tbody = $("#settings-body");
+        tbody.innerHTML = "";
+        try {
+          const v = await invoke("daemon_env");
+          const rows = [
+            ["network", v.network],
+            ["socket", v.socket_path],
+            ["wallets dir", v.wallets_dir],
+            ["ghost-pay", (v.ghost_pay_urls || []).join(", ")],
+            ["gsp", (v.gsp_urls || []).join(", ")],
+            ["tor proxy", v.tor_proxy || "(direct)"],
+          ];
+          for (const [k, val] of rows) {
+            const tr = document.createElement("tr");
+            tr.innerHTML =
+              `<th style="width:140px;text-align:left;">${k}</th>` +
+              `<td style="font-family:ui-monospace;font-size:12px;">${val ?? ""}</td>`;
+            tbody.append(tr);
+          }
+        } catch (e) {
+          showErr(`settings: ${e}`);
+        }
+      }
+      $("#settings-refresh").addEventListener("click", () => refreshSettings());
+
       $("#identity-refresh").addEventListener("click", () => refreshIdentity());
       $("#identity-gsp-auth").addEventListener("click", () => doGspAuth());
       $("#identity-register-scan").addEventListener("click", () => doRegisterScanKey());

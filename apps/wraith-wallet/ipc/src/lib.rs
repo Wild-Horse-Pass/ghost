@@ -54,6 +54,10 @@ pub enum Request {
     /// List BIP-352 silent-payment detections accumulated in the persistent
     /// session's local scanner since auth.
     LightDetected,
+    /// Read-only snapshot of the daemon's configured environment — the URLs
+    /// it talks to, the network it's bound to, where it stores wallets.
+    /// Useful for diagnostics + the GUI's settings panel.
+    DaemonEnv,
     /// Stream future BIP-352 silent-payment detections from the persistent
     /// session as they arrive. The daemon keeps the connection open and emits
     /// `Response::PaymentDetected` envelopes (id=0) until the client closes
@@ -138,6 +142,7 @@ pub enum Response {
     LightUtxos(LightUtxosResponse),
     LightHistory(LightHistoryResponse),
     LightDetected(LightDetectedResponse),
+    DaemonEnv(DaemonEnvResponse),
     /// Acknowledgement of a `Request::WatchPayments`. Subsequent
     /// `PaymentDetected` envelopes (id=0) on the same connection are pushes,
     /// not replies.
@@ -335,6 +340,24 @@ pub struct LocksJumpedResponse {
     pub jump_txid: Option<String>,
 }
 
+/// Read-only daemon environment snapshot. Maps 1:1 to the WRAITHD_* env vars
+/// that wraithd reads at startup, plus a couple of derived fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonEnvResponse {
+    /// Comma-separated list of ghost-pay URLs in failover order.
+    pub ghost_pay_urls: Vec<String>,
+    /// Comma-separated list of GSP WebSocket URLs in failover order.
+    pub gsp_urls: Vec<String>,
+    /// Network the daemon is bound to: `mainnet` / `signet` / `testnet` / `regtest`.
+    pub network: String,
+    /// Absolute path to the encrypted-keystore directory.
+    pub wallets_dir: String,
+    /// SOCKS5(h) proxy URL if Tor is enabled, otherwise `None`.
+    pub tor_proxy: Option<String>,
+    /// Absolute path to the IPC socket the daemon is listening on.
+    pub socket_path: String,
+}
+
 /// Result of `LightSend` (PreparePayment + sign + SubmitSignedPayment).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LightSentResponse {
@@ -492,6 +515,7 @@ mod tests {
             },
             Request::LocksList,
             Request::LocksPrepare { capacity_sats: 1_000_000 },
+            Request::DaemonEnv,
         ];
 
         for req in cases {
@@ -539,6 +563,14 @@ mod tests {
                 name: "restored".into(),
                 path: "/tmp/restored.json".into(),
             },
+            Response::DaemonEnv(DaemonEnvResponse {
+                ghost_pay_urls: vec!["http://127.0.0.1:8800".into()],
+                gsp_urls: vec!["ws://127.0.0.1:8900/ws/v1".into()],
+                network: "signet".into(),
+                wallets_dir: "/home/test/.wraith/wallets".into(),
+                tor_proxy: None,
+                socket_path: "/tmp/wraithd.sock".into(),
+            }),
             Response::WalletList(WalletListResponse {
                 wallets: vec![WalletListEntry {
                     name: "default".into(),

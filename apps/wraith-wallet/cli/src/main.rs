@@ -28,6 +28,8 @@ enum Command {
     Health,
     /// One-shot summary of daemon + ghost-pay + ghost-gsp + active wallet + session.
     Doctor,
+    /// Print the daemon's configured environment (URLs, network, paths).
+    Env,
     /// Chain backend (ghost-pay) commands.
     Chain {
         #[command(subcommand)]
@@ -270,6 +272,7 @@ mod unix {
         let request = match command {
             Command::Health => Request::Health,
             Command::Doctor => Request::Doctor,
+            Command::Env => Request::DaemonEnv,
             Command::Chain { sub } => match sub {
                 ChainCommand::Status => Request::ChainStatus,
             },
@@ -746,6 +749,19 @@ mod unix {
             Ok(Response::Error(e)) => {
                 eprintln!("wraithd error: {}", e.message);
                 std::process::ExitCode::FAILURE
+            }
+            Ok(Response::DaemonEnv(e)) => {
+                println!("network:      {}", e.network);
+                println!("socket:       {}", e.socket_path);
+                println!("wallets dir:  {}", e.wallets_dir);
+                println!("ghost-pay:    {}", e.ghost_pay_urls.join(", "));
+                println!("gsp:          {}", e.gsp_urls.join(", "));
+                if let Some(p) = &e.tor_proxy {
+                    println!("tor proxy:    {p}");
+                } else {
+                    println!("tor proxy:    (direct)");
+                }
+                std::process::ExitCode::SUCCESS
             }
             // Streaming variants are handled in run_watch() and never reach here.
             Ok(Response::Watching) | Ok(Response::PaymentDetected(_)) => {

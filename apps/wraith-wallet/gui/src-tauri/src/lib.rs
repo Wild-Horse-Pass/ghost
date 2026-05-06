@@ -129,6 +129,12 @@ async fn light_history(limit: u32, offset: u32) -> Result<serde_json::Value, Str
 }
 
 #[tauri::command]
+async fn daemon_env() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::DaemonEnv).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
 async fn wallet_ghost_id() -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::WalletGhostId).await?;
     to_value(&resp)
@@ -423,6 +429,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             daemon_health,
             daemon_doctor,
+            daemon_env,
             wallet_list,
             wallet_status,
             wallet_unlock,
