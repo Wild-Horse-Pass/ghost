@@ -761,6 +761,11 @@ mod unix {
                 } else {
                     println!("tor proxy:    (direct)");
                 }
+                if e.idle_lock_secs == 0 {
+                    println!("idle lock:    disabled");
+                } else {
+                    println!("idle lock:    {}s", e.idle_lock_secs);
+                }
                 std::process::ExitCode::SUCCESS
             }
             // Streaming variants are handled in run_watch() and never reach here.

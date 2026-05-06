@@ -356,6 +356,8 @@ pub struct DaemonEnvResponse {
     pub tor_proxy: Option<String>,
     /// Absolute path to the IPC socket the daemon is listening on.
     pub socket_path: String,
+    /// Idle-lock threshold in seconds; 0 means auto-lock is disabled.
+    pub idle_lock_secs: u64,
 }
 
 /// Result of `LightSend` (PreparePayment + sign + SubmitSignedPayment).
@@ -570,6 +572,7 @@ mod tests {
                 wallets_dir: "/home/test/.wraith/wallets".into(),
                 tor_proxy: None,
                 socket_path: "/tmp/wraithd.sock".into(),
+                idle_lock_secs: 900,
             }),
             Response::WalletList(WalletListResponse {
                 wallets: vec![WalletListEntry {

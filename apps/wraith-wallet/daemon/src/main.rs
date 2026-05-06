@@ -72,6 +72,8 @@ mod unix {
     /// The persistent WebSocket session does **not** yet honour this proxy.
     const TOR_PROXY_ENV: &str = "WRAITHD_TOR_PROXY";
     const SOCKET_ENV: &str = "WRAITHD_SOCKET";
+    const IDLE_LOCK_ENV: &str = "WRAITHD_IDLE_LOCK_SECS";
+    const DEFAULT_IDLE_LOCK_SECS: u64 = 900;
 
     /// A `SessionToken` paired with the wallet name that produced it AND a live
     /// `SessionHandle` running the persistent authenticated WebSocket. Dropping
@@ -100,6 +102,11 @@ mod unix {
         network: bitcoin::Network,
         /// Absolute IPC socket path. Surfaced via DaemonEnv for diagnostics.
         socket_path: PathBuf,
+        /// Unix-seconds timestamp of the last user-driven IPC request.
+        /// Health/Doctor/DaemonEnv don't bump this; everything else does.
+        last_activity: std::sync::atomic::AtomicU64,
+        /// Idle threshold in seconds. If 0, auto-lock is disabled.
+        idle_lock_secs: u64,
     }
 
     fn default_wallets_dir() -> PathBuf {
@@ -219,6 +226,11 @@ mod unix {
         )
         .map_err(|e| std::io::Error::other(format!("gsp client: {e}")))?;
 
+        let idle_lock_secs = std::env::var(IDLE_LOCK_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_IDLE_LOCK_SECS);
+
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             chain: Arc::new(chain),
@@ -232,7 +244,15 @@ mod unix {
             session: RwLock::new(None),
             network,
             socket_path: socket_path.clone(),
+            last_activity: std::sync::atomic::AtomicU64::new(now_unix_secs()),
+            idle_lock_secs,
         });
+
+        // Auto-lock task. Wakes every 30 s. If idle_lock_secs is 0 the task
+        // exits immediately — no overhead when the feature is disabled.
+        if idle_lock_secs > 0 {
+            tokio::spawn(idle_lock_task(state.clone()));
+        }
 
         if socket_path.exists() {
             tracing::warn!(
@@ -776,6 +796,67 @@ mod unix {
         f(&active, ks)
     }
 
+    fn now_unix_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Returns true iff this request counts as user-facing activity for the
+    /// idle-lock timer. Diagnostics (Health, Doctor, DaemonEnv) and the watch
+    /// stream itself don't reset the timer — they're either too quiet to
+    /// indicate a present user, or they're held open continuously and would
+    /// defeat the feature.
+    fn is_activity(req: &Request) -> bool {
+        !matches!(
+            req,
+            Request::Health | Request::Doctor | Request::DaemonEnv | Request::WatchPayments
+        )
+    }
+
+    /// Background task that locks every unlocked wallet after
+    /// `state.idle_lock_secs` of no user activity. Tick is
+    /// `min(30s, idle_lock_secs/2)` so short thresholds (mostly used in
+    /// tests) still fire roughly on time, while production-default 900s
+    /// thresholds keep the cheap 30s cadence.
+    async fn idle_lock_task(state: Arc<DaemonState>) {
+        let tick_secs = std::cmp::min(30, std::cmp::max(1, state.idle_lock_secs / 2));
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let last = state.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+            let now = now_unix_secs();
+            let idle = now.saturating_sub(last);
+            if idle < state.idle_lock_secs {
+                continue;
+            }
+            // Decide what to lock outside the write guard so we don't drop
+            // active references while iterating. Then drain.
+            let names: Vec<String> = {
+                let map = state.wallets.read().await;
+                map.keys().cloned().collect()
+            };
+            if names.is_empty() {
+                continue;
+            }
+            tracing::info!(
+                idle_secs = idle,
+                wallets = names.len(),
+                "idle threshold exceeded; auto-locking wallets"
+            );
+            let mut wallets = state.wallets.write().await;
+            for n in &names {
+                wallets.remove(n);
+            }
+            drop(wallets);
+            *state.active.write().await = None;
+            // Active GSP session belonged to one of those wallets; drop it.
+            *state.session.write().await = None;
+        }
+    }
+
     async fn dispatch(line: &str, state: &Arc<DaemonState>) -> Envelope<Response> {
         let parsed: Result<Envelope<Request>, _> = serde_json::from_str(line);
         let (id, request) = match parsed {
@@ -789,6 +870,15 @@ mod unix {
                 );
             }
         };
+
+        // Bump the idle-lock timer for user-facing requests. Diagnostics
+        // (Health, Doctor, DaemonEnv) and WatchPayments don't count.
+        if is_activity(&request) {
+            state.last_activity.store(
+                now_unix_secs(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
 
         let response = match request {
             Request::Health => Response::Health(HealthResponse {
@@ -960,6 +1050,7 @@ mod unix {
                     wallets_dir: state.wallets_dir.display().to_string(),
                     tor_proxy: state.tor_proxy.clone(),
                     socket_path: state.socket_path.display().to_string(),
+                    idle_lock_secs: state.idle_lock_secs,
                 })
             }
             Request::LightHistory { limit, offset } => {

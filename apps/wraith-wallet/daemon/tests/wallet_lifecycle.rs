@@ -261,6 +261,90 @@ async fn wallet_lifecycle_round_trip() {
     child.kill().await.ok();
 }
 
+/// Auto-lock: with WRAITHD_IDLE_LOCK_SECS=2 the daemon should lock all
+/// unlocked wallets after ~2s of no user-facing IPC activity. Health and
+/// DaemonEnv should NOT count as activity (would defeat the feature).
+#[tokio::test]
+async fn idle_lock_locks_wallets_after_threshold() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket = tmp.path().join("wraithd.sock");
+    let wallets = tmp.path().join("wallets");
+    std::fs::create_dir_all(&wallets).expect("mkdir wallets");
+    let mut child = Command::new(wraithd_binary())
+        .env("WRAITHD_SOCKET", &socket)
+        .env("WRAITHD_WALLETS_DIR", &wallets)
+        .env("WRAITHD_IDLE_LOCK_SECS", "2")
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn wraithd");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if socket.exists() {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert!(socket.exists(), "socket never appeared");
+
+    // Create the wallet — counts as activity, so the timer starts now.
+    let pass = "idle-test-passphrase-aaaaaa".to_string();
+    match rpc(
+        &socket,
+        1,
+        Request::WalletCreate {
+            name: "idle".into(),
+            passphrase: pass.clone(),
+        },
+    )
+    .await
+    {
+        Response::WalletCreate(_) => {}
+        other => panic!("create: {other:?}"),
+    }
+
+    // Confirm unlocked.
+    match rpc(&socket, 2, Request::WalletList).await {
+        Response::WalletList(l) => {
+            let e = l.wallets.iter().find(|w| w.name == "idle").unwrap();
+            assert!(e.unlocked, "fresh wallet must be unlocked");
+        }
+        other => panic!("list: {other:?}"),
+    }
+
+    // Sleep past the idle threshold without sending any IPC traffic. Health
+    // wouldn't have counted, but to keep the test deterministic we just wait.
+    // Threshold = 2s, tick = min(30, 2/2) = 1s. 4s gives ~2 ticks of slack on
+    // a slow CI runner.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // WalletList now: should show the wallet as locked. (The list call itself
+    // re-bumps the timer, but the auto-lock has already happened.)
+    match rpc(&socket, 3, Request::WalletList).await {
+        Response::WalletList(l) => {
+            let e = l
+                .wallets
+                .iter()
+                .find(|w| w.name == "idle")
+                .expect("idle still listed");
+            assert!(
+                !e.unlocked,
+                "expected wallet to be auto-locked after idle threshold"
+            );
+            assert!(
+                !e.active,
+                "active slot should clear when the active wallet auto-locks"
+            );
+        }
+        other => panic!("list: {other:?}"),
+    }
+
+    child.kill().await.ok();
+}
+
 /// WatchPayments before any gsp_auth must return a clean Error envelope on
 /// the same connection and not panic the daemon. Pinned because the streaming
 /// code path is structurally different from the request/response dispatch and

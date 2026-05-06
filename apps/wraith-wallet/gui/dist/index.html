@@ -1249,6 +1249,10 @@
         tbody.innerHTML = "";
         try {
           const v = await invoke("daemon_env");
+          const idle =
+            v.idle_lock_secs === 0
+              ? "disabled"
+              : `${v.idle_lock_secs}s of idle then locks all wallets`;
           const rows = [
             ["network", v.network],
             ["socket", v.socket_path],
@@ -1256,6 +1260,7 @@
             ["ghost-pay", (v.ghost_pay_urls || []).join(", ")],
             ["gsp", (v.gsp_urls || []).join(", ")],
             ["tor proxy", v.tor_proxy || "(direct)"],
+            ["idle lock", idle],
           ];
           for (const [k, val] of rows) {
             const tr = document.createElement("tr");

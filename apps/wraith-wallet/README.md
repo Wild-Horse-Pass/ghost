@@ -85,6 +85,7 @@ subcommands.
 | `WRAITHD_GSP`        | GSP WebSocket URL(s), comma-separated      | `ws://127.0.0.1:8900/ws/v1` |
 | `WRAITHD_NETWORK`    | `signet` / `mainnet` / `regtest`           | `signet` |
 | `WRAITHD_TOR_PROXY`  | SOCKS5(h) URL for Tor                      | (unset = direct) |
+| `WRAITHD_IDLE_LOCK_SECS` | Auto-lock wallets after this many seconds of no IPC activity (0 = disabled) | `900` |
 
 ## Phase status
 
