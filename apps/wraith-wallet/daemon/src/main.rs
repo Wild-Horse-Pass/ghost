@@ -282,18 +282,105 @@ mod unix {
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let response = dispatch(&line, &state).await;
-            let mut out = match serde_json::to_string(&response) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(?e, "failed to serialise response");
-                    continue;
+            // Streaming subscriptions short-circuit the request/response cycle:
+            // we ack on the original id, then keep writing pushes (id=0) until
+            // the client drops. After the stream ends the connection is done —
+            // we don't try to read more requests on the same connection.
+            if let Ok(env) = serde_json::from_str::<Envelope<Request>>(&line) {
+                if matches!(env.payload, Request::WatchPayments) {
+                    let ack: Envelope<Response> = Envelope::new(env.id, Response::Watching);
+                    if !write_envelope(&mut writer, &ack).await {
+                        return;
+                    }
+                    run_watch_payments(writer, lines, state.clone()).await;
+                    return;
                 }
-            };
-            out.push('\n');
-            if let Err(e) = writer.write_all(out.as_bytes()).await {
-                tracing::warn!(?e, "client write failed");
+            }
+            let response = dispatch(&line, &state).await;
+            if !write_envelope(&mut writer, &response).await {
                 return;
+            }
+        }
+    }
+
+    async fn write_envelope(
+        writer: &mut tokio::net::unix::OwnedWriteHalf,
+        env: &Envelope<Response>,
+    ) -> bool {
+        let mut out = match serde_json::to_string(env) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(?e, "failed to serialise response");
+                return true; // Skip this one; keep the connection open.
+            }
+        };
+        out.push('\n');
+        if let Err(e) = writer.write_all(out.as_bytes()).await {
+            tracing::warn!(?e, "client write failed");
+            return false;
+        }
+        true
+    }
+
+    /// Streaming WatchPayments handler. Subscribes to the active session's
+    /// payment-detection broadcast and forwards each event as a push envelope
+    /// (id=0). Exits when the client disconnects, the active session is
+    /// rotated out, or the broadcast channel is closed.
+    async fn run_watch_payments(
+        mut writer: tokio::net::unix::OwnedWriteHalf,
+        mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        state: Arc<DaemonState>,
+    ) {
+        let mut rx = match state.session.read().await.as_ref() {
+            Some(s) => s.handle.subscribe_payments(),
+            None => {
+                let err: Envelope<Response> = Envelope::new(
+                    0,
+                    Response::Error(ErrorResponse {
+                        message: "no active session; call gsp_auth first".to_string(),
+                    }),
+                );
+                let _ = write_envelope(&mut writer, &err).await;
+                return;
+            }
+        };
+        loop {
+            tokio::select! {
+                read = lines.next_line() => {
+                    // The client closed (or sent another request — we don't accept
+                    // anything else on a watch connection; just hang up).
+                    match read {
+                        Ok(Some(_)) => return,
+                        _ => return,
+                    }
+                }
+                event = rx.recv() => {
+                    match event {
+                        Ok(d) => {
+                            let push: Envelope<Response> = Envelope::new(
+                                0,
+                                Response::PaymentDetected(DetectedPaymentEntry {
+                                    txid: d.txid,
+                                    block_height: d.block_height,
+                                    vout: d.vout,
+                                    amount_sats: d.amount_sats,
+                                    k: d.k,
+                                    received_at: d.received_at,
+                                }),
+                            );
+                            if !write_envelope(&mut writer, &push).await {
+                                return;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(missed = n, "watch_payments lagged; client should resync via light_detected");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            // Session was rotated out — close the watch.
+                            return;
+                        }
+                    }
+                }
             }
         }
     }
@@ -835,6 +922,14 @@ mod unix {
                     }
                 }
             }
+            // Streaming subscription. handle_connection intercepts this before
+            // dispatch; reaching the dispatcher means the connection wasn't
+            // running our normal IPC loop. Fail loudly so misuse is obvious.
+            Request::WatchPayments => Response::Error(ErrorResponse {
+                message: "watch_payments must be sent on a fresh connection — \
+                          handled in handle_connection, not dispatch"
+                    .to_string(),
+            }),
             Request::LightHistory { limit, offset } => {
                 let guard = state.session.read().await;
                 match guard.as_ref() {

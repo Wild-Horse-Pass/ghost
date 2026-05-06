@@ -91,6 +91,9 @@ enum LightCommand {
     /// Show BIP-352 silent-payment matches detected by the persistent
     /// session's local scanner since `wraith gsp auth` ran.
     Detected,
+    /// Stream BIP-352 detections live as they arrive. Holds the connection
+    /// open and prints each detection on a new line. Ctrl-C to exit.
+    Watch,
     /// Show the active wallet's transaction history.
     History {
         /// Maximum number of transactions to return.
@@ -232,6 +235,12 @@ mod unix {
             }
         }
 
+        // Streaming subcommand: handed off to its own code path so we don't
+        // try to render it as a single Response.
+        if let Command::Light { sub: LightCommand::Watch } = &command {
+            return run_watch(json).await;
+        }
+
         let request = match command {
             Command::Health => Request::Health,
             Command::Doctor => Request::Doctor,
@@ -254,6 +263,7 @@ mod unix {
                     Request::LightHistory { limit, offset }
                 }
                 LightCommand::Detected => Request::LightDetected,
+                LightCommand::Watch => unreachable!("Watch handled above"),
                 LightCommand::Send {
                     recipient,
                     amount_sats,
@@ -688,6 +698,11 @@ mod unix {
                 eprintln!("wraithd error: {}", e.message);
                 std::process::ExitCode::FAILURE
             }
+            // Streaming variants are handled in run_watch() and never reach here.
+            Ok(Response::Watching) | Ok(Response::PaymentDetected(_)) => {
+                eprintln!("wraith: unexpected streaming variant on a one-shot request");
+                std::process::ExitCode::FAILURE
+            }
             Err(e) => {
                 eprintln!("wraith: {e}");
                 std::process::ExitCode::FAILURE
@@ -833,5 +848,96 @@ mod unix {
         let envelope: Envelope<Response> = serde_json::from_str(&response_line)
             .map_err(|e| format!("malformed response: {e}"))?;
         Ok(envelope.payload)
+    }
+
+    /// Streaming subscriber for `Request::WatchPayments`. Connects, sends the
+    /// request, expects a `Response::Watching` ack, then prints each
+    /// `Response::PaymentDetected` line until the daemon closes the stream
+    /// (or the user hits Ctrl-C). With `--json`, every line is the raw
+    /// envelope JSON exactly as the daemon emits it.
+    pub(crate) async fn run_watch(json: bool) -> std::process::ExitCode {
+        let socket = default_socket_path();
+        let stream = match UnixStream::connect(&socket).await {
+            Ok(s) => s,
+            Err(e) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"error": {"message": format!("connect: {e}")}})
+                    );
+                } else {
+                    eprintln!(
+                        "wraith: could not connect to wraithd at {}: {e}",
+                        socket.display()
+                    );
+                }
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+        let (reader, mut writer) = stream.into_split();
+        let req = Envelope::new(1, Request::WatchPayments);
+        let mut line = match serde_json::to_string(&req) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("wraith: serialise: {e}");
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+        line.push('\n');
+        if let Err(e) = writer.write_all(line.as_bytes()).await {
+            eprintln!("wraith: write: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+        let mut reader = BufReader::new(reader);
+        if !json {
+            eprintln!("wraith: watching for silent-payment detections (Ctrl-C to stop)");
+        }
+        loop {
+            let mut buf = String::new();
+            match reader.read_line(&mut buf).await {
+                Ok(0) => return std::process::ExitCode::SUCCESS,
+                Ok(_) => {
+                    if json {
+                        print!("{buf}");
+                        continue;
+                    }
+                    let env: Envelope<Response> = match serde_json::from_str(&buf) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            eprintln!("wraith: malformed push: {e}; raw={buf}");
+                            continue;
+                        }
+                    };
+                    match env.payload {
+                        Response::Watching => {} // ack — keep waiting
+                        Response::PaymentDetected(d) => {
+                            let height = d
+                                .block_height
+                                .map(|h| h.to_string())
+                                .unwrap_or_else(|| "—".to_string());
+                            let amt = d
+                                .amount_sats
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|| "?".to_string());
+                            println!(
+                                "{} sat  height={}  vout={}  k={}  txid={}",
+                                amt, height, d.vout, d.k, d.txid
+                            );
+                        }
+                        Response::Error(e) => {
+                            eprintln!("wraith: daemon error: {}", e.message);
+                            return std::process::ExitCode::FAILURE;
+                        }
+                        other => {
+                            eprintln!("wraith: unexpected push variant: {other:?}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("wraith: read: {e}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+        }
     }
 }

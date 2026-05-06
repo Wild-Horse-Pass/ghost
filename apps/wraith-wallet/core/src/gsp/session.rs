@@ -45,7 +45,7 @@ pub struct JumpRequestedResult {
     pub lock_id: String,
     pub jump_txid: Option<String>,
 }
-use tokio::sync::{mpsc, oneshot, watch, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, RwLock};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -101,12 +101,21 @@ pub struct SessionHandle {
     status: Arc<RwLock<SessionStatus>>,
     cmd_tx: mpsc::Sender<SessionCommand>,
     shutdown_tx: watch::Sender<bool>,
+    events_tx: broadcast::Sender<DetectedPayment>,
     task: Option<JoinHandle<()>>,
 }
 
 impl SessionHandle {
     pub async fn snapshot(&self) -> SessionStatus {
         self.status.read().await.clone()
+    }
+
+    /// Subscribe to a live stream of newly-detected silent payments. Each
+    /// receiver gets every event published after it subscribes; lagging
+    /// receivers will see RecvError::Lagged and are expected to recover by
+    /// re-snapshotting `SessionStatus.detections`.
+    pub fn subscribe_payments(&self) -> broadcast::Receiver<DetectedPayment> {
+        self.events_tx.subscribe()
     }
 
     /// Issue `GetUtxos` over the persistent session and await the matching `Utxos` reply.
@@ -396,6 +405,10 @@ pub fn spawn_session(
     let status = Arc::new(RwLock::new(SessionStatus::default()));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (cmd_tx, cmd_rx) = mpsc::channel::<SessionCommand>(32);
+    // 256 is roomy: even at >100 detections/sec a slow IPC client has 2.5s
+    // before the broadcast layer drops the oldest. We surface that via
+    // RecvError::Lagged so the client can resync from `LightDetected`.
+    let (events_tx, _) = broadcast::channel::<DetectedPayment>(256);
 
     let task = tokio::spawn(run(
         ws_urls,
@@ -403,6 +416,7 @@ pub fn spawn_session(
         scan_keys,
         tor_proxy,
         status.clone(),
+        events_tx.clone(),
         shutdown_rx,
         cmd_rx,
     ));
@@ -411,6 +425,7 @@ pub fn spawn_session(
         status,
         cmd_tx,
         shutdown_tx,
+        events_tx,
         task: Some(task),
     }
 }
@@ -505,6 +520,7 @@ async fn run(
     scan_keys: Option<GhostKeys>,
     tor_proxy: Option<String>,
     status: Arc<RwLock<SessionStatus>>,
+    events_tx: broadcast::Sender<DetectedPayment>,
     mut shutdown: watch::Receiver<bool>,
     mut cmd_rx: mpsc::Receiver<SessionCommand>,
 ) {
@@ -614,6 +630,7 @@ async fn run(
             &mut cmd_rx,
             &mut pending,
             scan_keys.as_ref(),
+            &events_tx,
         )
         .await;
 
@@ -670,6 +687,7 @@ enum MainLoopOutcome {
     Disconnect(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_main_loop(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -680,6 +698,7 @@ async fn run_main_loop(
     cmd_rx: &mut mpsc::Receiver<SessionCommand>,
     pending: &mut VecDeque<PendingReply>,
     scan_keys: Option<&GhostKeys>,
+    events_tx: &broadcast::Sender<DetectedPayment>,
 ) -> MainLoopOutcome {
     loop {
         tokio::select! {
@@ -872,7 +891,7 @@ async fn run_main_loop(
                         continue;
                     }
                 };
-                handle_message(parsed, status, pending, scan_keys).await;
+                handle_message(parsed, status, pending, scan_keys, events_tx).await;
             }
         }
     }
@@ -883,6 +902,7 @@ async fn handle_message(
     status: &Arc<RwLock<SessionStatus>>,
     pending: &mut VecDeque<PendingReply>,
     scan_keys: Option<&GhostKeys>,
+    events_tx: &broadcast::Sender<DetectedPayment>,
 ) {
     match msg {
         // Push: balance update.
@@ -1159,6 +1179,12 @@ async fn handle_message(
                         ?block_height,
                         "gsp session: silent-payment match detected"
                     );
+                    // Fan out to live subscribers BEFORE we drop the values into
+                    // the status cache. send() returning Err just means no live
+                    // subscribers — fine, the detection is still cached.
+                    for d in &detected {
+                        let _ = events_tx.send(d.clone());
+                    }
                     let mut s = status.write().await;
                     s.detections.extend(detected);
                 }

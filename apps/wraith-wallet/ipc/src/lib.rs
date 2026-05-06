@@ -54,6 +54,12 @@ pub enum Request {
     /// List BIP-352 silent-payment detections accumulated in the persistent
     /// session's local scanner since auth.
     LightDetected,
+    /// Stream future BIP-352 silent-payment detections from the persistent
+    /// session as they arrive. The daemon keeps the connection open and emits
+    /// `Response::PaymentDetected` envelopes (id=0) until the client closes
+    /// the socket. The initial reply on the request's own id is an
+    /// acknowledgement (`Response::Watching`).
+    WatchPayments,
     /// List the active wallet's Ghost Locks via the persistent GSP session.
     LocksList,
     /// Ask GSP to prepare a new ghost lock for the active wallet.
@@ -123,6 +129,12 @@ pub enum Response {
     LightUtxos(LightUtxosResponse),
     LightHistory(LightHistoryResponse),
     LightDetected(LightDetectedResponse),
+    /// Acknowledgement of a `Request::WatchPayments`. Subsequent
+    /// `PaymentDetected` envelopes (id=0) on the same connection are pushes,
+    /// not replies.
+    Watching,
+    /// Unsolicited push: a new BIP-352 detection. Daemon sends with `id=0`.
+    PaymentDetected(DetectedPaymentEntry),
     LocksList(LocksListResponse),
     LocksPrepared(LocksPreparedResponse),
     LocksConfirmed(LocksConfirmedResponse),
