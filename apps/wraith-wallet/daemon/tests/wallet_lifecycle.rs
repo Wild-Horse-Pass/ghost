@@ -256,6 +256,106 @@ async fn wallet_lifecycle_round_trip() {
         other => panic!("expected WalletList, got {other:?}"),
     }
 
+    // 10. Deterministic identity primitives — these are pure derivations from
+    //     the seed, so the same import on a fresh daemon must yield the same
+    //     bytes. Lock the contract.
+    let derive = match rpc(
+        &socket,
+        11,
+        Request::WalletDerive {
+            path: "m/86'/531'/0'/0/0".into(),
+        },
+    )
+    .await
+    {
+        Response::WalletDerive(r) => r,
+        other => panic!("expected WalletDerive, got {other:?}"),
+    };
+    assert_eq!(derive.path, "m/86'/531'/0'/0/0");
+    assert_eq!(
+        derive.public_key_hex.len(),
+        66,
+        "compressed sec1 = 33 bytes hex"
+    );
+    let auth = match rpc(&socket, 12, Request::WalletAuthInfo).await {
+        Response::WalletAuthInfo(r) => r,
+        other => panic!("expected WalletAuthInfo, got {other:?}"),
+    };
+    assert_eq!(auth.wallet_id.len(), 32, "wallet_id = 16 bytes hex");
+    assert_eq!(
+        auth.auth_public_key_hex.len(),
+        64,
+        "x-only auth pubkey = 32 bytes hex"
+    );
+    let ghost = match rpc(&socket, 13, Request::WalletGhostId).await {
+        Response::WalletGhostId(r) => r,
+        other => panic!("expected WalletGhostId, got {other:?}"),
+    };
+    assert!(!ghost.ghost_id.is_empty(), "ghost_id must be set");
+    assert_eq!(ghost.scan_public_key_hex.len(), 66);
+
+    // 11. Checkpoint export + restore. The encrypted file is portable: the
+    //     restored wallet decrypts under the same passphrase and yields the
+    //     same auth_info.
+    let backup_path = _tmp.path().join("alpha.bak");
+    match rpc(
+        &socket,
+        14,
+        Request::WalletExport {
+            name: "alpha".into(),
+            to_path: backup_path.display().to_string(),
+        },
+    )
+    .await
+    {
+        Response::WalletExported { name, bytes, .. } => {
+            assert_eq!(name, "alpha");
+            assert!(bytes > 0, "export must write a non-empty file");
+        }
+        other => panic!("expected WalletExported, got {other:?}"),
+    }
+    assert!(backup_path.exists(), "backup file written");
+    match rpc(
+        &socket,
+        15,
+        Request::WalletRestore {
+            name: "gamma".into(),
+            from_path: backup_path.display().to_string(),
+        },
+    )
+    .await
+    {
+        Response::WalletRestored { name, .. } => assert_eq!(name, "gamma"),
+        other => panic!("expected WalletRestored, got {other:?}"),
+    }
+    // Unlock under the same passphrase the original used; auth_info must match.
+    match rpc(
+        &socket,
+        16,
+        Request::WalletUnlock {
+            name: "gamma".into(),
+            passphrase: pass.clone(),
+        },
+    )
+    .await
+    {
+        Response::WalletUnlocked => {}
+        other => panic!("unlock restored wallet: {other:?}"),
+    }
+    match rpc(&socket, 17, Request::WalletSelect { name: "gamma".into() }).await {
+        Response::WalletSelected { .. } => {}
+        other => panic!("select gamma: {other:?}"),
+    }
+    match rpc(&socket, 18, Request::WalletAuthInfo).await {
+        Response::WalletAuthInfo(r) => {
+            assert_eq!(
+                r.auth_public_key_hex, auth.auth_public_key_hex,
+                "checkpoint round-trip must preserve auth identity"
+            );
+        }
+        other => panic!("expected WalletAuthInfo, got {other:?}"),
+    }
+
     // Tear down — kill_on_drop will reap, but be explicit so the test failure
     // reason is not "stuck child".
     child.kill().await.ok();
