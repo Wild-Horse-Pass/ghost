@@ -66,6 +66,9 @@ enum GspCommand {
     Auth,
     /// Show the daemon's stored GSP session token.
     SessionStatus,
+    /// Register the active wallet's BIP-352 scan public key with the GSP so the
+    /// server can detect incoming silent payments on its behalf.
+    RegisterScanKey,
 }
 
 #[derive(Subcommand)]
@@ -233,6 +236,7 @@ mod unix {
                 GspCommand::Ping => Request::GspPing,
                 GspCommand::Auth => Request::GspAuth,
                 GspCommand::SessionStatus => Request::GspSessionStatus,
+                GspCommand::RegisterScanKey => Request::GspRegisterScanKey,
             },
             Command::Light { sub } => match sub {
                 LightCommand::Receive { index } => Request::LightReceive { index },
@@ -359,6 +363,15 @@ mod unix {
                 println!("  wallet_id:    {}", a.wallet_id);
                 println!("  token (prefix): {}...", a.token_prefix);
                 println!("  expires_at:   {}", a.expires_at);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::GspScanKeyRegistered {
+                wallet_id,
+                scan_pubkey_hex,
+            }) => {
+                println!("scan key registered with GSP");
+                println!("  wallet_id:   {wallet_id}");
+                println!("  scan_pubkey: {scan_pubkey_hex}");
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::GspSessionStatus(s)) => {

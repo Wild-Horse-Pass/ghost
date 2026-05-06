@@ -278,6 +278,18 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             }
         }
 
+        ClientMessage::RegisterScanKey { scan_pubkey, proof } => {
+            // 33-byte SEC1 compressed pubkey = 66 hex chars.
+            if scan_pubkey.len() != 66 {
+                result.add_error("scan_pubkey must be 66 hex chars (33 bytes SEC1 compressed)");
+            } else if hex::decode(scan_pubkey).is_err() {
+                result.add_error("scan_pubkey is not valid hex");
+            }
+            if let Err(e) = proof.validate_structure() {
+                result.add_error(format!("Invalid proof: {}", e));
+            }
+        }
+
         ClientMessage::RequestJump {
             lock_id,
             priority,

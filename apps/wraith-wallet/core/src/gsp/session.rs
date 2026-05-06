@@ -215,6 +215,24 @@ impl SessionHandle {
         rx.await.map_err(|_| "reply dropped".to_string())?
     }
 
+    /// Issue `RegisterScanKey` and await the matching `ScanKeyRegistered` reply.
+    pub async fn register_scan_key(
+        &self,
+        scan_pubkey_hex: String,
+        proof: WalletProof,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::RegisterScanKey {
+                scan_pubkey: scan_pubkey_hex,
+                proof,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| "session task closed".to_string())?;
+        rx.await.map_err(|_| "reply dropped".to_string())?
+    }
+
     /// Issue `RequestJump` and await the matching `JumpRequested` reply.
     pub async fn request_jump(
         &self,
@@ -258,6 +276,7 @@ enum PendingReply {
     LockPrepared(oneshot::Sender<Result<LockPreparedResult, String>>),
     LockConfirmed(oneshot::Sender<Result<LockConfirmedResult, String>>),
     JumpRequested(oneshot::Sender<Result<JumpRequestedResult, String>>),
+    ScanKeyRegistered(oneshot::Sender<Result<(), String>>),
 }
 
 /// Commands the daemon can send into the session task.
@@ -305,6 +324,11 @@ pub enum SessionCommand {
         target_address: String,
         proof: WalletProof,
         reply: oneshot::Sender<Result<JumpRequestedResult, String>>,
+    },
+    RegisterScanKey {
+        scan_pubkey: String,
+        proof: WalletProof,
+        reply: oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -499,6 +523,9 @@ async fn run(
                 PendingReply::JumpRequested(tx) => {
                     let _ = tx.send(Err("session disconnected".into()));
                 }
+                PendingReply::ScanKeyRegistered(tx) => {
+                    let _ = tx.send(Err("session disconnected".into()));
+                }
             }
         }
 
@@ -681,6 +708,23 @@ async fn run_main_loop(
                             ));
                         }
                         pending.push_back(PendingReply::JumpRequested(reply));
+                    }
+                    SessionCommand::RegisterScanKey {
+                        scan_pubkey,
+                        proof,
+                        reply,
+                    } => {
+                        let msg = ClientMessage::RegisterScanKey {
+                            scan_pubkey,
+                            proof,
+                        };
+                        if let Err(e) = send_client(ws, &msg).await {
+                            let _ = reply.send(Err(format!("send RegisterScanKey: {e}")));
+                            return MainLoopOutcome::Disconnect(format!(
+                                "send RegisterScanKey: {e}"
+                            ));
+                        }
+                        pending.push_back(PendingReply::ScanKeyRegistered(reply));
                     }
                 }
             }
@@ -913,6 +957,25 @@ async fn handle_message(
             tracing::debug!("gsp session: unmatched JumpRequested message");
         }
 
+        // Response to RegisterScanKey.
+        ServerMessage::ScanKeyRegistered { success, error } => {
+            if let Some(idx) = pending
+                .iter()
+                .position(|p| matches!(p, PendingReply::ScanKeyRegistered(_)))
+            {
+                if let Some(PendingReply::ScanKeyRegistered(tx)) = pending.remove(idx) {
+                    let result = if success {
+                        Ok(())
+                    } else {
+                        Err(error.unwrap_or_else(|| "ScanKeyRegistered failed".into()))
+                    };
+                    let _ = tx.send(result);
+                    return;
+                }
+            }
+            tracing::debug!("gsp session: unmatched ScanKeyRegistered message");
+        }
+
         // Server-side error — surface it on the head of the pending queue.
         ServerMessage::Error {
             code,
@@ -945,6 +1008,9 @@ async fn handle_message(
                         let _ = tx.send(Err(err));
                     }
                     PendingReply::JumpRequested(tx) => {
+                        let _ = tx.send(Err(err));
+                    }
+                    PendingReply::ScanKeyRegistered(tx) => {
                         let _ = tx.send(Err(err));
                     }
                 }

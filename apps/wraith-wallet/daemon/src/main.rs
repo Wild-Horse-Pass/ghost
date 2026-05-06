@@ -459,6 +459,46 @@ mod unix {
         })
     }
 
+    /// Send `RegisterScanKey` over the persistent session: derives the wallet's
+    /// BIP-352 scan pubkey, signs a `register_scan_key` proof, and delegates to
+    /// the session task. Returns (wallet_id, scan_pubkey_hex) on success.
+    async fn gsp_register_scan_key(
+        state: &Arc<DaemonState>,
+    ) -> Result<(String, String), String> {
+        let session = state.session.read().await;
+        let session = session
+            .as_ref()
+            .ok_or_else(|| "no GSP session — run `wraith gsp auth` first".to_string())?;
+
+        // Derive scan pubkey + auth keypair from the session's wallet.
+        let (scan_pubkey_hex, kp) = {
+            let wallets = state.wallets.read().await;
+            let ks = wallets.get(&session.wallet_name).ok_or_else(|| {
+                format!(
+                    "wallet '{}' (the session's wallet) is not unlocked",
+                    session.wallet_name
+                )
+            })?;
+            let gk = ks.ghost_keys().map_err(|e| format!("ghost-keys: {e}"))?;
+            let scan_hex = hex::encode(gk.scan_pubkey().serialize());
+            let kp = wraith_wallet_core::auth::auth_keypair(ks)
+                .map_err(|e| format!("auth keypair: {e}"))?;
+            (scan_hex, kp)
+        };
+
+        let proof = wraith_wallet_core::auth::make_proof(&kp, "register_scan_key")
+            .map_err(|e| format!("register_scan_key proof: {e}"))?;
+        let wallet_id = wraith_wallet_core::auth::wallet_id_hex(&kp);
+
+        session
+            .handle
+            .register_scan_key(scan_pubkey_hex.clone(), proof)
+            .await
+            .map_err(|e| format!("RegisterScanKey: {e}"))?;
+
+        Ok((wallet_id, scan_pubkey_hex))
+    }
+
     fn phase_label(p: SessionPhase) -> &'static str {
         match p {
             SessionPhase::Disconnected => "disconnected",
@@ -534,6 +574,13 @@ mod unix {
             },
             Request::GspAuth => match gsp_auth(state).await {
                 Ok(r) => Response::GspAuth(r),
+                Err(message) => Response::Error(ErrorResponse { message }),
+            },
+            Request::GspRegisterScanKey => match gsp_register_scan_key(state).await {
+                Ok((wallet_id, scan_pubkey_hex)) => Response::GspScanKeyRegistered {
+                    wallet_id,
+                    scan_pubkey_hex,
+                },
                 Err(message) => Response::Error(ErrorResponse { message }),
             },
             Request::GspSessionStatus => {

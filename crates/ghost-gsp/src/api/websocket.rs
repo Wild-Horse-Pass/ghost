@@ -639,6 +639,10 @@ async fn handle_message(
                 .await
         }
 
+        ClientMessage::RegisterScanKey { scan_pubkey, proof } => {
+            handle_register_scan_key(state, conn_state, &scan_pubkey, &proof).await
+        }
+
         ClientMessage::RequestJump {
             lock_id,
             priority,
@@ -1555,6 +1559,107 @@ async fn handle_confirm_ghost_lock_funding(
             }))
         }
     }
+}
+
+/// Register a BIP-352 scan public key for the authenticated wallet.
+///
+/// The scan key is public — it lets the GSP detect incoming silent payments
+/// addressed to this wallet, but cannot be used to spend. Spending still
+/// requires the matching scan_secret which never leaves the wallet.
+///
+/// Storage is keyed by the wallet's PERMANENT id (`SHA256(auth_pubkey)[..16]`)
+/// derived from the proof's pubkey, so the scan key persists across the
+/// session-rotating IDs that JWT tokens carry.
+async fn handle_register_scan_key(
+    state: &Arc<GspState>,
+    conn_state: &ConnectionState,
+    scan_pubkey_hex: &str,
+    proof: &WalletProof,
+) -> Result<Option<ServerMessage>, GspError> {
+    // Authenticated session required.
+    let _session_wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
+
+    // Validate proof structure + signature + extract the permanent wallet_id
+    // (= SHA256(auth_pubkey)[..16]). The session-rotating wallet_id check used
+    // by other sensitive WS handlers is skipped here — this op identifies
+    // the wallet by its permanent ID for storage.
+    let permanent_id = match crate::auth::verify_proof_and_extract_wallet_id(proof) {
+        Ok(id) => id,
+        Err(e) => {
+            return Ok(Some(ServerMessage::ScanKeyRegistered {
+                success: false,
+                error: Some(format!("proof: {e}")),
+            }));
+        }
+    };
+
+    // Action must match.
+    if proof.action() != Some("register_scan_key") {
+        return Ok(Some(ServerMessage::ScanKeyRegistered {
+            success: false,
+            error: Some("invalid proof action (expected 'register_scan_key')".into()),
+        }));
+    }
+
+    // Decode + validate scan_pubkey: 33 bytes SEC1 compressed, parses as a
+    // valid secp256k1 point.
+    let scan_bytes = match hex::decode(scan_pubkey_hex) {
+        Ok(b) if b.len() == 33 => b,
+        Ok(_) => {
+            return Ok(Some(ServerMessage::ScanKeyRegistered {
+                success: false,
+                error: Some("scan_pubkey must be 33 bytes (SEC1 compressed)".into()),
+            }));
+        }
+        Err(e) => {
+            return Ok(Some(ServerMessage::ScanKeyRegistered {
+                success: false,
+                error: Some(format!("scan_pubkey hex decode: {e}")),
+            }));
+        }
+    };
+    if let Err(e) = bitcoin::secp256k1::PublicKey::from_slice(&scan_bytes) {
+        return Ok(Some(ServerMessage::ScanKeyRegistered {
+            success: false,
+            error: Some(format!("invalid scan_pubkey: {e}")),
+        }));
+    }
+    let mut scan_arr = [0u8; 33];
+    scan_arr.copy_from_slice(&scan_bytes);
+
+    // Wallet must be registered first (so the foreign key constraint holds).
+    if !state.registry.is_registered(&permanent_id)? {
+        return Ok(Some(ServerMessage::ScanKeyRegistered {
+            success: false,
+            error: Some("wallet not registered — call /register first".into()),
+        }));
+    }
+
+    // Upsert.
+    if let Err(e) = state.registry.upsert_scan_key(&permanent_id, &scan_arr) {
+        warn!(
+            wallet_id = %permanent_id,
+            error = %e,
+            "Failed to upsert scan key"
+        );
+        return Ok(Some(ServerMessage::ScanKeyRegistered {
+            success: false,
+            error: Some(format!("storage: {e}")),
+        }));
+    }
+
+    info!(
+        wallet_id = %permanent_id,
+        "BIP-352 scan key registered"
+    );
+
+    Ok(Some(ServerMessage::ScanKeyRegistered {
+        success: true,
+        error: None,
+    }))
 }
 
 // =============================================================================

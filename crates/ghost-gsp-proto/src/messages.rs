@@ -151,6 +151,17 @@ pub enum ClientMessage {
         proof: WalletProof,
     },
 
+    /// Register the wallet's BIP-352 scan public key with the GSP so the
+    /// server can detect incoming silent payments on the wallet's behalf.
+    /// The scan key is public (only used for detection, never for spending);
+    /// the wallet keeps the matching scan_secret.
+    RegisterScanKey {
+        /// 33-byte SEC1 compressed scan public key, hex-encoded.
+        scan_pubkey: String,
+        /// Authentication proof (action: "register_scan_key").
+        proof: WalletProof,
+    },
+
     /// Request emergency jump for a lock
     RequestJump {
         /// Lock ID to jump
@@ -469,6 +480,14 @@ pub enum ServerMessage {
         lock_id: String,
         /// Jump transaction ID if broadcast
         jump_txid: Option<String>,
+        /// Error message if failed
+        error: Option<String>,
+    },
+
+    /// BIP-352 scan-key registration result
+    ScanKeyRegistered {
+        /// Whether registration succeeded
+        success: bool,
         /// Error message if failed
         error: Option<String>,
     },
@@ -877,6 +896,7 @@ impl ClientMessage {
                 | ClientMessage::CancelPayment { .. }
                 | ClientMessage::PrepareGhostLock { .. }
                 | ClientMessage::ConfirmGhostLockFunding { .. }
+                | ClientMessage::RegisterScanKey { .. }
                 | ClientMessage::RequestJump { .. }
                 | ClientMessage::SubscribeBalance
                 | ClientMessage::SubscribePayments
@@ -902,6 +922,7 @@ impl ClientMessage {
             ClientMessage::PreparePayment { .. }
                 | ClientMessage::CancelPayment { .. }
                 | ClientMessage::ConfirmGhostLockFunding { .. }
+                | ClientMessage::RegisterScanKey { .. }
                 | ClientMessage::RequestJump { .. }
                 | ClientMessage::AcceptInstantPayment { .. }
                 | ClientMessage::ShieldBalance { .. }

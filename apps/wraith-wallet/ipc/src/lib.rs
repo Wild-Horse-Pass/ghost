@@ -37,6 +37,9 @@ pub enum Request {
     GspAuth,
     /// Inspect the daemon's stored GSP session token + persistent connection state.
     GspSessionStatus,
+    /// Register the active wallet's BIP-352 scan public key with the GSP so the
+    /// server can detect incoming silent payments on its behalf.
+    GspRegisterScanKey,
     /// Read the active wallet's last-known on-chain balance from the persistent session.
     LightBalance,
     /// List the active wallet's UTXOs via the persistent GSP session.
@@ -109,6 +112,7 @@ pub enum Response {
     GspPing(GspPingResponse),
     GspAuth(GspAuthResponse),
     GspSessionStatus(GspSessionStatusResponse),
+    GspScanKeyRegistered { wallet_id: String, scan_pubkey_hex: String },
     LightBalance(LightBalanceResponse),
     LightUtxos(LightUtxosResponse),
     LightHistory(LightHistoryResponse),
