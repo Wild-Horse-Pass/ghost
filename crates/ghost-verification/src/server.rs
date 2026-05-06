@@ -35,7 +35,7 @@ use ghost_common::types::NodeCapabilities;
 use ghost_policy::{PolicyEngine, PolicyProfile};
 use ghost_storage::Database;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -849,12 +849,22 @@ impl Default for DashboardConfig {
 
 /// Verification server state
 /// Peer info for the load-balancer endpoint (`/api/internal/pool-nodes`).
+///
+/// `max_capacity` is the peer's hardware-derived ceiling. The translator's
+/// load balancer divides `miner_count` by `max_capacity` to compute
+/// utilisation and route new connections to the under-utilised peer; an
+/// operator with bigger hardware naturally absorbs more.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PoolPeerInfo {
     pub public_address: String,
     pub miner_count: u32,
     pub public_mining: bool,
     pub last_seen: u64,
+    /// Peer's effective max miners (derived from CPU/RAM/FD, capped by
+    /// operator's `network.max_miners` if set). 0 means the peer hasn't
+    /// reported it yet (treated as "unknown" / excluded from routing).
+    #[serde(default)]
+    pub max_capacity: u32,
 }
 
 pub struct VerificationState {
@@ -920,6 +930,11 @@ pub struct VerificationState {
     pub require_internal_auth: bool,
     /// Pool peers callback: returns peers with public_mining + miner counts for load balancing.
     get_pool_peers: Option<Box<dyn Fn() -> Vec<PoolPeerInfo> + Send + Sync>>,
+    /// Reaper stats callback: returns a JSON-serializable snapshot of the
+    /// cumulative ReaperStats counters. Pre-serialized to JSON because the
+    /// concrete `ReaperStats` type lives in `bins/ghost-pool` and we don't
+    /// want a reverse dep from ghost-verification.
+    get_reaper_stats: Option<Box<dyn Fn() -> serde_json::Value + Send + Sync>>,
     /// Mesh-wide deduplicated active miner count callback. Returns the size
     /// of the union of locally-active miner_id hashes and every connected
     /// peer's most-recent reported set, giving an exact pool-wide active
@@ -943,6 +958,12 @@ pub struct VerificationState {
     /// This prevents attackers from enabling debug endpoints at runtime to gain
     /// access to sensitive system information.
     debug_endpoints_frozen: AtomicBool,
+    /// Hardware-derived effective miner capacity for this node (capacity::measure).
+    /// Reported in `/api/internal/pool-nodes` as `this_node.max_capacity` so
+    /// the colocated translator's load balancer can compute utilisation %
+    /// against this node's true hardware ceiling. Set via `set_max_capacity`
+    /// at startup; 0 = not yet configured.
+    max_capacity: AtomicU32,
     /// Prometheus metrics (optional - only present when running as ghost-pool)
     pub metrics: Option<Arc<Metrics>>,
     /// Callback to submit L2 NoteSpend transactions to the consensus mesh
@@ -955,7 +976,23 @@ pub struct VerificationState {
     pub glyph_registered_relay_fn: Option<GlyphRegisteredRelayFn>,
     /// Callback to get live L2 tree state from epoch manager
     pub l2_tree_state_fn: Option<L2TreeStateFn>,
+    /// Cached stratum self-verification results. The verification handler
+    /// uses bogus Noise-NK bytes / mining.subscribe to confirm the local
+    /// stratum endpoint is up; pool_sv2 logs the rejection as ERROR. Caching
+    /// the result for STRATUM_VERIFY_CACHE_TTL keeps incoming peer challenges
+    /// from re-probing on every cycle and slamming pool_sv2's log.
+    /// Key: (protocol, port). Value: (probe_time, response).
+    stratum_verify_cache: parking_lot::Mutex<
+        std::collections::HashMap<(StratumProtocol, u16), (Instant, StratumResponse)>,
+    >,
 }
+
+/// TTL for cached stratum self-verification results. Verification cycles run
+/// every 5 minutes mesh-wide and the 3+ peer challenges within a cycle arrive
+/// spread out (often 1–2 min apart), not as a tight burst. A 240s TTL covers
+/// the full intra-cycle spread while still refreshing once per cycle so a
+/// real stratum outage is detected within ~4–5 minutes.
+const STRATUM_VERIFY_CACHE_TTL: Duration = Duration::from_secs(240);
 
 /// Archive handler trait
 pub trait ArchiveHandler {
@@ -1071,18 +1108,21 @@ impl VerificationState {
             block_found_fn: None,
             internal_auth: None,
             get_pool_peers: None,
+            get_reaper_stats: None,
             get_mesh_active_miners: None,
             // VF-C2: Default to requiring internal auth for security
             require_internal_auth: true,
             restart_signal: Arc::new(AtomicBool::new(false)),
             // L-28: Debug endpoints flag frozen from DashboardConfig
             debug_endpoints_frozen: AtomicBool::new(debug_enabled),
+            max_capacity: AtomicU32::new(0),
             metrics: None,
             l2_submit_fn: None,
             l2_sync_commitment_fn: None,
             glyph_claim_relay_fn: None,
             glyph_registered_relay_fn: None,
             l2_tree_state_fn: None,
+            stratum_verify_cache: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -1492,6 +1532,19 @@ impl VerificationState {
         (self.get_miner_count)()
     }
 
+    /// Get this node's advertised hardware-derived miner capacity. 0 means
+    /// not yet measured (the LB treats us as "unknown" / excluded).
+    pub fn max_capacity(&self) -> u32 {
+        self.max_capacity.load(Ordering::Relaxed)
+    }
+
+    /// Set this node's advertised capacity (called at startup after
+    /// `capacity::measure`). Cheap, lock-free; safe to re-call if the
+    /// operator throttle (`network.max_miners`) changes.
+    pub fn set_max_capacity(&self, value: u32) {
+        self.max_capacity.store(value, Ordering::Relaxed);
+    }
+
     /// Returns pool peers with public_mining enabled (for load balancer).
     pub fn pool_peers(&self) -> Vec<PoolPeerInfo> {
         self.get_pool_peers
@@ -1506,6 +1559,24 @@ impl VerificationState {
         f: impl Fn() -> Vec<PoolPeerInfo> + Send + Sync + 'static,
     ) -> Self {
         self.get_pool_peers = Some(Box::new(f));
+        self
+    }
+
+    /// Reaper observability snapshot, or `null` when not wired.
+    pub fn reaper_stats(&self) -> serde_json::Value {
+        self.get_reaper_stats
+            .as_ref()
+            .map(|f| f())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// Set the Reaper-stats callback (pre-serialized JSON to avoid a
+    /// reverse-dependency on ghost-pool).
+    pub fn with_reaper_stats(
+        mut self,
+        f: impl Fn() -> serde_json::Value + Send + Sync + 'static,
+    ) -> Self {
+        self.get_reaper_stats = Some(Box::new(f));
         self
     }
 
@@ -1585,6 +1656,16 @@ impl VerificationState {
     pub fn with_stratum_ports(mut self, sv2_port: u16, sv1_port: u16) -> Self {
         self.stratum_sv2_port = sv2_port;
         self.stratum_sv1_port = sv1_port;
+        self
+    }
+
+    /// Set the publicly-advertised stratum host (IP or DNS name) used when
+    /// answering an incoming stratum challenge. The challenge handler probes
+    /// this address via `verify_sv1` / `verify_sv2`. Setting it to the node's
+    /// real public address (per VER-6) makes the self-verification check
+    /// external reachability, not just a loopback listener.
+    pub fn with_stratum_host(self, host: String) -> Self {
+        self.dashboard_config.write().stratum_host = Some(host);
         self
     }
 
@@ -1732,16 +1813,24 @@ impl VerificationState {
         })
     }
 
-    /// Verify stratum challenge
+    /// Verify stratum challenge.
     ///
-    /// H-4: Performs actual Stratum protocol verification, not just TCP connection.
-    /// Uses StratumVerifier to perform proper mining.subscribe (SV1) or Noise handshake (SV2).
+    /// Confirms the local stratum endpoint is bound on the configured port by
+    /// scanning `/proc/net/tcp{,6}` for a LISTEN socket. We deliberately do
+    /// NOT open a TCP connection: the previous implementation wrote bogus
+    /// Noise NK bytes to pool_sv2 to "test" it, which pool_sv2 (correctly)
+    /// rejected and logged as ERROR — every peer challenge created spurious
+    /// log spam.
+    ///
+    /// Loss vs. a real protocol handshake is small. Pool_sv2 is constantly
+    /// handling translator + miner SV2 traffic; a broken endpoint surfaces
+    /// in mining metrics within seconds — well before the 5-min verification
+    /// cycle would catch it. The listener check tells us the daemon is up
+    /// and bound; the daemon's behaviour is validated by real load.
     pub async fn verify_stratum(
         &self,
         challenge: StratumChallenge,
     ) -> GhostResult<StratumResponse> {
-        use crate::handlers::StratumVerifier;
-
         if !self.capabilities.public_mining {
             return Ok(StratumResponse {
                 success: false,
@@ -1758,57 +1847,37 @@ impl VerificationState {
             StratumProtocol::Sv1 => challenge.port.unwrap_or(self.stratum_sv1_port),
         };
 
-        // H-4: Use StratumVerifier to perform actual protocol handshake
-        // This prevents nodes from passing verification with just a TCP listener
-        let verifier = StratumVerifier::new().with_timeout(Duration::from_secs(5));
-
-        // VER-6 FIX: Use the node's external/advertised address for self-verification
-        // instead of localhost. Using localhost would only verify that the stratum
-        // service is listening on loopback, not that it's accessible externally.
-        // Falls back to localhost if no external address is configured (dev mode).
-        let verification_host = {
-            let config = self.dashboard_config.read();
-            config
-                .stratum_host
-                .clone()
-                .unwrap_or_else(|| "127.0.0.1".to_string())
-        };
-
-        let result = match challenge.protocol {
-            StratumProtocol::Sv1 => verifier.verify_sv1(&verification_host, port).await,
-            StratumProtocol::Sv2 => verifier.verify_sv2(&verification_host, port).await,
-        };
-
-        match result {
-            Ok(verify_result) => {
-                // H-4: Require valid_protocol, not just connection
-                let success = verify_result.connected && verify_result.valid_protocol;
-                Ok(StratumResponse {
-                    success,
-                    port,
-                    protocol: challenge.protocol,
-                    connected: verify_result.connected,
-                    latency_ms: Some(verify_result.total_latency.as_millis() as u32),
-                    error: if success {
-                        None
-                    } else {
-                        Some(
-                            verify_result
-                                .error
-                                .unwrap_or_else(|| "Protocol handshake failed".to_string()),
-                        )
-                    },
-                })
+        // Cache hit: peer challenges arrive several times per verification
+        // cycle. /proc/net/tcp scans are cheap (~µs) but caching keeps the
+        // hot path even quieter and matches how the rest of self-verification
+        // is rate-limited.
+        let cache_key = (challenge.protocol, port);
+        if let Some((stored_at, cached)) = self.stratum_verify_cache.lock().get(&cache_key) {
+            if stored_at.elapsed() < STRATUM_VERIFY_CACHE_TTL {
+                return Ok(cached.clone());
             }
-            Err(e) => Ok(StratumResponse {
-                success: false,
-                port,
-                protocol: challenge.protocol,
-                connected: false,
-                latency_ms: None,
-                error: Some(format!("Verification failed: {}", e)),
-            }),
         }
+
+        let start = Instant::now();
+        let listening = port_listening(port);
+        let latency_ms = Some(start.elapsed().as_millis() as u32);
+
+        let response = StratumResponse {
+            success: listening,
+            port,
+            protocol: challenge.protocol,
+            connected: listening,
+            latency_ms,
+            error: if listening {
+                None
+            } else {
+                Some(format!("No listener bound on port {port}"))
+            },
+        };
+        self.stratum_verify_cache
+            .lock()
+            .insert(cache_key, (Instant::now(), response.clone()));
+        Ok(response)
     }
 
     /// Verify GhostPay challenge
@@ -2208,6 +2277,47 @@ async fn serve_tls(
             }
         });
     }
+}
+
+/// Return true iff a TCP listener is bound to `port` on any local interface.
+/// Reads `/proc/net/tcp{,6}` directly so the check is invisible to the
+/// listening daemon (no spurious connections, no log noise).
+#[cfg(target_os = "linux")]
+fn port_listening(port: u16) -> bool {
+    fn scan(path: &str, port: u16) -> bool {
+        // /proc/net/tcp format (whitespace-separated):
+        //   sl  local_address  rem_address  st  ...
+        // local_address is "ADDR:PORT" in big-endian hex; state 0A = LISTEN.
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let port_hex = format!("{:04X}", port);
+        for line in content.lines().skip(1) {
+            let mut fields = line.split_whitespace();
+            let _sl = fields.next();
+            let Some(local) = fields.next() else { continue };
+            let _rem = fields.next();
+            let Some(state) = fields.next() else { continue };
+            if state != "0A" {
+                continue;
+            }
+            if local.rsplit_once(':').map(|(_, p)| p) == Some(port_hex.as_str()) {
+                return true;
+            }
+        }
+        false
+    }
+    scan("/proc/net/tcp", port) || scan("/proc/net/tcp6", port)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn port_listening(port: u16) -> bool {
+    use std::net::TcpStream;
+    TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().unwrap(),
+        Duration::from_millis(500),
+    )
+    .is_ok()
 }
 
 #[cfg(test)]

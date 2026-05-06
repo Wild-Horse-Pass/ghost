@@ -352,6 +352,12 @@ pub struct HealthPing {
     /// that don't include it deserialize to an empty Vec.
     #[serde(default, with = "ghost_common_active_hashes")]
     pub active_miner_id_hashes: Vec<[u8; 16]>,
+    /// Hardware-derived effective miner capacity. Translator's load balancer
+    /// uses `miner_count / max_capacity` to compute utilisation and route
+    /// new arrivals to the under-utilised peer. 0 = pre-update node (treated
+    /// as unknown / excluded from utilisation routing).
+    #[serde(default)]
+    pub max_capacity: u32,
 }
 
 /// Hex-encoded serialization for the active miner-id hash list.

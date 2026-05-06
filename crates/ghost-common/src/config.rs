@@ -453,7 +453,9 @@ impl NodeConfig {
         }
 
         // Public mining without public address
-        if self.network.public_mining && self.network.public_address.is_none() {
+        if matches!(self.network.mining_mode, MiningMode::PublicPool)
+            && self.network.public_address.is_none()
+        {
             result.add_warning(
                 "network.public_address",
                 "Public mining enabled but no public address configured",
@@ -461,12 +463,12 @@ impl NodeConfig {
         }
 
         // MANDATORY: Signing key required for public mining
-        if self.network.public_mining {
+        if matches!(self.network.mining_mode, MiningMode::PublicPool) {
             match &self.network.signing_key {
                 None => {
                     result.add_error(
                         "network.signing_key",
-                        "signing_key is REQUIRED when public_mining is enabled. \
+                        "signing_key is REQUIRED when mining_mode = PublicPool. \
                          Generate with: ghostd --generate-signing-key",
                     );
                 }
@@ -576,15 +578,9 @@ impl NodeConfig {
         match self.network.mining_mode {
             MiningMode::PublicPool => {
                 // PublicPool requires signing_key for DNS registration
-                // (already validated above in public_mining check)
-                // Sync public_mining with mining_mode for backward compatibility
-                if !self.network.public_mining {
-                    result.add_warning(
-                        "network.mining_mode",
-                        "mining_mode is PublicPool but public_mining is false. \
-                         Consider setting public_mining = true for consistency.",
-                    );
-                }
+                // (already validated above in public_mining check).
+                // The legacy `public_mining` bool was removed — mining_mode is
+                // the single source of truth.
             }
             MiningMode::PrivatePool => {
                 // PrivatePool requires private_mining_password
@@ -966,18 +962,24 @@ pub struct NetworkConfig {
     pub sv2_port: u16,
     /// SV1 Stratum port (translator)
     pub sv1_port: u16,
-    /// HTTP API port
+    /// HTTP API port (plain HTTP — SRI webhook, nginx upstream, dashboard).
     pub http_port: u16,
+    /// HTTPS port for the inter-peer verification mesh.
+    ///
+    /// When set (default 8443), ghost-pool also binds an HTTPS listener on
+    /// this port serving the same routes as `http_port` but with identity-
+    /// derived TLS + cert pinning. The verification client uses this port
+    /// for cross-VM peer challenges so the mesh traffic is encrypted while
+    /// SRI / nginx / dashboard keep talking plain HTTP on `http_port`.
+    #[serde(default = "default_verification_https_port")]
+    pub verification_https_port: u16,
     /// P2P consensus ports
     pub p2p: P2PPortConfig,
     /// Seed nodes for P2P discovery
     pub seed_nodes: Vec<String>,
     /// Maximum connected miners
     pub max_miners: u32,
-    /// Enable public mining (accept external miners)
-    /// DEPRECATED: Use mining_mode instead. This is kept for backward compatibility.
-    pub public_mining: bool,
-    /// Signing key for message authentication (REQUIRED for public_mining/PublicPool)
+    /// Signing key for message authentication (REQUIRED for mining_mode = PublicPool)
     /// Must be 64 hex characters (32 bytes). Generate with: ghostd --generate-signing-key
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_key: Option<String>,
@@ -1048,6 +1050,10 @@ fn default_noise_enabled() -> bool {
     true
 }
 
+fn default_verification_https_port() -> u16 {
+    crate::constants::VERIFICATION_HTTPS_PORT
+}
+
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
@@ -1055,10 +1061,10 @@ impl Default for NetworkConfig {
             sv2_port: SV2_STRATUM_PORT,
             sv1_port: SV1_STRATUM_PORT,
             http_port: HTTP_API_PORT,
+            verification_https_port: crate::constants::VERIFICATION_HTTPS_PORT,
             p2p: P2PPortConfig::default(),
             seed_nodes: Vec::new(),
             max_miners: 1000,
-            public_mining: false,
             signing_key: None,
             mining_mode: MiningMode::default(),
             private_mining_password: None,
@@ -1451,7 +1457,7 @@ mod tests {
     #[test]
     fn test_signing_key_required_for_public_mining() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = true;
+        config.network.mining_mode = MiningMode::PublicPool;
         config.network.signing_key = None;
 
         let result = config.validate();
@@ -1465,7 +1471,7 @@ mod tests {
     #[test]
     fn test_signing_key_valid_format() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = true;
+        config.network.mining_mode = MiningMode::PublicPool;
         // 64 hex chars = valid 32-byte key
         config.network.signing_key =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
@@ -1481,7 +1487,7 @@ mod tests {
     #[test]
     fn test_signing_key_invalid_length() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = true;
+        config.network.mining_mode = MiningMode::PublicPool;
         // Too short
         config.network.signing_key = Some("0123456789abcdef".to_string());
 
@@ -1496,7 +1502,7 @@ mod tests {
     #[test]
     fn test_signing_key_invalid_chars() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = true;
+        config.network.mining_mode = MiningMode::PublicPool;
         // Contains non-hex chars (g, h, i, j)
         config.network.signing_key =
             Some("ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
@@ -1512,11 +1518,12 @@ mod tests {
     #[test]
     fn test_signing_key_not_required_private_mining() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = false;
+        config.network.mining_mode = MiningMode::PrivatePool;
+        config.network.private_mining_password = Some("strong-password".to_string());
         config.network.signing_key = None;
 
         let result = config.validate();
-        // Should not have signing_key error when public_mining is disabled
+        // Should not have signing_key error when not in PublicPool mode
         assert!(!result
             .errors
             .iter()
@@ -1527,7 +1534,6 @@ mod tests {
     fn test_mining_mode_public_pool() {
         let mut config = NodeConfig::default();
         config.network.mining_mode = MiningMode::PublicPool;
-        config.network.public_mining = true;
         config.network.signing_key =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
 
@@ -1740,7 +1746,10 @@ mod tests {
     }
 
     #[test]
-    fn test_mainnet_requires_tls_cert() {
+    fn test_mainnet_without_tls_cert_warns_but_does_not_error() {
+        // Identity-derived TLS is the mainnet-allowed default — explicit
+        // cert_path is optional. The validator should emit a warning (so
+        // operators are aware of the cert source) but NOT a hard error.
         let mut config = NodeConfig::default();
         config.bitcoin.network = BitcoinNetwork::Mainnet;
         config.network.noise_enabled = true;
@@ -1751,17 +1760,22 @@ mod tests {
             "seed2.bitcoinghost.org:8559".to_string(),
             "seed3.bitcoinghost.org:8559".to_string(),
         ];
-        // No TLS cert configured
         config.network.tls = TlsConfig::default();
 
         let result = config.validate();
         assert!(
-            result
+            !result
                 .errors
                 .iter()
-                .any(|e| e.field == "network.tls.cert_path"
-                    && e.message.contains("MAINNET SECURITY")),
-            "Mainnet should require TLS cert_path"
+                .any(|e| e.field == "network.tls.cert_path"),
+            "Mainnet must NOT error on missing cert_path (identity-derived TLS is allowed)"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.field == "network.tls.cert_path"),
+            "Mainnet should warn when cert_path is unset so operators understand the source"
         );
     }
 

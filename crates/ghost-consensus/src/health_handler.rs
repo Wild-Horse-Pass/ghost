@@ -859,6 +859,9 @@ impl HealthPingHandler {
         // Active miner_id hashes used for mesh-wide deduplicated counting.
         self.peers
             .update_active_miner_hashes(&envelope.sender, ping.active_miner_id_hashes.clone());
+        // Hardware-derived capacity used by the LB for utilisation routing.
+        self.peers
+            .update_max_capacity(&envelope.sender, ping.max_capacity);
 
         // Persist to database if available
         if let Some(ref db) = self.db {

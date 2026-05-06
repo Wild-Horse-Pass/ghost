@@ -205,6 +205,15 @@ impl PeerManager {
         }
     }
 
+    /// Update a peer's hardware-derived `max_capacity` (advertised in their
+    /// most recent health ping). Used by the load balancer to compute
+    /// utilisation for routing decisions.
+    pub fn update_max_capacity(&self, node_id: &NodeId, max_capacity: u32) {
+        if let Some(peer) = self.peers.write().get_mut(node_id) {
+            peer.max_capacity = max_capacity;
+        }
+    }
+
     /// Replace the active miner_id hash list for a peer with the most recent
     /// from a health ping. Used for mesh-wide deduplicated active counting.
     pub fn update_active_miner_hashes(&self, node_id: &NodeId, hashes: Vec<[u8; 16]>) {
@@ -305,6 +314,13 @@ pub struct Peer {
     /// last ~5 min, from the most recent health ping. Used for mesh-wide
     /// deduplicated active-miner counting.
     pub active_miner_id_hashes: Vec<[u8; 16]>,
+    /// Peer's hardware-derived effective miner capacity, advertised in its
+    /// health pings. The translator's load balancer divides `miner_count`
+    /// by this value to compute utilisation and pick the under-utilised
+    /// peer for new connections. 0 means the peer hasn't reported yet
+    /// (legacy or pre-update node) — treated as "unknown" and excluded
+    /// from utilisation-based routing.
+    pub max_capacity: u32,
 }
 
 impl Peer {
@@ -326,6 +342,7 @@ impl Peer {
             messages_sent: 0,
             miner_count: 0,
             active_miner_id_hashes: Vec::new(),
+            max_capacity: 0,
         }
     }
 

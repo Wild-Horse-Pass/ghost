@@ -69,6 +69,8 @@ use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler, SoloBlockF
 use ghost_pool::registry::RegistryClient;
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
+use ghost_pool::capacity;
+use ghost_pool::self_check::SelfCheck;
 use ghost_pool::share_handler::ShareProofHandler;
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
 use ghost_pool::template_provider::{TdpConfig, TemplateDistributionServer};
@@ -77,6 +79,27 @@ use ghost_pool::treasury::TreasuryState;
 /// Exit code that signals systemd to restart the service
 /// Used when config is updated via API and requires restart to apply
 const EXIT_CODE_RESTART: i32 = 100;
+
+/// Block height at which the payout proposal switches from per-`miner_id`
+/// grouping to per-`payout_address` grouping.
+///
+/// Below this height: a user running N workers under one address takes
+/// N coinbase output slots. At/above this height: their unpaid work is
+/// summed across workers and they take ONE slot — freeing the rest for
+/// other miners.
+///
+/// This is a BFT-voted payout calculation. If any node uses a different
+/// algorithm than its peers, its proposal diverges and never reaches the
+/// 67 % supermajority. Baking the activation as a block-height gate (not
+/// a feature flag) means every node — old binary or new — makes the same
+/// decision at the same block. Mixed-version mesh stays compatible
+/// because both code paths exist in the new code; old binaries keep
+/// running their original logic until they're replaced.
+///
+/// Pick a value comfortably past the deploy window (≈24 h ≈ 144 blocks)
+/// so all 4 VMs cohort the new binary before the chain crosses the gate.
+/// See `tasks/plan_payout_address_grouping.md` for the full rollout.
+pub const PAYOUT_ADDRESS_GROUPING_HEIGHT: u64 = 946_743;
 
 /// H-8 SECURITY: Static storage for ZMQ subscriber to prevent memory leak.
 /// Previously used std::mem::forget which intentionally leaked memory.
@@ -512,6 +535,16 @@ async fn main() -> Result<()> {
         eprintln!("Note: Tracing subscriber already initialized, using existing configuration");
     }
 
+    // Install the rustls process-level CryptoProvider exactly once, before
+    // any code path constructs a `rustls::ClientConfig::builder()` or similar.
+    // The verification client's identity-pinned TLS path triggers this otherwise.
+    if rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .is_err()
+    {
+        // Already installed (test harness / re-init); nothing to do.
+    }
+
     // Expand data directory
     let data_dir = expand_path(&args.data_dir)?;
     std::fs::create_dir_all(&data_dir)?;
@@ -941,6 +974,14 @@ async fn main() -> Result<()> {
 
     let mesh = Arc::new(mesh_inner);
 
+    // Hardware-derived miner capacity. Operator's `network.max_miners` is the
+    // ceiling — `measure()` returns `min(calculated, declared)`. The mesh
+    // broadcasts this in health pings so peers' load balancers can route by
+    // utilisation % of declared capacity.
+    let cap_breakdown = capacity::measure(Some(config.network.max_miners));
+    mesh.set_max_capacity(cap_breakdown.effective_max);
+    let effective_max_capacity = cap_breakdown.effective_max;
+
     // Initialize consensus voting
     let voting_manager = Arc::new(VotingManager::new(100)); // 100 max sessions
 
@@ -1007,30 +1048,74 @@ async fn main() -> Result<()> {
                         .map(|e| e.recipient_id)
                         .collect();
                     let treasury_amount = proposal.treasury_amount;
+                    // Use the proposal's block height as the gate input so
+                    // every approving node makes the same pre/post-gate
+                    // decision regardless of when the consensus message
+                    // arrives. (We can't trust local tip height — it
+                    // races with mesh-relayed proposals.)
+                    let proposal_height = proposal.block_height;
                     tokio::spawn(async move {
                         // (a) Mark paid: reverse-resolve each PayoutEntry's
-                        // recipient_id hash back to our local miner_id
-                        // strings so the ledger entries update correctly.
-                        let distinct = match db_mark.get_distinct_unpaid_miner_ids(cutoff_ts) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::error!(error = %e, "Failed to list unpaid miners for mark-paid");
-                                return;
-                            }
-                        };
-                        let matched: Vec<String> = distinct
-                            .into_iter()
-                            .filter(|id| {
-                                let h = ghost_common::identity::hash_message(id.as_bytes());
+                        // recipient_id hash back to local miner_id strings.
+                        //
+                        // Pre-PAYOUT_ADDRESS_GROUPING_HEIGHT — recipient_id
+                        // is sha256(miner_id), one entry per worker. Match
+                        // unpaid miner_ids by hash and pass directly to
+                        // mark_miners_paid.
+                        //
+                        // Post-gate — recipient_id is sha256(payout_address),
+                        // one entry per address. We have to fan out: hash
+                        // every distinct unpaid miner's address, match
+                        // against the proposal's hash set, then resolve
+                        // those addresses back to ALL their miner_ids so
+                        // the per-share UPDATE catches every worker
+                        // belonging to a paid address.
+                        let matched: Vec<String> = if proposal_height >= PAYOUT_ADDRESS_GROUPING_HEIGHT {
+                            // Pull (addr, _, miner_ids) for every unpaid
+                            // address. u32::MAX limit because we want
+                            // the full unpaid set, not the top-1000 cut.
+                            let groups = match db_mark
+                                .get_top_unpaid_addresses(cutoff_ts, u32::MAX)
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::error!(error = %e, "Failed to list unpaid addresses for mark-paid");
+                                    return;
+                                }
+                            };
+                            let mut acc = Vec::new();
+                            for (addr, _work, miner_ids) in groups {
+                                let h = ghost_common::identity::hash_message(addr.as_bytes());
                                 let mut arr = [0u8; 32];
                                 arr.copy_from_slice(&h);
-                                wanted.contains(&arr)
-                            })
-                            .collect();
+                                if wanted.contains(&arr) {
+                                    acc.extend(miner_ids);
+                                }
+                            }
+                            acc
+                        } else {
+                            let distinct = match db_mark.get_distinct_unpaid_miner_ids(cutoff_ts) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::error!(error = %e, "Failed to list unpaid miners for mark-paid");
+                                    return;
+                                }
+                            };
+                            distinct
+                                .into_iter()
+                                .filter(|id| {
+                                    let h = ghost_common::identity::hash_message(id.as_bytes());
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&h);
+                                    wanted.contains(&arr)
+                                })
+                                .collect()
+                        };
                         match db_mark.mark_miners_paid(&proposal_hash, &matched, cutoff_ts) {
                             Ok(n) => tracing::info!(
                                 shares_marked = n,
                                 miners = matched.len(),
+                                grouping = if proposal_height >= PAYOUT_ADDRESS_GROUPING_HEIGHT { "address" } else { "miner_id" },
                                 "Ledger: marked paid shares for approved proposal"
                             ),
                             Err(e) => tracing::error!(error = %e, "Ledger mark-paid failed"),
@@ -1510,10 +1595,16 @@ async fn main() -> Result<()> {
             })
         }));
 
-        // Wire finalization callback to notify ghost-pay when checkpoints are finalized
+        // Wire finalization callback to notify ghost-pay when checkpoints are finalized.
+        // ghost-pay serves identity-derived TLS on 8800 (cert pubkey == node_id).
+        // Both daemons run on the same VM under the same identity, so the loopback
+        // call doesn't need cert-chain validation — `danger_accept_invalid_certs`
+        // is appropriate for localhost-only IPC. (Not the same code path as the
+        // L-29-blocked verification client; that one talks to remote peers.)
         if config.ghost_pay.is_some() {
             let finalize_client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
+                .danger_accept_invalid_certs(true)
                 .build()
                 .expect("Failed to create HTTP client for ghost-pay finalize");
             let finalize_fn: ghost_consensus::nullifier_route_handler::FinalizeFn =
@@ -1536,7 +1627,7 @@ async fn main() -> Result<()> {
                                 .await;
                             }
                             match client
-                                .post("http://127.0.0.1:8800/api/v1/l2/finalize")
+                                .post("https://127.0.0.1:8800/api/v1/l2/finalize")
                                 .json(&body)
                                 .send()
                                 .await
@@ -2891,6 +2982,18 @@ async fn main() -> Result<()> {
         capabilities,
     );
 
+    // VER-6: When a peer challenges this node's stratum capability, our
+    // handler probes the stratum endpoint to confirm reachability. Without
+    // this, the handler falls back to 127.0.0.1, which only proves loopback
+    // listening (not external reachability) AND spams pool_sv2 with bogus
+    // Noise NK handshakes that get logged as ERROR. Wiring the configured
+    // public_address restores VER-6's intent.
+    if let Some(public_address) = config.network.public_address.clone() {
+        verification_state = verification_state.with_stratum_host(public_address);
+    }
+    verification_state =
+        verification_state.with_stratum_ports(config.network.sv2_port, config.network.sv1_port);
+
     // Configure callbacks for health/status endpoints
     // Miner count now comes from share notifications via SRI forwarder
     verification_state = verification_state.with_callbacks(
@@ -2919,6 +3022,7 @@ async fn main() -> Result<()> {
                 miner_count: p.miner_count,
                 public_mining: true,
                 last_seen: p.last_seen,
+                max_capacity: p.max_capacity,
             })
             .collect()
     });
@@ -2928,6 +3032,18 @@ async fn main() -> Result<()> {
     let mesh_for_active = Arc::clone(&mesh);
     verification_state = verification_state.with_mesh_active_miners(move || {
         mesh_for_active.mesh_active_miner_count(60) as u32
+    });
+
+    // Advertise this node's hardware-derived capacity via /api/internal/pool-nodes
+    // so the colocated translator's load balancer routes by utilisation %.
+    verification_state.set_max_capacity(effective_max_capacity);
+
+    // Wire Reaper observability counters through to /api/v1/reaper/status.
+    // The processor owns the Arc<ReaperStats>; we hand the dashboard a closure
+    // that snapshots it on demand.
+    let reaper_stats_for_api = template_processor.reaper_stats();
+    verification_state = verification_state.with_reaper_stats(move || {
+        serde_json::to_value(reaper_stats_for_api.snapshot()).unwrap_or(serde_json::Value::Null)
     });
 
     // Configure archive handler if archive mode enabled
@@ -3323,9 +3439,29 @@ async fn main() -> Result<()> {
                     const LEDGER_CAP: u32 = 1000;
                     const DUST_SATS: u64 = 546;
 
-                    let raw = db_for_bf
-                        .get_top_unpaid_miners(cutoff_ts, LEDGER_CAP)
-                        .unwrap_or_default();
+                    // Below PAYOUT_ADDRESS_GROUPING_HEIGHT we group by
+                    // miner_id (per-worker, legacy). At/above the gate we
+                    // group by payout_address so a multi-rig user takes
+                    // one slot instead of N. Both paths feed the same
+                    // (String, f64) tuple list into the dust filter
+                    // below — the String is just a miner_id pre-gate or
+                    // an address post-gate. The downstream proposal
+                    // handler treats the string as the payout target
+                    // either way (a miner_id is `<addr>.<worker>`, the
+                    // address derives from there; an address is itself).
+                    let raw: Vec<(String, f64)> =
+                        if height >= PAYOUT_ADDRESS_GROUPING_HEIGHT {
+                            db_for_bf
+                                .get_top_unpaid_addresses(cutoff_ts, LEDGER_CAP)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|(addr, work, _ids)| (addr, work))
+                                .collect()
+                        } else {
+                            db_for_bf
+                                .get_top_unpaid_miners(cutoff_ts, LEDGER_CAP)
+                                .unwrap_or_default()
+                        };
 
                     if raw.is_empty() {
                         warn!(
@@ -3976,44 +4112,129 @@ async fn main() -> Result<()> {
     let _verification_state_for_ws = Arc::clone(&verification_state);
 
     let http_port = config.network.http_port;
-    // Build TLS config for HTTPS on the verification server.
-    // Only enable TLS when the operator explicitly provides cert/key paths OR on mainnet.
-    // On signet/testnet without explicit certs, use plain HTTP to match the verification
-    // client which uses HTTP for peer challenges (self-signed certs aren't trusted).
+    let verification_https_port = config.network.verification_https_port;
+    // Build TLS config for the verification HTTPS listener. Resolution order:
+    //   1. Operator-managed PEM files (`tls.cert_path` + `tls.key_path`)
+    //   2. Identity-derived cert (cert pubkey == node_id; mainnet-allowed)
+    //   3. Random self-signed (testnet/dev only)
+    //
+    // Plain HTTP on `http_port` is ALWAYS bound — it serves SRI's share
+    // webhook (loopback), nginx public-API upstream, and the local dashboard.
+    // TLS is added on a SEPARATE listener (`verification_https_port`) used
+    // only by cross-VM peer challenges, so SRI/nginx/dashboard never see TLS.
     let has_explicit_tls = config.network.tls.cert_path.is_some();
     let is_mainnet_tls = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
-    let tls_server_config = if has_explicit_tls || is_mainnet_tls {
+    // Identity-derived TLS works only with LocalSigner; HSM/KMS need operator PEMs.
+    let identity_secret_for_tls: Option<[u8; 32]> = identity
+        .signer()
+        .as_any()
+        .downcast_ref::<ghost_common::signer::LocalSigner>()
+        .map(|s| s.signing_key_bytes());
+
+    let tls_server_config = if has_explicit_tls {
         match ghost_common::tls::build_server_config_for_network(
             &config.network.tls,
             is_mainnet_tls,
         ) {
             Ok(tls) => {
                 info!(
-                    "TLS configured for verification server on port {}",
+                    "TLS configured (operator PEM) for verification server on port {}",
                     http_port
                 );
                 Some(tls)
             }
             Err(e) => {
-                warn!(
+                error!(
                     error = %e,
-                    "TLS configuration failed, verification server will use plain HTTP. \
-                     For production mainnet deployments, configure tls.cert_path and \
-                     tls.key_path in [network] section."
+                    "Operator PEM TLS load failed; verification mesh will not start cleanly"
+                );
+                None
+            }
+        }
+    } else if let Some(secret) = identity_secret_for_tls {
+        match ghost_common::tls::build_server_config_with_identity(
+            &config.network.tls,
+            &secret,
+            config.network.public_address.as_deref(),
+        ) {
+            Ok(tls) => {
+                info!(
+                    "TLS configured (identity-derived, cert pubkey = node_id) on port {}",
+                    http_port
+                );
+                Some(tls)
+            }
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "Identity-derived TLS build failed; falling back to plain HTTP"
+                );
+                None
+            }
+        }
+    } else if is_mainnet_tls {
+        // HSM/KMS without operator PEMs is a misconfiguration on mainnet.
+        match ghost_common::tls::build_server_config_for_network(
+            &config.network.tls,
+            is_mainnet_tls,
+        ) {
+            Ok(tls) => Some(tls),
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "Mainnet TLS unavailable: HSM/KMS signers must supply tls.cert_path + tls.key_path"
                 );
                 None
             }
         }
     } else {
-        info!("Verification server using plain HTTP (no TLS cert configured)");
+        info!("No TLS configured — verification HTTPS listener will not start");
         None
     };
+
+    // Always bind plain HTTP on `http_port`. Loopback-only consumers (SRI
+    // share webhook on 127.0.0.1, nginx public-API upstream, the local
+    // dashboard) all expect plain HTTP and have no TLS-skip-verify escape
+    // hatch. Cross-VM peer challenges use the HTTPS listener below instead.
+    let state_for_http = Arc::clone(&verification_state);
     tokio::spawn(async move {
-        if let Err(e) = start_server(verification_state, http_port, tls_server_config).await {
-            error!(error = %e, "Verification server error");
+        if let Err(e) = start_server(state_for_http, http_port, None).await {
+            error!(error = %e, "Verification HTTP server error (port {})", http_port);
         }
     });
-    info!("HTTP API listening on port {}", http_port);
+    info!("HTTP API listening on port {} (plain HTTP)", http_port);
+
+    // Additionally bind HTTPS on `verification_https_port` for the inter-peer
+    // verification mesh — only the verification client uses this port. Cert
+    // is identity-derived (pubkey == node_id), peers pin against the
+    // registered node_id, no CA / DNS / Let's Encrypt required.
+    let https_verification_listening = tls_server_config.is_some();
+    if let Some(tls) = tls_server_config {
+        let state_for_https = Arc::clone(&verification_state);
+        tokio::spawn(async move {
+            if let Err(e) = start_server(state_for_https, verification_https_port, Some(tls)).await
+            {
+                error!(
+                    error = %e,
+                    "Verification HTTPS server error (port {})",
+                    verification_https_port
+                );
+            }
+        });
+        info!(
+            "Verification HTTPS listening on port {} (identity-pinned TLS for peer mesh)",
+            verification_https_port
+        );
+    }
+
+    // Phase 3: capability self-check loop. Probes prerequisites for each
+    // claimed capability (stratum ports, disk space, ghost-pay daemon,
+    // reaper config) every 30s. Diagnostic only — surfaced via the dashboard
+    // and `/health/self_check`. Does not auto-demote claims; the verification
+    // mesh catches false claims at the consensus layer.
+    let self_check = SelfCheck::new();
+    self_check.clone().spawn_loop(Arc::new(config.clone()));
+    info!("Capability self-check loop started (30s interval)");
 
     // Subscribe to template events BEFORE starting the processor to avoid race condition
     // (the processor fires NewWork immediately on first refresh)
@@ -4334,10 +4555,21 @@ async fn main() -> Result<()> {
     });
 
     // Start periodic verification task (verifies peer capabilities every 5 minutes)
-    // This implements the spec: nodes verify each other, results stored in DB for payout calculation
+    // This implements the spec: nodes verify each other, results stored in DB for payout calculation.
+    //
+    // The peer_provider's `http_port` becomes the port the verification client
+    // connects to on each peer. When the local HTTPS listener bound, peers also
+    // expose the same HTTPS listener (per protocol), so we target their
+    // `verification_https_port`. Otherwise fall back to plain HTTP on
+    // `http_port`.
+    let peer_challenge_port = if https_verification_listening {
+        config.network.verification_https_port
+    } else {
+        config.network.http_port
+    };
     let peer_provider = Arc::new(PeerProviderAdapter::new(
         Arc::clone(mesh.peers()),
-        config.network.http_port,
+        peer_challenge_port,
     ));
 
     // Create broadcast channel for verification results
@@ -4345,13 +4577,21 @@ async fn main() -> Result<()> {
         ghost_verification::task::verification_broadcast_channel(100);
 
     // C-3: Handle Result from VerificationTask::new() instead of panicking
-    // Use HTTPS on mainnet, HTTP on signet/testnet (where TLS is typically not configured)
+    // Mainnet uses identity-pinned TLS (cert pubkey == node_id, no CA chain).
+    // Signet/testnet falls back to plain HTTP for ease of dev iteration.
     let is_mainnet = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
     let verification_result = if is_mainnet {
-        VerificationTask::new_with_identity(
+        // Build the pubkey allow list backed by the live peer registry. The
+        // closure clones the Arc<PeerManager> so it can be consulted at every
+        // TLS handshake without holding any lock outside the call.
+        let peer_mgr_for_pinning = Arc::clone(mesh.peers());
+        let pubkey_allow: ghost_common::tls::PubkeyAllowList =
+            Arc::new(move |pubkey: &[u8; 32]| peer_mgr_for_pinning.get_peer(pubkey).is_some());
+        VerificationTask::new_with_identity_pinned(
             Arc::clone(&db),
             &identity,
             peer_provider as Arc<dyn PeerProvider>,
+            pubkey_allow,
         )
     } else {
         // Signet/testnet: Use HTTP since TLS is typically not configured
@@ -4946,6 +5186,22 @@ fn expand_path(path: &std::path::Path) -> Result<PathBuf> {
 fn load_config(path: &std::path::Path) -> Result<NodeConfig> {
     let config = if path.exists() {
         let content = std::fs::read_to_string(path)?;
+
+        // One-shot deprecation check: the legacy `public_mining` bool was
+        // removed in favour of `mining_mode`. Old pool.toml files still parse
+        // (serde silently ignores unknown fields) but operators should clean
+        // up so the source of truth is unambiguous.
+        if content
+            .lines()
+            .any(|l| l.trim_start().starts_with("public_mining"))
+        {
+            warn!(
+                "DEPRECATED: `public_mining` in pool.toml is ignored. \
+                 Use `mining_mode = \"PublicPool\" | \"PrivatePool\" | \"PrivateSolo\"` instead. \
+                 Remove the `public_mining` line to silence this warning."
+            );
+        }
+
         let config: NodeConfig = toml::from_str(&content)?;
 
         // Check config file permissions — fails on mainnet if world-readable

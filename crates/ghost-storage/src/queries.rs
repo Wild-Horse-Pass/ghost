@@ -745,6 +745,158 @@ impl Database {
         })
     }
 
+    /// Address-grouped variant of [`Self::get_top_unpaid_miners`]. Sums
+    /// unpaid work across all of a payout address's workers so a user
+    /// running N rigs under one BTC address takes ONE coinbase slot
+    /// instead of N. Backs the post-`PAYOUT_ADDRESS_GROUPING_HEIGHT`
+    /// payout path; the legacy per-miner_id query stays around for the
+    /// pre-gate path so a mixed-version mesh keeps producing identical
+    /// proposals during the rollout window.
+    ///
+    /// Tie-break: lex order on the (decrypted) address. Deterministic
+    /// across every node so the BFT supermajority computes identical
+    /// proposal hashes.
+    ///
+    /// `payout_address` is encrypted at rest, so we can't `GROUP BY`
+    /// in SQL — fetch the unpaid set, decrypt addresses in-process, then
+    /// fold into a HashMap. At ledger sizes (low thousands of unpaid
+    /// miners) the decrypt loop is negligible; if it ever shows up in
+    /// flame graphs, add a `payout_address_hash` column + migration.
+    ///
+    /// Returns `Vec<(address, unpaid_work, miner_ids_in_group)>` ordered
+    /// by unpaid_work desc, address asc. The `miner_ids_in_group` field
+    /// lets the caller pass the flattened list straight to
+    /// [`Self::mark_miners_paid`] without a follow-up resolve query.
+    pub fn get_top_unpaid_addresses(
+        &self,
+        cutoff_ts: i64,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, f64, Vec<String>)>> {
+        // 1. Pull every unpaid (miner_id, work, encrypted_address) row.
+        //    No GROUP BY in SQL because the address is encrypted.
+        let raw: Vec<(String, f64, String)> = self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.miner_id, SUM(s.work) AS unpaid_work, m.payout_address
+                     FROM shares s
+                     INNER JOIN miners m ON m.miner_id = s.miner_id
+                     WHERE s.paid_in_proposal_hash IS NULL
+                       AND s.timestamp <= ?1
+                       AND s.valid = 1
+                     GROUP BY s.miner_id",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![cutoff_ts], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })?;
+
+        // 2. Decrypt + group by plaintext address. Skip rows whose
+        //    payout_address is empty or fails to decrypt — they have no
+        //    valid output target and should be excluded from payout
+        //    rather than crashing the whole proposal.
+        use std::collections::HashMap;
+        let mut acc: HashMap<String, (f64, Vec<String>)> = HashMap::new();
+        for (miner_id, work, enc_addr) in raw {
+            if enc_addr.is_empty() {
+                continue;
+            }
+            let plain = match self.decrypt_address(&enc_addr) {
+                Ok(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            let entry = acc.entry(plain).or_insert((0.0, Vec::new()));
+            entry.0 += work;
+            entry.1.push(miner_id);
+        }
+
+        // 3. Sort by (unpaid_work desc, address asc) — deterministic
+        //    tie-break for cross-node BFT consensus.
+        let mut sorted: Vec<(String, f64, Vec<String>)> = acc
+            .into_iter()
+            .map(|(addr, (work, ids))| (addr, work, ids))
+            .collect();
+        sorted.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        sorted.truncate(limit as usize);
+
+        // 4. Each group's miner_ids list also gets a stable order so
+        //    downstream callers that hash / serialise it converge.
+        for entry in sorted.iter_mut() {
+            entry.2.sort();
+        }
+
+        Ok(sorted)
+    }
+
+    /// Resolve a list of decrypted payout addresses to every `miner_id`
+    /// currently bound to one of them. Used by the mark-paid handler
+    /// post-`PAYOUT_ADDRESS_GROUPING_HEIGHT`: the proposal lists hashed
+    /// ADDRESSES, but `mark_miners_paid` works on miner_ids, so we need
+    /// to fan out before the UPDATE.
+    ///
+    /// Decrypts every miner's stored address in-process and matches in
+    /// memory — same trade-off as [`Self::get_top_unpaid_addresses`].
+    /// The input set is bounded by `LEDGER_CAP` (1000) so the cost is
+    /// always trivially small.
+    pub fn miner_ids_for_addresses(
+        &self,
+        addresses: &[String],
+    ) -> GhostResult<Vec<String>> {
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+        use std::collections::HashSet;
+        let wanted: HashSet<&str> = addresses.iter().map(|s| s.as_str()).collect();
+
+        let pairs: Vec<(String, String)> = self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT miner_id, payout_address
+                     FROM miners
+                     WHERE payout_address IS NOT NULL AND payout_address != ''",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })?;
+
+        let mut out: Vec<String> = Vec::new();
+        for (miner_id, enc_addr) in pairs {
+            let plain = match self.decrypt_address(&enc_addr) {
+                Ok(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            if wanted.contains(plain.as_str()) {
+                out.push(miner_id);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     /// Recent valid shares for live visualisation (quasar). Returns
     /// `(miner_id, share_hash, timestamp, work)` ordered by timestamp
     /// ascending, so the caller can append them to a render queue in

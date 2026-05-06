@@ -194,8 +194,16 @@ pub const SV2_STRATUM_PORT: u16 = 34255;
 /// SV1 Stratum port (translator)
 pub const SV1_STRATUM_PORT: u16 = 3333;
 
-/// HTTP API port
+/// HTTP API port (plain HTTP — used by SRI share webhook on loopback, the
+/// nginx public-API upstream, and the local dashboard).
 pub const HTTP_API_PORT: u16 = 8080;
+
+/// HTTPS API port for the inter-peer verification mesh.
+///
+/// Hosts the same routes as `HTTP_API_PORT` but only the verification client
+/// uses this — peer challenges hit `https://<peer-ip>:VERIFICATION_HTTPS_PORT`
+/// with identity-pinned TLS. SRI / nginx / dashboard never see TLS.
+pub const VERIFICATION_HTTPS_PORT: u16 = 8443;
 
 // P2P Consensus ports
 /// Share propagation port

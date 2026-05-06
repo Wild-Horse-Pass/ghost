@@ -53,7 +53,7 @@ use futures::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tmq::{publish, subscribe, Context, Multipart};
 use tokio::sync::mpsc;
@@ -217,6 +217,10 @@ pub struct MeshNetwork {
     /// to gossip the local active set so peers can compute a deduplicated
     /// mesh-wide active miner count.
     active_miner_hashes_fn: Option<Arc<dyn Fn() -> Vec<[u8; 16]> + Send + Sync>>,
+    /// Hardware-derived effective capacity advertised in health pings.
+    /// `0` means we haven't computed it yet (mesh started before capacity
+    /// init); peers treat it as unknown and skip utilisation routing for us.
+    max_capacity: AtomicU32,
 }
 
 /// Message identifier for deduplication
@@ -985,7 +989,15 @@ impl MeshNetwork {
             noise_pool,
             miner_count_fn: None,
             active_miner_hashes_fn: None,
+            max_capacity: AtomicU32::new(0),
         })
+    }
+
+    /// Set the hardware-derived miner capacity advertised in health pings.
+    /// Should be called once at startup after [`capacity::measure`]; can be
+    /// re-called if the operator throttle (`network.max_miners`) changes.
+    pub fn set_max_capacity(&self, value: u32) {
+        self.max_capacity.store(value, Ordering::Relaxed);
     }
 
     /// Set a callback that provides the real connected-miner count for health pings.
@@ -2391,6 +2403,7 @@ impl MeshNetwork {
                 active_miner_id_hashes: self.active_miner_hashes_fn.as_ref()
                     .map(|f| f())
                     .unwrap_or_default(),
+                max_capacity: self.max_capacity.load(Ordering::Relaxed),
             };
 
             match self.create_envelope(

@@ -95,7 +95,8 @@ export default function LocksPage() {
     <div className="space-y-6">
       {/* 1. PageHeader */}
       <PageHeader
-        title="Ghost Locks"
+        eyebrow="locks"
+        title="Quantum-safe P2WSH UTXOs."
         subtitle="Timelocked P2TR outputs with automatic key rotation"
       />
 

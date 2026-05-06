@@ -1173,7 +1173,22 @@ impl PayoutProposalCreator {
     /// which is stored in the miners table via update_miner_address().
     ///
     /// MED-POOL-5: Validates the address is a valid Bitcoin address format.
+    ///
+    /// PAYOUT_ADDRESS_GROUPING_HEIGHT fast-path: post-gate, the block-found
+    /// path passes payout addresses directly (rather than miner_ids) as the
+    /// string key, because `get_top_unpaid_addresses` already grouped by
+    /// address. If the input parses as a valid bitcoin address we skip the
+    /// miner-table lookup and return its bytes — no extra DB round-trip,
+    /// and the upstream merge-by-address logic still does the right thing
+    /// on the (rare) chance the same address appears twice.
     fn get_miner_address(&self, miner_id: &str) -> GhostResult<Vec<u8>> {
+        if miner_id
+            .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            .is_ok()
+        {
+            return Ok(miner_id.as_bytes().to_vec());
+        }
+
         // Look up miner's payout address from the miners table
         if let Some(address_str) = self.db.get_miner_payout_address(miner_id)? {
             if !address_str.is_empty() {

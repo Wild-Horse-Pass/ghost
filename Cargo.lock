@@ -2862,6 +2862,7 @@ dependencies = [
  "ghost-gsp",
  "ghost-gsp-proto",
  "hex",
+ "rustls",
  "serde",
  "tempfile",
  "tokio",
@@ -3138,10 +3139,12 @@ dependencies = [
  "ghost-verification",
  "ghost-zkp",
  "hex",
+ "libc",
  "noise_sv2 1.4.1",
  "parking_lot",
  "rand 0.8.5",
  "reqwest 0.12.28",
+ "rustls",
  "secp256k1 0.28.2",
  "serde",
  "serde_json",
@@ -3366,6 +3369,7 @@ dependencies = [
  "axum",
  "bitcoin",
  "chrono",
+ "ed25519-dalek",
  "futures",
  "getrandom 0.2.17",
  "ghost-buds",
@@ -8149,6 +8153,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-socks"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d4770b8024672c1101b3f6733eab95b18007dbe0847a8afe341fcf79e06043f"
+dependencies = [
+ "either",
+ "futures-util",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-stream"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9830,17 +9846,56 @@ name = "wraith-wallet-cli"
 version = "1.8.0"
 dependencies = [
  "clap",
+ "libc",
+ "rpassword",
+ "serde_json",
+ "tokio",
  "wraith-wallet-ipc",
 ]
 
 [[package]]
 name = "wraith-wallet-core"
 version = "1.8.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "async-trait",
+ "axum",
+ "bip32",
+ "bip39",
+ "bitcoin",
+ "futures-util",
+ "ghost-gsp-proto",
+ "ghost-keys",
+ "hex",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "secp256k1 0.29.1",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-socks",
+ "tokio-tungstenite 0.21.0",
+ "tracing",
+ "url",
+ "zeroize",
+]
 
 [[package]]
 name = "wraith-wallet-daemon"
 version = "1.8.0"
 dependencies = [
+ "bitcoin",
+ "ghost-gsp-proto",
+ "ghost-keys",
+ "hex",
+ "rand 0.8.5",
+ "secrecy",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -9849,9 +9904,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "wraith-wallet-gui"
+version = "1.8.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wraith-wallet-ipc",
+]
+
+[[package]]
 name = "wraith-wallet-ipc"
 version = "1.8.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
 ]

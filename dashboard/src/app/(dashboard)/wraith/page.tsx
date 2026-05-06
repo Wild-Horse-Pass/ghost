@@ -29,7 +29,8 @@ export default function WraithPage() {
     <div className="space-y-6">
       {/* 1. PageHeader */}
       <PageHeader
-        title="Ghost Wraith"
+        eyebrow="wraith"
+        title="Privacy mixing sessions."
         subtitle="CoinJoin mixing for transaction privacy"
         actions={
           ghostPayStatus ? (

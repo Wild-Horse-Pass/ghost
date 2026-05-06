@@ -6,6 +6,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pool · Bitcoin Ghost</title>
   <meta name="description" content="Ghost Pool — 1% pool fee from subsidy only, 100% of tx fees to the winning node, every node runs its own policy.">
+  <meta property="og:site_name" content="Bitcoin Ghost">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Ghost Pool · Bitcoin Ghost">
+  <meta property="og:description" content="Decentralised mining pool on Bitcoin Ghost. Live leaderboard, ledger-model payouts, BFT-voted coinbase — no operator, no fee.">
+  <meta property="og:url" content="https://bitcoinghost.org/pool.html">
+  <meta property="og:image" content="https://bitcoinghost.org/logo.png">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:site" content="@defenwycke">
+  <meta name="twitter:creator" content="@defenwycke">
+  <meta name="twitter:title" content="Ghost Pool · Bitcoin Ghost">
+  <meta name="twitter:description" content="Decentralised mining pool on Bitcoin Ghost. Live leaderboard, ledger-model payouts, BFT-voted coinbase — no operator, no fee.">
+  <meta name="twitter:image" content="https://bitcoinghost.org/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -211,7 +223,6 @@
       <div class="lb-window">
         <label for="lb-window">window</label>
         <select id="lb-window">
-          <option value="lifetime">lifetime</option>
           <option value="day" selected>last day</option>
           <option value="week">last week</option>
           <option value="month">last month</option>
@@ -367,6 +378,48 @@
     return (ths / 1e6).toFixed(2) + '<span class="unit"> EH/s</span>';
   }
 
+  // ─── Sliding-window smoothers ──────────────────────────────────────────
+  // Damp poll-cycle jitter on numeric metrics. Each `smooth(key, raw)` call
+  // appends `raw` to the named ring buffer (default 8 samples ≈ 4 min at
+  // 30s polls) and returns a smoothed value:
+  //   • mode 'ema' (default)    — exponential moving average, alpha=0.35
+  //   • mode 'median'           — middle of the buffer, ideal for discrete
+  //                               counts where fractional EMAs look silly
+  // Drop-in: replace `raw` with `smooth('hashrate', raw)` at render time.
+  // The buffers live only in-memory — page refresh resets them, which keeps
+  // the smoothing honest after a real outage.
+  var __smoothers = {};
+  function smooth(key, raw, opts) {
+    opts = opts || {};
+    var maxN = opts.window || 8;
+    var mode = opts.mode || 'ema';
+    var alpha = opts.alpha != null ? opts.alpha : 0.35;
+    var s = __smoothers[key] || (__smoothers[key] = []);
+    if (raw != null && isFinite(raw)) s.push(raw);
+    while (s.length > maxN) s.shift();
+    if (!s.length) return null;
+    if (mode === 'median') {
+      var sorted = s.slice().sort(function (a, b) { return a - b; });
+      var mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+    var v = s[0];
+    for (var i = 1; i < s.length; i++) v = alpha * s[i] + (1 - alpha) * v;
+    return v;
+  }
+  // Smooth a stored history series of [t, v] points into a new EMA series
+  // for charting. Same alpha as point-wise smoother so headline tile and
+  // chart line agree visually.
+  function smoothSeries(series, alpha) {
+    if (!series || !series.length) return [];
+    alpha = alpha != null ? alpha : 0.35;
+    var out = [series[0].slice()];
+    for (var i = 1; i < series.length; i++) {
+      out.push([series[i][0], alpha * series[i][1] + (1 - alpha) * out[i - 1][1]]);
+    }
+    return out;
+  }
+
   var POOL_NODES = [
     { id: 'vm1' }, { id: 'vm2' }, { id: 'vm3' }, { id: 'vm4' }
   ];
@@ -440,7 +493,11 @@
       svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#8b8a84" font-size="14" font-family="IBM Plex Mono">collecting data…</text>';
       return { latest: null, peak: null };
     }
-    var padX = 72, padY = 24, padBottom = 36; // extra room at bottom for time labels
+    // padX must fit the widest Y-axis label. With hashrate values up to
+    // 100s of TH/s and a "TH/s" unit suffix the rendered text can exceed
+    // 80 px, so 72 was clipping the leading "1" off "10.00 TH/s". Bumped
+    // to 96 to keep labels fully on-screen at common-case magnitudes.
+    var padX = 96, padY = 24, padBottom = 36;
     // Filter entries down to finite numeric values — guards against stale
     // localStorage rows with null / undefined values.
     var clean = series.filter(function (s) { return Array.isArray(s) && typeof s[1] === 'number' && isFinite(s[1]); });
@@ -502,9 +559,13 @@
   }
 
   function renderCharts() {
+    // Plot smoothed series so single-poll dips (rate-limit, miner reconnect,
+    // peer broadcast freshness expiring) don't flicker the line. Raw points
+    // remain in chartHistory for honesty + future re-smoothing.
+    var hrSmooth = smoothSeries(chartHistory.hashrate);
     var hrStats = renderLineChart(
       document.getElementById('hashrate-chart'),
-      chartHistory.hashrate,
+      hrSmooth,
       '#f7931a',
       function (v) { return formatHashrate(v).replace(/<[^>]+>/g, '').trim(); },
       { yTitle: 'pool hashrate' }
@@ -513,9 +574,10 @@
     document.getElementById('hashrate-peak').innerHTML   = hrStats.peak   == null ? '—' : formatHashrate(hrStats.peak);
     document.getElementById('hashrate-window').textContent = formatWindow(chartHistory.hashrate);
 
+    var mnSmooth = smoothSeries(chartHistory.miners);
     var mnStats = renderLineChart(
       document.getElementById('miners-chart'),
-      chartHistory.miners,
+      mnSmooth,
       '#06b6d4',
       function (v) { return Math.round(v).toString(); },
       { floor: 4, yTitle: 'active miners' }
@@ -534,8 +596,12 @@
   }
 
   function renderMetrics() {
-    document.getElementById('m-hashrate').innerHTML = formatHashrate(lastStats.hashrate);
-    document.getElementById('m-miners').textContent = lastStats.miners.toString();
+    // Smoothed values for the rate/count tiles (jittery underlying metrics).
+    // Block height and blocks-found stay raw — those are exact counters.
+    var hr = smooth('hashrate', lastStats.hashrate);
+    var mn = smooth('miners', lastStats.miners, { mode: 'median' });
+    document.getElementById('m-hashrate').innerHTML = formatHashrate(hr != null ? hr : lastStats.hashrate);
+    document.getElementById('m-miners').textContent = (mn != null ? Math.round(mn) : lastStats.miners).toString();
     document.getElementById('m-blocks').textContent = lastStats.blocks.toString();
     document.getElementById('m-height').textContent = lastStats.height ? lastStats.height.toLocaleString() : '—';
   }
@@ -690,6 +756,21 @@
         bestPerWindow[r.window] = r.data.best;
       }
     });
+    // Enforce window monotonicity: wider windows are supersets of narrower
+    // ones, so a wider window's best can never be worse than a narrower
+    // one's. If a single rate-limited fetch leaves month with stale cache
+    // while week has fresh data, propagate the better result outward so
+    // the user never sees "last week better than last month".
+    // REC_WINDOWS = ['block', 'day', 'week', 'month'] — in increasing-window order.
+    for (var __wi = 1; __wi < REC_WINDOWS.length; __wi++) {
+      var __wider = REC_WINDOWS[__wi];
+      var __narrower = REC_WINDOWS[__wi - 1];
+      var __wb = bestPerWindow[__wider];
+      var __nb = bestPerWindow[__narrower];
+      if (__nb && (!__wb || __nb.share_hash < __wb.share_hash)) {
+        bestPerWindow[__wider] = __nb;
+      }
+    }
     REC_WINDOWS.forEach(function (w) {
       var v = document.getElementById('rec-' + w);
       var m = document.getElementById('rec-' + w + '-meta');
@@ -816,12 +897,17 @@
 
   (function () {
     // Sync the window selector + its visibility to the active tab.
-    // Shares tab uses lifetime (and hides the selector since there's no
-    // choice to make); best-hash tab shows day/week/month.
+    // Shares tab uses lifetime via state (selector hidden — only one
+    // valid choice). Best-hash tab shows day/week/month; `lifetime` is
+    // not offered because the node only keeps raw share hashes for a
+    // bounded window (see api_pool_leaderboard_handler).
     function syncWindowSelect() {
       var select = document.getElementById('lb-window');
       var wrap = select.parentElement;
-      select.value = lbCurrentWindow();
+      if (lbState.category === 'best_hash' && lbState.windowByCategory.best_hash === 'lifetime') {
+        lbState.windowByCategory.best_hash = 'day';
+      }
+      if (lbState.category === 'best_hash') select.value = lbCurrentWindow();
       wrap.style.visibility = (lbState.category === 'shares') ? 'hidden' : 'visible';
     }
     document.querySelectorAll('.lb-tabs button').forEach(function (b) {
@@ -1463,16 +1549,25 @@ window.__ghostPool.onBlockEvent = function (kind, height) {
   if (kind === 'ours') triggerBlockFound();
   else triggerNoBlock();
 };
-// Seed "time since last block" from the chain's actual tip timestamp
-// so the HUD clock shows the truth after a page refresh, not zero.
-// Convert unix seconds → performance.now() frame by computing offset.
-let tipTimeSynced = false;
+// Re-sync "time since last block" from the chain's actual tip timestamp on
+// every refreshPool tick. Previous one-shot `tipTimeSynced` flag meant the
+// clock only ever seeded once on page load, then relied on height-increment
+// detection to reset it when a block landed. If that detection missed (e.g.
+// ghost-pool's template lagged the real tip, or a poll got rate-limited
+// across a transition), the clock drifted forever and eventually showed
+// 30+ minutes even though the chain had moved on.
+//
+// Now: re-seed whenever tipUnixSecs changes. `last_block_time` is the
+// authoritative source for the clock — skip only during the flash animation
+// (when the clock displays '—' anyway).
+let lastSyncedTipUnix = 0;
 function syncFromTipTime(tipUnixSecs) {
-  if (tipTimeSynced || flashState) return; // don't overwrite during a live event
+  if (flashState) return;                           // flash is driving the display
+  if (tipUnixSecs === lastSyncedTipUnix) return;    // tip hasn't moved, no work
   const nowUnix = Date.now() / 1000;
   const ageSecs = Math.max(0, nowUnix - tipUnixSecs);
   lastBlockTs = (performance.now() / 1000) - ageSecs;
-  tipTimeSynced = true;
+  lastSyncedTipUnix = tipUnixSecs;
 }
 window.__ghostPool.onTipTime = syncFromTipTime;
 

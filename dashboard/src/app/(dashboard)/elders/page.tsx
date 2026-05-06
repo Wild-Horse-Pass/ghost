@@ -177,7 +177,8 @@ export default function EldersPage() {
     <div className="space-y-6">
       {/* Page Header */}
       <PageHeader
-        title="Elders & MPC"
+        eyebrow="elders & mpc"
+        title="Quorum members and ceremony."
         subtitle="MPC ceremony status, elder registry, and zero-knowledge proof parameters"
         actions={
           isElder && elderSlot != null ? (

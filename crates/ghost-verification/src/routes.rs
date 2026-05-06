@@ -261,6 +261,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/swarm/nodes", get(api_swarm_nodes_handler))
         .route("/api/v1/watchdog/status", get(api_watchdog_status_handler))
         .route("/api/v1/system/version", get(api_system_version_handler))
+        .route("/api/v1/system/mempool", get(api_system_mempool_handler))
+        .route("/api/v1/reaper/status", get(api_reaper_status_handler))
         .route("/api/v1/payments", get(api_payments_handler))
         .route("/api/v1/backup/history", get(api_backup_history_handler))
         .route("/api/v1/wraith/sessions", get(api_wraith_sessions_handler))
@@ -2019,21 +2021,46 @@ async fn api_pool_next_payout_handler(
     // are excluded from the display only; if shares from a real miner
     // happen to be submitted under a system miner_id they'd still be
     // paid on-chain but the public view doesn't need to surface them.
-    let top_rows: Vec<(String, f64)> = db
-        .get_top_unpaid_miners(now_s, LEDGER_CAP.saturating_mul(2))
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(miner_id, _)| !is_system_miner(miner_id))
-        .take(LEDGER_CAP as usize)
-        .collect();
-    // Count distinct unpaid miners, excluding system accounts so the
-    // header tile matches what's actually shown in the table.
-    let total_unpaid_miners = db
-        .get_distinct_unpaid_miner_ids(now_s)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|id| !is_system_miner(id))
-        .count() as u64;
+    //
+    // Gate: post-PAYOUT_ADDRESS_GROUPING_HEIGHT we group by payout_address
+    // so the displayed top-N matches the post-gate coinbase behaviour
+    // (one slot per address, multi-rig users no longer monopolise).
+    // The constant is duplicated here rather than imported because
+    // ghost-verification doesn't depend on ghost-pool — keep the two
+    // in sync if the gate ever moves.
+    const PAYOUT_ADDRESS_GROUPING_HEIGHT: u64 = 946_743;
+
+    let top_rows: Vec<(String, f64)> = if block_height >= PAYOUT_ADDRESS_GROUPING_HEIGHT {
+        db.get_top_unpaid_addresses(now_s, LEDGER_CAP.saturating_mul(2))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(addr, _, _)| !is_system_miner(addr))
+            .take(LEDGER_CAP as usize)
+            .map(|(addr, work, _miner_ids)| (addr, work))
+            .collect()
+    } else {
+        db.get_top_unpaid_miners(now_s, LEDGER_CAP.saturating_mul(2))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(miner_id, _)| !is_system_miner(miner_id))
+            .take(LEDGER_CAP as usize)
+            .collect()
+    };
+    // Count distinct unpaid users (miners pre-gate, addresses post-gate)
+    // so the header tile matches what's actually shown in the table.
+    let total_unpaid_miners = if block_height >= PAYOUT_ADDRESS_GROUPING_HEIGHT {
+        db.get_top_unpaid_addresses(now_s, u32::MAX)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(addr, _, _)| !is_system_miner(addr))
+            .count() as u64
+    } else {
+        db.get_distinct_unpaid_miner_ids(now_s)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| !is_system_miner(id))
+            .count() as u64
+    };
 
     // Iterative dust filter: drop miners whose projected payout < 546 sats,
     // recompute total_work, repeat until stable. Converges quickly (each
@@ -2810,16 +2837,20 @@ struct GhostPayLiveStatus {
     sync_state: &'static str,
 }
 
-/// Query ghost-pay L2 status — tries in-process handler first, then HTTP to localhost:8800.
+/// Query ghost-pay L2 status — tries in-process handler first, then HTTPS to localhost:8800.
 /// Returns a self-contained future (no borrows) so axum handlers stay Send.
+///
+/// ghost-pay serves identity-derived TLS on 8800 (cert pubkey == node_id).
+/// Loopback IPC under the same identity, so we skip cert-chain validation.
 async fn fetch_ghostpay_from_service() -> Option<GhostPayLiveStatus> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
+        .danger_accept_invalid_certs(true)
         .build()
         .ok()?;
 
     let resp = client
-        .get("http://127.0.0.1:8800/verify/ghostpay?unsigned=true")
+        .get("https://127.0.0.1:8800/verify/ghostpay?unsigned=true")
         .send()
         .await
         .ok()?;
@@ -5300,9 +5331,6 @@ async fn api_config_update_handler(
                 }
 
                 config.network.mining_mode = new_mode;
-                // Sync public_mining flag for backward compatibility
-                config.network.public_mining =
-                    matches!(new_mode, ghost_common::config::MiningMode::PublicPool);
                 updated_fields.push("mining_mode".to_string());
             }
             Err(e) => {
@@ -6856,8 +6884,76 @@ async fn pool_nodes_handler(
     Json(serde_json::json!({
         "this_node": {
             "miner_count": state.miner_count(),
+            "max_capacity": state.max_capacity(),
         },
         "peers": state.pool_peers(),
+    }))
+}
+
+/// Return the Reaper observability snapshot (cumulative txs evaluated /
+/// reaped / accepted, dead bytes total, per-DeadCodeType counters). Read by
+/// the dashboard `/reaper` page. Counters are process-lived — they reset on
+/// ghost-pool restart, matching the rest of the operator metric surface.
+async fn api_reaper_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(state.reaper_stats())
+}
+
+/// Detect whether the operator has installed the per-node mempool.space stack
+/// on this VM. The stack is opt-in (extra ~2 GB RAM, ~50 GB disk), so most
+/// nodes won't have it — that's fine. Detection is deliberately cheap:
+///
+///   1. If `/etc/ghost/mempool-stack.enabled` exists, read the port from it
+///      (operator's bring-up script writes this marker).
+///   2. Otherwise default to checking port 8999.
+///   3. TCP-connect with a 250 ms timeout to that port on localhost.
+///
+/// Returns one of three states:
+///   - `running`             — port responds, frontend can iframe it
+///   - `installed_not_running` — marker exists but port is silent
+///   - `not_installed`       — no marker, port silent → show install panel
+async fn api_system_mempool_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    use tokio::net::TcpStream;
+    use std::time::Duration;
+
+    let marker_path = std::path::Path::new("/etc/ghost/mempool-stack.enabled");
+    let marker_present = marker_path.exists();
+    let port: u16 = if marker_present {
+        std::fs::read_to_string(marker_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(8999)
+    } else {
+        8999
+    };
+
+    let port_responds = tokio::time::timeout(
+        Duration::from_millis(250),
+        TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false);
+
+    let status = match (marker_present, port_responds) {
+        (_, true) => "running",
+        (true, false) => "installed_not_running",
+        (false, false) => "not_installed",
+    };
+
+    Json(serde_json::json!({
+        "enabled": port_responds,
+        "status": status,
+        "port": port,
+        "marker_path": marker_path.to_string_lossy(),
+        // Helpful UI hints — keep these stable, the dashboard reads them.
+        "install_command": "sudo /opt/ghost/bin/ghost-mempool install",
+        "uninstall_command": "sudo /opt/ghost/bin/ghost-mempool uninstall",
+        "min_ram_gb": 4,
+        "min_disk_gb": 50,
     }))
 }
 

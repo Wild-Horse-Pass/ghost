@@ -85,7 +85,7 @@ export default function PeersPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Peers" subtitle="Connected nodes in the Ghost mesh network" />
+      <PageHeader eyebrow="peers" title="Mesh connections." subtitle="Connected nodes in the Ghost mesh network" />
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

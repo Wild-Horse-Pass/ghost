@@ -323,6 +323,10 @@ pub struct TemplateProcessor {
     classifier: BudsClassifier,
     /// Reaper config for dead code detection
     reaper_config: ReaperConfig,
+    /// Cumulative Reaper observability counters — incremented on every
+    /// analyze() call. Exposed via /api/v1/reaper/status; read-only from
+    /// outside this module.
+    reaper_stats: Arc<crate::reaper_stats::ReaperStats>,
     /// Current work state
     current_work: RwLock<Option<WorkState>>,
     /// Work states by template_id (for SubmitSolution lookup)
@@ -349,6 +353,12 @@ pub struct TemplateProcessor {
 }
 
 impl TemplateProcessor {
+    /// Clone the Reaper-stats Arc so the verification API can read counters
+    /// without taking any lock on the processor itself.
+    pub fn reaper_stats(&self) -> Arc<crate::reaper_stats::ReaperStats> {
+        Arc::clone(&self.reaper_stats)
+    }
+
     /// Create a new template processor
     pub fn new(
         config: TemplateConfig,
@@ -365,6 +375,7 @@ impl TemplateProcessor {
             policy,
             classifier: BudsClassifier::new(),
             reaper_config,
+            reaper_stats: crate::reaper_stats::ReaperStats::new(),
             current_work: RwLock::new(None),
             work_states: RwLock::new(HashMap::new()),
             job_counter: RwLock::new(0),
@@ -1915,6 +1926,7 @@ impl TemplateProcessor {
             // Reaper: detect dead code in witness scripts
             if self.reaper_config.enabled {
                 let reaper_verdict = ghost_reaper::analyze(&btc_tx, &self.reaper_config);
+                self.reaper_stats.record(&reaper_verdict);
                 if reaper_verdict.is_corpse() {
                     removed_fees += tx.fee;
                     reaped_count += 1;

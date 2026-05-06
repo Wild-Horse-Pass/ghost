@@ -147,6 +147,14 @@ struct Args {
     #[arg(long)]
     tls_key: Option<std::path::PathBuf>,
 
+    /// Path to the node's Ed25519 identity key (`node.key`, same file
+    /// ghost-pool uses). When provided AND no operator PEM cert is given,
+    /// ghost-pay derives a self-signed TLS cert from this identity. Peers
+    /// pin against the registered `node_id` (cert pubkey == node_id), so
+    /// no CA / DNS / Let's Encrypt is required.
+    #[arg(long, env = "GHOST_PAY_IDENTITY_KEY")]
+    identity_key: Option<std::path::PathBuf>,
+
     /// MPC parameters directory (for loading Groth16 verification keys)
     /// Defaults to <data-dir>/../mpc_params/ (sibling of data dir)
     #[arg(long, env = "GHOST_MPC_PARAMS_DIR")]
@@ -978,9 +986,21 @@ fn pubkey_hex_to_p2tr_address(pubkey_hex: &str, network: Network) -> String {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Install the rustls process-level CryptoProvider exactly once before any
+    // ClientConfig::builder() / ServerConfig::builder() construction. Required
+    // when identity-derived TLS is used (mirrors the ghost-pool fix).
+    if rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .is_err()
+    {
+        // Already installed (test harness / re-init); nothing to do.
+    }
+
     // Extract TLS config before args is moved into AppState
     let tls_cert_path = args.tls_cert.clone();
     let tls_key_path = args.tls_key.clone();
+    let identity_key_path = args.identity_key.clone();
+    let public_address_for_tls = std::env::var("GHOST_PAY_PUBLIC_ADDRESS").ok();
 
     // Setup logging
     let level = match args.log_level.to_lowercase().as_str() {
@@ -1749,9 +1769,10 @@ async fn main() -> Result<()> {
     // Parse listen address
     let addr: SocketAddr = state.config.api_listen.parse()?;
 
-    // Build TLS config for HTTPS — only when operator provides explicit cert/key.
-    // Without explicit certs, serve plain HTTP so that the verification client
-    // (which uses HTTP on signet/testnet) can reach us without TLS issues.
+    // Build TLS config for HTTPS. Resolution order:
+    //   1. Operator PEM files (`--tls-cert` + `--tls-key`)
+    //   2. Identity-derived cert from `--identity-key` (cert pubkey == node_id)
+    //   3. Plain HTTP fallback (testnet / dev only)
     let tls_config = if let (Some(cert_path), Some(key_path)) = (tls_cert_path, tls_key_path) {
         let tls_cfg = ghost_common::config::TlsConfig {
             cert_path: Some(cert_path),
@@ -1766,8 +1787,51 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("Failed to build TLS config: {}", e));
             }
         }
+    } else if let Some(key_path) = identity_key_path {
+        // Read the 32-byte Ed25519 secret seed (LocalSigner format: 32 bytes
+        // optionally followed by a 12-byte PoW proof we ignore here).
+        match std::fs::read(&key_path) {
+            Ok(bytes) if bytes.len() >= 32 => {
+                let mut secret = [0u8; 32];
+                secret.copy_from_slice(&bytes[..32]);
+                match ghost_common::tls::build_server_config_with_identity(
+                    &ghost_common::config::TlsConfig::default(),
+                    &secret,
+                    public_address_for_tls.as_deref(),
+                ) {
+                    Ok(tls) => {
+                        info!(
+                            "Ghost Pay API starting on {} (HTTPS, identity-derived cert from {})",
+                            addr,
+                            key_path.display()
+                        );
+                        Some(tls)
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!(
+                            "Failed to derive TLS config from identity {}: {}",
+                            key_path.display(),
+                            e
+                        ));
+                    }
+                }
+            }
+            Ok(_) => {
+                return Err(anyhow::anyhow!(
+                    "Identity key {} is too short (need ≥32 bytes)",
+                    key_path.display()
+                ));
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to read identity key {}: {}",
+                    key_path.display(),
+                    e
+                ));
+            }
+        }
     } else {
-        info!("Ghost Pay API starting on {} (HTTP)", addr);
+        info!("Ghost Pay API starting on {} (HTTP — no operator cert and no --identity-key)", addr);
         None
     };
 
