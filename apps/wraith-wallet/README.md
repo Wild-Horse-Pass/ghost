@@ -36,6 +36,38 @@ IPC codepath and the GUI never links the core directly.
 The wallet only ever talks to `ghost-pay` and `ghost-gsp` — it never reaches past
 them to a Bitcoin node directly.
 
+## Quick start
+
+Assuming `cargo` is on your PATH and you've cloned the monorepo:
+
+```sh
+# 1. Build everything (first build pulls + compiles a lot of deps).
+cargo build -p wraith-wallet-daemon -p wraith-wallet-cli -p wraith-wallet-gui
+
+# 2. Bring up the dev stack (needs a local signet bitcoind on :38335).
+bash scripts/run-wraith-stack.sh up
+
+# 3. Open the GUI — it kicks off onboarding automatically when there
+#    are no wallets. Or use the CLI:
+./target/debug/wraith-gui                              # GUI path
+./target/debug/wraith wallet create alice              # CLI path
+./target/debug/wraith gsp auth                         # → GSP session
+./target/debug/wraith light receive --index 0          # show first address
+./target/debug/wraith light watch                      # live silent-payment stream
+```
+
+Same `wraithd` daemon serves both clients. The GUI window can close
+without terminating `wraithd` (system-tray → Quit GUI to do that).
+
+To restore an existing wallet:
+
+```sh
+./target/debug/wraith wallet import alice
+# (paste 12 or 24 BIP-39 words; choose a fresh passphrase)
+```
+
+In the GUI, click `+ restore` next to the wallet picker.
+
 ## Build
 
 ```sh
@@ -120,21 +152,36 @@ immutable artifact ready for manual signing and upload.
 | 0  | Foundation (workspace skeleton)                  | done |
 | 1  | Chain client (ghost-pay RPC + GSP WS)            | done |
 | 2  | Light wallet                                     | done |
-| 3  | CLI maturation (`--json`, doctor, multi-cmd)     | done |
-| 4  | Multi-wallet                                     | done |
-| 5a | Wraith protocol v3 amendment                     | upstream (separate crate) |
-| 5b | Wraith wallet module                             | minimal participant |
-| 6  | Locks (prepare / confirm / jump)                 | done |
-| 7  | TAP / L2 payments                                | done |
-| 8  | Silent payments (BIP-352, candidate-tx push)     | done |
+| 3  | CLI maturation (`--json`, doctor, multi-cmd, completions) | done |
+| 4  | Multi-wallet (with GUI picker that switches active) | done |
+| 5a | Wraith protocol v3 amendment                     | upstream `wraith-protocol/` crate |
+| 5b | Wraith wallet module                             | not started |
+| 6  | Locks (prepare / confirm / jump)                 | done — CLI + GUI |
+| 7  | TAP / L2 payments                                | done — with confirm dialog |
+| 8  | Silent payments (BIP-352, candidate-tx push)     | done — with live `wraith light watch` |
 | 9  | Shroud relay                                     | pending |
 | 10 | Tor transport (SOCKS5 → arti later)              | done (SOCKS5) |
-| 11 | Multi-node failover                              | done |
-| 12 | Recovery (seed + checkpoint)                     | partial |
-| 13 | Hardware-wallet trait                            | software impl only |
-| 14 | Tauri GUI                                        | scaffold (health/doctor) |
-| 15 | Distribution (signed installers, auto-update)    | pending |
-| 16 | Hardening (IPC fuzz, external review)            | pending |
+| 11 | Multi-node failover                              | done — comma-separated URLs |
+| 12 | Recovery (seed + checkpoint)                     | done — `wallet import` + `wallet restore` |
+| 13 | Hardware-wallet trait                            | trait + software impl + stub vendor backend |
+| 14 | Tauri GUI                                        | done — onboarding, send/recv/locks/identity/settings tabs, system tray, live push toasts |
+| 15 | Distribution (signed installers, auto-update)    | tarball script — signing + update server pending |
+| 16 | Hardening (IPC fuzz, external review)            | proptest IPC fuzz + integration tests; external review pending |
+
+Tests as of latest: 7 IPC + 5 core + 4 daemon = 16, all green.
+
+## Security model
+
+- Encrypted keystore: Argon2id KDF → AES-256-GCM. Per-wallet passphrases.
+- IPC socket: bound at owner-only (0600) permissions; channel restricted to
+  processes running as the same user as `wraithd`.
+- Auto-lock: wallets are dropped from the unlocked set after
+  `WRAITHD_IDLE_LOCK_SECS` of no activity (default 15 minutes). Diagnostics
+  (Health / Doctor / DaemonEnv) and the WatchPayments stream don't reset
+  the timer; everything else does.
+- Network boundary: the wallet only ever talks to `ghost-pay` (REST) and
+  `ghost-gsp` (REST + WebSocket). It never reaches past them to a Bitcoin
+  node directly. Tor routing optional via `WRAITHD_TOR_PROXY`.
 
 ## Hard rules
 
