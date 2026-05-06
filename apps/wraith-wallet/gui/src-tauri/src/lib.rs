@@ -129,6 +129,36 @@ async fn light_history(limit: u32, offset: u32) -> Result<serde_json::Value, Str
 }
 
 #[tauri::command]
+async fn wallet_ghost_id() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletGhostId).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn wallet_auth_info() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletAuthInfo).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn gsp_register_scan_key() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::GspRegisterScanKey).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn gsp_session_status() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::GspSessionStatus).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn gsp_auth() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::GspAuth).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
 async fn locks_list() -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::LocksList).await?;
     to_value(&resp)
@@ -405,6 +435,11 @@ pub fn run() {
             light_receive,
             light_history,
             light_send,
+            wallet_ghost_id,
+            wallet_auth_info,
+            gsp_register_scan_key,
+            gsp_session_status,
+            gsp_auth,
             locks_list,
             locks_prepare,
             locks_confirm,

@@ -240,6 +240,7 @@
       <button data-tab="receive">receive</button>
       <button data-tab="send">send</button>
       <button data-tab="locks">locks</button>
+      <button data-tab="identity">identity</button>
       <button data-tab="history">history</button>
       <button data-tab="doctor">doctor</button>
     </nav>
@@ -323,6 +324,26 @@
             </thead>
             <tbody id="locks-body"></tbody>
           </table>
+        </div>
+      </section>
+
+      <!-- IDENTITY -->
+      <section data-view="identity" class="col hide">
+        <div class="panel col">
+          <label>Ghost ID (silent-payment receive identity)</label>
+          <div id="identity-ghost-id" class="addr">—</div>
+          <label>Scan public key</label>
+          <div id="identity-scan-key" class="addr">—</div>
+          <label>Spend public key</label>
+          <div id="identity-spend-key" class="addr">—</div>
+          <div style="height: 8px;"></div>
+          <label>GSP session</label>
+          <div id="identity-session" class="addr">no session — run gsp auth first</div>
+          <div class="row">
+            <button class="primary" id="identity-gsp-auth">authenticate with gsp</button>
+            <button class="ghost" id="identity-register-scan">register scan key</button>
+            <button class="ghost" id="identity-refresh">refresh</button>
+          </div>
         </div>
       </section>
 
@@ -880,6 +901,7 @@
           if (tab === "history") refreshHistory();
           if (tab === "doctor") refreshDoctor();
           if (tab === "locks") refreshLocks();
+          if (tab === "identity") refreshIdentity();
         });
       });
 
@@ -1128,8 +1150,65 @@
       $("#wallet-lock-btn").addEventListener("click", doLock);
       $("#wallet-new-btn").addEventListener("click", () => onboardingFlow());
       $("#wallet-import-btn").addEventListener("click", () => importFlow());
+      async function refreshIdentity() {
+        clearErr();
+        const setText = (id, value) => {
+          $("#" + id).textContent = value;
+        };
+        try {
+          const v = await invoke("wallet_ghost_id");
+          setText("identity-ghost-id", v.ghost_id || "—");
+          setText("identity-scan-key", v.scan_public_key_hex || "—");
+          setText("identity-spend-key", v.spend_public_key_hex || "—");
+        } catch (e) {
+          setText("identity-ghost-id", "—");
+          setText("identity-scan-key", "—");
+          setText("identity-spend-key", "—");
+          showErr(`identity: ${e}`);
+        }
+        try {
+          const s = await invoke("gsp_session_status");
+          if (s && s.has_session) {
+            const exp = s.expires_at
+              ? new Date(s.expires_at * 1000).toISOString()
+              : "(no expiry)";
+            setText("identity-session", `wallet=${s.wallet_name} · expires ${exp}`);
+          } else {
+            setText("identity-session", "no session — run gsp auth first");
+          }
+        } catch {
+          /* leave default text */
+        }
+      }
+
+      async function doGspAuth() {
+        clearErr();
+        try {
+          await invoke("gsp_auth");
+          showToast("Authenticated with GSP.");
+          await refreshIdentity();
+        } catch (e) {
+          showErr(`gsp auth: ${e}`);
+        }
+      }
+      async function doRegisterScanKey() {
+        clearErr();
+        try {
+          const v = await invoke("gsp_register_scan_key");
+          const k = v.scan_pubkey_hex
+            ? v.scan_pubkey_hex.slice(0, 12) + "…"
+            : "registered";
+          showToast(`Scan key registered: ${k}`);
+        } catch (e) {
+          showErr(`register scan key: ${e}`);
+        }
+      }
+
       $("#locks-prepare-btn").addEventListener("click", () => prepareLockFlow());
       $("#locks-refresh").addEventListener("click", () => refreshLocks());
+      $("#identity-refresh").addEventListener("click", () => refreshIdentity());
+      $("#identity-gsp-auth").addEventListener("click", () => doGspAuth());
+      $("#identity-register-scan").addEventListener("click", () => doRegisterScanKey());
 
       function showToast(message) {
         const t = document.createElement("div");
