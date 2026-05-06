@@ -147,6 +147,10 @@ enum LocksCommand {
 enum WalletCommand {
     /// Create a fresh wallet under the given name (generates a new BIP39 mnemonic).
     Create { name: String },
+    /// Import a wallet from an existing BIP-39 mnemonic. Prompts for the words
+    /// and a new passphrase. Refuses to overwrite an existing wallet of the
+    /// same name.
+    Import { name: String },
     /// Unlock the named wallet (becomes active).
     Unlock { name: String },
     /// Lock a wallet by name, or the active one if no name is given.
@@ -306,6 +310,21 @@ mod unix {
                     },
                     Err(e) => return io_err(e),
                 },
+                WalletCommand::Import { name } => {
+                    let mnemonic = match prompt_mnemonic() {
+                        Ok(m) => m,
+                        Err(e) => return io_err(e),
+                    };
+                    let pass = match prompt_new_passphrase() {
+                        Ok(p) => p,
+                        Err(e) => return io_err(e),
+                    };
+                    Request::WalletImport {
+                        name,
+                        mnemonic,
+                        passphrase: pass,
+                    }
+                }
                 WalletCommand::Unlock { name } => match prompt_passphrase("passphrase: ") {
                     Ok(pass) => Request::WalletUnlock {
                         name,
@@ -609,6 +628,11 @@ mod unix {
                 println!("Wallet '{}' is unlocked and active.", c.name);
                 std::process::ExitCode::SUCCESS
             }
+            Ok(Response::WalletImported { name, path }) => {
+                println!("wallet '{name}' imported at {path}");
+                println!("Wallet '{name}' is unlocked and active.");
+                std::process::ExitCode::SUCCESS
+            }
             Ok(Response::WalletUnlocked) => {
                 println!("wallet unlocked and selected as active");
                 std::process::ExitCode::SUCCESS
@@ -817,6 +841,22 @@ mod unix {
             }
         }
         Ok(pass)
+    }
+
+    /// Reads a BIP-39 mnemonic from stdin. We don't echo it (treat as secret),
+    /// so it goes through rpassword on a TTY; on a pipe we just read a line.
+    /// Whitespace is normalised to a single space so users can paste from any
+    /// line wrapping.
+    fn prompt_mnemonic() -> std::io::Result<String> {
+        let raw = prompt_passphrase("mnemonic (12 or 24 words): ")?;
+        let words: Vec<&str> = raw.split_whitespace().collect();
+        if words.len() != 12 && words.len() != 24 {
+            return Err(std::io::Error::other(format!(
+                "expected 12 or 24 words, got {}",
+                words.len()
+            )));
+        }
+        Ok(words.join(" "))
     }
 
     async fn call(request: Request) -> Result<Response, String> {

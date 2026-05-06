@@ -87,6 +87,15 @@ pub enum Request {
     },
     /// Create a new named wallet on disk and add it to the daemon's unlocked set.
     WalletCreate { name: String, passphrase: String },
+    /// Restore a wallet from an existing BIP-39 mnemonic. Equivalent to
+    /// `WalletCreate` but with the seed supplied by the caller. The new
+    /// keystore is encrypted under `passphrase` and added to the unlocked
+    /// set; on success the daemon also makes it active.
+    WalletImport {
+        name: String,
+        mnemonic: String,
+        passphrase: String,
+    },
     /// Unlock a named wallet by reading from disk + decrypting. Becomes active.
     WalletUnlock { name: String, passphrase: String },
     /// Drop a named wallet from the unlocked set (or the active one if name is None).
@@ -141,6 +150,9 @@ pub enum Response {
     LocksJumped(LocksJumpedResponse),
     LightSent(LightSentResponse),
     WalletCreate(WalletCreateResponse),
+    /// Reply to `Request::WalletImport`. We don't echo the mnemonic back —
+    /// the caller already has it.
+    WalletImported { name: String, path: String },
     WalletUnlocked,
     WalletLocked { name: String },
     WalletList(WalletListResponse),
@@ -461,6 +473,11 @@ mod tests {
                 name: "test".into(),
                 passphrase: "p".repeat(32),
             },
+            Request::WalletImport {
+                name: "restored".into(),
+                mnemonic: "abandon ".repeat(11) + "about",
+                passphrase: "long-enough-passphrase".into(),
+            },
             Request::WalletLock { name: None },
             Request::WalletSelect { name: "test".into() },
             Request::LightBalance,
@@ -518,6 +535,10 @@ mod tests {
                 uptime_secs: 42,
             }),
             Response::WalletLocked { name: "default".into() },
+            Response::WalletImported {
+                name: "restored".into(),
+                path: "/tmp/restored.json".into(),
+            },
             Response::WalletList(WalletListResponse {
                 wallets: vec![WalletListEntry {
                     name: "default".into(),

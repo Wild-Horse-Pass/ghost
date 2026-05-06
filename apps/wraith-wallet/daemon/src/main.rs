@@ -1151,6 +1151,45 @@ mod unix {
                     }
                 }
             }
+            Request::WalletImport {
+                name,
+                mnemonic,
+                passphrase,
+            } => {
+                if let Err(e) = validate_wallet_name(&name) {
+                    Response::Error(ErrorResponse { message: e })
+                } else {
+                    let path = keystore_path(&state.wallets_dir, &name);
+                    if path.exists() {
+                        Response::Error(ErrorResponse {
+                            message: format!(
+                                "wallet '{name}' already exists at {}; refusing to overwrite",
+                                path.display()
+                            ),
+                        })
+                    } else {
+                        let pass = SecretString::new(passphrase.into());
+                        match Keystore::from_mnemonic(&mnemonic) {
+                            Ok(ks) => match ks.save(&path, &pass) {
+                                Ok(()) => {
+                                    state.wallets.write().await.insert(name.clone(), ks);
+                                    *state.active.write().await = Some(name.clone());
+                                    Response::WalletImported {
+                                        name,
+                                        path: path.display().to_string(),
+                                    }
+                                }
+                                Err(e) => Response::Error(ErrorResponse {
+                                    message: format!("save: {e}"),
+                                }),
+                            },
+                            Err(e) => Response::Error(ErrorResponse {
+                                message: format!("mnemonic: {e}"),
+                            }),
+                        }
+                    }
+                }
+            }
             Request::WalletUnlock { name, passphrase } => {
                 if let Err(e) = validate_wallet_name(&name) {
                     Response::Error(ErrorResponse { message: e })

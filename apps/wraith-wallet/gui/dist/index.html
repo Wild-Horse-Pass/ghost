@@ -231,6 +231,7 @@
       <button class="ghost" id="wallet-unlock-btn">unlock</button>
       <button class="ghost" id="wallet-lock-btn">lock</button>
       <button class="ghost" id="wallet-new-btn">+ new</button>
+      <button class="ghost" id="wallet-import-btn">+ restore</button>
       <div class="spacer"></div>
       <div class="status" id="status">connecting...</div>
     </header>
@@ -507,6 +508,105 @@
         });
       }
 
+      // Restore-from-mnemonic flow. Lives alongside onboarding so users with
+      // an existing seed don't have to drop to the CLI on first run.
+      async function importFlow() {
+        clearErr();
+        let existing = [];
+        try {
+          const v = await invoke("wallet_list");
+          existing = v.wallets || [];
+        } catch (e) {
+          showErr(String(e));
+          return;
+        }
+        const data = await modal((m, done) => {
+          const h = document.createElement("h3");
+          h.textContent = "Restore from mnemonic";
+          const hint = document.createElement("p");
+          hint.className = "step-hint";
+          hint.textContent =
+            "Paste your 12 or 24 BIP-39 words. They are sent to the local daemon over " +
+            "an owner-only Unix socket; nothing leaves this machine.";
+          const nameLabel = document.createElement("label");
+          nameLabel.textContent = "wallet name";
+          const name = document.createElement("input");
+          name.placeholder = "default";
+          const seedLabel = document.createElement("label");
+          seedLabel.textContent = "mnemonic";
+          const seed = document.createElement("input");
+          seed.type = "password";
+          seed.placeholder = "twelve or twenty-four words separated by spaces";
+          const passLabel = document.createElement("label");
+          passLabel.textContent = "new passphrase (min 12 chars)";
+          const pass = document.createElement("input");
+          pass.type = "password";
+          const confirmLabel = document.createElement("label");
+          confirmLabel.textContent = "confirm passphrase";
+          const confirm = document.createElement("input");
+          confirm.type = "password";
+          const errLine = document.createElement("div");
+          errLine.className = "danger";
+          const row = document.createElement("div");
+          row.className = "row";
+          const cancel = document.createElement("button");
+          cancel.className = "ghost";
+          cancel.textContent = "cancel";
+          const ok = document.createElement("button");
+          ok.className = "primary";
+          ok.textContent = "restore";
+          row.append(cancel, ok);
+          m.append(h, hint, nameLabel, name, seedLabel, seed, passLabel, pass, confirmLabel, confirm, errLine, row);
+          setTimeout(() => name.focus(), 0);
+
+          function submit() {
+            const n = name.value.trim() || "default";
+            const words = seed.value.trim().split(/\s+/).filter(Boolean);
+            if (existing.some((w) => w.name === n)) {
+              errLine.textContent = `wallet "${n}" already exists`;
+              return;
+            }
+            if (words.length !== 12 && words.length !== 24) {
+              errLine.textContent = `expected 12 or 24 words, got ${words.length}`;
+              return;
+            }
+            if (pass.value.length < 12) {
+              errLine.textContent = "passphrase must be at least 12 characters";
+              return;
+            }
+            if (pass.value !== confirm.value) {
+              errLine.textContent = "passphrases don't match";
+              return;
+            }
+            done({ name: n, mnemonic: words.join(" "), passphrase: pass.value });
+          }
+          cancel.addEventListener("click", () => done(null));
+          ok.addEventListener("click", submit);
+          [name, seed, pass, confirm].forEach((el) => {
+            el.addEventListener("keydown", (e) => {
+              if (e.key === "Enter") submit();
+              if (e.key === "Escape") done(null);
+            });
+          });
+        });
+        if (!data) return;
+        try {
+          await invoke("wallet_import", data);
+        } catch (e) {
+          showErr(`import: ${e}`);
+          return;
+        }
+        try {
+          await invoke("wallet_unlock", { name: data.name, passphrase: data.passphrase });
+          await invoke("wallet_select", { name: data.name });
+        } catch (e) {
+          showErr(`unlock imported wallet: ${e}`);
+        }
+        await refreshWalletList();
+        await refreshBalance();
+        showToast(`Wallet "${data.name}" restored.`);
+      }
+
       // Step A: collect name + passphrase. Resolves to {name, passphrase} or null.
       async function onboardingCollectCredentials(existingWallets) {
         return modal((m, done) => {
@@ -764,6 +864,7 @@
       $("#wallet-unlock-btn").addEventListener("click", doUnlock);
       $("#wallet-lock-btn").addEventListener("click", doLock);
       $("#wallet-new-btn").addEventListener("click", () => onboardingFlow());
+      $("#wallet-import-btn").addEventListener("click", () => importFlow());
 
       function showToast(message) {
         const t = document.createElement("div");
