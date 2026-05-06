@@ -168,7 +168,9 @@ immutable artifact ready for manual signing and upload.
 | 15 | Distribution (signed installers, auto-update)    | tarball script — signing + update server pending |
 | 16 | Hardening (IPC fuzz, external review)            | proptest IPC fuzz + integration tests; external review pending |
 
-Tests as of latest: 7 IPC + 5 core + 4 daemon = 16, all green.
+Tests as of latest: 39 across the wraith-wallet workspace
+(7 IPC + 28 core + 4 daemon), all green. Run them with
+`cargo test -p wraith-wallet-{ipc,core,daemon} --tests`.
 
 ## Security model
 
