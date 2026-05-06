@@ -41,7 +41,16 @@ impl GhostPayClient {
         } else {
             base_urls
         };
-        let mut builder = Client::builder();
+        // Bounded timeouts on every request:
+        //   * connect_timeout = 5 s — TCP handshake to a non-routable IP
+        //     would otherwise hang on the OS-default socket timeout
+        //     (60+ s on Linux). 5 s comfortably covers any real LAN /
+        //     internet round-trip.
+        //   * timeout = 15 s — overall request budget once connected,
+        //     matches the daemon's other reqwest clients.
+        let mut builder = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(15));
         if let Some(p) = proxy_url {
             let proxy =
                 reqwest::Proxy::all(p).map_err(|e| ChainError::Transport(format!("proxy: {e}")))?;

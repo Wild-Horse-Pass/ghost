@@ -220,8 +220,8 @@ default fetch URL with `WRAITHD_UPDATE_MANIFEST_URL`.
 | 15 | Distribution (signed installers, auto-update)    | done — tarball + manifest + GPG hook + CheckForUpdate IPC + release CI workflow |
 | 16 | Hardening (IPC fuzz, external review)            | proptest IPC fuzz + integration tests; external review pending |
 
-Tests as of latest: 53 across the wraith-wallet workspace
-(7 IPC + 35 core + 11 daemon), all green. Run them with
+Tests as of latest: 64 across the wraith-wallet workspace
+(7 IPC + 40 core + 17 daemon), all green. Run them with
 `cargo test -p wraith-wallet-{ipc,core,daemon} --tests`.
 
 ## Security model
@@ -244,6 +244,16 @@ Tests as of latest: 53 across the wraith-wallet workspace
   own Shroud and ghost-pool's mesh-forwarding shroud — three independent
   random delays compose. Bypass per-call with `wraith light send …
   --immediate` or override with `--shroud-max-ms <ms>`.
+- Mainnet readiness: when `WRAITHD_NETWORK=mainnet`, the daemon refuses
+  `WalletImport` with a publicly-known mnemonic (canonical BIP-39 test
+  vectors, common docs vectors) — these have been swept thousands of
+  times and importing one on mainnet means instant theft. Doctor adds
+  three mainnet-only rows: `mainnet/ghost-pay tls`, `mainnet/gsp tls`,
+  and `mainnet/tor`. Plaintext non-loopback ghost-pay/GSP URLs fail;
+  loopback URLs (127.0.0.1, ::1, localhost) are exempt; missing
+  `WRAITHD_TOR_PROXY` is a `skip` (advisory, since Tor is opt-in by
+  design). The GUI shows a red `MAINNET` chip in the header so the
+  user always knows which network they're on.
 
 ## Hard rules
 

@@ -124,9 +124,18 @@ impl GspClient {
     }
 
     async fn try_ping(&self, ws_url: &str) -> Result<PingResult, GspError> {
-        let (mut ws, _) = connect_async(ws_url)
-            .await
-            .map_err(|e| GspError::Transport(e.to_string()))?;
+        // Bound the connect at 5 s; tokio-tungstenite's connect_async would
+        // otherwise inherit the OS-default socket timeout (60+ s on Linux)
+        // when the host is unroutable, which blocks doctor for far longer
+        // than is useful. 5 s comfortably covers any real LAN / internet
+        // handshake.
+        let (mut ws, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), connect_async(ws_url))
+                .await
+                .map_err(|_| {
+                    GspError::Transport(format!("connect to {ws_url}: timed out after 5s"))
+                })?
+                .map_err(|e| GspError::Transport(e.to_string()))?;
 
         let sent_ts = now_unix_ms();
         let request = ClientMessage::Ping {

@@ -156,6 +156,24 @@
         border-radius: 6px;
         font-size: 13px;
       }
+      .net-chip {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        text-transform: uppercase;
+      }
+      .net-chip.mainnet {
+        background: #5a1f1f;
+        border: 1px solid #b54545;
+        color: #ffd6d6;
+      }
+      .net-chip.testnet {
+        background: #1f3a5a;
+        border: 1px solid #4570b5;
+        color: #d6e4ff;
+      }
       .modal-bg {
         position: fixed;
         inset: 0;
@@ -227,6 +245,7 @@
   <body>
     <header>
       <div class="title">Wraith Wallet</div>
+      <span id="network-chip" class="net-chip hide"></span>
       <select id="wallet-picker"></select>
       <button class="ghost" id="wallet-unlock-btn">unlock</button>
       <button class="ghost" id="wallet-lock-btn">lock</button>
@@ -435,6 +454,32 @@
       }
 
       let healthDownLast = null; // null = no probe yet, true/false otherwise
+      async function refreshNetworkChip() {
+        // The chip is intentionally always-visible on mainnet — the user's
+        // muscle memory says "default is signet" so a real bitcoin daemon
+        // needs an unmissable cue every time the window is open. testnet
+        // and regtest also chip but in blue (less urgent).
+        try {
+          const v = await invoke("daemon_env");
+          const chip = $("#network-chip");
+          chip.classList.add("hide");
+          chip.classList.remove("mainnet", "testnet");
+          if (v.network === "mainnet") {
+            chip.textContent = "MAINNET";
+            chip.classList.add("mainnet");
+            chip.classList.remove("hide");
+          } else if (v.network === "testnet" || v.network === "regtest") {
+            chip.textContent = v.network.toUpperCase();
+            chip.classList.add("testnet");
+            chip.classList.remove("hide");
+          }
+          // signet renders nothing — that's the wallet's default network
+          // and a chip on every header line would be visual noise.
+        } catch {
+          // Silent — refreshHealth will surface daemon-down separately.
+        }
+      }
+
       async function refreshHealth() {
         try {
           const v = await invoke("daemon_health");
@@ -1442,6 +1487,7 @@
           selectTab(saved);
         }
         await refreshHealth();
+        await refreshNetworkChip();
         await refreshWalletList();
         // Fresh install path: if no wallets exist yet, kick off the
         // onboarding flow automatically. Already-set-up users hit refresh

@@ -808,7 +808,127 @@ mod unix {
             }
         }
 
+        // Mainnet-readiness: only emitted when bound to real bitcoin. The
+        // checks here aren't run on signet / testnet / regtest because the
+        // privacy-and-integrity stakes don't apply to test networks.
+        if state.network == bitcoin::Network::Bitcoin {
+            mainnet_readiness_checks(state, &mut checks, &mut all_pass);
+        }
+
         DoctorResponse { checks, all_pass }
+    }
+
+    /// Returns true for URLs that bind to the local host (127.0.0.1, ::1,
+    /// localhost). Plaintext is fine on these — the traffic never leaves
+    /// the box and TLS-on-loopback is just CPU burned for no privacy gain.
+    fn is_loopback_url(url: &str) -> bool {
+        // Strip scheme. Anything past `://` up to the next `/` or `:` is
+        // the host. Cheap parse — we don't need a full URL parser here.
+        let after_scheme = url.split("://").nth(1).unwrap_or(url);
+        let host = after_scheme
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("");
+        matches!(host, "127.0.0.1" | "::1" | "localhost")
+    }
+
+    /// Phase: mainnet-only doctor checks. Flags plaintext non-loopback
+    /// URLs (real privacy hole on real bitcoin) and the absence of a Tor
+    /// proxy (advisory — Tor is opt-in by design, but worth surfacing so
+    /// the user knows they're publishing their IP to ghost-pay/GSP).
+    fn mainnet_readiness_checks(
+        state: &Arc<DaemonState>,
+        checks: &mut Vec<DoctorCheck>,
+        all_pass: &mut bool,
+    ) {
+        let plaintext_pay: Vec<&String> = state
+            .ghost_pay_urls
+            .iter()
+            .filter(|u| u.starts_with("http://") && !is_loopback_url(u))
+            .collect();
+        let plaintext_gsp: Vec<&String> = state
+            .gsp_urls
+            .iter()
+            .filter(|u| u.starts_with("ws://") && !is_loopback_url(u))
+            .collect();
+
+        // Plaintext ghost-pay row. Fail = wallet→ghost-pay traffic is
+        // visible to anyone on the path; an observer can correlate
+        // submissions with broadcasts.
+        if plaintext_pay.is_empty() {
+            checks.push(DoctorCheck {
+                name: "mainnet/ghost-pay tls".into(),
+                status: "pass".into(),
+                detail: "all ghost-pay endpoints use https or are loopback-bound".into(),
+            });
+        } else {
+            *all_pass = false;
+            checks.push(DoctorCheck {
+                name: "mainnet/ghost-pay tls".into(),
+                status: "fail".into(),
+                detail: format!(
+                    "{} non-TLS endpoint(s): {}. switch to https:// or run ghost-pay on \
+                     loopback.",
+                    plaintext_pay.len(),
+                    plaintext_pay
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+
+        // Plaintext GSP row. Same threat: ws:// leaks the wallet's
+        // existence + auth identity to anyone on the path.
+        if plaintext_gsp.is_empty() {
+            checks.push(DoctorCheck {
+                name: "mainnet/gsp tls".into(),
+                status: "pass".into(),
+                detail: "all gsp endpoints use wss or are loopback-bound".into(),
+            });
+        } else {
+            *all_pass = false;
+            checks.push(DoctorCheck {
+                name: "mainnet/gsp tls".into(),
+                status: "fail".into(),
+                detail: format!(
+                    "{} non-TLS endpoint(s): {}. switch to wss:// or run GSP on loopback.",
+                    plaintext_gsp.len(),
+                    plaintext_gsp
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+
+        // Tor row. Advisory only — Tor is opt-in by design, and forcing
+        // it would break legitimate setups (e.g. an operator running
+        // their own ghost-pay on a private network). "skip" rather than
+        // "fail" so all_pass isn't lowered.
+        if state.tor_proxy.is_none() {
+            checks.push(DoctorCheck {
+                name: "mainnet/tor".into(),
+                status: "skip".into(),
+                detail: "WRAITHD_TOR_PROXY unset — your IP is visible to ghost-pay and GSP. \
+                         set e.g. socks5h://127.0.0.1:9050 to route through Tor."
+                    .into(),
+            });
+        } else {
+            checks.push(DoctorCheck {
+                name: "mainnet/tor".into(),
+                status: "pass".into(),
+                detail: format!(
+                    "routing through {}",
+                    state.tor_proxy.as_deref().unwrap_or("?")
+                ),
+            });
+        }
     }
 
     fn phase_label(p: SessionPhase) -> &'static str {
@@ -1405,6 +1525,18 @@ mod unix {
             } => {
                 if let Err(e) = validate_wallet_name(&name) {
                     Response::Error(ErrorResponse { message: e })
+                } else if state.network == bitcoin::Network::Bitcoin
+                    && wraith_wallet_core::mainnet_guard::is_known_weak_mnemonic(&mnemonic)
+                {
+                    // Mainnet-readiness guard: refuse canonical BIP-39 test vectors
+                    // and other publicly-published seeds. Allowed on signet /
+                    // testnet / regtest where the foot-gun isn't a foot-gun.
+                    Response::Error(ErrorResponse {
+                        message: "refusing to import a publicly-known mnemonic on mainnet — \
+                                  this seed has been swept thousands of times. Generate a \
+                                  fresh one with `wraith wallet create`."
+                            .to_string(),
+                    })
                 } else {
                     let path = keystore_path(&state.wallets_dir, &name);
                     if path.exists() {
