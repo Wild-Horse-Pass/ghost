@@ -215,7 +215,7 @@ default fetch URL with `WRAITHD_UPDATE_MANIFEST_URL`.
 | 10 | Tor transport (SOCKS5 → arti later)              | done (SOCKS5) |
 | 11 | Multi-node failover                              | done — comma-separated URLs |
 | 12 | Recovery (seed + checkpoint)                     | done — `wallet import` + `wallet restore` |
-| 13 | Hardware-wallet trait                            | done — `Signer` + `SignerSetup` + load-bearing GSP-auth path; vendor backends drop in via cargo features |
+| 13 | Hardware-wallet trait                            | trait done; vendor backends deferred (drop-in via cargo features when a user asks) |
 | 14 | Tauri GUI                                        | done — onboarding, send/recv/locks/identity/settings tabs, system tray, live push toasts |
 | 15 | Distribution (signed installers, auto-update)    | done — tarball + manifest + GPG hook + CheckForUpdate IPC + release CI workflow |
 | 16 | Hardening (IPC fuzz, external review)            | proptest IPC fuzz + integration tests; external review pending |
