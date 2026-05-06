@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 secrecy = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 wraith-wallet-ipc = { workspace = true }

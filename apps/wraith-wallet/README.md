@@ -119,16 +119,19 @@ subcommands.
 | `WRAITHD_TOR_PROXY`  | SOCKS5(h) URL for Tor                      | (unset = direct) |
 | `WRAITHD_IDLE_LOCK_SECS` | Auto-lock wallets after this many seconds of no IPC activity (0 = disabled) | `900` |
 | `WRAITHD_SHROUD_MAX_MS` | Shroud relay window: hold each signed payment a uniform random delay in `[0, this]` ms before submitting to ghost-pay (0 = immediate) | `5000` |
+| `WRAITHD_UPDATE_MANIFEST_URL` | URL of the release manifest the daemon's `CheckForUpdate` handler fetches by default. Unset = no auto-update channel; per-call URLs still work. | (unset) |
 
 ## Release
 
 `scripts/release-wraith.sh` builds release binaries, generates shell completions,
-and packs everything into a versioned tarball:
+and packs everything into a versioned tarball + machine-readable manifest:
 
 ```sh
 bash scripts/release-wraith.sh
-# produces: dist/wraith-wallet-<version>-<host-triple>.tar.gz
-#         + dist/wraith-wallet-<version>-<host-triple>.tar.gz.sha256
+# produces:
+#   dist/wraith-wallet-<version>-<triple>.tar.gz
+#   dist/wraith-wallet-<version>-<triple>.tar.gz.sha256
+#   dist/wraith-wallet-<version>-<triple>.manifest.json
 ```
 
 The tarball layout:
@@ -142,9 +145,57 @@ wraith-wallet-<version>/
   BUILDINFO.txt    # version + triple + commit + rustc + build timestamp
 ```
 
-Signing + auto-update tooling are Phase 15 follow-ups; the tarball above is
-what a release-engineer would run on a build host to produce a clean,
-immutable artifact ready for manual signing and upload.
+Manifest schema (consumed by `wraith update check` and downstream
+verification tooling):
+
+```json
+{
+  "version":        "1.8.0",
+  "triple":         "x86_64-unknown-linux-gnu",
+  "built":          "2026-05-06T17:42:11Z",
+  "commit":         "abcd…",
+  "rustc":          "rustc 1.93.0 …",
+  "tarball":        "wraith-wallet-1.8.0-x86_64-unknown-linux-gnu.tar.gz",
+  "tarball_sha256": "…",
+  "binaries": {
+    "wraithd":    {"sha256": "…", "size": 12345678},
+    "wraith":     {"sha256": "…", "size":  4567890},
+    "wraith-gui": {"sha256": "…", "size": 23456789}
+  }
+}
+```
+
+### Signing
+
+Set `WRAITH_RELEASE_SIGNING_KEY` to a GPG key id and the script will produce
+a detached `manifest.json.asc` next to the manifest:
+
+```sh
+WRAITH_RELEASE_SIGNING_KEY=0xDEADBEEF bash scripts/release-wraith.sh
+```
+
+When the env var is unset the script still ships an unsigned manifest —
+useful for dev / CI dry-runs. **An update client should refuse to act on
+an unsigned manifest in production.**
+
+### CI
+
+`.github/workflows/release-wraith.yml` runs `release-wraith.sh` on
+`wraith-v*` tag pushes (or via `workflow_dispatch`) and uploads the
+artifacts to a draft GitHub release. The CI job deliberately does NOT
+sign — automated signing in CI would defeat the threat model the
+manifests guard against. The expected workflow is:
+
+1. Push a `wraith-v…` tag → CI builds + uploads tarball + manifest to a draft.
+2. Pull the manifest down to a build host with the offline release key.
+3. `gpg --detach-sign --armor --local-user <key> -o manifest.json.asc manifest.json`
+4. Attach the `.asc` to the draft release and publish.
+
+### Update check
+
+`wraith update check [--manifest-url <url>]` fetches the manifest, compares
+versions, and reports `up to date` or `update available`. Configure the
+default fetch URL with `WRAITHD_UPDATE_MANIFEST_URL`.
 
 ## Phase status
 
@@ -166,11 +217,11 @@ immutable artifact ready for manual signing and upload.
 | 12 | Recovery (seed + checkpoint)                     | done — `wallet import` + `wallet restore` |
 | 13 | Hardware-wallet trait                            | done — `Signer` + `SignerSetup` + load-bearing GSP-auth path; vendor backends drop in via cargo features |
 | 14 | Tauri GUI                                        | done — onboarding, send/recv/locks/identity/settings tabs, system tray, live push toasts |
-| 15 | Distribution (signed installers, auto-update)    | tarball script — signing + update server pending |
+| 15 | Distribution (signed installers, auto-update)    | done — tarball + manifest + GPG hook + CheckForUpdate IPC + release CI workflow |
 | 16 | Hardening (IPC fuzz, external review)            | proptest IPC fuzz + integration tests; external review pending |
 
-Tests as of latest: 50 across the wraith-wallet workspace
-(7 IPC + 35 core + 8 daemon), all green. Run them with
+Tests as of latest: 53 across the wraith-wallet workspace
+(7 IPC + 35 core + 11 daemon), all green. Run them with
 `cargo test -p wraith-wallet-{ipc,core,daemon} --tests`.
 
 ## Security model

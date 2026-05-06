@@ -52,14 +52,15 @@ mod unix {
     use wraith_wallet_core::light;
     use wraith_wallet_core::signer::{Signer, SoftwareSigner};
     use wraith_wallet_ipc::{
-        default_socket_path, ChainStatusResponse, DaemonEnvResponse, DetectedPaymentEntry,
-        DoctorCheck, DoctorResponse, Envelope, ErrorResponse, GspAuthResponse, GspPingResponse,
-        GspSessionStatusResponse, HealthResponse, LightBalanceResponse, LightDetectedResponse,
-        LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightSentResponse,
-        LightUtxoEntry, LightUtxosResponse, LockEntry, LocksConfirmedResponse, LocksJumpedResponse,
-        LocksListResponse, LocksPreparedResponse, Request, Response, SignerInfoIpc,
-        WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse,
-        WalletListEntry, WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
+        default_socket_path, ChainStatusResponse, CheckForUpdateResponse, DaemonEnvResponse,
+        DetectedPaymentEntry, DoctorCheck, DoctorResponse, Envelope, ErrorResponse,
+        GspAuthResponse, GspPingResponse, GspSessionStatusResponse, HealthResponse,
+        LightBalanceResponse, LightDetectedResponse, LightHistoryEntry, LightHistoryResponse,
+        LightReceiveResponse, LightSentResponse, LightUtxoEntry, LightUtxosResponse, LockEntry,
+        LocksConfirmedResponse, LocksJumpedResponse, LocksListResponse, LocksPreparedResponse,
+        ReleaseManifest, Request, Response, SignerInfoIpc, WalletAuthInfoResponse,
+        WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
+        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -81,6 +82,9 @@ mod unix {
     /// shares the same constant for symmetry.
     const SHROUD_ENV: &str = "WRAITHD_SHROUD_MAX_MS";
     const DEFAULT_SHROUD_MAX_MS: u64 = 5000;
+    /// Phase 15: URL the daemon's CheckForUpdate handler fetches by default.
+    /// Unset → no auto-update channel is configured; per-call URLs still work.
+    const UPDATE_MANIFEST_ENV: &str = "WRAITHD_UPDATE_MANIFEST_URL";
 
     /// A `SessionToken` paired with the wallet name that produced it AND a live
     /// `SessionHandle` running the persistent authenticated WebSocket. Dropping
@@ -118,6 +122,14 @@ mod unix {
         /// before submitting to ghost-pay. Each send picks a uniform random
         /// delay in [0, this]. 0 = disabled (broadcast immediately).
         shroud_max_ms: u64,
+        /// Phase 15: default URL for the release manifest used by
+        /// CheckForUpdate. None = no default channel; per-call overrides
+        /// still work.
+        update_manifest_url: Option<String>,
+        /// HTTP client used for daemon-side fetches outside the GSP/ghost-pay
+        /// stack (currently just the manifest fetch). Reuses rustls so we
+        /// don't pull in a second TLS implementation.
+        http: reqwest::Client,
     }
 
     fn default_wallets_dir() -> PathBuf {
@@ -243,6 +255,15 @@ mod unix {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_SHROUD_MAX_MS);
+        let update_manifest_url = std::env::var(UPDATE_MANIFEST_ENV)
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent(concat!("wraithd/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|e| std::io::Error::other(format!("http client: {e}")))?;
 
         let state = Arc::new(DaemonState {
             started: Instant::now(),
@@ -260,6 +281,8 @@ mod unix {
             last_activity: std::sync::atomic::AtomicU64::new(now_unix_secs()),
             idle_lock_secs,
             shroud_max_ms,
+            update_manifest_url,
+            http,
         });
 
         // Auto-lock task. Wakes every 30 s. If idle_lock_secs is 0 the task
@@ -830,6 +853,47 @@ mod unix {
         }
     }
 
+    /// Phase 15 helper: fetch a release manifest, compare against the running
+    /// version. Returns a structured response; bubbles fetch / parse failures
+    /// up as `Err(String)` so the caller maps them to `Response::Error`.
+    async fn check_for_update(
+        state: &Arc<DaemonState>,
+        override_url: Option<String>,
+    ) -> Result<CheckForUpdateResponse, String> {
+        let url = override_url
+            .or_else(|| state.update_manifest_url.clone())
+            .ok_or_else(|| {
+                "no manifest URL — pass --manifest-url <url> or set \
+                 WRAITHD_UPDATE_MANIFEST_URL"
+                    .to_string()
+            })?;
+        let resp = state
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("fetch {url}: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("fetch {url}: HTTP {}", resp.status()));
+        }
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("read manifest body: {e}"))?;
+        let manifest: ReleaseManifest =
+            serde_json::from_str(&body).map_err(|e| format!("parse manifest: {e}"))?;
+        let current = env!("CARGO_PKG_VERSION").to_string();
+        let up_to_date = manifest.version == current;
+        Ok(CheckForUpdateResponse {
+            current_version: current,
+            latest_version: Some(manifest.version),
+            up_to_date,
+            manifest_url: url,
+            tarball: Some(manifest.tarball),
+            tarball_sha256: Some(manifest.tarball_sha256),
+        })
+    }
+
     /// Phase 9 Shroud helper: pick a uniform random delay in `[0, max_ms]`,
     /// or `None` when shroud is disabled (`max_ms == 0`).
     ///
@@ -1104,7 +1168,14 @@ mod unix {
                     socket_path: state.socket_path.display().to_string(),
                     idle_lock_secs: state.idle_lock_secs,
                     shroud_max_ms: state.shroud_max_ms,
+                    update_manifest_url: state.update_manifest_url.clone(),
                 })
+            }
+            Request::CheckForUpdate { manifest_url } => {
+                match check_for_update(state, manifest_url).await {
+                    Ok(r) => Response::CheckForUpdate(r),
+                    Err(message) => Response::Error(ErrorResponse { message }),
+                }
             }
             Request::LightHistory { limit, offset } => {
                 let guard = state.session.read().await;

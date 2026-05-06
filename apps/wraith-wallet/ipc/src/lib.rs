@@ -61,6 +61,15 @@ pub enum Request {
     /// it talks to, the network it's bound to, where it stores wallets.
     /// Useful for diagnostics + the GUI's settings panel.
     DaemonEnv,
+    /// Phase 15: ask the daemon to fetch a release manifest from
+    /// `manifest_url` (or the daemon-configured default if `None`),
+    /// compare the manifest's version against the running daemon's
+    /// version, and report whether an upgrade is available. The daemon
+    /// only reports — it does not download or install anything.
+    CheckForUpdate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        manifest_url: Option<String>,
+    },
     /// Stream future BIP-352 silent-payment detections from the persistent
     /// session as they arrive. The daemon keeps the connection open and emits
     /// `Response::PaymentDetected` envelopes (id=0) until the client closes
@@ -184,6 +193,7 @@ pub enum Response {
     LightHistory(LightHistoryResponse),
     LightDetected(LightDetectedResponse),
     DaemonEnv(DaemonEnvResponse),
+    CheckForUpdate(CheckForUpdateResponse),
     /// Acknowledgement of a `Request::WatchPayments`. Subsequent
     /// `PaymentDetected` envelopes (id=0) on the same connection are pushes,
     /// not replies.
@@ -396,6 +406,49 @@ pub struct LocksJumpedResponse {
     pub jump_txid: Option<String>,
 }
 
+/// One binary entry in a release manifest. Mirrors the JSON shape produced
+/// by `scripts/release-wraith.sh` so the daemon can parse manifests with
+/// `serde_json::from_str` directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestBinary {
+    pub sha256: String,
+    pub size: u64,
+}
+
+/// Wraith Wallet release manifest. Produced by `release-wraith.sh`,
+/// optionally GPG-detached-signed alongside, consumed by the daemon's
+/// CheckForUpdate handler and the `wraith verify` CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseManifest {
+    pub version: String,
+    pub triple: String,
+    pub built: String,
+    pub commit: String,
+    pub rustc: String,
+    pub tarball: String,
+    pub tarball_sha256: String,
+    pub binaries: std::collections::BTreeMap<String, ManifestBinary>,
+}
+
+/// Result of `Request::CheckForUpdate`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckForUpdateResponse {
+    /// Version reported by the running daemon (`CARGO_PKG_VERSION`).
+    pub current_version: String,
+    /// Version reported by the manifest, when fetch + parse succeeded.
+    pub latest_version: Option<String>,
+    /// `true` only when the fetched manifest's version is byte-equal to
+    /// the running version. Different (newer or older) → `false`.
+    pub up_to_date: bool,
+    /// Where the manifest was fetched from (resolved from caller's
+    /// `manifest_url` override, or the daemon-configured default).
+    pub manifest_url: String,
+    /// Tarball filename from the manifest, when present.
+    pub tarball: Option<String>,
+    /// Tarball sha256 from the manifest, when present.
+    pub tarball_sha256: Option<String>,
+}
+
 /// Read-only daemon environment snapshot. Maps 1:1 to the WRAITHD_* env vars
 /// that wraithd reads at startup, plus a couple of derived fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,6 +471,10 @@ pub struct DaemonEnvResponse {
     /// milliseconds. 0 means the wallet broadcasts immediately. The actual
     /// delay applied to each send is uniform random in `[0, this]`.
     pub shroud_max_ms: u64,
+    /// Phase 15: URL of the release manifest the daemon's CheckForUpdate
+    /// handler fetches by default. `None` when no auto-update channel is
+    /// configured — the handler will still accept a per-call override.
+    pub update_manifest_url: Option<String>,
 }
 
 /// Result of `LightSend` (PreparePayment + sign + SubmitSignedPayment).
@@ -618,6 +675,10 @@ mod tests {
                 capacity_sats: 1_000_000,
             },
             Request::DaemonEnv,
+            Request::CheckForUpdate { manifest_url: None },
+            Request::CheckForUpdate {
+                manifest_url: Some("https://example.invalid/manifest.json".into()),
+            },
         ];
 
         for req in cases {
@@ -676,6 +737,7 @@ mod tests {
                 socket_path: "/tmp/wraithd.sock".into(),
                 idle_lock_secs: 900,
                 shroud_max_ms: 5000,
+                update_manifest_url: None,
             }),
             Response::WalletList(WalletListResponse {
                 wallets: vec![WalletListEntry {

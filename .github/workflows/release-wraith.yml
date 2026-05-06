@@ -1,0 +1,114 @@
+name: Release Wraith Wallet
+
+# Triggered on Wraith-specific tags so the existing repo-wide v* tags
+# (which build ghost-pool / ghost-cli / etc.) don't accidentally cut a
+# wallet release with a stale binary.
+on:
+  push:
+    tags:
+      - 'wraith-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for the artifacts (e.g. 1.8.0). Defaults to the workspace version."
+        required: false
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.triple }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triple: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsqlite3-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Run release script
+        shell: bash
+        env:
+          # Signing intentionally not wired here — secrets aren't in this
+          # repo, and the policy is "manual signing on a build host". The
+          # script skips signing cleanly when the env var is unset.
+          WRAITH_RELEASE_SIGNING_KEY: ""
+        run: |
+          # Honour an explicit version override from workflow_dispatch; on
+          # tag pushes use the workspace version (release-wraith.sh's
+          # default), so the tag and Cargo.toml stay the source of truth
+          # together.
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            bash scripts/release-wraith.sh "${{ github.event.inputs.version }}"
+          else
+            bash scripts/release-wraith.sh
+          fi
+          ls -la dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wraith-wallet-${{ matrix.triple }}
+          path: |
+            dist/wraith-wallet-*.tar.gz
+            dist/wraith-wallet-*.tar.gz.sha256
+            dist/wraith-wallet-*.manifest.json
+
+  release:
+    name: Create Draft Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/wraith-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Layout
+        shell: bash
+        run: find artifacts -type f | sort
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v1
+        with:
+          # Always draft — the release engineer is expected to:
+          #   1. Download the manifest + tarball locally
+          #   2. Sign the manifest with the offline release key
+          #   3. Upload the .asc back to the draft
+          #   4. Publish
+          # That gate is the point — automated signing in CI would defeat
+          # the threat model these manifests guard against.
+          draft: true
+          generate_release_notes: true
+          name: "Wraith Wallet ${{ github.ref_name }}"
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.tar.gz.sha256
+            artifacts/**/*.manifest.json

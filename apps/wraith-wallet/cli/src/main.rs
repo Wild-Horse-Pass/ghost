@@ -59,6 +59,11 @@ enum Command {
         #[command(subcommand)]
         sub: LocksCommand,
     },
+    /// Release / update commands.
+    Update {
+        #[command(subcommand)]
+        sub: UpdateCommand,
+    },
     /// Print a shell-completion script to stdout. Pipe into your shell's
     /// completion location, e.g.:
     ///   wraith completions bash > /etc/bash_completion.d/wraith
@@ -140,6 +145,17 @@ enum LightCommand {
         /// `0` disables; `n` picks a uniform random delay in `[0, n]`.
         #[arg(long, value_name = "MS")]
         shroud_max_ms: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
+enum UpdateCommand {
+    /// Fetch the configured release manifest, compare against the running
+    /// daemon's version, and report whether an upgrade is available.
+    Check {
+        /// Override the daemon's configured manifest URL for this call.
+        #[arg(long, value_name = "URL")]
+        manifest_url: Option<String>,
     },
 }
 
@@ -250,7 +266,9 @@ mod unix {
     use tokio::net::UnixStream;
     use wraith_wallet_ipc::{default_socket_path, Envelope, Request, Response};
 
-    use crate::{ChainCommand, Command, GspCommand, LightCommand, LocksCommand, WalletCommand};
+    use crate::{
+        ChainCommand, Command, GspCommand, LightCommand, LocksCommand, UpdateCommand, WalletCommand,
+    };
 
     pub async fn run(command: Command, json: bool, no_spawn: bool) -> std::process::ExitCode {
         // Make sure wraithd is up before constructing the request — the request
@@ -341,6 +359,9 @@ mod unix {
                     target_address,
                     priority,
                 },
+            },
+            Command::Update { sub } => match sub {
+                UpdateCommand::Check { manifest_url } => Request::CheckForUpdate { manifest_url },
             },
             Command::Wallet { sub } => match sub {
                 WalletCommand::Create { name } => match prompt_new_passphrase() {
@@ -684,6 +705,27 @@ mod unix {
                 println!("Wallet '{}' is unlocked and active.", c.name);
                 std::process::ExitCode::SUCCESS
             }
+            Ok(Response::CheckForUpdate(c)) => {
+                if c.up_to_date {
+                    println!("up to date — running v{}", c.current_version);
+                    println!("  source: {}", c.manifest_url);
+                } else if let Some(latest) = &c.latest_version {
+                    println!("update available: v{} → v{}", c.current_version, latest);
+                    println!("  source: {}", c.manifest_url);
+                    if let (Some(t), Some(h)) = (&c.tarball, &c.tarball_sha256) {
+                        println!("  tarball: {t}");
+                        println!("  sha256:  {h}");
+                    }
+                } else {
+                    // The daemon would have returned Response::Error here, but
+                    // be defensive in case the manifest schema ever drifts.
+                    println!(
+                        "could not determine latest version (running v{})",
+                        c.current_version
+                    );
+                }
+                std::process::ExitCode::SUCCESS
+            }
             Ok(Response::WalletImported { name, path }) => {
                 println!("wallet '{name}' imported at {path}");
                 println!("Wallet '{name}' is unlocked and active.");
@@ -795,6 +837,12 @@ mod unix {
                     println!("shroud:       disabled (immediate broadcast)");
                 } else {
                     println!("shroud:       0–{} ms random delay", e.shroud_max_ms);
+                }
+                match &e.update_manifest_url {
+                    Some(u) => println!("update url:   {u}"),
+                    None => println!(
+                        "update url:   (unset — pass --manifest-url to `wraith update check`)"
+                    ),
                 }
                 std::process::ExitCode::SUCCESS
             }
