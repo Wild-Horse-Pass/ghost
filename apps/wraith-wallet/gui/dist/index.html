@@ -239,6 +239,7 @@
       <button data-tab="home" class="active">home</button>
       <button data-tab="receive">receive</button>
       <button data-tab="send">send</button>
+      <button data-tab="locks">locks</button>
       <button data-tab="history">history</button>
       <button data-tab="doctor">doctor</button>
     </nav>
@@ -297,6 +298,31 @@
             <button class="primary" id="send-go">send</button>
           </div>
           <div id="send-out"></div>
+        </div>
+      </section>
+
+      <!-- LOCKS -->
+      <section data-view="locks" class="col hide">
+        <div class="panel">
+          <div class="row" style="margin-bottom: 8px;">
+            <button class="primary" id="locks-prepare-btn">+ prepare lock</button>
+            <button class="ghost" id="locks-refresh">refresh</button>
+            <span id="locks-total" style="margin-left:auto; color: var(--fg-mute); font-size: 12px;"></span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>status</th>
+                <th>capacity</th>
+                <th>balance</th>
+                <th>denom</th>
+                <th>funding</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="locks-body"></tbody>
+          </table>
         </div>
       </section>
 
@@ -853,8 +879,245 @@
           });
           if (tab === "history") refreshHistory();
           if (tab === "doctor") refreshDoctor();
+          if (tab === "locks") refreshLocks();
         });
       });
+
+      async function refreshLocks() {
+        clearErr();
+        const tbody = $("#locks-body");
+        const total = $("#locks-total");
+        try {
+          const v = await invoke("locks_list");
+          const locks = v.locks || [];
+          total.textContent =
+            `total locked: ${(v.total_locked_sats || 0).toLocaleString()} sat`;
+          tbody.innerHTML = "";
+          if (locks.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" style="color:#9ca3af;">no locks yet — prepare one to get started</td></tr>`;
+            return;
+          }
+          for (const l of locks) {
+            const tr = document.createElement("tr");
+            const idShort = l.lock_id ? l.lock_id.slice(0, 12) + "…" : "—";
+            const fundShort = l.funding_address
+              ? l.funding_address.slice(0, 10) + "…" + l.funding_address.slice(-6)
+              : "—";
+            const cap = (l.capacity_sats ?? 0).toLocaleString();
+            const bal = (l.balance_sats ?? 0).toLocaleString();
+            const status = (l.status || "").toLowerCase();
+            tr.innerHTML = `
+              <td title="${l.lock_id}" style="font-family:ui-monospace;font-size:11px;">${idShort}</td>
+              <td>${status}</td>
+              <td>${cap}</td>
+              <td>${bal}</td>
+              <td>${l.denomination ?? ""}</td>
+              <td title="${l.funding_address ?? ""}" style="font-family:ui-monospace;font-size:11px;">${fundShort}</td>
+              <td></td>
+            `;
+            const actions = tr.lastElementChild;
+            // Show "confirm" + "jump" controls based on status. We're conservative:
+            // anything not obviously settled gets a confirm button; jump is offered
+            // for active locks.
+            if (!l.funding_txid) {
+              const btn = document.createElement("button");
+              btn.className = "ghost";
+              btn.textContent = "confirm";
+              btn.addEventListener("click", () => confirmLockFlow(l));
+              actions.append(btn);
+            } else {
+              const btn = document.createElement("button");
+              btn.className = "ghost";
+              btn.textContent = "jump";
+              btn.addEventListener("click", () => jumpLockFlow(l));
+              actions.append(btn);
+            }
+            tbody.append(tr);
+          }
+        } catch (e) {
+          showErr(`locks: ${e}`);
+        }
+      }
+
+      async function prepareLockFlow() {
+        clearErr();
+        const data = await modal((m, done) => {
+          const h = document.createElement("h3");
+          h.textContent = "Prepare a new lock";
+          const hint = document.createElement("p");
+          hint.className = "step-hint";
+          hint.textContent =
+            "Choose a capacity. After GSP allocates the lock you'll get a funding address — " +
+            "send the exact required amount to it from your normal wallet, then come back and confirm.";
+          const capLabel = document.createElement("label");
+          capLabel.textContent = "capacity (sats)";
+          const cap = document.createElement("input");
+          cap.type = "number";
+          cap.min = "1000";
+          cap.value = "100000";
+          const errLine = document.createElement("div");
+          errLine.className = "danger";
+          const row = document.createElement("div");
+          row.className = "row";
+          const cancel = document.createElement("button");
+          cancel.className = "ghost";
+          cancel.textContent = "cancel";
+          const ok = document.createElement("button");
+          ok.className = "primary";
+          ok.textContent = "prepare";
+          row.append(cancel, ok);
+          m.append(h, hint, capLabel, cap, errLine, row);
+          setTimeout(() => cap.focus(), 0);
+          ok.addEventListener("click", () => {
+            const n = Number(cap.value);
+            if (!Number.isFinite(n) || n <= 0) {
+              errLine.textContent = "capacity must be a positive number";
+              return;
+            }
+            done({ capacity_sats: n });
+          });
+          cancel.addEventListener("click", () => done(null));
+        });
+        if (!data) return;
+        try {
+          const v = await invoke("locks_prepare", data);
+          await modal((m, done) => {
+            const h = document.createElement("h3");
+            h.textContent = "Lock prepared — fund it";
+            const p = document.createElement("p");
+            p.className = "step-hint";
+            p.innerHTML =
+              `Send <b>${(v.required_sats || 0).toLocaleString()}</b> sat to the address below, ` +
+              "then return and click confirm on this lock's row.";
+            const addr = document.createElement("div");
+            addr.className = "addr";
+            addr.textContent = v.funding_address;
+            const idLine = document.createElement("p");
+            idLine.className = "step-hint";
+            idLine.textContent = `lock_id: ${v.lock_id}`;
+            const row = document.createElement("div");
+            row.className = "row";
+            const close = document.createElement("button");
+            close.className = "primary";
+            close.textContent = "got it";
+            close.addEventListener("click", () => done(true));
+            row.append(close);
+            m.append(h, p, addr, idLine, row);
+          });
+          await refreshLocks();
+        } catch (e) {
+          showErr(`prepare lock: ${e}`);
+        }
+      }
+
+      async function confirmLockFlow(lock) {
+        clearErr();
+        const data = await modal((m, done) => {
+          const h = document.createElement("h3");
+          h.textContent = "Confirm lock funding";
+          const hint = document.createElement("p");
+          hint.className = "step-hint";
+          hint.textContent =
+            `Paste the txid of your funding payment to ${lock.funding_address}.`;
+          const txLabel = document.createElement("label");
+          txLabel.textContent = "funding txid";
+          const tx = document.createElement("input");
+          tx.placeholder = "64-character hex";
+          const errLine = document.createElement("div");
+          errLine.className = "danger";
+          const row = document.createElement("div");
+          row.className = "row";
+          const cancel = document.createElement("button");
+          cancel.className = "ghost";
+          cancel.textContent = "cancel";
+          const ok = document.createElement("button");
+          ok.className = "primary";
+          ok.textContent = "confirm";
+          row.append(cancel, ok);
+          m.append(h, hint, txLabel, tx, errLine, row);
+          setTimeout(() => tx.focus(), 0);
+          ok.addEventListener("click", () => {
+            const t = tx.value.trim();
+            if (!/^[0-9a-fA-F]{64}$/.test(t)) {
+              errLine.textContent = "expected 64 hex characters";
+              return;
+            }
+            done({ lock_id: lock.lock_id, funding_txid: t });
+          });
+          cancel.addEventListener("click", () => done(null));
+        });
+        if (!data) return;
+        try {
+          await invoke("locks_confirm", data);
+          showToast("Lock confirmed.");
+          await refreshLocks();
+        } catch (e) {
+          showErr(`confirm lock: ${e}`);
+        }
+      }
+
+      async function jumpLockFlow(lock) {
+        clearErr();
+        const data = await modal((m, done) => {
+          const h = document.createElement("h3");
+          h.textContent = "Jump (rotate) lock";
+          const hint = document.createElement("p");
+          hint.className = "step-hint";
+          hint.textContent =
+            "A lock jump moves the unspent capacity to a new key under your control. " +
+            "Provide the destination address and a fee priority.";
+          const tLabel = document.createElement("label");
+          tLabel.textContent = "target address";
+          const t = document.createElement("input");
+          t.placeholder = "bc1q…";
+          const pLabel = document.createElement("label");
+          pLabel.textContent = "priority";
+          const p = document.createElement("select");
+          for (const v of ["normal", "high", "urgent"]) {
+            const o = document.createElement("option");
+            o.value = v;
+            o.textContent = v;
+            p.append(o);
+          }
+          const errLine = document.createElement("div");
+          errLine.className = "danger";
+          const row = document.createElement("div");
+          row.className = "row";
+          const cancel = document.createElement("button");
+          cancel.className = "ghost";
+          cancel.textContent = "cancel";
+          const ok = document.createElement("button");
+          ok.className = "primary";
+          ok.textContent = "jump";
+          row.append(cancel, ok);
+          m.append(h, hint, tLabel, t, pLabel, p, errLine, row);
+          setTimeout(() => t.focus(), 0);
+          ok.addEventListener("click", () => {
+            if (!t.value.trim()) {
+              errLine.textContent = "target address is required";
+              return;
+            }
+            done({
+              lock_id: lock.lock_id,
+              target_address: t.value.trim(),
+              priority: p.value,
+            });
+          });
+          cancel.addEventListener("click", () => done(null));
+        });
+        if (!data) return;
+        try {
+          const v = await invoke("locks_jump", data);
+          if (v.jump_txid) {
+            showToast(`Jump broadcast: ${v.jump_txid.slice(0, 12)}…`);
+          } else {
+            showToast("Jump scheduled.");
+          }
+          await refreshLocks();
+        } catch (e) {
+          showErr(`jump lock: ${e}`);
+        }
+      }
 
       $("#balance-refresh").addEventListener("click", refreshBalance);
       $("#receive-go").addEventListener("click", showAddress);
@@ -865,6 +1128,8 @@
       $("#wallet-lock-btn").addEventListener("click", doLock);
       $("#wallet-new-btn").addEventListener("click", () => onboardingFlow());
       $("#wallet-import-btn").addEventListener("click", () => importFlow());
+      $("#locks-prepare-btn").addEventListener("click", () => prepareLockFlow());
+      $("#locks-refresh").addEventListener("click", () => refreshLocks());
 
       function showToast(message) {
         const t = document.createElement("div");

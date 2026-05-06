@@ -125,6 +125,46 @@ async fn light_history(limit: u32, offset: u32) -> Result<serde_json::Value, Str
 }
 
 #[tauri::command]
+async fn locks_list() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LocksList).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn locks_prepare(capacity_sats: u64) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LocksPrepare { capacity_sats }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn locks_confirm(
+    lock_id: String,
+    funding_txid: String,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LocksConfirm {
+        lock_id,
+        funding_txid,
+    })
+    .await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn locks_jump(
+    lock_id: String,
+    target_address: String,
+    priority: String,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LocksJump {
+        lock_id,
+        target_address,
+        priority,
+    })
+    .await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
 async fn light_send(
     recipient: String,
     amount_sats: u64,
@@ -292,6 +332,10 @@ pub fn run() {
             light_receive,
             light_history,
             light_send,
+            locks_list,
+            locks_prepare,
+            locks_confirm,
+            locks_jump,
             start_watch,
         ])
         .run(tauri::generate_context!())
