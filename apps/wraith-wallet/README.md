@@ -60,6 +60,32 @@ bash scripts/run-wraith-stack.sh down    # tear it down
 
 Logs land in `/tmp/wraith-stack/<service>.log`.
 
+## Shell completions
+
+`wraith` ships generated completions for bash, zsh, fish, elvish, and powershell:
+
+```sh
+wraith completions bash > /etc/bash_completion.d/wraith
+wraith completions zsh  > ~/.zfunc/_wraith         # ensure ~/.zfunc is in $fpath
+wraith completions fish > ~/.config/fish/completions/wraith.fish
+```
+
+The script is generated at runtime — re-run after upgrading `wraith` to pick up new
+subcommands.
+
+## Daemon environment
+
+`wraithd` is configured by environment variables:
+
+| Var | Purpose | Default |
+|---|---|---|
+| `WRAITHD_SOCKET`     | IPC socket path                            | `$XDG_RUNTIME_DIR/wraithd-${UID}.sock` |
+| `WRAITHD_WALLETS_DIR`| Encrypted keystore directory               | `$HOME/.local/share/wraithd/wallets` |
+| `WRAITHD_GHOST_PAY`  | Ghost-pay URL(s), comma-separated          | `http://127.0.0.1:8800` |
+| `WRAITHD_GSP`        | GSP WebSocket URL(s), comma-separated      | `ws://127.0.0.1:8900/ws/v1` |
+| `WRAITHD_NETWORK`    | `signet` / `mainnet` / `regtest`           | `signet` |
+| `WRAITHD_TOR_PROXY`  | SOCKS5(h) URL for Tor                      | (unset = direct) |
+
 ## Phase status
 
 | # | Phase | Status |

@@ -2,7 +2,8 @@
 //!
 //! Thin client that speaks JSON-RPC to a running `wraithd` over a local Unix socket.
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Parser)]
 #[command(version, about = "Wraith Wallet CLI", long_about = None)]
@@ -51,6 +52,15 @@ enum Command {
     Locks {
         #[command(subcommand)]
         sub: LocksCommand,
+    },
+    /// Print a shell-completion script to stdout. Pipe into your shell's
+    /// completion location, e.g.:
+    ///   wraith completions bash > /etc/bash_completion.d/wraith
+    ///   wraith completions zsh  > ~/.zfunc/_wraith    # add ~/.zfunc to fpath
+    ///   wraith completions fish > ~/.config/fish/completions/wraith.fish
+    Completions {
+        /// Target shell.
+        shell: Shell,
     },
 }
 
@@ -197,6 +207,18 @@ fn main() -> std::process::ExitCode {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 
     let cli = Cli::parse();
+
+    // Short-circuit shell completions: don't spin up the runtime, don't try
+    // to spawn or talk to wraithd. Just emit the script and exit.
+    if let Command::Completions { shell } = cli.command {
+        let mut cmd = Cli::command();
+        // Hardcode "wraith" (the binary name we ship); clap defaults to the
+        // package name (wraith-wallet-cli) which would generate completions
+        // bound to the wrong word.
+        clap_complete::generate(shell, &mut cmd, "wraith", &mut std::io::stdout());
+        return std::process::ExitCode::SUCCESS;
+    }
+
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
         Err(e) => {
@@ -351,6 +373,9 @@ mod unix {
                     Request::WalletRestore { name, from_path: from }
                 }
             },
+            // Handled in main() before we reach the runtime; the arm exists
+            // here only so the match is exhaustive.
+            Command::Completions { .. } => unreachable!("Completions handled in main"),
         };
 
         let result = call(request).await;
