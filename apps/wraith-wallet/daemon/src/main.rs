@@ -56,8 +56,8 @@ mod unix {
         LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightSentResponse,
         LightUtxoEntry, LightUtxosResponse, LockEntry, LocksConfirmedResponse, LocksJumpedResponse,
         LocksListResponse, LocksPreparedResponse, Request, Response, WalletAuthInfoResponse,
-        WalletCreateResponse, WalletDeriveResponse, WalletListEntry, WalletListResponse,
-        WalletShowMnemonicResponse, WalletStatusResponse,
+        WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
+        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -97,6 +97,17 @@ mod unix {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
         home.join(".wraith").join("wallets")
+    }
+
+    fn ghost_network_from_bitcoin(n: bitcoin::Network) -> ghost_keys::GhostNetwork {
+        match n {
+            bitcoin::Network::Bitcoin => ghost_keys::GhostNetwork::Mainnet,
+            bitcoin::Network::Testnet => ghost_keys::GhostNetwork::Testnet,
+            bitcoin::Network::Signet => ghost_keys::GhostNetwork::Signet,
+            bitcoin::Network::Regtest => ghost_keys::GhostNetwork::Regtest,
+            // bitcoin 0.32 has more variants in non_exhaustive — default to Mainnet.
+            _ => ghost_keys::GhostNetwork::Mainnet,
+        }
     }
 
     fn parse_network(s: &str) -> Option<bitcoin::Network> {
@@ -972,6 +983,32 @@ mod unix {
                         Response::WalletDerive(WalletDeriveResponse {
                             path,
                             public_key_hex,
+                        })
+                    }
+                    Err(message) => Response::Error(ErrorResponse { message }),
+                }
+            }
+            Request::WalletGhostId => {
+                let net = state.network;
+                let label = format!("{:?}", net).to_lowercase();
+                match with_active_wallet(state, move |_, ks| {
+                    let gk = ks.ghost_keys().map_err(|e| format!("ghost-keys: {e}"))?;
+                    let id = gk
+                        .ghost_id()
+                        .encode_for_network(ghost_network_from_bitcoin(net))
+                        .map_err(|e| format!("encode: {e}"))?;
+                    let scan_hex = hex::encode(gk.scan_pubkey().serialize());
+                    let spend_hex = hex::encode(gk.spend_pubkey().serialize());
+                    Ok::<_, String>((id, scan_hex, spend_hex))
+                })
+                .await
+                {
+                    Ok((id, scan, spend)) => {
+                        Response::WalletGhostId(WalletGhostIdResponse {
+                            ghost_id: id,
+                            network: label,
+                            scan_public_key_hex: scan,
+                            spend_public_key_hex: spend,
                         })
                     }
                     Err(message) => Response::Error(ErrorResponse { message }),

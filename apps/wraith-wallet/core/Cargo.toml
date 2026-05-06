@@ -15,6 +15,7 @@ bip39 = { workspace = true }
 bitcoin = { workspace = true }
 futures-util = { workspace = true }
 ghost-gsp-proto = { workspace = true }
+ghost-keys = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }

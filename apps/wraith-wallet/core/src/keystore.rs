@@ -178,6 +178,21 @@ impl Keystore {
         }
         Ok(xprv)
     }
+
+    /// Derive `GhostKeys` (BIP-352 scan + spend) for this wallet.
+    ///
+    /// Paths match `ghost-light-wallet`'s canonical layout so wallets sharing a
+    /// seed produce the same Ghost ID:
+    ///   - scan:  `m/352'/0'/0'/0'`
+    ///   - spend: `m/352'/0'/0'/1'`
+    pub fn ghost_keys(&self) -> Result<ghost_keys::GhostKeys, KeystoreError> {
+        let scan = self.derive_xprv("m/352'/0'/0'/0'")?;
+        let spend = self.derive_xprv("m/352'/0'/0'/1'")?;
+        let scan_bytes = scan.to_bytes();
+        let spend_bytes = spend.to_bytes();
+        ghost_keys::GhostKeys::from_bytes(&scan_bytes, &spend_bytes)
+            .map_err(|e| KeystoreError::Bip32(format!("ghost_keys: {e}")))
+    }
 }
 
 struct KdfKey([u8; KEY_LEN]);
@@ -232,6 +247,20 @@ mod tests {
             Err(other) => panic!("expected Decrypt error, got {other:?}"),
             Ok(_) => panic!("expected Decrypt error, got Ok"),
         }
+    }
+
+    #[test]
+    fn ghost_keys_round_trip() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let ks = Keystore::from_mnemonic(mnemonic).unwrap();
+        let gk1 = ks.ghost_keys().unwrap();
+        let gk2 = ks.ghost_keys().unwrap();
+        // Deterministic: same seed → same Ghost ID
+        assert_eq!(gk1.scan_pubkey(), gk2.scan_pubkey());
+        assert_eq!(gk1.spend_pubkey(), gk2.spend_pubkey());
+        // Bech32 encoding is non-empty and starts with the expected HRP
+        let id_str = gk1.ghost_id().encode_for_network(ghost_keys::GhostNetwork::Signet).unwrap();
+        assert!(id_str.starts_with("sghost1"), "got {id_str}");
     }
 
     #[test]

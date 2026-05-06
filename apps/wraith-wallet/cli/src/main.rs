@@ -150,6 +150,8 @@ enum WalletCommand {
     Derive { path: String },
     /// Show the GSP authentication identity (wallet_id + auth pubkey) of the active wallet.
     AuthInfo,
+    /// Show the active wallet's BIP-352 Ghost ID (silent payment receive identity).
+    GhostId,
     /// Re-display the BIP39 mnemonic for a named wallet.
     ShowMnemonic { name: String },
     /// Copy the encrypted keystore for `name` to a backup file.
@@ -296,6 +298,7 @@ mod unix {
                 WalletCommand::Status => Request::WalletStatus,
                 WalletCommand::Derive { path } => Request::WalletDerive { path },
                 WalletCommand::AuthInfo => Request::WalletAuthInfo,
+                WalletCommand::GhostId => Request::WalletGhostId,
                 WalletCommand::ShowMnemonic { name } => match prompt_passphrase("passphrase: ") {
                     Ok(pass) => Request::WalletShowMnemonic {
                         name,
@@ -583,6 +586,13 @@ mod unix {
                 println!("wallet_id:      {}", a.wallet_id);
                 println!("auth_public_key: {}", a.auth_public_key_hex);
                 println!("derivation:      {}", a.derivation_path);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WalletGhostId(g)) => {
+                println!("{}", g.ghost_id);
+                println!("  network: {}", g.network);
+                println!("  scan_pubkey:  {}", g.scan_public_key_hex);
+                println!("  spend_pubkey: {}", g.spend_public_key_hex);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::WalletShowMnemonic(m)) => {

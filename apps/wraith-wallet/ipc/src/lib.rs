@@ -87,6 +87,8 @@ pub enum Request {
     WalletDerive { path: String },
     /// Show the GSP auth identity (wallet_id + x-only auth pubkey) of the active wallet.
     WalletAuthInfo,
+    /// Show the active wallet's BIP-352 Ghost ID (silent payment receive identity).
+    WalletGhostId,
     /// Re-display a wallet's BIP39 mnemonic. Always re-prompts the passphrase.
     WalletShowMnemonic { name: String, passphrase: String },
     /// Copy the on-disk encrypted keystore for `name` to `to_path` (a regular file).
@@ -123,6 +125,7 @@ pub enum Response {
     WalletStatus(WalletStatusResponse),
     WalletDerive(WalletDeriveResponse),
     WalletAuthInfo(WalletAuthInfoResponse),
+    WalletGhostId(WalletGhostIdResponse),
     WalletShowMnemonic(WalletShowMnemonicResponse),
     WalletExported { name: String, path: String, bytes: u64 },
     WalletRestored { name: String, path: String, bytes: u64 },
@@ -334,6 +337,20 @@ pub struct WalletAuthInfoResponse {
     pub auth_public_key_hex: String,
     /// BIP32 path the auth keypair is derived at.
     pub derivation_path: String,
+}
+
+/// The wallet's BIP-352 Ghost ID — share this string to receive payments.
+/// Derived deterministically from the seed; same seed across wallet
+/// implementations yields the same Ghost ID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletGhostIdResponse {
+    pub ghost_id: String,
+    pub network: String,
+    /// Compressed (33-byte) scan public key, hex. Public — given to a GSP
+    /// to scan for incoming payments.
+    pub scan_public_key_hex: String,
+    /// Compressed (33-byte) spend public key, hex.
+    pub spend_public_key_hex: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
