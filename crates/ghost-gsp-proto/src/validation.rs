@@ -324,7 +324,9 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
         | ClientMessage::SubscribePayments
         | ClientMessage::SubscribeLocks
         | ClientMessage::SubscribeReorgs
-        | ClientMessage::UnsubscribeReorgs => {
+        | ClientMessage::UnsubscribeReorgs
+        | ClientMessage::SubscribeSilentPayments
+        | ClientMessage::UnsubscribeSilentPayments => {
             // No parameters to validate
         }
 

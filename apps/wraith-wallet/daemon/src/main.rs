@@ -51,9 +51,9 @@ mod unix {
         spawn_session, GspError, SessionHandle, SessionPhase, SessionStatus,
     };
     use wraith_wallet_ipc::{
-        default_socket_path, ChainStatusResponse, DoctorCheck, DoctorResponse, Envelope,
-        ErrorResponse, GspAuthResponse, GspPingResponse, GspSessionStatusResponse,
-        HealthResponse, LightBalanceResponse,
+        default_socket_path, ChainStatusResponse, DetectedPaymentEntry, DoctorCheck, DoctorResponse,
+        Envelope, ErrorResponse, GspAuthResponse, GspPingResponse, GspSessionStatusResponse,
+        HealthResponse, LightBalanceResponse, LightDetectedResponse,
         LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightSentResponse,
         LightUtxoEntry, LightUtxosResponse, LockEntry, LocksConfirmedResponse, LocksJumpedResponse,
         LocksListResponse, LocksPreparedResponse, Request, Response, WalletAuthInfoResponse,
@@ -346,10 +346,19 @@ mod unix {
         let expires_at = token.expires_at;
         let jwt_for_session = token.token.clone();
 
+        // Derive ghost keys for client-side BIP-352 detection. Best-effort:
+        // failure here just means the session won't auto-scan; auth still works.
+        let scan_keys = {
+            let wallets = state.wallets.read().await;
+            wallets
+                .get(&active_name)
+                .and_then(|ks| ks.ghost_keys().ok())
+        };
+
         // 4. Stash the token + spawn a persistent authenticated session task.
         //    Replacing an existing slot drops the old SessionHandle, which aborts
         //    its task before the new one starts.
-        let handle = spawn_session(state.gsp_urls.clone(), jwt_for_session);
+        let handle = spawn_session(state.gsp_urls.clone(), jwt_for_session, scan_keys);
         *state.session.write().await = Some(StoredSession {
             wallet_name: active_name,
             token,
@@ -791,6 +800,30 @@ mod unix {
                             message: format!("light utxos: {e}"),
                         }),
                     },
+                }
+            }
+            Request::LightDetected => {
+                let guard = state.session.read().await;
+                match guard.as_ref() {
+                    None => Response::Error(ErrorResponse {
+                        message: "no GSP session — run `wraith gsp auth` first".to_string(),
+                    }),
+                    Some(s) => {
+                        let snap = s.handle.snapshot().await;
+                        let detections = snap
+                            .detections
+                            .into_iter()
+                            .map(|d| DetectedPaymentEntry {
+                                txid: d.txid,
+                                block_height: d.block_height,
+                                vout: d.vout,
+                                amount_sats: d.amount_sats,
+                                k: d.k,
+                                received_at: d.received_at,
+                            })
+                            .collect();
+                        Response::LightDetected(LightDetectedResponse { detections })
+                    }
                 }
             }
             Request::LightHistory { limit, offset } => {

@@ -21,9 +21,10 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use ghost_gsp_proto::{
-    ClientMessage, PaymentMode, PreparedPayment, ServerMessage, TransactionInfo, UtxoInfo,
-    WalletProof,
+    CandidateOutput, ClientMessage, PaymentMode, PreparedPayment, ServerMessage, TransactionInfo,
+    UtxoInfo, WalletProof,
 };
+use ghost_keys::{GhostKeys, PaymentDetector};
 
 #[derive(Debug, Clone)]
 pub struct LockPreparedResult {
@@ -68,6 +69,9 @@ pub struct SessionStatus {
     pub last_error: Option<String>,
     /// Successful WS connection count (1 = connected first time, 2 = one reconnect, ...).
     pub connect_count: u64,
+    /// Silent-payment detections accumulated client-side from CandidateTransaction
+    /// pushes. Cleared on session restart (re-population needs server-side rescan).
+    pub detections: Vec<DetectedPayment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +80,19 @@ pub struct BalanceSnapshot {
     pub unconfirmed_sats: u64,
     pub locked_sats: u64,
     /// Unix seconds when this snapshot was received.
+    pub received_at: i64,
+}
+
+/// One BIP-352 silent-payment detection from a `CandidateTransaction` push.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedPayment {
+    pub txid: String,
+    pub block_height: Option<u32>,
+    pub vout: u32,
+    pub amount_sats: Option<u64>,
+    /// Derivation index (k) used by the sender. Recorded so a future
+    /// "spend this output" call can re-derive the spend key.
+    pub k: u32,
     pub received_at: i64,
 }
 
@@ -360,7 +377,16 @@ pub struct GhostLocksResult {
 ///
 /// `ws_urls` is the failover list — the task tries them in order and rotates
 /// on each reconnect attempt. Pass `vec![single_url]` for the single-endpoint case.
-pub fn spawn_session(ws_urls: Vec<String>, jwt_token: String) -> SessionHandle {
+///
+/// `scan_keys` enables BIP-352 silent-payment detection. When provided, the task
+/// runs the local scanner against every `CandidateTransaction` push from the
+/// server and caches matches in `SessionStatus.detections`. Pass `None` to
+/// disable client-side detection (saves CPU on session-bootstrap failure paths).
+pub fn spawn_session(
+    ws_urls: Vec<String>,
+    jwt_token: String,
+    scan_keys: Option<GhostKeys>,
+) -> SessionHandle {
     let status = Arc::new(RwLock::new(SessionStatus::default()));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (cmd_tx, cmd_rx) = mpsc::channel::<SessionCommand>(32);
@@ -368,6 +394,7 @@ pub fn spawn_session(ws_urls: Vec<String>, jwt_token: String) -> SessionHandle {
     let task = tokio::spawn(run(
         ws_urls,
         jwt_token,
+        scan_keys,
         status.clone(),
         shutdown_rx,
         cmd_rx,
@@ -388,6 +415,7 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 async fn run(
     ws_urls: Vec<String>,
     jwt_token: String,
+    scan_keys: Option<GhostKeys>,
     status: Arc<RwLock<SessionStatus>>,
     mut shutdown: watch::Receiver<bool>,
     mut cmd_rx: mpsc::Receiver<SessionCommand>,
@@ -477,8 +505,12 @@ async fn run(
             s.last_error = None;
         }
 
-        // bootstrap: ask for current balance
+        // bootstrap: ask for current balance + (if we have scan keys) subscribe
+        // to silent-payment candidate-transaction pushes.
         let _ = send_client(&mut ws, &ClientMessage::GetBalance { max_k: None }).await;
+        if scan_keys.is_some() {
+            let _ = send_client(&mut ws, &ClientMessage::SubscribeSilentPayments).await;
+        }
 
         // === main loop: drain messages + keepalive + commands ===
         let mut keepalive = tokio::time::interval(Duration::from_secs(KEEPALIVE_SECS));
@@ -493,6 +525,7 @@ async fn run(
             &mut keepalive,
             &mut cmd_rx,
             &mut pending,
+            scan_keys.as_ref(),
         )
         .await;
 
@@ -558,6 +591,7 @@ async fn run_main_loop(
     keepalive: &mut tokio::time::Interval,
     cmd_rx: &mut mpsc::Receiver<SessionCommand>,
     pending: &mut VecDeque<PendingReply>,
+    scan_keys: Option<&GhostKeys>,
 ) -> MainLoopOutcome {
     loop {
         tokio::select! {
@@ -750,7 +784,7 @@ async fn run_main_loop(
                         continue;
                     }
                 };
-                handle_message(parsed, status, pending).await;
+                handle_message(parsed, status, pending, scan_keys).await;
             }
         }
     }
@@ -760,6 +794,7 @@ async fn handle_message(
     msg: ServerMessage,
     status: &Arc<RwLock<SessionStatus>>,
     pending: &mut VecDeque<PendingReply>,
+    scan_keys: Option<&GhostKeys>,
 ) {
     match msg {
         // Push: balance update.
@@ -1017,6 +1052,37 @@ async fn handle_message(
             }
         }
 
+        // Push: BIP-352 silent-payment candidate. Run local scanner.
+        ServerMessage::CandidateTransaction {
+            ephemeral_pubkey,
+            outputs,
+            txid,
+            block_height,
+        } => {
+            let Some(keys) = scan_keys else {
+                tracing::trace!("gsp session: candidate tx but no scan keys; ignoring");
+                return;
+            };
+            match scan_candidate(keys, &ephemeral_pubkey, &outputs, &txid, block_height) {
+                Ok(detected) if !detected.is_empty() => {
+                    tracing::info!(
+                        matches = detected.len(),
+                        %txid,
+                        ?block_height,
+                        "gsp session: silent-payment match detected"
+                    );
+                    let mut s = status.write().await;
+                    s.detections.extend(detected);
+                }
+                Ok(_) => {
+                    tracing::trace!(%txid, "gsp session: candidate tx scanned, no match");
+                }
+                Err(e) => {
+                    tracing::debug!(%txid, error = %e, "gsp session: candidate scan error");
+                }
+            }
+        }
+
         ServerMessage::Pong { .. } => {
             tracing::trace!("gsp session: pong");
         }
@@ -1025,6 +1091,100 @@ async fn handle_message(
             tracing::trace!(?other, "gsp session: unhandled push");
         }
     }
+}
+
+/// Run the local BIP-352 scanner against one candidate transaction. Returns
+/// any detected payments belonging to `keys`.
+fn scan_candidate(
+    keys: &GhostKeys,
+    ephemeral_pubkey_hex: &str,
+    outputs: &[CandidateOutput],
+    txid: &str,
+    block_height: Option<u32>,
+) -> Result<Vec<DetectedPayment>, String> {
+    use bitcoin::secp256k1::PublicKey;
+
+    let eph_bytes =
+        hex::decode(ephemeral_pubkey_hex).map_err(|e| format!("ephemeral hex: {e}"))?;
+    let ephemeral = PublicKey::from_slice(&eph_bytes)
+        .map_err(|e| format!("ephemeral pubkey: {e}"))?;
+
+    // Decode each x-only (32-byte) output pubkey. Stash the raw x-only bytes
+    // for later — BIP-352 output keys are taproot (x-only on chain), so we
+    // need to try BOTH parities (0x02 / 0x03) when feeding the scanner,
+    // since `PaymentDetector` compares full SEC1 byte equality and only
+    // one of the two parities will be the real BIP-352-derived point.
+    struct Decoded {
+        xonly: [u8; 32],
+        amount: Option<u64>,
+        vout: u32,
+    }
+    let mut decoded: Vec<Decoded> = Vec::with_capacity(outputs.len());
+    for out in outputs {
+        let xonly_bytes =
+            hex::decode(&out.output_pubkey).map_err(|e| format!("output hex: {e}"))?;
+        if xonly_bytes.len() != 32 {
+            return Err(format!(
+                "output_pubkey must be 32 bytes (x-only), got {}",
+                xonly_bytes.len()
+            ));
+        }
+        let mut xonly = [0u8; 32];
+        xonly.copy_from_slice(&xonly_bytes);
+        decoded.push(Decoded {
+            xonly,
+            amount: out.amount_sats,
+            vout: out.vout,
+        });
+    }
+
+    let detector = PaymentDetector::new(keys);
+    let now = now_unix_secs();
+    let mut detections: Vec<DetectedPayment> = Vec::new();
+
+    // Scan once with each parity. Dedupe matches by (vout, k) since the same
+    // real output can never match under both parities (each x-only key
+    // belongs to exactly one curve point with a defined parity).
+    for parity in [0x02u8, 0x03u8] {
+        let mut scan_inputs: Vec<(PublicKey, Option<u64>)> = Vec::with_capacity(decoded.len());
+        for d in &decoded {
+            let mut sec1 = [0u8; 33];
+            sec1[0] = parity;
+            sec1[1..].copy_from_slice(&d.xonly);
+            let pk = match PublicKey::from_slice(&sec1) {
+                Ok(p) => p,
+                Err(_) => {
+                    // Off-curve x-only with this parity — skip this input.
+                    continue;
+                }
+            };
+            scan_inputs.push((pk, d.amount));
+        }
+        let scanned = detector.scan_transaction(&ephemeral, &scan_inputs);
+        for s in scanned {
+            // Map the scanner's slice-index back to our on-chain vout.
+            // Note: the slice index can drift if any inputs were skipped above;
+            // we only skip on parse failure which should never happen for valid
+            // x-only bytes, so this is safe in practice.
+            let d = match decoded.get(s.output_index as usize) {
+                Some(d) => d,
+                None => continue,
+            };
+            // Dedupe across parities.
+            if detections.iter().any(|x| x.vout == d.vout && x.k == s.k) {
+                continue;
+            }
+            detections.push(DetectedPayment {
+                txid: txid.to_string(),
+                block_height,
+                vout: d.vout,
+                amount_sats: s.amount,
+                k: s.k,
+                received_at: now,
+            });
+        }
+    }
+    Ok(detections)
 }
 
 /// Read frames until we see an `AuthResult`. Drops anything else.
@@ -1110,4 +1270,115 @@ fn now_unix_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// End-to-end synthetic test: sender constructs a BIP-352 payment to a
+    /// receiver's `GhostKeys`, packages it as a `CandidateTransaction`, and
+    /// the wallet's `scan_candidate` detects the match.
+    #[test]
+    fn scan_candidate_detects_synthetic_match() {
+        use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use ghost_keys::{derive_payment_address_v2, derive_shared_secret};
+        use rand::RngCore;
+
+        let receiver = GhostKeys::generate();
+
+        // Sender's role: pick a one-shot ephemeral keypair (in real BIP-352
+        // this is derived from the input set; the scanner only sees the pubkey).
+        let secp = Secp256k1::new();
+        let mut eph_bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut eph_bytes);
+        let eph_secret = SecretKey::from_slice(&eph_bytes).expect("nonzero scalar");
+        let ephemeral_pub = PublicKey::from_secret_key(&secp, &eph_secret);
+
+        // Both sides compute the same shared secret via ECDH (commutativity).
+        // Sender side: ECDH(eph_secret, receiver.scan_pubkey).
+        let shared_secret = derive_shared_secret(&eph_secret, receiver.scan_pubkey());
+
+        // Sender derives the destination output pubkey at index k=0.
+        let k: u32 = 0;
+        let (output_pubkey, _tweak) =
+            derive_payment_address_v2(receiver.spend_pubkey(), &shared_secret, k)
+                .expect("derive output pubkey");
+
+        // On chain we'd see the x-only form (taproot output).
+        let serialized = output_pubkey.serialize();
+        let xonly = &serialized[1..];
+
+        let candidate_outputs = vec![CandidateOutput {
+            output_pubkey: hex::encode(xonly),
+            amount_sats: Some(50_000),
+            vout: 7,
+        }];
+
+        let txid = "0".repeat(64);
+        let detections = scan_candidate(
+            &receiver,
+            &hex::encode(ephemeral_pub.serialize()),
+            &candidate_outputs,
+            &txid,
+            Some(123_456),
+        )
+        .expect("scan succeeds");
+
+        assert_eq!(detections.len(), 1, "expected one match");
+        let det = &detections[0];
+        assert_eq!(det.k, k);
+        assert_eq!(det.amount_sats, Some(50_000));
+        assert_eq!(det.vout, 7);
+        assert_eq!(det.block_height, Some(123_456));
+        assert_eq!(det.txid, txid);
+    }
+
+    #[test]
+    fn scan_candidate_returns_empty_on_no_match() {
+        use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use rand::RngCore;
+
+        let receiver = GhostKeys::generate();
+
+        let secp = Secp256k1::new();
+        let mut eph_bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut eph_bytes);
+        let eph_secret = SecretKey::from_slice(&eph_bytes).unwrap();
+        let ephemeral_pub = PublicKey::from_secret_key(&secp, &eph_secret);
+
+        // Output addressed to a DIFFERENT receiver — should not match.
+        let other = GhostKeys::generate();
+        let mut other_eph_bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut other_eph_bytes);
+        let other_eph_secret = SecretKey::from_slice(&other_eph_bytes).unwrap();
+        let shared_secret =
+            ghost_keys::derive_shared_secret(&other_eph_secret, other.scan_pubkey());
+        let (output_pubkey, _tweak) =
+            ghost_keys::derive_payment_address_v2(other.spend_pubkey(), &shared_secret, 0)
+                .unwrap();
+        let serialized = output_pubkey.serialize();
+        let xonly = &serialized[1..];
+
+        let candidate_outputs = vec![CandidateOutput {
+            output_pubkey: hex::encode(xonly),
+            amount_sats: Some(1_000),
+            vout: 0,
+        }];
+
+        let detections = scan_candidate(
+            &receiver,
+            &hex::encode(ephemeral_pub.serialize()),
+            &candidate_outputs,
+            "deadbeef",
+            None,
+        )
+        .expect("scan succeeds");
+
+        assert!(
+            detections.is_empty(),
+            "no match expected, got {:?}",
+            detections
+        );
+    }
 }

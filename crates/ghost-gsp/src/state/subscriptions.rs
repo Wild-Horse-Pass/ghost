@@ -39,6 +39,8 @@ pub enum SubscriptionType {
     Locks,
     /// Chain reorganization notifications (L1 and L2)
     Reorgs,
+    /// BIP-352 silent-payment candidate-transaction pushes
+    SilentPayments,
 }
 
 impl SubscriptionType {
@@ -60,6 +62,7 @@ impl SubscriptionType {
             SubscriptionType::Payments => "payments",
             SubscriptionType::Locks => "locks",
             SubscriptionType::Reorgs => "reorgs",
+            SubscriptionType::SilentPayments => "silent_payments",
         }
     }
 }

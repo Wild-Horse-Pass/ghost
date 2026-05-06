@@ -51,6 +51,9 @@ pub enum Request {
     },
     /// List the active wallet's transaction history via the persistent GSP session.
     LightHistory { limit: u32, offset: u32 },
+    /// List BIP-352 silent-payment detections accumulated in the persistent
+    /// session's local scanner since auth.
+    LightDetected,
     /// List the active wallet's Ghost Locks via the persistent GSP session.
     LocksList,
     /// Ask GSP to prepare a new ghost lock for the active wallet.
@@ -119,6 +122,7 @@ pub enum Response {
     LightBalance(LightBalanceResponse),
     LightUtxos(LightUtxosResponse),
     LightHistory(LightHistoryResponse),
+    LightDetected(LightDetectedResponse),
     LocksList(LocksListResponse),
     LocksPrepared(LocksPreparedResponse),
     LocksConfirmed(LocksConfirmedResponse),
@@ -249,6 +253,21 @@ pub struct LightHistoryEntry {
 pub struct LightHistoryResponse {
     pub transactions: Vec<LightHistoryEntry>,
     pub total_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectedPaymentEntry {
+    pub txid: String,
+    pub block_height: Option<u32>,
+    pub vout: u32,
+    pub amount_sats: Option<u64>,
+    pub k: u32,
+    pub received_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightDetectedResponse {
+    pub detections: Vec<DetectedPaymentEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

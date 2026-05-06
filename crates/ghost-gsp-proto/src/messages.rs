@@ -198,6 +198,15 @@ pub enum ClientMessage {
     /// Unsubscribe from chain reorganization notifications
     UnsubscribeReorgs,
 
+    /// Subscribe to BIP-352 silent-payment candidate transaction pushes.
+    /// Server pushes every taproot-output-bearing transaction with its
+    /// computed ephemeral pubkey; wallet runs scanner locally with its
+    /// scan secret. Server never learns the wallet's scan secret.
+    SubscribeSilentPayments,
+
+    /// Unsubscribe from silent-payment pushes.
+    UnsubscribeSilentPayments,
+
     // =========================================================================
     // Instant Payments
     // =========================================================================
@@ -484,6 +493,21 @@ pub enum ServerMessage {
         error: Option<String>,
     },
 
+    /// Push: a candidate transaction the wallet should scan locally for
+    /// silent-payment matches. Sent when the wallet has subscribed via
+    /// `SubscribeSilentPayments` and the server has chain-extracted the
+    /// transaction's ephemeral pubkey + taproot outputs.
+    CandidateTransaction {
+        /// 33-byte SEC1 compressed ephemeral input-set pubkey, hex.
+        ephemeral_pubkey: String,
+        /// All taproot outputs from the transaction.
+        outputs: Vec<CandidateOutput>,
+        /// Transaction id (32 bytes hex).
+        txid: String,
+        /// Block height the tx was confirmed at, or `None` for mempool.
+        block_height: Option<u32>,
+    },
+
     /// BIP-352 scan-key registration result
     ScanKeyRegistered {
         /// Whether registration succeeded
@@ -744,6 +768,17 @@ pub enum ServerMessage {
     },
 }
 
+/// One taproot output from a `CandidateTransaction`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateOutput {
+    /// 32-byte x-only output pubkey, hex.
+    pub output_pubkey: String,
+    /// Output value in satoshis, if known.
+    pub amount_sats: Option<u64>,
+    /// Output index in the transaction.
+    pub vout: u32,
+}
+
 /// UTXO information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UtxoInfo {
@@ -903,6 +938,8 @@ impl ClientMessage {
                 | ClientMessage::SubscribeLocks
                 | ClientMessage::SubscribeReorgs
                 | ClientMessage::UnsubscribeReorgs
+                | ClientMessage::SubscribeSilentPayments
+                | ClientMessage::UnsubscribeSilentPayments
                 | ClientMessage::CheckInstantCapability { .. }
                 | ClientMessage::SubscribeLockState { .. }
                 | ClientMessage::UnsubscribeLockState { .. }

@@ -581,6 +581,14 @@ async fn handle_message(
 
         ClientMessage::UnsubscribeReorgs => handle_unsubscribe(state, conn_state, "reorgs").await,
 
+        ClientMessage::SubscribeSilentPayments => {
+            handle_subscribe(state, conn_state, "silent_payments").await
+        }
+
+        ClientMessage::UnsubscribeSilentPayments => {
+            handle_unsubscribe(state, conn_state, "silent_payments").await
+        }
+
         ClientMessage::Unsubscribe { subscription } => {
             handle_unsubscribe(state, conn_state, &subscription).await
         }

@@ -88,6 +88,9 @@ enum LightCommand {
         #[arg(short = 'c', long, default_value_t = 1)]
         min_confirmations: u32,
     },
+    /// Show BIP-352 silent-payment matches detected by the persistent
+    /// session's local scanner since `wraith gsp auth` ran.
+    Detected,
     /// Show the active wallet's transaction history.
     History {
         /// Maximum number of transactions to return.
@@ -250,6 +253,7 @@ mod unix {
                 LightCommand::History { limit, offset } => {
                     Request::LightHistory { limit, offset }
                 }
+                LightCommand::Detected => Request::LightDetected,
                 LightCommand::Send {
                     recipient,
                     amount_sats,
@@ -444,6 +448,29 @@ mod unix {
                     if u.utxos.iter().any(|x| !x.spendable) {
                         println!("  * = not currently spendable");
                     }
+                }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LightDetected(d)) => {
+                if d.detections.is_empty() {
+                    println!("(no detections — server scanner may not be wired yet,");
+                    println!(" or no incoming silent payments since auth)");
+                } else {
+                    for det in &d.detections {
+                        let amt = det
+                            .amount_sats
+                            .map(|a| format!("{a} sats"))
+                            .unwrap_or_else(|| "?".into());
+                        let height = det
+                            .block_height
+                            .map(|h| h.to_string())
+                            .unwrap_or_else(|| "(mempool)".into());
+                        println!(
+                            "{}:{}  {amt}  k={}  height {height}",
+                            det.txid, det.vout, det.k
+                        );
+                    }
+                    println!("\n{} detection(s)", d.detections.len());
                 }
                 std::process::ExitCode::SUCCESS
             }
