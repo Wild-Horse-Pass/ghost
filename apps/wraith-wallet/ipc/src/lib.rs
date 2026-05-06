@@ -48,6 +48,21 @@ pub enum Request {
     LightHistory { limit: u32, offset: u32 },
     /// List the active wallet's Ghost Locks via the persistent GSP session.
     LocksList,
+    /// Ask GSP to prepare a new ghost lock for the active wallet.
+    /// Server returns a funding address and required-sats; client funds it externally.
+    LocksPrepare { capacity_sats: u64 },
+    /// Confirm that a previously-prepared lock has been funded on-chain.
+    LocksConfirm {
+        lock_id: String,
+        funding_txid: String,
+    },
+    /// Initiate a jump (key rotation) for an existing lock.
+    /// Priority is one of: "normal" (default), "high", "urgent".
+    LocksJump {
+        lock_id: String,
+        target_address: String,
+        priority: String,
+    },
     /// Prepare + sign + submit an on-chain / L2 payment.
     /// Mode is one of: "ghostpay" (default), "wraith", "confidential".
     LightSend {
@@ -96,6 +111,9 @@ pub enum Response {
     LightUtxos(LightUtxosResponse),
     LightHistory(LightHistoryResponse),
     LocksList(LocksListResponse),
+    LocksPrepared(LocksPreparedResponse),
+    LocksConfirmed(LocksConfirmedResponse),
+    LocksJumped(LocksJumpedResponse),
     LightSent(LightSentResponse),
     WalletCreate(WalletCreateResponse),
     WalletUnlocked,
@@ -225,6 +243,27 @@ pub struct LockEntry {
 pub struct LocksListResponse {
     pub locks: Vec<LockEntry>,
     pub total_locked_sats: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocksPreparedResponse {
+    pub lock_id: String,
+    pub funding_address: String,
+    pub required_sats: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocksConfirmedResponse {
+    pub lock_id: String,
+    pub txid: String,
+    pub block_height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocksJumpedResponse {
+    pub lock_id: String,
+    /// Jump transaction id, if the server broadcast it.
+    pub jump_txid: Option<String>,
 }
 
 /// Result of `LightSend` (PreparePayment + sign + SubmitSignedPayment).

@@ -111,6 +111,25 @@ enum LightCommand {
 enum LocksCommand {
     /// List all Ghost Locks for the active wallet.
     List,
+    /// Ask GSP to prepare a new ghost lock — returns a funding address.
+    Prepare {
+        /// Capacity of the lock in satoshis.
+        capacity_sats: u64,
+    },
+    /// Confirm that a prepared lock has been funded on-chain.
+    Confirm {
+        lock_id: String,
+        funding_txid: String,
+    },
+    /// Initiate a jump (key rotation) for an existing lock.
+    Jump {
+        lock_id: String,
+        /// Target address for the new lock.
+        target_address: String,
+        /// Priority: normal (default), high, or urgent.
+        #[arg(long, default_value = "normal")]
+        priority: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -236,6 +255,25 @@ mod unix {
             },
             Command::Locks { sub } => match sub {
                 LocksCommand::List => Request::LocksList,
+                LocksCommand::Prepare { capacity_sats } => {
+                    Request::LocksPrepare { capacity_sats }
+                }
+                LocksCommand::Confirm {
+                    lock_id,
+                    funding_txid,
+                } => Request::LocksConfirm {
+                    lock_id,
+                    funding_txid,
+                },
+                LocksCommand::Jump {
+                    lock_id,
+                    target_address,
+                    priority,
+                } => Request::LocksJump {
+                    lock_id,
+                    target_address,
+                    priority,
+                },
             },
             Command::Wallet { sub } => match sub {
                 WalletCommand::Create { name } => match prompt_new_passphrase() {
@@ -410,6 +448,32 @@ mod unix {
                 println!("  amount:     {} sats", s.amount_sats);
                 println!("  fee:        {} sats", s.fee_sats);
                 println!("  mode:       {}", s.mode);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LocksPrepared(r)) => {
+                println!("lock prepared");
+                println!("  lock_id:         {}", r.lock_id);
+                println!("  funding address: {}", r.funding_address);
+                println!("  required:        {} sats", r.required_sats);
+                println!();
+                println!("Send {} sats to the address above, then run:", r.required_sats);
+                println!("  wraith locks confirm {} <funding_txid>", r.lock_id);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LocksConfirmed(r)) => {
+                println!("lock confirmed");
+                println!("  lock_id:      {}", r.lock_id);
+                println!("  funding txid: {}", r.txid);
+                println!("  block height: {}", r.block_height);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LocksJumped(r)) => {
+                println!("jump initiated");
+                println!("  lock_id:   {}", r.lock_id);
+                match r.jump_txid {
+                    Some(tx) => println!("  jump txid: {tx}"),
+                    None => println!("  jump txid: (queued — not yet broadcast)"),
+                }
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::LocksList(r)) => {

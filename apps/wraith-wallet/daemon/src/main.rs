@@ -54,9 +54,10 @@ mod unix {
         default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspAuthResponse,
         GspPingResponse, GspSessionStatusResponse, HealthResponse, LightBalanceResponse,
         LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightSentResponse,
-        LightUtxoEntry, LightUtxosResponse, LockEntry, LocksListResponse, Request, Response,
-        WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletListEntry,
-        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
+        LightUtxoEntry, LightUtxosResponse, LockEntry, LocksConfirmedResponse, LocksJumpedResponse,
+        LocksListResponse, LocksPreparedResponse, Request, Response, WalletAuthInfoResponse,
+        WalletCreateResponse, WalletDeriveResponse, WalletListEntry, WalletListResponse,
+        WalletShowMnemonicResponse, WalletStatusResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -332,6 +333,36 @@ mod unix {
             token_prefix,
             expires_at,
         })
+    }
+
+    /// Helpers shared by lock operations: pull the auth keypair from the session's wallet.
+    /// Used so each lock op binds to the wallet that produced the session token.
+    async fn auth_keypair_for_session(
+        state: &Arc<DaemonState>,
+    ) -> Result<bitcoin::secp256k1::Keypair, String> {
+        let session = state.session.read().await;
+        let session = session
+            .as_ref()
+            .ok_or_else(|| "no GSP session — run `wraith gsp auth` first".to_string())?;
+        let wallets = state.wallets.read().await;
+        let ks = wallets.get(&session.wallet_name).ok_or_else(|| {
+            format!(
+                "wallet '{}' (the session's wallet) is not unlocked",
+                session.wallet_name
+            )
+        })?;
+        wraith_wallet_core::auth::auth_keypair(ks).map_err(|e| format!("auth keypair: {e}"))
+    }
+
+    fn parse_jump_priority(s: &str) -> Result<String, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "normal" => Ok("normal".to_string()),
+            "high" => Ok("high".to_string()),
+            "urgent" => Ok("urgent".to_string()),
+            other => Err(format!(
+                "unknown jump priority '{other}' (try normal, high, urgent)"
+            )),
+        }
     }
 
     fn parse_payment_mode(s: &str) -> Result<PaymentMode, String> {
@@ -620,6 +651,114 @@ mod unix {
                 Ok(r) => Response::LightSent(r),
                 Err(message) => Response::Error(ErrorResponse { message }),
             },
+            Request::LocksPrepare { capacity_sats } => {
+                let kp = match auth_keypair_for_session(state).await {
+                    Ok(k) => k,
+                    Err(message) => {
+                        return Envelope::new(id, Response::Error(ErrorResponse { message }));
+                    }
+                };
+                let owner_pubkey =
+                    hex::encode(wraith_wallet_core::auth::xonly_pubkey_bytes(&kp));
+                let session = state.session.read().await;
+                let session = session.as_ref().expect("just checked above");
+                match session
+                    .handle
+                    .prepare_ghost_lock(owner_pubkey, capacity_sats)
+                    .await
+                {
+                    Ok(r) => Response::LocksPrepared(LocksPreparedResponse {
+                        lock_id: r.lock_id,
+                        funding_address: r.funding_address,
+                        required_sats: r.required_sats,
+                    }),
+                    Err(message) => Response::Error(ErrorResponse {
+                        message: format!("locks prepare: {message}"),
+                    }),
+                }
+            }
+            Request::LocksConfirm {
+                lock_id,
+                funding_txid,
+            } => {
+                let kp = match auth_keypair_for_session(state).await {
+                    Ok(k) => k,
+                    Err(message) => {
+                        return Envelope::new(id, Response::Error(ErrorResponse { message }));
+                    }
+                };
+                let proof = match wraith_wallet_core::auth::make_proof(&kp, "confirm_lock") {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("confirm_lock proof: {e}"),
+                            }),
+                        );
+                    }
+                };
+                let session = state.session.read().await;
+                let session = session.as_ref().expect("just checked above");
+                match session
+                    .handle
+                    .confirm_ghost_lock_funding(lock_id, funding_txid, proof)
+                    .await
+                {
+                    Ok(r) => Response::LocksConfirmed(LocksConfirmedResponse {
+                        lock_id: r.lock_id,
+                        txid: r.txid,
+                        block_height: r.block_height,
+                    }),
+                    Err(message) => Response::Error(ErrorResponse {
+                        message: format!("locks confirm: {message}"),
+                    }),
+                }
+            }
+            Request::LocksJump {
+                lock_id,
+                target_address,
+                priority,
+            } => {
+                let priority = match parse_jump_priority(&priority) {
+                    Ok(p) => p,
+                    Err(message) => {
+                        return Envelope::new(id, Response::Error(ErrorResponse { message }));
+                    }
+                };
+                let kp = match auth_keypair_for_session(state).await {
+                    Ok(k) => k,
+                    Err(message) => {
+                        return Envelope::new(id, Response::Error(ErrorResponse { message }));
+                    }
+                };
+                let proof = match wraith_wallet_core::auth::make_proof(&kp, "request_jump") {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("request_jump proof: {e}"),
+                            }),
+                        );
+                    }
+                };
+                let session = state.session.read().await;
+                let session = session.as_ref().expect("just checked above");
+                match session
+                    .handle
+                    .request_jump(lock_id, priority, target_address, proof)
+                    .await
+                {
+                    Ok(r) => Response::LocksJumped(LocksJumpedResponse {
+                        lock_id: r.lock_id,
+                        jump_txid: r.jump_txid,
+                    }),
+                    Err(message) => Response::Error(ErrorResponse {
+                        message: format!("locks jump: {message}"),
+                    }),
+                }
+            }
             Request::LocksList => {
                 let guard = state.session.read().await;
                 match guard.as_ref() {
