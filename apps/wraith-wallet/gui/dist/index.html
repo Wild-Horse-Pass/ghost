@@ -410,13 +410,28 @@
         els.raw.textContent = label + "\n" + JSON.stringify(value, null, 2);
       }
 
+      let healthDownLast = null; // null = no probe yet, true/false otherwise
       async function refreshHealth() {
         try {
           const v = await invoke("daemon_health");
           els.status.textContent = `daemon v${v.daemon_version} · uptime ${v.uptime_secs}s`;
+          // Recovery edge: if the daemon was unreachable on the previous probe
+          // and is reachable now, refresh the panels that depend on it. Cheap
+          // self-healing UX — the user doesn't have to click around to figure
+          // out the panels are stale.
+          if (healthDownLast === true) {
+            clearErr();
+            refreshWalletList();
+            refreshBalance();
+          }
+          healthDownLast = false;
         } catch (e) {
           els.status.textContent = "daemon not reachable";
-          showErr(String(e));
+          // Only spam the error banner on the first transition into "down".
+          if (healthDownLast !== true) {
+            showErr(String(e));
+          }
+          healthDownLast = true;
         }
       }
 
@@ -888,21 +903,24 @@
         }
       }
 
-      // Tab switcher
-      document.querySelectorAll("nav button").forEach((b) => {
-        b.addEventListener("click", () => {
-          document.querySelectorAll("nav button").forEach((x) =>
-            x.classList.remove("active"));
-          b.classList.add("active");
-          const tab = b.dataset.tab;
-          document.querySelectorAll("[data-view]").forEach((v) => {
-            v.classList.toggle("hide", v.dataset.view !== tab);
-          });
-          if (tab === "history") refreshHistory();
-          if (tab === "doctor") refreshDoctor();
-          if (tab === "locks") refreshLocks();
-          if (tab === "identity") refreshIdentity();
+      // Tab switcher with localStorage persistence — re-opening the GUI lands
+      // the user back on the tab they were last using.
+      const TAB_KEY = "wraith.lastTab";
+      function selectTab(tab) {
+        document.querySelectorAll("nav button").forEach((x) => {
+          x.classList.toggle("active", x.dataset.tab === tab);
         });
+        document.querySelectorAll("[data-view]").forEach((v) => {
+          v.classList.toggle("hide", v.dataset.view !== tab);
+        });
+        try { localStorage.setItem(TAB_KEY, tab); } catch {}
+        if (tab === "history") refreshHistory();
+        if (tab === "doctor") refreshDoctor();
+        if (tab === "locks") refreshLocks();
+        if (tab === "identity") refreshIdentity();
+      }
+      document.querySelectorAll("nav button").forEach((b) => {
+        b.addEventListener("click", () => selectTab(b.dataset.tab));
       });
 
       async function refreshLocks() {
@@ -1234,6 +1252,15 @@
       });
 
       (async function init() {
+        // Restore last-active tab if it's a known one. Default = home.
+        const known = new Set(
+          [...document.querySelectorAll("nav button")].map((b) => b.dataset.tab)
+        );
+        let saved;
+        try { saved = localStorage.getItem(TAB_KEY); } catch {}
+        if (saved && known.has(saved)) {
+          selectTab(saved);
+        }
         await refreshHealth();
         await refreshWalletList();
         // Fresh install path: if no wallets exist yet, kick off the
@@ -1257,6 +1284,17 @@
           // in poll-only mode.
           console.warn("start_watch failed:", e);
         }
+        // Background health probe: 5s cadence is well below tokio-tungstenite
+        // keepalive (30s) and roomy enough that we're not hammering the
+        // daemon. The recovery edge in refreshHealth() also retries
+        // start_watch in case the daemon was killed and came back.
+        setInterval(async () => {
+          const wasDown = healthDownLast === true;
+          await refreshHealth();
+          if (wasDown && healthDownLast === false) {
+            try { await invoke("start_watch"); } catch {}
+          }
+        }, 5000);
       })();
     </script>
   </body>
