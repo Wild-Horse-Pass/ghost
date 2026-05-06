@@ -30,6 +30,10 @@ enum Command {
     Doctor,
     /// Print the daemon's configured environment (URLs, network, paths).
     Env,
+    /// One-line-each summary: daemon, doctor pass-rate, active wallet,
+    /// balance, lock count, GSP session. Aggregates several IPC calls
+    /// into one terminal-friendly view; useful as a `watch` target.
+    Status,
     /// Chain backend (ghost-pay) commands.
     Chain {
         #[command(subcommand)]
@@ -269,6 +273,12 @@ mod unix {
             return run_watch(json).await;
         }
 
+        // Multi-call summary: aggregate several IPC round-trips into one
+        // terminal-friendly view.
+        if matches!(&command, Command::Status) {
+            return run_status(json).await;
+        }
+
         let request = match command {
             Command::Health => Request::Health,
             Command::Doctor => Request::Doctor,
@@ -379,6 +389,7 @@ mod unix {
             // Handled in main() before we reach the runtime; the arm exists
             // here only so the match is exhaustive.
             Command::Completions { .. } => unreachable!("Completions handled in main"),
+            Command::Status => unreachable!("Status handled above"),
         };
 
         let result = call(request).await;
@@ -934,6 +945,118 @@ mod unix {
         let envelope: Envelope<Response> = serde_json::from_str(&response_line)
             .map_err(|e| format!("malformed response: {e}"))?;
         Ok(envelope.payload)
+    }
+
+    /// Multi-call status summary. Issues a few cheap requests in sequence and
+    /// renders one line per facet. With --json, dumps the consolidated map
+    /// instead so it's machine-readable.
+    pub(crate) async fn run_status(json: bool) -> std::process::ExitCode {
+        let health = call(Request::Health).await;
+        let env_resp = call(Request::DaemonEnv).await;
+        let wallets = call(Request::WalletList).await;
+        let session = call(Request::GspSessionStatus).await;
+        let balance = call(Request::LightBalance).await;
+        let locks = call(Request::LocksList).await;
+
+        if json {
+            let body = serde_json::json!({
+                "health":  result_value(&health),
+                "env":     result_value(&env_resp),
+                "wallets": result_value(&wallets),
+                "session": result_value(&session),
+                "balance": result_value(&balance),
+                "locks":   result_value(&locks),
+            });
+            println!("{body}");
+            return std::process::ExitCode::SUCCESS;
+        }
+
+        // daemon row
+        match &health {
+            Ok(Response::Health(h)) => {
+                let secs = h.uptime_secs;
+                let pretty = if secs < 60 {
+                    format!("{secs}s")
+                } else if secs < 3600 {
+                    format!("{}m {}s", secs / 60, secs % 60)
+                } else {
+                    format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+                };
+                println!("daemon:   v{} — uptime {pretty}", h.daemon_version);
+            }
+            _ => println!("daemon:   unreachable"),
+        }
+        // env: just show the network so a user can spot \"oh I'm on signet\"
+        if let Ok(Response::DaemonEnv(e)) = &env_resp {
+            println!("network:  {}", e.network);
+        }
+        // wallet row — picks out the active one
+        match &wallets {
+            Ok(Response::WalletList(l)) => {
+                if let Some(active) = l.wallets.iter().find(|w| w.active) {
+                    println!("wallet:   {} (unlocked, active)", active.name);
+                } else if let Some(any) = l.wallets.first() {
+                    println!("wallet:   {} (locked) — {} total", any.name, l.wallets.len());
+                } else {
+                    println!("wallet:   (none — `wraith wallet create <name>`)");
+                }
+            }
+            _ => println!("wallet:   error"),
+        }
+        // balance row — only meaningful if we have a session
+        match &balance {
+            Ok(Response::LightBalance(b)) => {
+                let confirmed = b.confirmed_sats.unwrap_or(0);
+                let unconfirmed = b.unconfirmed_sats.unwrap_or(0);
+                if unconfirmed > 0 {
+                    println!("balance:  {confirmed} sat ({unconfirmed} unconfirmed)");
+                } else {
+                    println!("balance:  {confirmed} sat");
+                }
+            }
+            Ok(Response::Error(_)) | Err(_) => {
+                println!("balance:  (no session — `wraith gsp auth`)");
+            }
+            _ => {}
+        }
+        // locks row
+        match &locks {
+            Ok(Response::LocksList(l)) => {
+                println!(
+                    "locks:    {} ({} sat capacity)",
+                    l.locks.len(),
+                    l.total_locked_sats
+                );
+            }
+            Ok(Response::Error(_)) | Err(_) => println!("locks:    (no session)"),
+            _ => {}
+        }
+        // session row
+        match &session {
+            Ok(Response::GspSessionStatus(s)) if s.have_token => {
+                let remaining = s.remaining_secs.unwrap_or(0).max(0);
+                let pretty = if remaining < 60 {
+                    format!("{remaining}s")
+                } else if remaining < 3600 {
+                    format!("{}m {}s", remaining / 60, remaining % 60)
+                } else {
+                    format!("{}h {}m", remaining / 3600, (remaining % 3600) / 60)
+                };
+                let wallet = s.wallet_name.as_deref().unwrap_or("(unknown)");
+                let phase = s.phase.as_deref().unwrap_or("?");
+                println!("session:  {wallet} — {phase} — expires in {pretty}");
+            }
+            Ok(Response::GspSessionStatus(_)) => println!("session:  (none)"),
+            _ => println!("session:  (none)"),
+        }
+        std::process::ExitCode::SUCCESS
+    }
+
+    fn result_value(r: &Result<Response, String>) -> serde_json::Value {
+        match r {
+            Ok(resp) => serde_json::to_value(resp).unwrap_or(serde_json::Value::Null),
+            Err(e) => serde_json::json!({"error": e}),
+        }
     }
 
     /// Streaming subscriber for `Request::WatchPayments`. Connects, sends the
