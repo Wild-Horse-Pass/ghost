@@ -70,6 +70,7 @@ members = [
     "apps/wraith-wallet/ipc",
     "apps/wraith-wallet/daemon",
     "apps/wraith-wallet/cli",
+    "apps/wraith-wallet/gui/src-tauri",
 ]
 exclude = [
     # sv2-apps has its own workspace structure
