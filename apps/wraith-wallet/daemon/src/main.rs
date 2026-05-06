@@ -51,8 +51,9 @@ mod unix {
         spawn_session, GspError, SessionHandle, SessionPhase, SessionStatus,
     };
     use wraith_wallet_ipc::{
-        default_socket_path, ChainStatusResponse, Envelope, ErrorResponse, GspAuthResponse,
-        GspPingResponse, GspSessionStatusResponse, HealthResponse, LightBalanceResponse,
+        default_socket_path, ChainStatusResponse, DoctorCheck, DoctorResponse, Envelope,
+        ErrorResponse, GspAuthResponse, GspPingResponse, GspSessionStatusResponse,
+        HealthResponse, LightBalanceResponse,
         LightHistoryEntry, LightHistoryResponse, LightReceiveResponse, LightSentResponse,
         LightUtxoEntry, LightUtxosResponse, LockEntry, LocksConfirmedResponse, LocksJumpedResponse,
         LocksListResponse, LocksPreparedResponse, Request, Response, WalletAuthInfoResponse,
@@ -516,6 +517,113 @@ mod unix {
         Ok((wallet_id, scan_pubkey_hex))
     }
 
+    /// Run all connectivity / liveness checks and return a summary.
+    async fn doctor_run(state: &Arc<DaemonState>) -> DoctorResponse {
+        let mut checks: Vec<DoctorCheck> = Vec::new();
+        let mut all_pass = true;
+
+        // 1. Daemon liveness — always passes if we got here.
+        checks.push(DoctorCheck {
+            name: "daemon".into(),
+            status: "pass".into(),
+            detail: format!(
+                "v{} — uptime {}s",
+                env!("CARGO_PKG_VERSION"),
+                state.started.elapsed().as_secs()
+            ),
+        });
+
+        // 2. ghost-pay /api/v1/status round-trip.
+        match state.chain.status().await {
+            Ok(s) => checks.push(DoctorCheck {
+                name: "ghost-pay".into(),
+                status: "pass".into(),
+                detail: format!(
+                    "v{} ({}); locks={}, sessions={}",
+                    s.backend_version, s.network, s.lock_count, s.active_sessions
+                ),
+            }),
+            Err(e) => {
+                all_pass = false;
+                checks.push(DoctorCheck {
+                    name: "ghost-pay".into(),
+                    status: "fail".into(),
+                    detail: format!("{e}"),
+                });
+            }
+        }
+
+        // 3. GSP ping round-trip.
+        match state.gsp.ping().await {
+            Ok(p) => {
+                let detail = match p.round_trip_ms {
+                    Some(rtt) => format!("server_time {} — round-trip {}ms", p.server_time, rtt),
+                    None => format!("server_time {}", p.server_time),
+                };
+                checks.push(DoctorCheck {
+                    name: "ghost-gsp".into(),
+                    status: "pass".into(),
+                    detail,
+                });
+            }
+            Err(e) => {
+                all_pass = false;
+                checks.push(DoctorCheck {
+                    name: "ghost-gsp".into(),
+                    status: "fail".into(),
+                    detail: format!("{e}"),
+                });
+            }
+        }
+
+        // 4. Active wallet status.
+        match state.active.read().await.clone() {
+            Some(active) => checks.push(DoctorCheck {
+                name: "active wallet".into(),
+                status: "pass".into(),
+                detail: format!("'{active}' unlocked"),
+            }),
+            None => {
+                checks.push(DoctorCheck {
+                    name: "active wallet".into(),
+                    status: "skip".into(),
+                    detail: "no wallet selected — `wraith wallet unlock <name>`".into(),
+                });
+            }
+        }
+
+        // 5. Session — present?
+        match state.session.read().await.as_ref() {
+            None => checks.push(DoctorCheck {
+                name: "gsp session".into(),
+                status: "skip".into(),
+                detail: "no session — `wraith gsp auth`".into(),
+            }),
+            Some(s) => {
+                let snap = s.handle.snapshot().await;
+                let phase = phase_label(snap.phase);
+                let status = if matches!(snap.phase, SessionPhase::Authenticated) {
+                    "pass".to_string()
+                } else {
+                    all_pass = false;
+                    "fail".to_string()
+                };
+                checks.push(DoctorCheck {
+                    name: "gsp session".into(),
+                    status,
+                    detail: format!(
+                        "{} (connects: {}, expires in {}s)",
+                        phase,
+                        snap.connect_count,
+                        s.token.remaining_secs()
+                    ),
+                });
+            }
+        }
+
+        DoctorResponse { checks, all_pass }
+    }
+
     fn phase_label(p: SessionPhase) -> &'static str {
         match p {
             SessionPhase::Disconnected => "disconnected",
@@ -568,6 +676,7 @@ mod unix {
                 daemon_version: env!("CARGO_PKG_VERSION").to_string(),
                 uptime_secs: state.started.elapsed().as_secs(),
             }),
+            Request::Doctor => Response::Doctor(doctor_run(state).await),
             Request::ChainStatus => match state.chain.status().await {
                 Ok(s) => Response::ChainStatus(ChainStatusResponse {
                     backend_version: s.backend_version,

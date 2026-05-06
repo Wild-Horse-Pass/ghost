@@ -30,6 +30,8 @@ pub fn default_socket_path() -> std::path::PathBuf {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
     Health,
+    /// One-shot connectivity + health summary (daemon + ghost-pay + ghost-gsp + session).
+    Doctor,
     ChainStatus,
     GspPing,
     /// Register the active wallet's auth identity with the configured GSP and create
@@ -108,6 +110,7 @@ pub enum Request {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Response {
     Health(HealthResponse),
+    Doctor(DoctorResponse),
     ChainStatus(ChainStatusResponse),
     GspPing(GspPingResponse),
     GspAuth(GspAuthResponse),
@@ -141,6 +144,22 @@ pub enum Response {
 pub struct HealthResponse {
     pub daemon_version: String,
     pub uptime_secs: u64,
+}
+
+/// One row in the `Doctor` summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorCheck {
+    pub name: String,
+    /// `"pass"` / `"fail"` / `"skip"`.
+    pub status: String,
+    /// Human-readable detail line.
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorResponse {
+    pub checks: Vec<DoctorCheck>,
+    pub all_pass: bool,
 }
 
 /// Status of the configured ghost-pay backend.

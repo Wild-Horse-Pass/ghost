@@ -25,6 +25,8 @@ struct Cli {
 enum Command {
     /// Round-trip a health request to wraithd.
     Health,
+    /// One-shot summary of daemon + ghost-pay + ghost-gsp + active wallet + session.
+    Doctor,
     /// Chain backend (ghost-pay) commands.
     Chain {
         #[command(subcommand)]
@@ -229,6 +231,7 @@ mod unix {
 
         let request = match command {
             Command::Health => Request::Health,
+            Command::Doctor => Request::Doctor,
             Command::Chain { sub } => match sub {
                 ChainCommand::Status => Request::ChainStatus,
             },
@@ -327,6 +330,31 @@ mod unix {
         }
 
         match result {
+            Ok(Response::Doctor(d)) => {
+                for c in &d.checks {
+                    let mark = match c.status.as_str() {
+                        "pass" => "  ok ",
+                        "fail" => "FAIL ",
+                        "skip" => "skip ",
+                        _ => "  ?  ",
+                    };
+                    println!("{mark} {:<14}  {}", c.name, c.detail);
+                }
+                println!();
+                println!(
+                    "{}",
+                    if d.all_pass {
+                        "all checks passed"
+                    } else {
+                        "one or more checks failed"
+                    }
+                );
+                if d.all_pass {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::FAILURE
+                }
+            }
             Ok(Response::Health(h)) => {
                 println!(
                     "wraithd ok — version {} — uptime {}s",
