@@ -23,8 +23,7 @@ impl GhostPayClient {
     /// Construct from a list of base URLs. They will be tried in order on
     /// each request until one succeeds.
     pub fn with_urls(base_urls: Vec<String>) -> Self {
-        Self::with_urls_and_proxy(base_urls, None)
-            .expect("default reqwest client always builds")
+        Self::with_urls_and_proxy(base_urls, None).expect("default reqwest client always builds")
     }
 
     /// Same as [`with_urls`] but routes every request through a SOCKS5 proxy
@@ -44,8 +43,8 @@ impl GhostPayClient {
         };
         let mut builder = Client::builder();
         if let Some(p) = proxy_url {
-            let proxy = reqwest::Proxy::all(p)
-                .map_err(|e| ChainError::Transport(format!("proxy: {e}")))?;
+            let proxy =
+                reqwest::Proxy::all(p).map_err(|e| ChainError::Transport(format!("proxy: {e}")))?;
             builder = builder.proxy(proxy);
         }
         let http = builder

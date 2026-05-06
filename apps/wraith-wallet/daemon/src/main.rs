@@ -37,6 +37,7 @@ mod unix {
     use std::sync::Arc;
     use std::time::Instant;
 
+    use ghost_gsp_proto::{PaymentMode, SessionToken};
     use secrecy::SecretString;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{UnixListener, UnixStream};
@@ -44,12 +45,11 @@ mod unix {
     use wraith_wallet_core::auth;
     use wraith_wallet_core::chain::ChainClient;
     use wraith_wallet_core::gsp::GspClient;
-    use wraith_wallet_core::keystore::{Keystore, KeystoreError};
-    use wraith_wallet_core::light;
-    use ghost_gsp_proto::{PaymentMode, SessionToken};
     use wraith_wallet_core::gsp::{
         spawn_session, GspError, SessionHandle, SessionPhase, SessionStatus,
     };
+    use wraith_wallet_core::keystore::{Keystore, KeystoreError};
+    use wraith_wallet_core::light;
     use wraith_wallet_ipc::{
         default_socket_path, ChainStatusResponse, DaemonEnvResponse, DetectedPaymentEntry,
         DoctorCheck, DoctorResponse, Envelope, ErrorResponse, GspAuthResponse, GspPingResponse,
@@ -151,9 +151,7 @@ mod unix {
         }
         let allowed = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
         if !name.chars().all(allowed) {
-            return Err(
-                "wallet name must be ascii alphanumeric, '-', or '_' only".into(),
-            );
+            return Err("wallet name must be ascii alphanumeric, '-', or '_' only".into());
         }
         Ok(())
     }
@@ -271,12 +269,9 @@ mod unix {
 
         // Watch for SIGTERM / SIGINT (Ctrl-C) so we can drop the listener, kill
         // any active session task, and remove the socket file before exiting.
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )?;
-        let mut sigint = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::interrupt(),
-        )?;
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
 
         loop {
             tokio::select! {
@@ -445,11 +440,7 @@ mod unix {
             auth::make_proof(&kp, "register").map_err(|e| format!("register proof: {e}"))?;
         let already_registered = match state.gsp.register(register_proof, None).await {
             Ok(_) => false,
-            Err(GspError::Server(msg))
-                if msg.to_ascii_lowercase().contains("already") =>
-            {
-                true
-            }
+            Err(GspError::Server(msg)) if msg.to_ascii_lowercase().contains("already") => true,
             Err(e) => return Err(format!("register: {e}")),
         };
 
@@ -564,16 +555,13 @@ mod unix {
         // Get the auth keypair from the active wallet (must match the session's wallet).
         let kp = {
             let wallets = state.wallets.read().await;
-            let ks = wallets
-                .get(&session.wallet_name)
-                .ok_or_else(|| {
-                    format!(
-                        "wallet '{}' (the session's wallet) is not unlocked",
-                        session.wallet_name
-                    )
-                })?;
-            wraith_wallet_core::auth::auth_keypair(ks)
-                .map_err(|e| format!("auth keypair: {e}"))?
+            let ks = wallets.get(&session.wallet_name).ok_or_else(|| {
+                format!(
+                    "wallet '{}' (the session's wallet) is not unlocked",
+                    session.wallet_name
+                )
+            })?;
+            wraith_wallet_core::auth::auth_keypair(ks).map_err(|e| format!("auth keypair: {e}"))?
         };
 
         // 1. Sign a fresh `prepare_payment` proof.
@@ -619,9 +607,7 @@ mod unix {
     /// Send `RegisterScanKey` over the persistent session: derives the wallet's
     /// BIP-352 scan pubkey, signs a `register_scan_key` proof, and delegates to
     /// the session task. Returns (wallet_id, scan_pubkey_hex) on success.
-    async fn gsp_register_scan_key(
-        state: &Arc<DaemonState>,
-    ) -> Result<(String, String), String> {
+    async fn gsp_register_scan_key(state: &Arc<DaemonState>) -> Result<(String, String), String> {
         let session = state.session.read().await;
         let session = session
             .as_ref()
@@ -784,16 +770,11 @@ mod unix {
     where
         F: FnOnce(&str, &Keystore) -> Result<R, String>,
     {
-        let active = state
-            .active
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| {
-                "no active wallet; run `wraith wallet unlock <name>` or \
+        let active = state.active.read().await.clone().ok_or_else(|| {
+            "no active wallet; run `wraith wallet unlock <name>` or \
                  `wraith wallet select <name>` first"
-                    .to_string()
-            })?;
+                .to_string()
+        })?;
         let wallets = state.wallets.read().await;
         let ks = wallets
             .get(&active)
@@ -831,7 +812,9 @@ mod unix {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            let last = state.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+            let last = state
+                .last_activity
+                .load(std::sync::atomic::Ordering::Relaxed);
             let now = now_unix_secs();
             let idle = now.saturating_sub(last);
             if idle < state.idle_lock_secs {
@@ -879,10 +862,9 @@ mod unix {
         // Bump the idle-lock timer for user-facing requests. Diagnostics
         // (Health, Doctor, DaemonEnv) and WatchPayments don't count.
         if is_activity(&request) {
-            state.last_activity.store(
-                now_unix_secs(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            state
+                .last_activity
+                .store(now_unix_secs(), std::sync::atomic::Ordering::Relaxed);
         }
 
         let response = match request {
@@ -1107,8 +1089,7 @@ mod unix {
                         return Envelope::new(id, Response::Error(ErrorResponse { message }));
                     }
                 };
-                let owner_pubkey =
-                    hex::encode(wraith_wallet_core::auth::xonly_pubkey_bytes(&kp));
+                let owner_pubkey = hex::encode(wraith_wallet_core::auth::xonly_pubkey_bytes(&kp));
                 let session = state.session.read().await;
                 let session = session.as_ref().expect("just checked above");
                 match session
@@ -1372,10 +1353,7 @@ mod unix {
                     }
                     // Drop any GSP session bound to the wallet we just locked.
                     let mut session = state.session.write().await;
-                    if session
-                        .as_ref()
-                        .is_some_and(|s| s.wallet_name == target)
-                    {
+                    if session.as_ref().is_some_and(|s| s.wallet_name == target) {
                         *session = None;
                     }
                     Response::WalletLocked { name: target }
@@ -1388,7 +1366,9 @@ mod unix {
                 let mut wallets: Vec<WalletListEntry> = on_disk
                     .into_iter()
                     .map(|name| WalletListEntry {
-                        path: keystore_path(&state.wallets_dir, &name).display().to_string(),
+                        path: keystore_path(&state.wallets_dir, &name)
+                            .display()
+                            .to_string(),
                         unlocked: unlocked.contains_key(&name),
                         active: active.as_deref() == Some(name.as_str()),
                         name,
@@ -1424,10 +1404,7 @@ mod unix {
                     *state.active.write().await = Some(name.clone());
                     // Drop any GSP session that belongs to a different wallet.
                     let mut session = state.session.write().await;
-                    if session
-                        .as_ref()
-                        .is_some_and(|s| s.wallet_name != name)
-                    {
+                    if session.as_ref().is_some_and(|s| s.wallet_name != name) {
                         *session = None;
                     }
                     Response::WalletSelected { name }
@@ -1456,12 +1433,10 @@ mod unix {
                 })
                 .await
                 {
-                    Ok(public_key_hex) => {
-                        Response::WalletDerive(WalletDeriveResponse {
-                            path,
-                            public_key_hex,
-                        })
-                    }
+                    Ok(public_key_hex) => Response::WalletDerive(WalletDeriveResponse {
+                        path,
+                        public_key_hex,
+                    }),
                     Err(message) => Response::Error(ErrorResponse { message }),
                 }
             }
@@ -1480,14 +1455,12 @@ mod unix {
                 })
                 .await
                 {
-                    Ok((id, scan, spend)) => {
-                        Response::WalletGhostId(WalletGhostIdResponse {
-                            ghost_id: id,
-                            network: label,
-                            scan_public_key_hex: scan,
-                            spend_public_key_hex: spend,
-                        })
-                    }
+                    Ok((id, scan, spend)) => Response::WalletGhostId(WalletGhostIdResponse {
+                        ghost_id: id,
+                        network: label,
+                        scan_public_key_hex: scan,
+                        spend_public_key_hex: spend,
+                    }),
                     Err(message) => Response::Error(ErrorResponse { message }),
                 }
             }

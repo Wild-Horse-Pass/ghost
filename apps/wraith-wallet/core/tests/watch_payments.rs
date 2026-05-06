@@ -100,7 +100,10 @@ async fn spawn_mock(candidate: ServerMessage) -> std::net::SocketAddr {
         "/ws/v1",
         get(move |ws: WebSocketUpgrade| {
             let cand = candidate.clone();
-            async move { ws.on_upgrade(move |socket| handle_ws(socket, cand)).into_response() }
+            async move {
+                ws.on_upgrade(move |socket| handle_ws(socket, cand))
+                    .into_response()
+            }
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

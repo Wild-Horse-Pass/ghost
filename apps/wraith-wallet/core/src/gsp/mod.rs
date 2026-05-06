@@ -56,8 +56,7 @@ impl GspClient {
     }
 
     pub fn with_urls(ws_urls: Vec<String>) -> Self {
-        Self::with_urls_and_proxy(ws_urls, None)
-            .expect("default reqwest client always builds")
+        Self::with_urls_and_proxy(ws_urls, None).expect("default reqwest client always builds")
     }
 
     /// Same as [`with_urls`] but routes REST traffic (register, session) through
@@ -79,8 +78,8 @@ impl GspClient {
         let http_bases = urls.iter().map(|u| derive_http_base(u)).collect();
         let mut builder = reqwest::Client::builder();
         if let Some(p) = proxy_url {
-            let proxy = reqwest::Proxy::all(p)
-                .map_err(|e| GspError::Transport(format!("proxy: {e}")))?;
+            let proxy =
+                reqwest::Proxy::all(p).map_err(|e| GspError::Transport(format!("proxy: {e}")))?;
             builder = builder.proxy(proxy);
         }
         let http = builder
@@ -133,8 +132,8 @@ impl GspClient {
         let request = ClientMessage::Ping {
             timestamp: Some(sent_ts),
         };
-        let payload = serde_json::to_string(&request)
-            .map_err(|e| GspError::Encoding(e.to_string()))?;
+        let payload =
+            serde_json::to_string(&request).map_err(|e| GspError::Encoding(e.to_string()))?;
 
         ws.send(Message::Text(payload.into()))
             .await
@@ -202,11 +201,7 @@ impl GspClient {
         Err(last_err.unwrap_or_else(|| GspError::Transport("no endpoints configured".into())))
     }
 
-    async fn try_register(
-        &self,
-        url: &str,
-        body: &RegisterRequest,
-    ) -> Result<WalletId, GspError> {
+    async fn try_register(&self, url: &str, body: &RegisterRequest) -> Result<WalletId, GspError> {
         let resp = self
             .http
             .post(url)
@@ -222,8 +217,8 @@ impl GspClient {
         if !status.is_success() {
             return Err(GspError::Server(extract_error(&text, status)));
         }
-        let body: RegisterResponse = serde_json::from_str(&text)
-            .map_err(|e| GspError::Encoding(e.to_string()))?;
+        let body: RegisterResponse =
+            serde_json::from_str(&text).map_err(|e| GspError::Encoding(e.to_string()))?;
         if !body.success {
             return Err(GspError::Server(body.error.unwrap_or_else(|| {
                 format!("register failed with status {status}")
@@ -278,12 +273,13 @@ impl GspClient {
         if !status.is_success() {
             return Err(GspError::Server(extract_error(&text, status)));
         }
-        let body: SessionResponse = serde_json::from_str(&text)
-            .map_err(|e| GspError::Encoding(e.to_string()))?;
+        let body: SessionResponse =
+            serde_json::from_str(&text).map_err(|e| GspError::Encoding(e.to_string()))?;
         if !body.success {
-            return Err(GspError::Server(body.error.unwrap_or_else(|| {
-                format!("session failed with status {status}")
-            })));
+            return Err(GspError::Server(
+                body.error
+                    .unwrap_or_else(|| format!("session failed with status {status}")),
+            ));
         }
         body.token.ok_or(GspError::MissingField("token"))
     }
@@ -318,8 +314,14 @@ fn derive_http_base(ws_url: &str) -> String {
         ("http", r)
     } else {
         // Already an http(s) URL? trim any trailing path.
-        let r = ws_url.trim_start_matches("http://").trim_start_matches("https://");
-        let s = if ws_url.starts_with("https://") { "https" } else { "http" };
+        let r = ws_url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let s = if ws_url.starts_with("https://") {
+            "https"
+        } else {
+            "http"
+        };
         (s, r)
     };
     let host_and_port = rest.split('/').next().unwrap_or(rest);
@@ -339,8 +341,17 @@ mod tests {
 
     #[test]
     fn derive_http_base_strips_path() {
-        assert_eq!(derive_http_base("ws://127.0.0.1:8900/ws/v1"), "http://127.0.0.1:8900");
-        assert_eq!(derive_http_base("wss://gsp.example.com/ws/v1"), "https://gsp.example.com");
-        assert_eq!(derive_http_base("ws://localhost:9000"), "http://localhost:9000");
+        assert_eq!(
+            derive_http_base("ws://127.0.0.1:8900/ws/v1"),
+            "http://127.0.0.1:8900"
+        );
+        assert_eq!(
+            derive_http_base("wss://gsp.example.com/ws/v1"),
+            "https://gsp.example.com"
+        );
+        assert_eq!(
+            derive_http_base("ws://localhost:9000"),
+            "http://localhost:9000"
+        );
     }
 }

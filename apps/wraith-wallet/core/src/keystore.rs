@@ -169,7 +169,8 @@ impl Keystore {
     pub fn derive_xprv(&self, path: &str) -> Result<bip32::XPrv, KeystoreError> {
         use bip32::DerivationPath;
         use std::str::FromStr;
-        let parsed = DerivationPath::from_str(path).map_err(|e| KeystoreError::Bip32(e.to_string()))?;
+        let parsed =
+            DerivationPath::from_str(path).map_err(|e| KeystoreError::Bip32(e.to_string()))?;
         let mut xprv = self.master_xprv()?;
         for child_number in parsed.into_iter() {
             xprv = xprv
@@ -259,7 +260,10 @@ mod tests {
         assert_eq!(gk1.scan_pubkey(), gk2.scan_pubkey());
         assert_eq!(gk1.spend_pubkey(), gk2.spend_pubkey());
         // Bech32 encoding is non-empty and starts with the expected HRP
-        let id_str = gk1.ghost_id().encode_for_network(ghost_keys::GhostNetwork::Signet).unwrap();
+        let id_str = gk1
+            .ghost_id()
+            .encode_for_network(ghost_keys::GhostNetwork::Signet)
+            .unwrap();
         assert!(id_str.starts_with("sghost1"), "got {id_str}");
     }
 

@@ -147,15 +147,21 @@ impl Signer for HardwareSignerStub {
     }
 
     fn sec1_pubkey_at(&self, _: &str) -> Result<[u8; 33], SignerError> {
-        Err(SignerError::Unsupported("hardware signer not yet implemented"))
+        Err(SignerError::Unsupported(
+            "hardware signer not yet implemented",
+        ))
     }
 
     fn xonly_pubkey_at(&self, _: &str) -> Result<[u8; 32], SignerError> {
-        Err(SignerError::Unsupported("hardware signer not yet implemented"))
+        Err(SignerError::Unsupported(
+            "hardware signer not yet implemented",
+        ))
     }
 
     fn sign_schnorr_at(&self, _: &str, _: &[u8; 32]) -> Result<[u8; 64], SignerError> {
-        Err(SignerError::Unsupported("hardware signer not yet implemented"))
+        Err(SignerError::Unsupported(
+            "hardware signer not yet implemented",
+        ))
     }
 }
 

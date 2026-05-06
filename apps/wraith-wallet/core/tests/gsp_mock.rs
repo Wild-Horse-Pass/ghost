@@ -128,7 +128,10 @@ async fn create_session_round_trip() {
 
     let recorded = state.last_session.lock().unwrap().clone().unwrap();
     assert_eq!(recorded.proof.action(), Some("session"));
-    assert_eq!(recorded.session_nonce.as_deref(), Some(session_nonce.as_str()));
+    assert_eq!(
+        recorded.session_nonce.as_deref(),
+        Some(session_nonce.as_str())
+    );
 }
 
 #[tokio::test]

@@ -295,12 +295,9 @@ async fn watch_payments_happy_path_through_daemon() {
 
     // Read the first detection push within 5s.
     let mut detected_line = String::new();
-    let read = tokio::time::timeout(
-        Duration::from_secs(5),
-        reader.read_line(&mut detected_line),
-    )
-    .await
-    .expect("watch never delivered");
+    let read = tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut detected_line))
+        .await
+        .expect("watch never delivered");
     read.expect("read detection");
     let env: Envelope<Response> = serde_json::from_str(&detected_line).expect("decode push");
     assert_eq!(env.id, 0, "push must use id=0");

@@ -479,8 +479,7 @@ async fn ws_connect(
     let target = format!("{host}:{port}");
 
     // Parse the proxy URL — only socks5/socks5h are supported.
-    let proxy_parsed =
-        url::Url::parse(proxy_url).map_err(|e| format!("proxy url parse: {e}"))?;
+    let proxy_parsed = url::Url::parse(proxy_url).map_err(|e| format!("proxy url parse: {e}"))?;
     let proxy_scheme = proxy_parsed.scheme();
     if proxy_scheme != "socks5" && proxy_scheme != "socks5h" {
         return Err(format!(
@@ -923,7 +922,10 @@ async fn handle_message(
 
         // Response to GetUtxos.
         ServerMessage::Utxos { utxos, total_sats } => {
-            if let Some(idx) = pending.iter().position(|p| matches!(p, PendingReply::Utxos(_))) {
+            if let Some(idx) = pending
+                .iter()
+                .position(|p| matches!(p, PendingReply::Utxos(_)))
+            {
                 if let Some(PendingReply::Utxos(tx)) = pending.remove(idx) {
                     let _ = tx.send(Ok(UtxosResult { utxos, total_sats }));
                     return;
@@ -1218,10 +1220,9 @@ fn scan_candidate(
 ) -> Result<Vec<DetectedPayment>, String> {
     use bitcoin::secp256k1::PublicKey;
 
-    let eph_bytes =
-        hex::decode(ephemeral_pubkey_hex).map_err(|e| format!("ephemeral hex: {e}"))?;
-    let ephemeral = PublicKey::from_slice(&eph_bytes)
-        .map_err(|e| format!("ephemeral pubkey: {e}"))?;
+    let eph_bytes = hex::decode(ephemeral_pubkey_hex).map_err(|e| format!("ephemeral hex: {e}"))?;
+    let ephemeral =
+        PublicKey::from_slice(&eph_bytes).map_err(|e| format!("ephemeral pubkey: {e}"))?;
 
     // Decode each x-only (32-byte) output pubkey. Stash the raw x-only bytes
     // for later — BIP-352 output keys are taproot (x-only on chain), so we
@@ -1469,8 +1470,7 @@ mod tests {
         let shared_secret =
             ghost_keys::derive_shared_secret(&other_eph_secret, other.scan_pubkey());
         let (output_pubkey, _tweak) =
-            ghost_keys::derive_payment_address_v2(other.spend_pubkey(), &shared_secret, 0)
-                .unwrap();
+            ghost_keys::derive_payment_address_v2(other.spend_pubkey(), &shared_secret, 0).unwrap();
         let serialized = output_pubkey.serialize();
         let xonly = &serialized[1..];
 

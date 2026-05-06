@@ -50,7 +50,10 @@ pub enum Request {
         min_confirmations: u32,
     },
     /// List the active wallet's transaction history via the persistent GSP session.
-    LightHistory { limit: u32, offset: u32 },
+    LightHistory {
+        limit: u32,
+        offset: u32,
+    },
     /// List BIP-352 silent-payment detections accumulated in the persistent
     /// session's local scanner since auth.
     LightDetected,
@@ -68,7 +71,9 @@ pub enum Request {
     LocksList,
     /// Ask GSP to prepare a new ghost lock for the active wallet.
     /// Server returns a funding address and required-sats; client funds it externally.
-    LocksPrepare { capacity_sats: u64 },
+    LocksPrepare {
+        capacity_sats: u64,
+    },
     /// Confirm that a previously-prepared lock has been funded on-chain.
     LocksConfirm {
         lock_id: String,
@@ -90,7 +95,10 @@ pub enum Request {
         memo: Option<String>,
     },
     /// Create a new named wallet on disk and add it to the daemon's unlocked set.
-    WalletCreate { name: String, passphrase: String },
+    WalletCreate {
+        name: String,
+        passphrase: String,
+    },
     /// Restore a wallet from an existing BIP-39 mnemonic. Equivalent to
     /// `WalletCreate` but with the seed supplied by the caller. The new
     /// keystore is encrypted under `passphrase` and added to the unlocked
@@ -101,31 +109,51 @@ pub enum Request {
         passphrase: String,
     },
     /// Unlock a named wallet by reading from disk + decrypting. Becomes active.
-    WalletUnlock { name: String, passphrase: String },
+    WalletUnlock {
+        name: String,
+        passphrase: String,
+    },
     /// Drop a named wallet from the unlocked set (or the active one if name is None).
-    WalletLock { name: Option<String> },
+    WalletLock {
+        name: Option<String>,
+    },
     /// List all on-disk wallets with unlocked / active status.
     WalletList,
     /// Set the active wallet (must already be unlocked).
-    WalletSelect { name: String },
+    WalletSelect {
+        name: String,
+    },
     /// Status of the active wallet (or "no active wallet" if none).
     WalletStatus,
     /// Derive a key at a BIP32 path from the active wallet's keystore.
-    WalletDerive { path: String },
+    WalletDerive {
+        path: String,
+    },
     /// Show the GSP auth identity (wallet_id + x-only auth pubkey) of the active wallet.
     WalletAuthInfo,
     /// Show the active wallet's BIP-352 Ghost ID (silent payment receive identity).
     WalletGhostId,
     /// Re-display a wallet's BIP39 mnemonic. Always re-prompts the passphrase.
-    WalletShowMnemonic { name: String, passphrase: String },
+    WalletShowMnemonic {
+        name: String,
+        passphrase: String,
+    },
     /// Copy the on-disk encrypted keystore for `name` to `to_path` (a regular file).
     /// The file is already encrypted with the wallet passphrase.
-    WalletExport { name: String, to_path: String },
+    WalletExport {
+        name: String,
+        to_path: String,
+    },
     /// Read an encrypted keystore from `from_path` and install it as wallet `name`.
     /// Refuses if `name` already exists on disk.
-    WalletRestore { name: String, from_path: String },
+    WalletRestore {
+        name: String,
+        from_path: String,
+    },
     /// Derive a BIP86 taproot receive address at index `index` from the active wallet.
-    LightReceive { index: u32 },
+    LightReceive {
+        index: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,7 +165,10 @@ pub enum Response {
     GspPing(GspPingResponse),
     GspAuth(GspAuthResponse),
     GspSessionStatus(GspSessionStatusResponse),
-    GspScanKeyRegistered { wallet_id: String, scan_pubkey_hex: String },
+    GspScanKeyRegistered {
+        wallet_id: String,
+        scan_pubkey_hex: String,
+    },
     LightBalance(LightBalanceResponse),
     LightUtxos(LightUtxosResponse),
     LightHistory(LightHistoryResponse),
@@ -157,18 +188,33 @@ pub enum Response {
     WalletCreate(WalletCreateResponse),
     /// Reply to `Request::WalletImport`. We don't echo the mnemonic back —
     /// the caller already has it.
-    WalletImported { name: String, path: String },
+    WalletImported {
+        name: String,
+        path: String,
+    },
     WalletUnlocked,
-    WalletLocked { name: String },
+    WalletLocked {
+        name: String,
+    },
     WalletList(WalletListResponse),
-    WalletSelected { name: String },
+    WalletSelected {
+        name: String,
+    },
     WalletStatus(WalletStatusResponse),
     WalletDerive(WalletDeriveResponse),
     WalletAuthInfo(WalletAuthInfoResponse),
     WalletGhostId(WalletGhostIdResponse),
     WalletShowMnemonic(WalletShowMnemonicResponse),
-    WalletExported { name: String, path: String, bytes: u64 },
-    WalletRestored { name: String, path: String, bytes: u64 },
+    WalletExported {
+        name: String,
+        path: String,
+        bytes: u64,
+    },
+    WalletRestored {
+        name: String,
+        path: String,
+        bytes: u64,
+    },
     LightReceive(LightReceiveResponse),
     Error(ErrorResponse),
 }
@@ -504,10 +550,17 @@ mod tests {
                 passphrase: "long-enough-passphrase".into(),
             },
             Request::WalletLock { name: None },
-            Request::WalletSelect { name: "test".into() },
+            Request::WalletSelect {
+                name: "test".into(),
+            },
             Request::LightBalance,
-            Request::LightUtxos { min_confirmations: 1 },
-            Request::LightHistory { limit: 50, offset: 0 },
+            Request::LightUtxos {
+                min_confirmations: 1,
+            },
+            Request::LightHistory {
+                limit: 50,
+                offset: 0,
+            },
             Request::LightReceive { index: 0 },
             Request::LightSend {
                 recipient: "bc1qxyz".into(),
@@ -516,7 +569,9 @@ mod tests {
                 memo: Some("test".into()),
             },
             Request::LocksList,
-            Request::LocksPrepare { capacity_sats: 1_000_000 },
+            Request::LocksPrepare {
+                capacity_sats: 1_000_000,
+            },
             Request::DaemonEnv,
         ];
 
@@ -542,8 +597,8 @@ mod tests {
             "null",
             "[]",
             "\"hello\"",
-            "{\"jsonrpc\":\"2.0\"}",                       // missing method/id
-            "{\"jsonrpc\":\"2.0\",\"id\":1}",              // missing method
+            "{\"jsonrpc\":\"2.0\"}",          // missing method/id
+            "{\"jsonrpc\":\"2.0\",\"id\":1}", // missing method
             "{\"jsonrpc\":\"2.0\",\"id\":-1,\"method\":\"health\"}", // negative id
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"unknown_method_x\"}",
         ];
@@ -560,7 +615,9 @@ mod tests {
                 daemon_version: "1.8.0".into(),
                 uptime_secs: 42,
             }),
-            Response::WalletLocked { name: "default".into() },
+            Response::WalletLocked {
+                name: "default".into(),
+            },
             Response::WalletImported {
                 name: "restored".into(),
                 path: "/tmp/restored.json".into(),

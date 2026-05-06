@@ -342,7 +342,15 @@ async fn wallet_lifecycle_round_trip() {
         Response::WalletUnlocked => {}
         other => panic!("unlock restored wallet: {other:?}"),
     }
-    match rpc(&socket, 17, Request::WalletSelect { name: "gamma".into() }).await {
+    match rpc(
+        &socket,
+        17,
+        Request::WalletSelect {
+            name: "gamma".into(),
+        },
+    )
+    .await
+    {
         Response::WalletSelected { .. } => {}
         other => panic!("select gamma: {other:?}"),
     }

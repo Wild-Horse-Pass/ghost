@@ -241,15 +241,9 @@ mod unix {
     use tokio::net::UnixStream;
     use wraith_wallet_ipc::{default_socket_path, Envelope, Request, Response};
 
-    use crate::{
-        ChainCommand, Command, GspCommand, LightCommand, LocksCommand, WalletCommand,
-    };
+    use crate::{ChainCommand, Command, GspCommand, LightCommand, LocksCommand, WalletCommand};
 
-    pub async fn run(
-        command: Command,
-        json: bool,
-        no_spawn: bool,
-    ) -> std::process::ExitCode {
+    pub async fn run(command: Command, json: bool, no_spawn: bool) -> std::process::ExitCode {
         // Make sure wraithd is up before constructing the request — the request
         // build for some subcommands (eg. wallet create) prompts for a passphrase,
         // and we want to fail fast on "no daemon" instead of after the user types it.
@@ -269,7 +263,10 @@ mod unix {
 
         // Streaming subcommand: handed off to its own code path so we don't
         // try to render it as a single Response.
-        if let Command::Light { sub: LightCommand::Watch } = &command {
+        if let Command::Light {
+            sub: LightCommand::Watch,
+        } = &command
+        {
             return run_watch(json).await;
         }
 
@@ -295,12 +292,10 @@ mod unix {
             Command::Light { sub } => match sub {
                 LightCommand::Receive { index } => Request::LightReceive { index },
                 LightCommand::Balance => Request::LightBalance,
-                LightCommand::Utxos { min_confirmations } => Request::LightUtxos {
-                    min_confirmations,
-                },
-                LightCommand::History { limit, offset } => {
-                    Request::LightHistory { limit, offset }
+                LightCommand::Utxos { min_confirmations } => {
+                    Request::LightUtxos { min_confirmations }
                 }
+                LightCommand::History { limit, offset } => Request::LightHistory { limit, offset },
                 LightCommand::Detected => Request::LightDetected,
                 LightCommand::Watch => unreachable!("Watch handled above"),
                 LightCommand::Send {
@@ -317,9 +312,7 @@ mod unix {
             },
             Command::Locks { sub } => match sub {
                 LocksCommand::List => Request::LocksList,
-                LocksCommand::Prepare { capacity_sats } => {
-                    Request::LocksPrepare { capacity_sats }
-                }
+                LocksCommand::Prepare { capacity_sats } => Request::LocksPrepare { capacity_sats },
                 LocksCommand::Confirm {
                     lock_id,
                     funding_txid,
@@ -382,9 +375,10 @@ mod unix {
                     Err(e) => return io_err(e),
                 },
                 WalletCommand::Export { name, to } => Request::WalletExport { name, to_path: to },
-                WalletCommand::Restore { name, from } => {
-                    Request::WalletRestore { name, from_path: from }
-                }
+                WalletCommand::Restore { name, from } => Request::WalletRestore {
+                    name,
+                    from_path: from,
+                },
             },
             // Handled in main() before we reach the runtime; the arm exists
             // here only so the match is exhaustive.
@@ -508,7 +502,11 @@ mod unix {
                         let spendable = if x.spendable { " " } else { " *" };
                         println!(
                             "{}:{}  {} sats  ({} confs, {}){}",
-                            x.txid, x.vout, x.amount_sats, x.confirmations, x.script_type,
+                            x.txid,
+                            x.vout,
+                            x.amount_sats,
+                            x.confirmations,
+                            x.script_type,
                             spendable
                         );
                     }
@@ -595,7 +593,10 @@ mod unix {
                 println!("  funding address: {}", r.funding_address);
                 println!("  required:        {} sats", r.required_sats);
                 println!();
-                println!("Send {} sats to the address above, then run:", r.required_sats);
+                println!(
+                    "Send {} sats to the address above, then run:",
+                    r.required_sats
+                );
                 println!("  wraith locks confirm {} <funding_txid>", r.lock_id);
                 std::process::ExitCode::SUCCESS
             }
@@ -709,10 +710,7 @@ mod unix {
                         if let Some(p) = s.path {
                             println!("  path:     {p}");
                         }
-                        println!(
-                            "  unlocked: {}",
-                            if s.unlocked { "yes" } else { "no" }
-                        );
+                        println!("  unlocked: {}", if s.unlocked { "yes" } else { "no" });
                     }
                     None => println!("(no active wallet)"),
                 }
@@ -833,8 +831,7 @@ mod unix {
             });
         }
 
-        cmd.spawn()
-            .map_err(|e| format!("spawn wraithd: {e}"))?;
+        cmd.spawn().map_err(|e| format!("spawn wraithd: {e}"))?;
 
         // Poll for the socket. ~3s budget at 60ms each.
         for _ in 0..50 {
@@ -882,7 +879,10 @@ mod unix {
         } else {
             let mut line = String::new();
             std::io::stdin().lock().read_line(&mut line)?;
-            Ok(line.trim_end_matches('\n').trim_end_matches('\r').to_string())
+            Ok(line
+                .trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string())
         }
     }
 
@@ -942,8 +942,8 @@ mod unix {
             .read_line(&mut response_line)
             .await
             .map_err(|e| format!("read failed: {e}"))?;
-        let envelope: Envelope<Response> = serde_json::from_str(&response_line)
-            .map_err(|e| format!("malformed response: {e}"))?;
+        let envelope: Envelope<Response> =
+            serde_json::from_str(&response_line).map_err(|e| format!("malformed response: {e}"))?;
         Ok(envelope.payload)
     }
 
@@ -996,7 +996,11 @@ mod unix {
                 if let Some(active) = l.wallets.iter().find(|w| w.active) {
                     println!("wallet:   {} (unlocked, active)", active.name);
                 } else if let Some(any) = l.wallets.first() {
-                    println!("wallet:   {} (locked) — {} total", any.name, l.wallets.len());
+                    println!(
+                        "wallet:   {} (locked) — {} total",
+                        any.name,
+                        l.wallets.len()
+                    );
                 } else {
                     println!("wallet:   (none — `wraith wallet create <name>`)");
                 }

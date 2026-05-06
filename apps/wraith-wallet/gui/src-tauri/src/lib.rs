@@ -177,10 +177,7 @@ async fn locks_prepare(capacity_sats: u64) -> Result<serde_json::Value, String> 
 }
 
 #[tauri::command]
-async fn locks_confirm(
-    lock_id: String,
-    funding_txid: String,
-) -> Result<serde_json::Value, String> {
+async fn locks_confirm(lock_id: String, funding_txid: String) -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::LocksConfirm {
         lock_id,
         funding_txid,
@@ -246,10 +243,7 @@ async fn start_watch(
     tokio::spawn(async move {
         if let Err(e) = run_watch_loop(&app).await {
             // Surface the failure to the frontend so it can show a banner.
-            let _ = app.emit(
-                "wraith://watch-error",
-                serde_json::json!({ "message": e }),
-            );
+            let _ = app.emit("wraith://watch-error", serde_json::json!({ "message": e }));
         }
         state.running.store(false, Ordering::SeqCst);
     });
@@ -321,8 +315,8 @@ async fn call_daemon(request: Request) -> Result<Response, String> {
         )
     })?;
     let (reader, mut writer) = stream.into_split();
-    let mut line = serde_json::to_string(&Envelope::new(1, request))
-        .map_err(|e| format!("serialise: {e}"))?;
+    let mut line =
+        serde_json::to_string(&Envelope::new(1, request)).map_err(|e| format!("serialise: {e}"))?;
     line.push('\n');
     writer
         .write_all(line.as_bytes())

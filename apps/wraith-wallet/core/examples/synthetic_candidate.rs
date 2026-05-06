@@ -26,10 +26,7 @@ fn main() {
     }
     let scan_hex = &args[1];
     let spend_hex = &args[2];
-    let amount: u64 = args
-        .get(3)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(50_000);
+    let amount: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(50_000);
     let vout: u32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
 
     let scan_bytes = hex::decode(scan_hex).expect("scan_pubkey hex");
