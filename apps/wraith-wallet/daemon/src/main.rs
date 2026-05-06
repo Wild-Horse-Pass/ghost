@@ -87,6 +87,9 @@ mod unix {
         gsp: GspClient,
         /// GSP WS URLs in failover order — passed to spawn_session at gsp_auth time.
         gsp_urls: Vec<String>,
+        /// Optional SOCKS5 proxy for both REST and WS (e.g. socks5h://127.0.0.1:9050).
+        /// Threaded into spawn_session so the persistent WS routes through Tor too.
+        tor_proxy: Option<String>,
         wallets_dir: PathBuf,
         wallets: RwLock<HashMap<String, Keystore>>,
         active: RwLock<Option<String>>,
@@ -209,6 +212,7 @@ mod unix {
             chain: Arc::new(chain),
             gsp,
             gsp_urls,
+            tor_proxy: tor_proxy.clone(),
             wallets_dir,
             wallets: RwLock::new(HashMap::new()),
             active: RwLock::new(None),
@@ -358,7 +362,12 @@ mod unix {
         // 4. Stash the token + spawn a persistent authenticated session task.
         //    Replacing an existing slot drops the old SessionHandle, which aborts
         //    its task before the new one starts.
-        let handle = spawn_session(state.gsp_urls.clone(), jwt_for_session, scan_keys);
+        let handle = spawn_session(
+            state.gsp_urls.clone(),
+            jwt_for_session,
+            scan_keys,
+            state.tor_proxy.clone(),
+        );
         *state.session.write().await = Some(StoredSession {
             wallet_name: active_name,
             token,

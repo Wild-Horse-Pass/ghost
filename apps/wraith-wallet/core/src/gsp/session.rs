@@ -47,7 +47,7 @@ pub struct JumpRequestedResult {
 }
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionPhase {
@@ -382,10 +382,16 @@ pub struct GhostLocksResult {
 /// runs the local scanner against every `CandidateTransaction` push from the
 /// server and caches matches in `SessionStatus.detections`. Pass `None` to
 /// disable client-side detection (saves CPU on session-bootstrap failure paths).
+///
+/// `tor_proxy` (e.g. `Some("socks5h://127.0.0.1:9050")`) routes the WebSocket
+/// connection through the given SOCKS5 proxy. Currently supports plain `ws://`
+/// only — wss-over-Tor needs a separate TLS-aware connector. Pass `None` for
+/// direct connections.
 pub fn spawn_session(
     ws_urls: Vec<String>,
     jwt_token: String,
     scan_keys: Option<GhostKeys>,
+    tor_proxy: Option<String>,
 ) -> SessionHandle {
     let status = Arc::new(RwLock::new(SessionStatus::default()));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -395,6 +401,7 @@ pub fn spawn_session(
         ws_urls,
         jwt_token,
         scan_keys,
+        tor_proxy,
         status.clone(),
         shutdown_rx,
         cmd_rx,
@@ -408,6 +415,86 @@ pub fn spawn_session(
     }
 }
 
+/// Connect a WebSocket, optionally routing the underlying TCP through a
+/// SOCKS5 proxy (`socks5://host:port` or `socks5h://host:port`). The `h`
+/// variant does DNS through the proxy — preferred for Tor.
+///
+/// Returns the `(stream, response)` pair `tokio_tungstenite::connect_async`
+/// would have returned.
+async fn ws_connect(
+    ws_url: &str,
+    proxy: Option<&str>,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
+    ),
+    String,
+> {
+    let proxy_url = match proxy {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            // No proxy → direct connect.
+            return tokio_tungstenite::connect_async(ws_url)
+                .await
+                .map_err(|e| e.to_string());
+        }
+    };
+
+    // Parse the WS URL to get host + port.
+    let parsed = url::Url::parse(ws_url).map_err(|e| format!("ws url parse: {e}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "ws url has no host".to_string())?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| "ws url has no port".to_string())?;
+    let scheme = parsed.scheme();
+    if scheme != "ws" {
+        // wss-over-Tor needs an additional TLS layer that we haven't wired yet.
+        return Err(format!(
+            "wss-over-tor not yet supported (got scheme '{scheme}'); use ws:// or run an arti onion-service to a plain ws GSP"
+        ));
+    }
+
+    // Strip the scheme so tokio_socks gets a host:port target.
+    let target = format!("{host}:{port}");
+
+    // Parse the proxy URL — only socks5/socks5h are supported.
+    let proxy_parsed =
+        url::Url::parse(proxy_url).map_err(|e| format!("proxy url parse: {e}"))?;
+    let proxy_scheme = proxy_parsed.scheme();
+    if proxy_scheme != "socks5" && proxy_scheme != "socks5h" {
+        return Err(format!(
+            "unsupported proxy scheme '{proxy_scheme}'; only socks5 and socks5h are supported"
+        ));
+    }
+    let proxy_host = proxy_parsed
+        .host_str()
+        .ok_or_else(|| "proxy url has no host".to_string())?;
+    let proxy_port = proxy_parsed
+        .port_or_known_default()
+        .ok_or_else(|| "proxy url has no port".to_string())?;
+    let proxy_target = format!("{proxy_host}:{proxy_port}");
+
+    // socks5h:// resolves the destination hostname inside the proxy (Tor),
+    // socks5:// resolves locally first (leaks DNS — discouraged with Tor).
+    let tcp = tokio_socks::tcp::Socks5Stream::connect(proxy_target.as_str(), target)
+        .await
+        .map_err(|e| format!("{proxy_scheme} connect: {e}"))?
+        .into_inner();
+
+    // Wrap as MaybeTlsStream::Plain BEFORE the WS handshake so the resulting
+    // stream type matches the non-proxy path (which goes through connect_async).
+    let plain = tokio_tungstenite::MaybeTlsStream::Plain(tcp);
+    tokio_tungstenite::client_async(ws_url, plain)
+        .await
+        .map_err(|e| format!("ws handshake over socks5: {e}"))
+}
+
 const KEEPALIVE_SECS: u64 = 30;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
@@ -416,6 +503,7 @@ async fn run(
     ws_urls: Vec<String>,
     jwt_token: String,
     scan_keys: Option<GhostKeys>,
+    tor_proxy: Option<String>,
     status: Arc<RwLock<SessionStatus>>,
     mut shutdown: watch::Receiver<bool>,
     mut cmd_rx: mpsc::Receiver<SessionCommand>,
@@ -436,7 +524,7 @@ async fn run(
 
         // === connect ===
         set_phase(&status, SessionPhase::Connecting).await;
-        let (mut ws, _) = match connect_async(ws_url).await {
+        let (mut ws, _) = match ws_connect(ws_url, tor_proxy.as_deref()).await {
             Ok(p) => p,
             Err(e) => {
                 let msg = e.to_string();
