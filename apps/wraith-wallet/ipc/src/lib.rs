@@ -422,3 +422,127 @@ impl<T> Envelope<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roundtrip<T>(value: &T) -> T
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let s = serde_json::to_string(value).expect("serialize");
+        serde_json::from_str(&s).expect("deserialize")
+    }
+
+    #[test]
+    fn envelope_request_round_trip() {
+        // Sample a representative selection across each subsystem so we catch
+        // schema drift early. The full Request variant set is exercised by the
+        // CLI and GUI integration tests.
+        let cases = vec![
+            Request::Health,
+            Request::Doctor,
+            Request::WalletList,
+            Request::WalletStatus,
+            Request::WalletUnlock {
+                name: "test".into(),
+                passphrase: "p".repeat(32),
+            },
+            Request::WalletLock { name: None },
+            Request::WalletSelect { name: "test".into() },
+            Request::LightBalance,
+            Request::LightUtxos { min_confirmations: 1 },
+            Request::LightHistory { limit: 50, offset: 0 },
+            Request::LightReceive { index: 0 },
+            Request::LightSend {
+                recipient: "bc1qxyz".into(),
+                amount_sats: 100_000,
+                mode: "onchain".into(),
+                memo: Some("test".into()),
+            },
+            Request::LocksList,
+            Request::LocksPrepare { capacity_sats: 1_000_000 },
+        ];
+
+        for req in cases {
+            let env = Envelope::new(7, req.clone());
+            let back: Envelope<Request> = roundtrip(&env);
+            assert_eq!(back.id, 7);
+            assert_eq!(back.jsonrpc, JSONRPC_VERSION);
+            // Compare via JSON shape since Request doesn't impl PartialEq.
+            assert_eq!(
+                serde_json::to_value(&req).unwrap(),
+                serde_json::to_value(&back.payload).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_envelopes_fail_cleanly() {
+        // The dispatch loop relies on these being errors — never panics.
+        let inputs = [
+            "",
+            "{",
+            "null",
+            "[]",
+            "\"hello\"",
+            "{\"jsonrpc\":\"2.0\"}",                       // missing method/id
+            "{\"jsonrpc\":\"2.0\",\"id\":1}",              // missing method
+            "{\"jsonrpc\":\"2.0\",\"id\":-1,\"method\":\"health\"}", // negative id
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"unknown_method_x\"}",
+        ];
+        for raw in inputs {
+            let result: Result<Envelope<Request>, _> = serde_json::from_str(raw);
+            assert!(result.is_err(), "expected error for input: {raw:?}");
+        }
+    }
+
+    #[test]
+    fn envelope_response_round_trip() {
+        let cases = vec![
+            Response::Health(HealthResponse {
+                daemon_version: "1.8.0".into(),
+                uptime_secs: 42,
+            }),
+            Response::WalletLocked { name: "default".into() },
+            Response::WalletList(WalletListResponse {
+                wallets: vec![WalletListEntry {
+                    name: "default".into(),
+                    path: "/tmp/x".into(),
+                    unlocked: false,
+                    active: false,
+                }],
+            }),
+        ];
+        for resp in cases {
+            let env = Envelope::new(99, resp.clone());
+            let back: Envelope<Response> = roundtrip(&env);
+            assert_eq!(back.id, 99);
+            assert_eq!(
+                serde_json::to_value(&env.payload).unwrap(),
+                serde_json::to_value(&back.payload).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn passphrase_field_serialises_and_does_not_leak_into_other_variants() {
+        // Sanity: a freshly-serialised WalletUnlock contains the passphrase
+        // (we don't redact at the wire layer — the trust model relies on the
+        // 0600 socket permissions instead). Make sure unrelated request
+        // variants never carry that field, so a typo in dispatch can't ship
+        // credentials by accident.
+        let r = Request::WalletUnlock {
+            name: "alice".into(),
+            passphrase: "hunter2".into(),
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("hunter2"));
+
+        for clean in [Request::Health, Request::Doctor, Request::WalletList] {
+            let s = serde_json::to_string(&clean).unwrap();
+            assert!(!s.contains("passphrase"));
+        }
+    }
+}
