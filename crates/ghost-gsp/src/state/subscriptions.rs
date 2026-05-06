@@ -51,6 +51,9 @@ impl SubscriptionType {
             "payments" => Some(SubscriptionType::Payments),
             "locks" => Some(SubscriptionType::Locks),
             "reorgs" => Some(SubscriptionType::Reorgs),
+            "silent_payments" | "silentpayments" | "silent-payments" => {
+                Some(SubscriptionType::SilentPayments)
+            }
             _ => None,
         }
     }

@@ -257,6 +257,12 @@ async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>, 
     let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // BIP-352 candidate-tx push fan-out. Subscribe up-front so we don't miss
+    // any messages even if the client subscribes mid-connection. Until the
+    // session sends `SubscribeSilentPayments`, any received broadcasts are
+    // dropped silently in the select arm below.
+    let mut silent_payments_rx = state.silent_payments_tx.subscribe();
+
     // Main message loop with M-3 ping/timeout
     loop {
         tokio::select! {
@@ -310,6 +316,54 @@ async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>, 
                 if let Err(e) = sender.send(Message::Text(json)).await {
                     error!("WebSocket send error: {}", e);
                     break;
+                }
+            }
+
+            // BIP-352 candidate-tx broadcaster fan-out.
+            // Each subscribed session receives every push and forwards to its WS.
+            broadcast_msg = silent_payments_rx.recv() => {
+                match broadcast_msg {
+                    Ok(msg) => {
+                        // Only forward when this session has actually subscribed,
+                        // otherwise drop silently.
+                        let subscribed = conn_state
+                            .wallet_id
+                            .as_ref()
+                            .map(|w| {
+                                state.subscriptions.is_subscribed(
+                                    w,
+                                    crate::state::SubscriptionType::SilentPayments,
+                                )
+                            })
+                            .unwrap_or(false);
+                        debug!(
+                            wallet_id = ?conn_state.wallet_id,
+                            subscribed,
+                            "candidate-tx fan-out arm fired"
+                        );
+                        if !subscribed {
+                            continue;
+                        }
+                        let json = match serde_json::to_string(&msg) {
+                            Ok(j) => j,
+                            Err(e) => {
+                                error!("serialize candidate-tx push: {e}");
+                                continue;
+                            }
+                        };
+                        if let Err(e) = sender.send(Message::Text(json)).await {
+                            debug!("client write failed during candidate-tx push: {e}");
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("silent-payments fan-out: {n} pushes dropped (laggard subscriber)");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Broadcaster closed (server shutting down). Bail out.
+                        break;
+                    }
                 }
             }
 
