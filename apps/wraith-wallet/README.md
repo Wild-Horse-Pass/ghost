@@ -7,27 +7,89 @@ Ghost Locks custody, and TAP (L2) payments behind a single GUI / CLI / daemon.
 
 | Crate | Role |
 |---|---|
-| `core/`   | `wraith-wallet-core` — all wallet logic (lib) |
-| `ipc/`    | `wraith-wallet-ipc` — JSON-RPC types shared between daemon and clients |
-| `daemon/` | `wraith-wallet-daemon` — `wraithd` binary |
-| `cli/`    | `wraith-wallet-cli` — `wraith` binary |
-
-GUI (Tauri) lands later in the build (Phase 14).
+| `core/`         | `wraith-wallet-core` — all wallet logic (lib) |
+| `ipc/`          | `wraith-wallet-ipc` — JSON-RPC types shared between daemon and clients |
+| `daemon/`       | `wraith-wallet-daemon` — `wraithd` binary |
+| `cli/`          | `wraith-wallet-cli` — `wraith` binary |
+| `gui/src-tauri/`| `wraith-wallet-gui` — `wraith-gui` binary (Tauri 2 desktop shell) |
 
 ## Architecture
 
-- `wraithd` is the long-running process. Runs all module tasks (light, wraith, tap,
-  locks, keys, shroud) concurrently. Connects to `ghost-pay` over RPC + GSP WebSocket.
-- `wraith` (CLI) and the GUI are thin clients over `wraithd`'s local IPC.
-- The wallet only ever talks to `ghost-pay`; never reaches past it to `ghost-core` directly.
+`wraithd` is the long-running process. It runs all module tasks (light, wraith, tap,
+locks, keys, shroud) concurrently as Tokio tasks. The CLI and GUI are thin clients
+that round-trip JSON-RPC envelopes over a local Unix socket — there is exactly one
+IPC codepath and the GUI never links the core directly.
+
+```
++----------+     +----------+     +-----------+
+|  wraith  | --> |          | --> | ghost-pay |
+|  (CLI)   |     |          |     +-----------+
++----------+     | wraithd  |
++----------+ --> |          | --> | ghost-gsp |
+| wraith-  |     |          |     +-----------+
+|  gui     |     +----------+
++----------+        ^
+                    |
+                    +--- Tor (optional, via embedded SOCKS5 proxy)
+```
+
+The wallet only ever talks to `ghost-pay` and `ghost-gsp` — it never reaches past
+them to a Bitcoin node directly.
 
 ## Build
 
 ```sh
-cargo build -p wraith-wallet-daemon  # produces `wraithd`
-cargo build -p wraith-wallet-cli     # produces `wraith`
+cargo build -p wraith-wallet-daemon   # produces `wraithd`
+cargo build -p wraith-wallet-cli      # produces `wraith`
+cargo build -p wraith-wallet-gui      # produces `wraith-gui`
 ```
 
-## Status
+## Local dev stack
 
-Phase 0 — workspace skeleton only. Both binaries build and run; no real lifecycle yet.
+`scripts/run-wraith-stack.sh` brings up `ghost-pay`, `ghost-gsp`, and `wraithd` on
+loopback for end-to-end testing. Requires a local signet `bitcoind` (default
+`http://127.0.0.1:38335`, override with `BITCOIN_RPC_URL` / `BITCOIN_RPC_USER` /
+`BITCOIN_RPC_PASSWORD`).
+
+```sh
+bash scripts/run-wraith-stack.sh up      # start the stack
+bash scripts/run-wraith-stack.sh status  # see what's running
+bash scripts/run-wraith-stack.sh down    # tear it down
+./target/debug/wraith doctor             # verify the wallet sees both services
+```
+
+Logs land in `/tmp/wraith-stack/<service>.log`.
+
+## Phase status
+
+| # | Phase | Status |
+|---|---|---|
+| 0  | Foundation (workspace skeleton)                  | done |
+| 1  | Chain client (ghost-pay RPC + GSP WS)            | done |
+| 2  | Light wallet                                     | done |
+| 3  | CLI maturation (`--json`, doctor, multi-cmd)     | done |
+| 4  | Multi-wallet                                     | done |
+| 5a | Wraith protocol v3 amendment                     | upstream (separate crate) |
+| 5b | Wraith wallet module                             | minimal participant |
+| 6  | Locks (prepare / confirm / jump)                 | done |
+| 7  | TAP / L2 payments                                | done |
+| 8  | Silent payments (BIP-352, candidate-tx push)     | done |
+| 9  | Shroud relay                                     | pending |
+| 10 | Tor transport (SOCKS5 → arti later)              | done (SOCKS5) |
+| 11 | Multi-node failover                              | done |
+| 12 | Recovery (seed + checkpoint)                     | partial |
+| 13 | Hardware-wallet trait                            | software impl only |
+| 14 | Tauri GUI                                        | scaffold (health/doctor) |
+| 15 | Distribution (signed installers, auto-update)    | pending |
+| 16 | Hardening (IPC fuzz, external review)            | pending |
+
+## Hard rules
+
+- Wallet talks to ghost-pay/ghost-gsp only. No direct ghost-core or Bitcoin-node
+  connection. Every leak of that boundary is a bug.
+- All modules run concurrently inside `wraithd`. The UI picks the foreground view,
+  never which module is alive.
+- The daemon is the unit of life, not the GUI. Closing the window does not kill
+  `wraithd`.
+- One IPC codepath: GUI and CLI both go through `wraithd`'s JSON-RPC. No direct
+  linkage from the GUI into core.
