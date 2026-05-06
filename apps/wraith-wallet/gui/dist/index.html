@@ -529,19 +529,75 @@
 
       async function sendPayment() {
         clearErr();
+        const recipient = els.sendTo.value.trim();
+        const amount = Number(els.sendAmount.value || 0);
+        const mode = els.sendMode.value;
+        const memo = els.sendMemo.value || null;
+        if (!recipient) {
+          showErr("recipient is required");
+          return;
+        }
+        if (!Number.isFinite(amount) || amount <= 0) {
+          showErr("amount must be a positive number of sats");
+          return;
+        }
+        // Pre-flight confirmation. Sending bitcoin is irreversible — the
+        // user gets one chance to read what they're about to do.
+        const confirmed = await modal((m, done) => {
+          const h = document.createElement("h3");
+          h.textContent = "Confirm payment";
+          const hint = document.createElement("p");
+          hint.className = "step-hint";
+          hint.textContent =
+            "This is irreversible once broadcast. Double-check the recipient and amount.";
+          const tbl = document.createElement("table");
+          tbl.style.width = "100%";
+          const rows = [
+            ["amount", `${amount.toLocaleString()} sat`],
+            ["recipient", recipient],
+            ["mode", mode],
+          ];
+          if (memo) rows.push(["memo", memo]);
+          for (const [k, v] of rows) {
+            const tr = document.createElement("tr");
+            tr.innerHTML =
+              `<th style="width:90px;text-align:left;color:var(--fg-mute);">${k}</th>` +
+              `<td style="font-family:ui-monospace;font-size:13px;word-break:break-all;">${v}</td>`;
+            tbl.append(tr);
+          }
+          const row = document.createElement("div");
+          row.className = "row";
+          const cancel = document.createElement("button");
+          cancel.className = "ghost";
+          cancel.textContent = "cancel";
+          const ok = document.createElement("button");
+          ok.className = "primary";
+          ok.textContent = "send it";
+          row.append(cancel, ok);
+          m.append(h, hint, tbl, row);
+          cancel.addEventListener("click", () => done(false));
+          ok.addEventListener("click", () => done(true));
+        });
+        if (!confirmed) return;
         try {
           const v = await invoke("light_send", {
-            recipient: els.sendTo.value,
-            amountSats: Number(els.sendAmount.value || 0),
-            mode: els.sendMode.value,
-            memo: els.sendMemo.value || null,
+            recipient,
+            amountSats: amount,
+            mode,
+            memo,
           });
           els.sendOut.innerHTML = "";
           const ok = document.createElement("div");
           ok.className = "addr";
           ok.textContent = JSON.stringify(v, null, 2);
           els.sendOut.append(ok);
+          showToast(`Sent ${amount.toLocaleString()} sat`);
           showRaw("light_send", v);
+          // Refresh balance + history so the user sees the deduction.
+          refreshBalance();
+          if (document.querySelector("nav button.active")?.dataset.tab === "history") {
+            refreshHistory();
+          }
         } catch (e) {
           showErr(String(e));
         }
