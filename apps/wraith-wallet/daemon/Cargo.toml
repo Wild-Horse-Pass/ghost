@@ -26,6 +26,13 @@ rand = { workspace = true }
 
 [dev-dependencies]
 wraith-wallet-ipc = { workspace = true }
+wraith-wallet-core = { workspace = true }
+ghost-keys = { workspace = true }
+ghost-gsp-proto = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "3"
+axum = { workspace = true }
+bitcoin = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
