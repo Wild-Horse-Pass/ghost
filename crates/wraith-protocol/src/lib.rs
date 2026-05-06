@@ -84,6 +84,12 @@ pub use session::{
     SessionRegistry, SessionState, WraithSession,
 };
 pub use tier::{ParticipantTier, WraithMode};
+// Wraith Lite v1 (DESIGN_LITE.md). Coexists with the legacy two-phase
+// ParticipantTier above during the v1 refactor; once every caller has
+// migrated, the legacy types are deleted and `LiteTier` becomes `Tier`.
+pub use tier::{
+    LiteTier, LITE_BOND_BPS, LITE_FILL_WINDOW_SECS, LITE_SERVICE_FEE_BPS,
+};
 
 /// Session type determines fee structure
 ///

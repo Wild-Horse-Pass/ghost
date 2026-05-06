@@ -1,6 +1,10 @@
-# Wraith Lite — Design Document v0.1
+# Wraith Lite — Design Document v1.0
 
-Status: **draft for sign-off**. No code has been changed against this doc yet.
+Status: **FINAL — signed off, refactor in progress against this spec.**
+
+All eight open questions from the v0.1 draft have been resolved. Decisions
+recorded in §15 below. Subsequent sections updated to reflect those
+decisions; what was previously "proposed" is now "specified."
 
 ## 0. Why this exists
 
@@ -219,14 +223,14 @@ code. Service fee is a single output to the coordinator's fee address.
 Change outputs (when an input is larger than denom + fee_share) go back to
 each participant individually.
 
-Tier table (proposed):
+Tier table (final):
 
-| Tier | Denom | Min participants | Max | Service fee |
-|---|---|---|---|---|
-| Spark | 100k sats | 5 | 20 | 0.5% |
-| Ember | 1M sats | 5 | 30 | 0.5% |
-| Flame | 10M sats | 5 | 50 | 0.5% |
-| Inferno | 100M sats | 5 | 100 | 0.5% |
+| Tier id | Denom | Min participants | Max | Fill window | Service fee | Bond rate |
+|---|---|---|---|---|---|---|
+| `100k_sats` | 100,000 sats   | 5 | 20  | 5 min | 0.5% | 0.5% |
+| `1m_sats`   | 1,000,000 sats | 5 | 30  | 5 min | 0.5% | 0.5% |
+| `10m_sats`  | 10,000,000 sats | 5 | 50  | 5 min | 0.5% | 0.5% |
+| `100m_sats` | 100,000,000 sats | 5 | 100 | 5 min | 0.5% | 0.5% |
 
 Round duration target: median 25 minutes (mostly chain confirmation), p99
 60 minutes.
@@ -405,42 +409,20 @@ Listed so they don't get rediscovered as gaps later:
   discussion). Not strictly necessary if re-blind on failover is
   acceptable, but reduces wallet-side complexity.
 
-## 15. Open questions for sign-off
+## 15. Resolved decisions (v1.0 sign-off)
 
-These are decisions the design needs you to make before code lands:
+All resolved. Refactor begins against this spec.
 
-1. **Tier names.** I proposed Spark / Ember / Flame / Inferno. Marketing-
-   friendly but maybe too cute. Numeric (Tier 1–4)? Denom-named (100k /
-   1M / 10M / 100M)? Your call.
+| # | Decision | Resolution |
+|---|---|---|
+| 1 | Tier names | **Denom-named.** `100k_sats` / `1m_sats` / `10m_sats` / `100m_sats`. |
+| 2 | Service fee rate | **0.5%.** Whirlpool parity. Per-tier override possible later if needed. |
+| 3 | Bond mechanism | **L2 (ghost-pay).** L1's only advantage was independence from L2 availability; that's defused by #6. L2 wins on speed (no chain-confirmation wait), privacy (bonds invisible to chain analysis), cost (no mining fees per bond), and UX. |
+| 4 | Remix queue default | **Opt-in.** User explicitly enrols at round-end. |
+| 5 | Min participants per round | **5.** Whirlpool's number, well-tested for fill rate vs. anonymity set. |
+| 6 | Behaviour when L2 down | **N/A — assumed never to happen.** Rationale: ghost-pay L2 outage means every node is fucked at the operator's level; if that's happening, Wraith rounds aren't the priority. Defensive code path: in-flight rounds proceed with their existing bond commitments; new rounds queue until L2 returns. |
+| 7 | Coordinator pool size | **1 Active + 3 Standbys.** |
+| 8 | Mainnet gating | **None.** Wallet allows Wraith Lite rounds on mainnet from day one. |
 
-2. **Service fee rate.** 0.5% matches Whirlpool. Higher (say 1%) is
-   defensible if the value-add is clear. Lower (0.25%) wins on price
-   competition. What's your target?
-
-3. **Bond mechanism on L2 vs L1.** L2 (default in this doc) is cheaper +
-   integrates with existing ghost-pay. L1 is more universally verifiable
-   but adds a Tx0-style pre-mix. Either works; L2 is simpler for v1.
-
-4. **Remix queue: opt-in or default-on?** Opt-in (this doc's default)
-   means user has to explicitly enrol. Default-on means user's outputs
-   auto-remix unless they opt out — better privacy hygiene by default,
-   harder to reason about for users who don't read settings.
-
-5. **Min participants per round.** 5 is Whirlpool's number, well-tested.
-   Lower (3) means faster fill but smaller anon set. Higher (10) means
-   bigger anon set but harder to fill at low traffic.
-
-6. **What happens when ghost-pay (the L2 layer) is down?** Wraith depends
-   on ghost-pay for bond escrow. If ghost-pay is offline, do rounds
-   refuse to start, fall back to L1-only mode, or queue until L2 returns?
-
-7. **Coordinator pool size.** Defaults: 1 Active + 3 Standbys. More is
-   safer-against-failure, more expensive to run. Three Standbys feels
-   right; sanity-check?
-
-8. **Mainnet readiness gating.** Should the wallet refuse Wraith Lite
-   rounds on mainnet until external audit completes? Hard gate or warning?
-
-Once you've answered the open questions, the next concrete step is the
-protocol crate refactor against the spec above. Wallet participant
-module follows.
+The next step is the protocol crate refactor against this spec. Wallet
+participant module follows.
