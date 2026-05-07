@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use wraith_protocol::{
-    BondLedger, BondResolution, LiteSessionState, RefundReason, SessionGossipEvent, SlashReason,
+    BondResolution, LiteSessionState, RefundReason, SessionGossipEvent, SlashReason,
 };
 
 use crate::bond_resolution::resolve_round_bonds;
