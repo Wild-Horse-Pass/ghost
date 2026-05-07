@@ -1,0 +1,5 @@
+//! HTTP endpoint handlers. One submodule per endpoint family so each
+//! file stays focused on its own request/response contract.
+
+pub mod discover;
+pub mod health;

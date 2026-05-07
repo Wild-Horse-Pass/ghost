@@ -183,12 +183,8 @@ pub enum RemixError {
     NotFound(RemixId),
     #[error("remix '{0}' is in terminal state {1}, can't transition")]
     Terminal(RemixId, &'static str),
-    #[error("remix '{0}' invalid transition from {from} to {to}")]
+    #[error("remix invalid transition from {from} to {to}")]
     InvalidTransition {
-        // tuple-prefix so the format string's `{0}` finds remix_id.
-        // (matches the LiteSessionError shape.)
-        // (named below.)
-        // Defensive: keep the message helpful for log-driven debugging.
         from: &'static str,
         to: &'static str,
     },

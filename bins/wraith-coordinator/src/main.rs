@@ -1,0 +1,101 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: bins/wraith-coordinator/src/main.rs                                                                            |
+//|======================================================================================================================|
+
+//! Wraith Lite v1 single-round CoinJoin coordinator — binary entry.
+//!
+//! Most of the implementation lives in the lib target alongside this
+//! file (`src/lib.rs`). This `main` is a thin shell: parse env-driven
+//! CLI args, init logging, build the router via the lib, bind a
+//! TCP listener, run.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use clap::Parser;
+use tracing::info;
+
+use wraith_coordinator::{build_router, CoordinatorState};
+
+/// CLI surface — kept narrow on purpose. Configuration that varies between
+/// dev, signet, and mainnet ships via env vars (`WRAITH_COORDINATOR_*`)
+/// just like every other node binary in this workspace.
+#[derive(Parser, Debug)]
+#[command(
+    name = "wraith-coordinator",
+    about = "Wraith Lite v1 single-round CoinJoin coordinator",
+    version
+)]
+struct Cli {
+    /// Listen address. Defaults to `WRAITH_COORDINATOR_LISTEN` env var if
+    /// set, falling back to `127.0.0.1:9100`. Production deployments bind
+    /// to a public address and front it with a TLS-terminating proxy.
+    #[arg(long, env = "WRAITH_COORDINATOR_LISTEN", default_value = "127.0.0.1:9100")]
+    listen: SocketAddr,
+
+    /// Bitcoin network (`mainnet` / `signet` / `testnet` / `regtest`).
+    /// Defaults to signet so dev installs don't accidentally announce a
+    /// mainnet coordinator. Mainnet operators set this explicitly via
+    /// `WRAITH_COORDINATOR_NETWORK=mainnet`.
+    #[arg(long, env = "WRAITH_COORDINATOR_NETWORK", default_value = "signet")]
+    network: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    init_logging();
+    let cli = Cli::parse();
+    let network = parse_network(&cli.network)
+        .with_context(|| format!("invalid network: {}", cli.network))?;
+
+    let state = Arc::new(CoordinatorState::new(network));
+    info!(
+        listen = %cli.listen,
+        network = ?network,
+        "wraith-coordinator starting"
+    );
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind(cli.listen)
+        .await
+        .with_context(|| format!("failed to bind {}", cli.listen))?;
+    axum::serve(listener, app)
+        .await
+        .context("axum serve loop terminated unexpectedly")?;
+    Ok(())
+}
+
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+fn parse_network(s: &str) -> Result<bitcoin::Network> {
+    Ok(match s.trim().to_ascii_lowercase().as_str() {
+        "mainnet" | "bitcoin" => bitcoin::Network::Bitcoin,
+        "signet" => bitcoin::Network::Signet,
+        "testnet" => bitcoin::Network::Testnet,
+        "regtest" => bitcoin::Network::Regtest,
+        other => anyhow::bail!("unknown network '{other}'"),
+    })
+}

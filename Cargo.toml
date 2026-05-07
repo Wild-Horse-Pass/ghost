@@ -52,6 +52,8 @@ members = [
     "bins/ghost-pay",
     "bins/ghost-cli",
     "bins/ghost-gsp",
+    # Wraith coordinator (Wraith Lite v1, single-round atomic CoinJoin)
+    "bins/wraith-coordinator",
     # Registry service for load balancing
     "bins/ghost-registry",
     # Headless setup CLI
