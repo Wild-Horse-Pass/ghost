@@ -216,6 +216,41 @@ pub enum Request {
         /// length-prefixed witness stack).
         witness_hex: String,
     },
+    /// Phase 5b: run a complete Wraith Lite mix in one shot. Daemon
+    /// drives prepare_mix, computes the BIP-341 taproot key-path
+    /// witness internally using the active wallet's keystore, then
+    /// runs submit_witness. Returns
+    /// [`Response::WraithMixCompleted`] on success — same response
+    /// shape as the two-step flow.
+    ///
+    /// The wallet must own the input UTXO at a BIP86 derivation
+    /// index ≤ `bip86_scan_max`; if `bip86_scan_max` is `None` the
+    /// daemon scans 0..1024 by default.
+    WraithMixOneShot {
+        coordinator_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        socks5_proxy: Option<String>,
+        tier_id: String,
+        ghost_id: String,
+        bond_id_placeholder: String,
+        utxo_txid: String,
+        utxo_vout: u32,
+        utxo_value_sats: u64,
+        utxo_scriptpubkey_hex: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change_address: Option<String>,
+        mix_output_address: String,
+        /// Optional BIP86 derivation index. When `None`, daemon
+        /// scans 0..bip86_scan_max for an address whose
+        /// scriptPubKey matches `utxo_scriptpubkey_hex`. When
+        /// `Some(idx)`, daemon uses index `idx` directly and
+        /// fails fast if it doesn't match.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bip86_index: Option<u32>,
+        /// Bound on the BIP86 scan. Default 1024.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bip86_scan_max: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

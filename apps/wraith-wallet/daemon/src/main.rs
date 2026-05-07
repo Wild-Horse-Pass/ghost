@@ -2075,6 +2075,121 @@ mod unix {
                     }),
                 }
             }
+            Request::WraithMixOneShot {
+                coordinator_url,
+                socks5_proxy,
+                tier_id,
+                ghost_id,
+                bond_id_placeholder,
+                utxo_txid,
+                utxo_vout,
+                utxo_value_sats,
+                utxo_scriptpubkey_hex,
+                change_address,
+                mix_output_address,
+                bip86_index,
+                bip86_scan_max,
+            } => {
+                use wraith_wallet_core::wraith::{
+                    MixRequest, ParticipantUtxo, WraithClientError, WraithSessionClient,
+                };
+                use wraith_wallet_core::wraith_signer::{
+                    sign_taproot_key_path, sign_taproot_key_path_at_index, DEFAULT_SCAN_INDEX_MAX,
+                };
+                let client_result = match socks5_proxy.as_deref() {
+                    Some(proxy) => WraithSessionClient::with_outputs_proxy(
+                        coordinator_url.clone(),
+                        state.network,
+                        proxy,
+                    ),
+                    None => Ok(WraithSessionClient::new(coordinator_url.clone(), state.network)),
+                };
+                let client = match client_result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("wraith client: {e}"),
+                            }),
+                        );
+                    }
+                };
+                let req = MixRequest {
+                    tier_id,
+                    ghost_id,
+                    bond_id_placeholder,
+                    utxo: ParticipantUtxo {
+                        txid: utxo_txid,
+                        vout: utxo_vout,
+                        value_sats: utxo_value_sats,
+                        scriptpubkey_hex: utxo_scriptpubkey_hex,
+                    },
+                    change_address,
+                    mix_output_address,
+                };
+                let bond_setup = |_: &str, _: u64| async {
+                    Ok::<(), WraithClientError>(())
+                };
+                let prepared = match client.prepare_mix(req, bond_setup).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("wraith prepare: {e}"),
+                            }),
+                        );
+                    }
+                };
+                // Sign with the active wallet's keystore. `with_active_wallet`
+                // is async and re-locks the keystore RwLock on each call;
+                // we hold the lock just for the (sync) sighash + Schnorr step.
+                let network = state.network;
+                let scan_max = bip86_scan_max.unwrap_or(DEFAULT_SCAN_INDEX_MAX);
+                let prepared_for_sign = prepared.clone();
+                let witness_result = with_active_wallet(state, move |_, ks| {
+                    let res = match bip86_index {
+                        Some(idx) => sign_taproot_key_path_at_index(
+                            ks,
+                            network,
+                            &prepared_for_sign.unsigned_tx,
+                            prepared_for_sign.input_index,
+                            &prepared_for_sign.prevouts,
+                            idx,
+                        ),
+                        None => sign_taproot_key_path(
+                            ks,
+                            network,
+                            &prepared_for_sign.unsigned_tx,
+                            prepared_for_sign.input_index,
+                            &prepared_for_sign.prevouts,
+                            scan_max,
+                        ),
+                    };
+                    res.map_err(|e| format!("wraith sign: {e}"))
+                })
+                .await;
+                let witness = match witness_result {
+                    Ok(w) => w,
+                    Err(message) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse { message }),
+                        );
+                    }
+                };
+                match client.submit_witness(&prepared, witness).await {
+                    Ok(outcome) => Response::WraithMixCompleted(WraithMixCompletedResponse {
+                        session_id: outcome.session_id,
+                        broadcast_txid: outcome.broadcast_txid.to_string(),
+                        mixed_output_tx_index: outcome.mixed_output_tx_index as u32,
+                    }),
+                    Err(e) => Response::Error(ErrorResponse {
+                        message: format!("wraith submit: {e}"),
+                    }),
+                }
+            }
         };
 
         Envelope::new(id, response)

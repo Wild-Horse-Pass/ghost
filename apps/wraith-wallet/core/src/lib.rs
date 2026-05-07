@@ -11,3 +11,4 @@ pub mod light;
 pub mod mainnet_guard;
 pub mod signer;
 pub mod wraith;
+pub mod wraith_signer;

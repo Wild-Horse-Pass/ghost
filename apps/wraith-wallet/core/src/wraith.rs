@@ -149,12 +149,30 @@ pub struct PreparedMix {
     /// BIP-341 sighash computation; not derivable from the unsigned
     /// tx (it's the prev-out amount, not a tx-internal value).
     pub prev_amount_sats: u64,
+    /// Per-input prevouts (script_pubkey + amount) in
+    /// `unsigned_tx.input` order. Required for BIP-341 (Taproot)
+    /// SIGHASH_DEFAULT, which commits to the prevouts of every
+    /// input — not just the one this wallet is signing. P2WPKH
+    /// signers can still get away with just `prev_amount_sats` /
+    /// the wallet's own scriptPubKey, but exposing the full slice
+    /// keeps the API uniform.
+    pub prevouts: Vec<PreparedPrevOut>,
     /// Index in `unsigned_tx.output` where the wallet's mixed output
     /// landed. Carry-through to `MixOutcome.mixed_output_tx_index`.
     pub mixed_output_tx_index: usize,
     /// Wallet identity — kept for the /witness POST; not used by
     /// the caller.
     pub ghost_id: String,
+}
+
+/// One input prevout reference. Mirrors the coordinator's wire-format
+/// type but lives on the wallet side so the wallet client doesn't
+/// expose serde DTOs in its public API.
+#[derive(Debug, Clone)]
+pub struct PreparedPrevOut {
+    /// Hex-encoded scriptPubKey of the spending output.
+    pub scriptpubkey_hex: String,
+    pub value_sats: u64,
 }
 
 /// The wallet's signing callback. Given the unsigned tx + the index
@@ -447,11 +465,21 @@ impl WraithSessionClient {
             self.network,
         )?;
 
+        let prevouts = rt
+            .prevouts
+            .iter()
+            .map(|p| PreparedPrevOut {
+                scriptpubkey_hex: p.scriptpubkey_hex.clone(),
+                value_sats: p.value_sats,
+            })
+            .collect();
+
         Ok(PreparedMix {
             session_id,
             unsigned_tx: tx,
             input_index,
             prev_amount_sats: request.utxo.value_sats,
+            prevouts,
             mixed_output_tx_index,
             ghost_id: request.ghost_id,
         })
@@ -709,7 +737,15 @@ struct RoundTxResponse {
     unsigned_tx_hex: String,
     txid: String,
     mining_fee_sats: u64,
+    #[serde(default)]
+    prevouts: Vec<PrevOutDto>,
     assembled_at: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrevOutDto {
+    scriptpubkey_hex: String,
+    value_sats: u64,
 }
 
 #[derive(Debug, Deserialize)]

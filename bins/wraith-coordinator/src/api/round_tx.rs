@@ -55,9 +55,22 @@ pub struct ResponseBody {
     pub txid: String,
     pub mining_fee_sats: u64,
     pub output_provenance: Vec<OutputProvenanceWire>,
+    /// Per-input prevouts, in `unsigned_tx.input` order. Required for
+    /// BIP-341 (Taproot) sighash computation — the wallet needs the
+    /// scriptPubKey + amount of EVERY input, not just its own. For
+    /// BIP-143 (P2WPKH) sighash only the wallet's own prevout is
+    /// strictly needed, but exposing all of them uniformly keeps
+    /// the wire format simple.
+    pub prevouts: Vec<PrevOutWire>,
     /// Unix-seconds the round was assembled (per the coordinator's
     /// clock).
     pub assembled_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PrevOutWire {
+    pub scriptpubkey_hex: String,
+    pub value_sats: u64,
 }
 
 pub async fn get(
@@ -125,12 +138,33 @@ pub async fn get(
         })
         .collect();
 
+    // Walk inputs_store in tx-input order to build the prevouts
+    // wire array. The assembly path adds participants in
+    // arrival/registration order and the LiteRoundBuilder preserves
+    // that order for inputs (only outputs get shuffled), so
+    // inputs_store[i] aligns with assembled.tx.input[i].
+    let inputs_snapshot = state
+        .inputs_store
+        .lock()
+        .expect("inputs_store poisoned")
+        .get(&session_id)
+        .cloned()
+        .unwrap_or_default();
+    let mut prevouts = Vec::with_capacity(inputs_snapshot.len());
+    for inp in &inputs_snapshot {
+        prevouts.push(PrevOutWire {
+            scriptpubkey_hex: inp.input.scriptpubkey_hex.clone(),
+            value_sats: inp.input.value_sats,
+        });
+    }
+
     let body = ResponseBody {
         session_id,
         unsigned_tx_hex: assembled.unsigned_tx_hex.clone(),
         txid: assembled.round.txid().to_string(),
         mining_fee_sats: assembled.round.mining_fee_sats,
         output_provenance: provenance,
+        prevouts,
         assembled_at: assembled.assembled_at,
     };
     (StatusCode::OK, Json(body)).into_response()

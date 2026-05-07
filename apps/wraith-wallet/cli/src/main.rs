@@ -147,6 +147,40 @@ enum MixCommand {
         #[arg(long)]
         witness_hex: String,
     },
+    /// One-shot mix: daemon does prepare + sign (using the active
+    /// wallet's BIP86 keystore) + submit, all in a single IPC call.
+    /// Use when the input UTXO is owned by the active wallet at a
+    /// BIP86 derivation index ≤ `--bip86-scan-max`.
+    Run {
+        #[arg(long)]
+        coordinator: String,
+        #[arg(long)]
+        socks5_proxy: Option<String>,
+        #[arg(long)]
+        tier: String,
+        #[arg(long)]
+        ghost_id: String,
+        #[arg(long, default_value = "placeholder")]
+        bond_id_placeholder: String,
+        #[arg(long)]
+        utxo: String,
+        #[arg(long)]
+        utxo_value: u64,
+        #[arg(long)]
+        utxo_scriptpubkey: String,
+        #[arg(long)]
+        change_address: Option<String>,
+        #[arg(long)]
+        mix_output_address: String,
+        /// BIP86 derivation index of the wallet key that owns the
+        /// input UTXO. Skipped scan when supplied.
+        #[arg(long)]
+        bip86_index: Option<u32>,
+        /// Maximum BIP86 index to scan for a key matching the input
+        /// scriptPubKey. Default 1024 (daemon-side).
+        #[arg(long)]
+        bip86_scan_max: Option<u32>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -531,6 +565,45 @@ mod unix {
                     session_id,
                     witness_hex,
                 },
+                MixCommand::Run {
+                    coordinator,
+                    socks5_proxy,
+                    tier,
+                    ghost_id,
+                    bond_id_placeholder,
+                    utxo,
+                    utxo_value,
+                    utxo_scriptpubkey,
+                    change_address,
+                    mix_output_address,
+                    bip86_index,
+                    bip86_scan_max,
+                } => {
+                    let (txid, vout) = match parse_outpoint(&utxo) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return io_err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                e,
+                            ));
+                        }
+                    };
+                    Request::WraithMixOneShot {
+                        coordinator_url: coordinator,
+                        socks5_proxy,
+                        tier_id: tier,
+                        ghost_id,
+                        bond_id_placeholder,
+                        utxo_txid: txid,
+                        utxo_vout: vout,
+                        utxo_value_sats: utxo_value,
+                        utxo_scriptpubkey_hex: utxo_scriptpubkey,
+                        change_address,
+                        mix_output_address,
+                        bip86_index,
+                        bip86_scan_max,
+                    }
+                }
             },
             // Handled in main() before we reach the runtime; the arm exists
             // here only so the match is exhaustive.
