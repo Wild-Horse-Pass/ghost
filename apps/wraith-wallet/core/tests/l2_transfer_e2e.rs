@@ -22,7 +22,7 @@ use axum::{
     routing::get,
     Router,
 };
-use ghost_gsp_proto::{ClientMessage, ServerMessage, WalletProof};
+use ghost_gsp_proto::{ClientMessage, ServerMessage, TransactionInfo, WalletProof};
 use wraith_wallet_core::gsp::spawn_session;
 
 /// Handle the GSP WebSocket frame loop. The mock supports the two
@@ -133,6 +133,113 @@ async fn light_send_round_trips_send_l2_payment() {
         "expected pay_ prefix, got {}",
         result.payment_id
     );
+}
+
+#[tokio::test]
+async fn light_history_round_trips_get_transactions() {
+    // Distinct mock that handles GetTransactions by replying with a
+    // small canned ledger. Tests pin the `Transactions` reply shape
+    // and the wallet's `TransactionsResult` parsing — closes the
+    // other half of the L2 send/history wire.
+    async fn handle_ws(mut socket: WebSocket) {
+        while let Some(Ok(frame)) = socket.recv().await {
+            let text = match frame {
+                WsMessage::Text(t) => t,
+                _ => continue,
+            };
+            let msg: ClientMessage = match serde_json::from_str(&text) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            match msg {
+                ClientMessage::Authenticate { .. } => {
+                    let auth = ServerMessage::AuthResult {
+                        success: true,
+                        wallet_id: Some("alice".into()),
+                        error: None,
+                    };
+                    let _ = socket
+                        .send(WsMessage::Text(serde_json::to_string(&auth).unwrap()))
+                        .await;
+                }
+                ClientMessage::GetTransactions { limit, offset: _ } => {
+                    // Build a tiny fake ledger: one send (-5000), one
+                    // receive (+5000), both with the new shape.
+                    let txs = vec![
+                        TransactionInfo {
+                            txid: "deadbeef".repeat(8),
+                            block_height: Some(123),
+                            timestamp: 1_700_000_000,
+                            amount_sats: -5_000,
+                            fee_sats: Some(0),
+                            tx_type: "send".to_string(),
+                            confirmations: 6,
+                            memo: Some("groceries".to_string()),
+                        },
+                        TransactionInfo {
+                            txid: "cafef00d".repeat(8),
+                            block_height: Some(124),
+                            timestamp: 1_700_000_500,
+                            amount_sats: 5_000,
+                            fee_sats: Some(0),
+                            tx_type: "receive".to_string(),
+                            confirmations: 5,
+                            memo: None,
+                        },
+                    ];
+                    let total = txs.len() as u32;
+                    let truncated: Vec<_> = txs.into_iter().take(limit as usize).collect();
+                    let reply = ServerMessage::Transactions {
+                        transactions: truncated,
+                        total_count: total,
+                    };
+                    let _ = socket
+                        .send(WsMessage::Text(serde_json::to_string(&reply).unwrap()))
+                        .await;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let app = Router::new().route(
+        "/ws/v1",
+        get(|ws: WebSocketUpgrade| async move {
+            ws.on_upgrade(handle_ws).into_response()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let ws_url = format!("ws://{addr}/ws/v1");
+
+    let session = spawn_session(
+        vec![ws_url],
+        "mock-jwt-token".to_string(),
+        None,
+        None,
+    );
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.get_transactions(50, 0),
+    )
+    .await
+    .expect("get_transactions timeout")
+    .expect("get_transactions failed");
+
+    assert_eq!(result.total_count, 2);
+    assert_eq!(result.transactions.len(), 2);
+    let send = &result.transactions[0];
+    assert_eq!(send.tx_type, "send");
+    assert_eq!(send.amount_sats, -5_000);
+    assert_eq!(send.memo.as_deref(), Some("groceries"));
+    let receive = &result.transactions[1];
+    assert_eq!(receive.tx_type, "receive");
+    assert_eq!(receive.amount_sats, 5_000);
 }
 
 #[tokio::test]
