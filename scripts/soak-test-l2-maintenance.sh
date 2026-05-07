@@ -476,93 +476,23 @@ test_withdrawal_on_vm() {
     fi
 }
 
-# ─── Phase E: Wraith Session ────────────────────────────────────────────────
+# ─── Phase E: Wraith Session (skipped after the wraith-coordinator split) ───
+#
+# The legacy `/api/v1/admin/simulate-wraith-session` endpoint was
+# removed when wraith mixing moved out of ghost-pay into the
+# wraith-coordinator binary. This function is a stub so the rest of
+# the soak harness keeps running; restore Phase E once the soak
+# script learns to drive `wraith-coordinator`'s `find_or_create` flow
+# directly. See `bins/wraith-coordinator/tests/router.rs` for the
+# in-process equivalent of what this used to soak-test.
 
 wraith_session_on_vm() {
     local vm_idx="$1" iteration="$2"
     local label
     label="$(vm_label $vm_idx)"
-    local start_ts
-    start_ts=$(date +%s)
-
-    log "  ${CYAN}── Phase E: Wraith Session on $label ──${RESET}"
-    ((WRAITH_ATTEMPTS++))
-
-    local result
-    result=$(ssh_cmd "$vm_idx" \
-        "curl -s --max-time 10 -X POST http://localhost:${PAY_PORT}/api/v1/admin/simulate-wraith-session" 2>/dev/null)
-
-    if [[ -z "$result" ]]; then
-        log "    Wraith trigger on $label: ${YELLOW}no response${RESET}"
-        log_event "wraith-session" "vm=${VM_NAMES[$vm_idx]},iter=$iteration" "fail:no-response"
-        return 1
-    fi
-
-    local session_id error_msg
-    session_id=$(echo "$result" | jq -r '.session_id // empty' 2>/dev/null)
-    error_msg=$(echo "$result" | jq -r '.error // empty' 2>/dev/null)
-
-    if [[ -n "$error_msg" ]]; then
-        log "    Wraith trigger on $label: ${YELLOW}error: $error_msg${RESET}"
-        log_event "wraith-session" "vm=${VM_NAMES[$vm_idx]},error=$error_msg" "fail:error"
-        return 1
-    fi
-
-    if [[ -z "$session_id" ]]; then
-        log "    Wraith trigger on $label: ${YELLOW}no session_id${RESET}"
-        log_event "wraith-session" "vm=${VM_NAMES[$vm_idx]}" "fail:no-session-id"
-        return 1
-    fi
-
-    log "    Wraith session started: ${GREEN}$session_id${RESET} — polling..."
-
-    # Poll for completion (timeout 35 minutes)
-    local poll_timeout=2100
-    local poll_interval=15
-    local elapsed=0
-    local final_state="timeout"
-
-    while (( elapsed < poll_timeout )); do
-        sleep "$poll_interval"
-        elapsed=$((elapsed + poll_interval))
-
-        local status_result
-        status_result=$(ssh_cmd "$vm_idx" \
-            "curl -s --max-time 5 http://localhost:${PAY_PORT}/api/v1/wraith/sessions" 2>/dev/null)
-
-        if [[ -z "$status_result" ]]; then
-            continue
-        fi
-
-        local state
-        state=$(echo "$status_result" | jq -r --arg sid "$session_id" \
-            '.[]? | select(.id == $sid) | .state // empty' 2>/dev/null)
-
-        if [[ -z "$state" ]]; then
-            state=$(echo "$status_result" | jq -r '.state // empty' 2>/dev/null)
-        fi
-
-        if [[ "$state" == "complete" || "$state" == "completed" ]]; then
-            final_state="complete"
-            break
-        elif [[ "$state" == "failed" || "$state" == "error" ]]; then
-            final_state="$state"
-            break
-        fi
-    done
-
-    local end_ts
-    end_ts=$(date +%s)
-    local duration=$((end_ts - start_ts))
-
-    if [[ "$final_state" == "complete" ]]; then
-        log "    Wraith session $session_id: ${GREEN}COMPLETE${RESET} (${duration}s)"
-        log_event "wraith-session" "vm=${VM_NAMES[$vm_idx]},session=$session_id,duration=${duration}s" "ok"
-        ((WRAITH_SUCCESSES++))
-    else
-        log "    Wraith session $session_id: ${YELLOW}$final_state${RESET} (${duration}s)"
-        log_event "wraith-session" "vm=${VM_NAMES[$vm_idx]},session=$session_id,state=$final_state" "fail:$final_state"
-    fi
+    log "  ${CYAN}── Phase E: Wraith Session on $label (skipped) ──${RESET}"
+    log_event "wraith-session" "vm=${VM_NAMES[$vm_idx]},iter=$iteration" "skipped:moved-to-wraith-coordinator"
+    return 0
 }
 
 # ─── Fault Injection ─────────────────────────────────────────────────────────
