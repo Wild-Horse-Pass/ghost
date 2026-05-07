@@ -304,6 +304,18 @@ impl MockBondLedger {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Snapshot every bond record. Test-only convenience so callers
+    /// don't have to track every BondId returned from `escrow` to
+    /// inspect resolution status later.
+    pub fn snapshot_all(&self) -> Vec<BondRecord> {
+        self.bonds
+            .lock()
+            .expect("mock ledger poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
 }
 
 impl BondLedger for MockBondLedger {

@@ -46,9 +46,13 @@ use bitcoin::Address;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use wraith_protocol::{LiteSessionState, SessionGossipEvent, TokenVerifier, UnblindedToken};
+use wraith_protocol::{
+    BondResolution, LiteSessionState, RefundReason, SessionGossipEvent, TokenVerifier,
+    UnblindedToken,
+};
 
 use crate::assembly::try_assemble_if_ready;
+use crate::bond_resolution::resolve_round_bonds;
 use crate::outputs::AcceptedOutput;
 use crate::state::CoordinatorState;
 
@@ -287,11 +291,27 @@ pub async fn post(
                     .insert(session_id.clone(), assembled);
             }
             Some(Err(e)) => {
-                // Transition to Failed and surface a coordinator-side
-                // error code in the response. Bonds get refunded by
-                // B/5c via the Failed-session sweep.
+                // Transition to Failed and refund bonds (assembly
+                // failure isn't any single participant's fault — it's
+                // a coordinator-side data problem). Slashing only
+                // happens via the no-sign deadline path (B/5e).
                 let reason = format!("tx_assembly:{}", e.code());
                 warn!(%session_id, ?e, "assembly failed; transitioning session to Failed");
+                if let Some(ledger) = state.bond_ledger.as_ref() {
+                    let inputs = state
+                        .inputs_store
+                        .lock()
+                        .expect("inputs_store poisoned")
+                        .get(&session_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let _ = resolve_round_bonds(
+                        ledger,
+                        &session_id,
+                        &inputs,
+                        BondResolution::Refund(RefundReason::CoordinatorAborted),
+                    );
+                }
                 let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
                     session_id: session_id.clone(),
                     new_state: LiteSessionState::Failed { reason: reason.clone() },

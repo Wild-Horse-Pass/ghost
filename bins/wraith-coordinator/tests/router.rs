@@ -2103,3 +2103,174 @@ async fn witness_idempotent_on_resubmission() {
         serde_json::from_slice(&to_bytes(second.into_body(), 4096).await.unwrap()).unwrap();
     assert_eq!(second_json["witnesses_collected"], 1, "duplicate replaced");
 }
+
+
+// ---------------------------------------------------------------------------
+// Bond resolution on round terminal transitions (B/5d)
+// ---------------------------------------------------------------------------
+
+/// Assert every bond in the ledger is in `Resolved(expected)` state.
+/// Uses MockBondLedger::snapshot_all so callers don't have to track
+/// every BondId returned from `escrow`.
+fn assert_all_bonds_resolved(
+    ledger: &Arc<MockBondLedger>,
+    expected: wraith_protocol::BondResolution,
+) {
+    let bonds = ledger.snapshot_all();
+    assert!(!bonds.is_empty(), "ledger has no bonds — test setup wrong");
+    for b in &bonds {
+        match &b.status {
+            wraith_protocol::BondStatus::Escrowed => {
+                panic!(
+                    "bond {} for {} still Escrowed; expected resolved as {:?}",
+                    b.bond_id, b.ghost_id, expected
+                );
+            }
+            wraith_protocol::BondStatus::Resolved(actual) => {
+                assert_eq!(
+                    actual, &expected,
+                    "bond {} resolution mismatch (ghost_id={})",
+                    b.bond_id, b.ghost_id
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn bonds_refund_round_completed_after_successful_broadcast() {
+    use wraith_protocol::{BondResolution, RefundReason};
+
+    let (router, state, ledger, _broadcaster) = deterministic_router(1_000_000);
+    let (session_id, _rt) = make_assembled_session(router.clone(), &state, &ledger).await;
+
+    // 5 enrolled wallets → 5 escrowed bonds.
+    assert_eq!(ledger.len(), 5);
+
+    // Drive all 5 witnesses to completion.
+    let mut last: Option<serde_json::Value> = None;
+    for i in 0..MIN_5 {
+        let idx = find_input_index(&state, &session_id, &format!("wallet-{i}"));
+        let resp = router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/session/{session_id}/witness"),
+                serde_json::json!({
+                    "ghost_id": format!("wallet-{i}"),
+                    "input_index": idx,
+                    "witness_hex": placeholder_witness_hex(),
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        last = Some(serde_json::from_slice(&body).unwrap());
+    }
+    let final_json = last.unwrap();
+    assert_eq!(final_json["state"], "complete");
+    assert_eq!(
+        final_json["bonds_resolved"], 5,
+        "all five bonds resolved on the round-completing /witness"
+    );
+
+    assert_all_bonds_resolved(
+        &ledger,
+        BondResolution::Refund(RefundReason::RoundCompleted),
+    );
+}
+
+#[tokio::test]
+async fn bonds_refund_coordinator_aborted_when_witness_merge_fails() {
+    use wraith_protocol::{BondResolution, RefundReason};
+
+    let (router, state, ledger, _broadcaster) = deterministic_router(1_000_000);
+    let (session_id, _rt) = make_assembled_session(router.clone(), &state, &ledger).await;
+    assert_eq!(ledger.len(), 5);
+
+    // 4 valid submissions, 1 with a stored witness that's malformed
+    // upon retry. To force the merge-time failure we doctor the
+    // witnesses_store directly between submissions: the 5th wallet's
+    // submission stores valid bytes, then we corrupt the entry, then
+    // a subsequent /witness retry triggers the merge that fails.
+    //
+    // Simpler approach: just submit 4 normally + 1 valid one. All 5
+    // valid submissions trigger the merge with valid bytes — that
+    // path doesn't actually fail. To exercise the failure branch
+    // here we need a different angle.
+    //
+    // Use the broadcaster-rejection path instead: replace the
+    // broadcaster with one that always rejects.
+    use wraith_coordinator::broadcaster::{BroadcastError, Broadcaster};
+    use std::sync::Mutex as StdMutex;
+    struct RejectingBroadcaster(StdMutex<u32>);
+    impl Broadcaster for RejectingBroadcaster {
+        fn broadcast(
+            &self,
+            _tx: &bitcoin::Transaction,
+        ) -> Result<bitcoin::Txid, BroadcastError> {
+            *self.0.lock().unwrap() += 1;
+            Err(BroadcastError::Rejected("simulated rejection".into()))
+        }
+    }
+    // We need to reach into the test state to swap the broadcaster.
+    // Easier path: build a fresh state with the rejecting broadcaster
+    // from the start, and re-run setup against it.
+    let rejecting = Arc::new(RejectingBroadcaster(StdMutex::new(0)));
+    let mock_clock = Arc::new(MockClock::new(1_000_000));
+    let fresh_ledger = Arc::new(MockBondLedger::new());
+    let fresh_state = Arc::new(CoordinatorState::with_components(
+        Network::Signet,
+        mock_clock.clone(),
+        Arc::new(DeterministicSessionIdGenerator::new()),
+        Some(fresh_ledger.clone() as Arc<dyn wraith_protocol::BondLedger>),
+        Some(TEST_FEE_ADDRESS.to_string()),
+        Some(rejecting.clone() as Arc<dyn Broadcaster>),
+    ));
+    let fresh_router = build_router(fresh_state.clone());
+    let (fresh_sid, _) = make_assembled_session(fresh_router.clone(), &fresh_state, &fresh_ledger)
+        .await;
+    assert_eq!(fresh_ledger.len(), 5);
+
+    // Drive 5 witnesses; the final one triggers the rejecting broadcast.
+    let mut last: Option<serde_json::Value> = None;
+    for i in 0..MIN_5 {
+        let idx = find_input_index(&fresh_state, &fresh_sid, &format!("wallet-{i}"));
+        let resp = fresh_router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/session/{fresh_sid}/witness"),
+                serde_json::json!({
+                    "ghost_id": format!("wallet-{i}"),
+                    "input_index": idx,
+                    "witness_hex": placeholder_witness_hex(),
+                }),
+            ))
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        if i + 1 < MIN_5 {
+            assert_eq!(status, StatusCode::OK, "non-final");
+        } else {
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "final rejected");
+            assert_eq!(json["error"], "broadcast_rejected");
+        }
+        last = Some(json);
+    }
+    let _ = last;
+
+    // Session is in Failed; bonds were refunded with CoordinatorAborted.
+    let snapshot = fresh_state.sessions.get(&fresh_sid).expect("present");
+    assert!(matches!(
+        snapshot.state,
+        wraith_protocol::LiteSessionState::Failed { .. }
+    ));
+    assert_all_bonds_resolved(
+        &fresh_ledger,
+        BondResolution::Refund(RefundReason::CoordinatorAborted),
+    );
+    // Broadcaster was tried exactly once.
+    assert_eq!(*rejecting.0.lock().unwrap(), 1);
+}

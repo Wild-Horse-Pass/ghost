@@ -39,8 +39,11 @@ use bitcoin::Witness;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use wraith_protocol::{LiteSessionState, SessionGossipEvent};
+use wraith_protocol::{
+    BondResolution, LiteSessionState, RefundReason, SessionGossipEvent,
+};
 
+use crate::bond_resolution::resolve_round_bonds;
 use crate::broadcaster::BroadcastError;
 use crate::state::CoordinatorState;
 use crate::witnesses::AcceptedWitness;
@@ -74,6 +77,11 @@ pub struct ResponseBody {
     /// reported txid). Otherwise None.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broadcast_txid: Option<String>,
+    /// Number of bonds resolved on this round-terminal transition.
+    /// Set on the final submission (whether successful broadcast or
+    /// broadcast-rejected); None for non-terminal submissions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bonds_resolved: Option<u32>,
 }
 
 pub async fn post(
@@ -257,6 +265,7 @@ pub async fn post(
                 witnesses_collected,
                 enrolled_count,
                 broadcast_txid: None,
+                bonds_resolved: None,
             }),
         )
             .into_response();
@@ -334,6 +343,17 @@ pub async fn post(
                     "broadcaster reported a different txid than the one we computed",
                 );
             }
+            // Resolve bonds (Refund(RoundCompleted)) BEFORE flipping
+            // state to Complete. The state change publishes a gossip
+            // event that standbys consume; resolving first means a
+            // standby that reads the event-log replay can audit the
+            // bond settlements alongside the state transition.
+            let bonds_resolved = resolve_bonds_for_round(
+                &state,
+                &session_id,
+                BondResolution::Refund(RefundReason::RoundCompleted),
+            );
+
             // Advance Signing → Complete in one step. (Broadcasting
             // is a future-iteration distinction for confirmation
             // tracking; v1 collapses it.)
@@ -343,7 +363,7 @@ pub async fn post(
                     session_id: session_id.clone(),
                     new_state: LiteSessionState::Complete,
                 });
-            info!(%session_id, %network_txid, "round broadcast complete");
+            info!(%session_id, %network_txid, %bonds_resolved, "round broadcast complete");
             (
                 StatusCode::OK,
                 Json(ResponseBody {
@@ -352,6 +372,7 @@ pub async fn post(
                     witnesses_collected,
                     enrolled_count,
                     broadcast_txid: Some(network_txid.to_string()),
+                    bonds_resolved: Some(bonds_resolved),
                 }),
             )
                 .into_response()
@@ -376,6 +397,32 @@ pub async fn post(
     }
 }
 
+/// Resolve every participant's bond on this session via
+/// `BondLedger.resolve_bond`. Returns the count of successful
+/// resolutions; failures are logged inside the helper.
+fn resolve_bonds_for_round(
+    state: &CoordinatorState,
+    session_id: &str,
+    resolution: BondResolution,
+) -> u32 {
+    let ledger = match state.bond_ledger.as_ref() {
+        Some(l) => l.clone(),
+        None => {
+            warn!(%session_id, "no bond ledger configured at round-terminal time");
+            return 0;
+        }
+    };
+    let inputs = state
+        .inputs_store
+        .lock()
+        .expect("inputs_store poisoned")
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default();
+    let summary = resolve_round_bonds(&ledger, session_id, &inputs, resolution);
+    summary.resolved
+}
+
 fn fail_round(
     state: &CoordinatorState,
     session_id: &str,
@@ -384,6 +431,15 @@ fn fail_round(
 ) -> Response {
     let reason = format!("witness:{code}");
     warn!(%session_id, %code, %detail, "failing round during witness merge");
+    // Refund every participant's bond — none of them caused the
+    // failure (it was either a coordinator-side merge issue or a
+    // node-side rejection). Slashing waits for B/5e's no-sign
+    // deadline path which actually identifies a guilty party.
+    let _ = resolve_bonds_for_round(
+        state,
+        session_id,
+        BondResolution::Refund(RefundReason::CoordinatorAborted),
+    );
     let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
         session_id: session_id.to_string(),
         new_state: LiteSessionState::Failed { reason },
