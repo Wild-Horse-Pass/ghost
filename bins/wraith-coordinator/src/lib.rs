@@ -15,6 +15,7 @@ pub mod assembly;
 pub mod bond_ledger_http;
 pub mod bond_resolution;
 pub mod broadcaster;
+pub mod gossip_auth;
 pub mod gossip_http;
 pub mod inputs;
 pub mod outputs;

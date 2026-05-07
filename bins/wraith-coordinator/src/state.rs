@@ -99,6 +99,12 @@ pub struct CoordinatorState {
     /// the re-blinding-on-failover path described in DESIGN_LITE §7
     /// before standbys can serve a round started by a now-dead Active.
     pub signers: Mutex<HashMap<String, SharedSigner>>,
+    /// Shared HMAC key for the inter-coordinator gossip route. When
+    /// `Some`, the receive handler verifies `X-Ghost-Signature` +
+    /// `X-Ghost-Timestamp` against this key (see `gossip_auth.rs`).
+    /// When `None`, the route accepts unsigned requests — operators
+    /// must firewall the `/api/v1/internal/` prefix.
+    pub gossip_peer_secret: Option<String>,
     /// Unix-seconds the binary started. `/health` reports uptime.
     pub started_at: u64,
 }
@@ -146,6 +152,7 @@ impl CoordinatorState {
             broadcaster,
             signing_deadlines: Mutex::new(HashMap::new()),
             signers: Mutex::new(HashMap::new()),
+            gossip_peer_secret: None,
             started_at,
         }
     }

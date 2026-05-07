@@ -185,16 +185,28 @@ and the next event (or future reconciliation snapshot) catches the peer up.
 Events are pushed only; v1 has no pull-on-promotion path. A Standby that
 joins late stays empty until the next event lands.
 
+### Authentication
+
+`/api/v1/internal/gossip` is HMAC-authenticated when the operator supplies a
+shared secret. Each outbound POST carries:
+
+- `X-Ghost-Signature: hex(HMAC-SHA256(peer_secret, timestamp || body))`
+- `X-Ghost-Timestamp: <unix_seconds>`
+
+The receiver rejects with `401 Unauthorized` on missing / malformed /
+expired (±300s window) / mismatched MAC. The scheme matches ghost-pay's
+existing `X-Ghost-Signature` convention so operators run one credential
+rotation playbook for both. When no secret is set, the route accepts
+unsigned requests (firewall-trust mode); mainnet refuses to start with
+`--peers` set but no secret to prevent silent misconfiguration.
+
 ### Configuration
 
 The Active is configured with `--peers` (or `WRAITH_COORDINATOR_PEERS`,
-comma-separated base URLs of every other coordinator in the pool). Standbys
-expose the receive endpoint by default; an empty `--peers` list runs solo
-with no replication.
-
-The `/api/v1/internal/` prefix is operator-firewalled to the pool's address
-range until a shared-secret HMAC header lands. v1 trusts peers on a private
-network.
+comma-separated base URLs of every other coordinator in the pool) and
+`--peer-secret` (or `WRAITH_COORDINATOR_PEER_SECRET`, the shared HMAC key
+applied to every coordinator). Standbys expose the receive endpoint by
+default; an empty `--peers` list runs solo with no replication.
 
 ## 7. Failover semantics — the re-blind handoff
 
@@ -438,8 +450,7 @@ Listed so they don't get rediscovered as gaps later:
   HTTP gossip (§6). A Standby that boots after the Active has been running
   starts empty until the next event lands. v2 adds a `GET /api/v1/internal/snapshot`
   endpoint so a fresh Standby can catch up to the current session set on
-  startup, plus an HMAC header on `/api/v1/internal/*` so the routes can
-  safely live on a public address.
+  startup. (HMAC auth on `/api/v1/internal/*` shipped in v1 — see §6.)
 
 ## 15. Resolved decisions (v1.0 sign-off)
 

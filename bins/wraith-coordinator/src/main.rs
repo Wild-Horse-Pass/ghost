@@ -142,6 +142,16 @@ struct Cli {
     /// solo coordinator with no replication.
     #[arg(long, env = "WRAITH_COORDINATOR_PEERS", value_delimiter = ',')]
     peers: Vec<String>,
+
+    /// Shared HMAC key for the inter-coordinator gossip route. When
+    /// set, every outbound gossip POST carries `X-Ghost-Signature` +
+    /// `X-Ghost-Timestamp` headers and the receive route verifies
+    /// them. Same secret on every coordinator in the pool. When
+    /// unset, the route accepts unsigned requests — operators must
+    /// firewall `/api/v1/internal/` to the pool's address range.
+    /// Refused on mainnet without a value (see startup checks).
+    #[arg(long, env = "WRAITH_COORDINATOR_PEER_SECRET")]
+    peer_secret: Option<String>,
 }
 
 #[tokio::main]
@@ -224,6 +234,23 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Mainnet refusal: if the operator configured peers without a
+    // shared secret, the gossip route would accept unsigned writes
+    // from any host that can reach `/api/v1/internal/`. That's only
+    // OK if the operator firewalls the prefix; on mainnet we refuse
+    // to start so misconfiguration can't silently expose it.
+    if matches!(network, bitcoin::Network::Bitcoin)
+        && !cli.peers.is_empty()
+        && cli.peer_secret.is_none()
+    {
+        anyhow::bail!(
+            "MAINNET REFUSAL: --peers without --peer-secret leaves \
+             /api/v1/internal/gossip unauthenticated. Set \
+             WRAITH_COORDINATOR_PEER_SECRET to the same value on \
+             every coordinator in the pool."
+        );
+    }
+
     let mut state = CoordinatorState::with_components(
         network,
         Arc::new(wraith_protocol::SystemClock),
@@ -232,6 +259,7 @@ async fn main() -> Result<()> {
         cli.fee_address.clone(),
         broadcaster,
     );
+    state.gossip_peer_secret = cli.peer_secret.clone();
 
     // Active/Standby state replication. When the operator supplies
     // peers, every session mutation publishes to all of them; the
@@ -240,11 +268,13 @@ async fn main() -> Result<()> {
         let runtime_handle = tokio::runtime::Handle::current();
         let sink = wraith_coordinator::gossip_http::HttpGossipSink::spawn(
             cli.peers.clone(),
+            cli.peer_secret.clone(),
             &runtime_handle,
         );
         state.sessions.set_gossip_sink(Box::new(sink));
         info!(
             peers = ?cli.peers,
+            authenticated = cli.peer_secret.is_some(),
             "gossip enabled — session state replicates to peer coordinators"
         );
     }

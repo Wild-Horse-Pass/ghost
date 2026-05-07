@@ -23,6 +23,13 @@ const TEST_FEE_ADDRESS: &str = "tb1q0xcqpzrky6eff2g52qdye53xkk9jxkvraulyla";
 
 /// Build an Active coordinator that publishes via HTTP to `peer_url`.
 async fn spawn_active_with_peer(peer_url: String) -> (String, Arc<CoordinatorState>) {
+    spawn_active_with_peer_secret(peer_url, None).await
+}
+
+async fn spawn_active_with_peer_secret(
+    peer_url: String,
+    peer_secret: Option<String>,
+) -> (String, Arc<CoordinatorState>) {
     let mut state = CoordinatorState::with_components(
         Network::Signet,
         Arc::new(MockClock::new(1_700_000_000)),
@@ -31,7 +38,12 @@ async fn spawn_active_with_peer(peer_url: String) -> (String, Arc<CoordinatorSta
         Some(TEST_FEE_ADDRESS.to_string()),
         None,
     );
-    let sink = HttpGossipSink::spawn(vec![peer_url], &tokio::runtime::Handle::current());
+    state.gossip_peer_secret = peer_secret.clone();
+    let sink = HttpGossipSink::spawn(
+        vec![peer_url],
+        peer_secret,
+        &tokio::runtime::Handle::current(),
+    );
     state.sessions.set_gossip_sink(Box::new(sink));
     let state = Arc::new(state);
 
@@ -46,14 +58,20 @@ async fn spawn_active_with_peer(peer_url: String) -> (String, Arc<CoordinatorSta
 
 /// Build a Standby coordinator (no outbound sink — pure receiver).
 async fn spawn_standby() -> (String, Arc<CoordinatorState>) {
-    let state = Arc::new(CoordinatorState::with_components(
+    spawn_standby_with_secret(None).await
+}
+
+async fn spawn_standby_with_secret(secret: Option<String>) -> (String, Arc<CoordinatorState>) {
+    let mut state = CoordinatorState::with_components(
         Network::Signet,
         Arc::new(MockClock::new(1_700_000_000)),
         Arc::new(DeterministicSessionIdGenerator::new()),
         Some(Arc::new(MockBondLedger::new())),
         Some(TEST_FEE_ADDRESS.to_string()),
         None,
-    ));
+    );
+    state.gossip_peer_secret = secret;
+    let state = Arc::new(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = build_router(state.clone());
@@ -240,6 +258,99 @@ async fn state_change_replicates_to_standby() {
     })
     .await;
     assert!(failed_ok, "standby never observed StateChanged → Failed");
+}
+
+#[tokio::test]
+async fn signed_gossip_round_trips_when_secrets_match() {
+    let secret = "shared-pool-secret".to_string();
+    let (standby_url, standby_state) =
+        spawn_standby_with_secret(Some(secret.clone())).await;
+    let (active_url, _active_state) =
+        spawn_active_with_peer_secret(standby_url, Some(secret)).await;
+
+    // Same secret on both sides — same-shape scenario as the
+    // unauthenticated round-trip test, but every event carries
+    // X-Ghost-Signature.
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/v1/session/find_or_create", active_url))
+        .json(&serde_json::json!({
+            "tier_id": "100k_sats",
+            "session_type": "mix",
+            "ghost_id": "wallet_a",
+            "bond_id": "bond_a",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let mirrored = poll_until(|| standby_state.sessions.len() == 1).await;
+    assert!(mirrored, "standby never observed signed gossip");
+}
+
+#[tokio::test]
+async fn standby_rejects_gossip_with_wrong_secret() {
+    let (standby_url, standby_state) =
+        spawn_standby_with_secret(Some("standby-secret".to_string())).await;
+    // Active signs with a DIFFERENT secret than the Standby expects.
+    let (active_url, _active_state) =
+        spawn_active_with_peer_secret(standby_url, Some("active-secret".to_string())).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/v1/session/find_or_create", active_url))
+        .json(&serde_json::json!({
+            "tier_id": "100k_sats",
+            "session_type": "mix",
+            "ghost_id": "wallet_a",
+            "bond_id": "bond_a",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "Active still serves clients fine");
+
+    // Give the gossip task plenty of time to fan out + get rejected
+    // (so the test fails fast if replication is somehow happening).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(
+        standby_state.sessions.len(),
+        0,
+        "standby must drop gossip events with mismatched HMAC"
+    );
+}
+
+#[tokio::test]
+async fn standby_rejects_unsigned_gossip_when_secret_is_set() {
+    let (standby_url, standby_state) =
+        spawn_standby_with_secret(Some("standby-secret".to_string())).await;
+    // Active doesn't sign at all (peer_secret = None) — should be
+    // identical in effect to a fresh-from-the-internet attacker.
+    let (active_url, _active_state) =
+        spawn_active_with_peer_secret(standby_url, None).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/v1/session/find_or_create", active_url))
+        .json(&serde_json::json!({
+            "tier_id": "100k_sats",
+            "session_type": "mix",
+            "ghost_id": "wallet_a",
+            "bond_id": "bond_a",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        standby_state.sessions.len(),
+        0,
+        "standby must reject unsigned gossip when configured for auth"
+    );
 }
 
 #[tokio::test]
