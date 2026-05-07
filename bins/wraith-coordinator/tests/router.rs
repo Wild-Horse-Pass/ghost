@@ -335,3 +335,109 @@ async fn find_or_create_rejects_blank_ghost_id_with_400() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["error"], "missing_ghost_id");
 }
+
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/session/{id} — status polling
+// ---------------------------------------------------------------------------
+
+/// Helper — runs find_or_create on the given router and returns the
+/// session_id from the response.
+async fn create_session_via_router(router: axum::Router, ghost: &str, bond: &str) -> String {
+    let response = router
+        .oneshot(post_json(
+            "/api/v1/session/find_or_create",
+            serde_json::json!({
+                "tier_id": "100k_sats",
+                "ghost_id": ghost,
+                "bond_id": bond,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    json["session"]["session_id"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn session_status_returns_200_with_descriptor_for_known_session() {
+    let (router, _state) = deterministic_router(1_000_000);
+    let session_id = create_session_via_router(router.clone(), "wallet-a", "bond-a").await;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/session/{session_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["session"]["session_id"], session_id);
+    assert_eq!(json["session"]["tier_id"], "100k_sats");
+    assert_eq!(json["session"]["state"], "filling");
+    assert_eq!(json["session"]["slots_filled"], 1);
+    assert_eq!(json["session"]["fill_window_expires_at"], 1_000_000 + 300);
+}
+
+#[tokio::test]
+async fn session_status_returns_404_for_unknown_session() {
+    let (router, _state) = deterministic_router(1_000_000);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session/no-such-session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "session_not_found");
+}
+
+#[tokio::test]
+async fn session_status_reflects_fill_window_expiry_after_clock_advance() {
+    // 100k_sats tier needs 5 to lock; we'll add 1 then advance past
+    // the fill window so the registry's tick rolls Filling → Failed
+    // (FillWindowExpired). Status should report "failed".
+    let mock_clock = Arc::new(MockClock::new(1_000_000));
+    let state = Arc::new(CoordinatorState::with_components(
+        Network::Signet,
+        mock_clock.clone(),
+        Arc::new(DeterministicSessionIdGenerator::new()),
+    ));
+    let router = build_router(state.clone());
+
+    let session_id = create_session_via_router(router.clone(), "lonely-wallet", "bond-x").await;
+    // Clock advances past the fill window (300s) without enough joiners.
+    mock_clock.advance(301);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/session/{session_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["session"]["state"], "failed",
+        "fill window expired without quorum should surface as failed",
+    );
+    assert!(
+        json["session"]["fill_window_expires_at"].is_null(),
+        "fill_window_expires_at should be cleared once not in Filling",
+    );
+}
