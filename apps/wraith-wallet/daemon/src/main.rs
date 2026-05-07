@@ -61,6 +61,7 @@ mod unix {
         ReleaseManifest, Request, Response, SignerInfoIpc, WalletAuthInfoResponse,
         WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
         WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
+        WraithMixCompletedResponse, WraithMixPreparedResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -95,6 +96,17 @@ mod unix {
         handle: SessionHandle,
     }
 
+    /// In-flight Wraith Lite mix between `WraithMixPrepare` and
+    /// `WraithMixSubmit`. Holds the prepared round + the client that
+    /// produced it (so /witness submission re-uses the same HTTP
+    /// client / proxy config without rebuilding it). Caller is
+    /// expected to submit promptly — the coordinator's no-sign
+    /// deadline is ticking.
+    struct StoredWraithMix {
+        prepared: wraith_wallet_core::wraith::PreparedMix,
+        client: Arc<wraith_wallet_core::wraith::WraithSessionClient>,
+    }
+
     struct DaemonState {
         started: Instant,
         chain: Arc<dyn ChainClient>,
@@ -126,6 +138,13 @@ mod unix {
         /// CheckForUpdate. None = no default channel; per-call overrides
         /// still work.
         update_manifest_url: Option<String>,
+        /// Phase 5b: in-flight Wraith Lite mix sessions, keyed by
+        /// session_id. Populated by `WraithMixPrepare` and consumed
+        /// by `WraithMixSubmit`. Each entry holds a
+        /// `wraith_wallet_core::wraith::PreparedMix` plus the
+        /// `WraithSessionClient` that produced it (so submit reuses
+        /// the same HTTP client / proxy config).
+        wraith_mixes: RwLock<HashMap<String, StoredWraithMix>>,
         /// HTTP client used for daemon-side fetches outside the GSP/ghost-pay
         /// stack (currently just the manifest fetch). Reuses rustls so we
         /// don't pull in a second TLS implementation.
@@ -283,6 +302,7 @@ mod unix {
             shroud_max_ms,
             update_manifest_url,
             http,
+            wraith_mixes: RwLock::new(HashMap::new()),
         });
 
         // Auto-lock task. Wakes every 30 s. If idle_lock_secs is 0 the task
@@ -1911,6 +1931,148 @@ mod unix {
                         ),
                     }),
                     Err(message) => Response::Error(ErrorResponse { message }),
+                }
+            }
+            Request::WraithMixPrepare {
+                coordinator_url,
+                socks5_proxy,
+                tier_id,
+                ghost_id,
+                bond_id_placeholder,
+                utxo_txid,
+                utxo_vout,
+                utxo_value_sats,
+                utxo_scriptpubkey_hex,
+                change_address,
+                mix_output_address,
+            } => {
+                use wraith_wallet_core::wraith::{
+                    MixRequest, ParticipantUtxo, WraithClientError, WraithSessionClient,
+                };
+                let client_result = match socks5_proxy.as_deref() {
+                    Some(proxy) => WraithSessionClient::with_outputs_proxy(
+                        coordinator_url.clone(),
+                        state.network,
+                        proxy,
+                    ),
+                    None => Ok(WraithSessionClient::new(
+                        coordinator_url.clone(),
+                        state.network,
+                    )),
+                };
+                let client = match client_result {
+                    Ok(c) => Arc::new(c),
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("wraith client: {e}"),
+                            }),
+                        );
+                    }
+                };
+                let req = MixRequest {
+                    tier_id,
+                    ghost_id,
+                    bond_id_placeholder,
+                    utxo: ParticipantUtxo {
+                        txid: utxo_txid,
+                        vout: utxo_vout,
+                        value_sats: utxo_value_sats,
+                        scriptpubkey_hex: utxo_scriptpubkey_hex,
+                    },
+                    change_address,
+                    mix_output_address,
+                };
+                // No-op bond_setup: v1 daemon takes bond escrow as a
+                // precondition. Phase C wires this to ghost-pay.
+                let bond_setup = |_: &str, _: u64| async {
+                    Ok::<(), WraithClientError>(())
+                };
+                match client.prepare_mix(req, bond_setup).await {
+                    Ok(prepared) => {
+                        let resp = WraithMixPreparedResponse {
+                            session_id: prepared.session_id.clone(),
+                            unsigned_tx_hex: bitcoin::consensus::encode::serialize_hex(
+                                &prepared.unsigned_tx,
+                            ),
+                            input_index: prepared.input_index as u32,
+                            prev_amount_sats: prepared.prev_amount_sats,
+                            mixed_output_tx_index: prepared.mixed_output_tx_index as u32,
+                        };
+                        state.wraith_mixes.write().await.insert(
+                            prepared.session_id.clone(),
+                            StoredWraithMix {
+                                prepared,
+                                client,
+                            },
+                        );
+                        Response::WraithMixPrepared(resp)
+                    }
+                    Err(e) => Response::Error(ErrorResponse {
+                        message: format!("wraith prepare: {e}"),
+                    }),
+                }
+            }
+            Request::WraithMixSubmit {
+                session_id,
+                witness_hex,
+            } => {
+                let stored = state.wraith_mixes.write().await.remove(&session_id);
+                let stored = match stored {
+                    Some(s) => s,
+                    None => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!(
+                                    "no in-flight wraith mix for session '{session_id}'"
+                                ),
+                            }),
+                        );
+                    }
+                };
+                let witness_bytes = match hex::decode(witness_hex.trim()) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        // Re-stash: caller can retry with corrected hex.
+                        state.wraith_mixes.write().await.insert(
+                            session_id.clone(),
+                            stored,
+                        );
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("witness_hex not valid hex: {e}"),
+                            }),
+                        );
+                    }
+                };
+                let witness: bitcoin::Witness =
+                    match bitcoin::consensus::encode::deserialize(&witness_bytes) {
+                        Ok(w) => w,
+                        Err(e) => {
+                            state.wraith_mixes.write().await.insert(
+                                session_id.clone(),
+                                stored,
+                            );
+                            return Envelope::new(
+                                id,
+                                Response::Error(ErrorResponse {
+                                    message: format!("witness consensus decode: {e}"),
+                                }),
+                            );
+                        }
+                    };
+                match stored.client.submit_witness(&stored.prepared, witness).await {
+                    Ok(outcome) => Response::WraithMixCompleted(WraithMixCompletedResponse {
+                        session_id: outcome.session_id,
+                        broadcast_txid: outcome.broadcast_txid.to_string(),
+                        mixed_output_tx_index: outcome.mixed_output_tx_index as u32,
+                    }),
+                    Err(e) => Response::Error(ErrorResponse {
+                        message: format!("wraith submit: {e}"),
+                    }),
                 }
             }
         };

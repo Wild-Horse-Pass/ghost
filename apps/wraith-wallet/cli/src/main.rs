@@ -64,6 +64,18 @@ enum Command {
         #[command(subcommand)]
         sub: UpdateCommand,
     },
+    /// Wraith Lite v1 mix subcommands. Two-step flow: `prepare`
+    /// drives the protocol up to the `/round-tx` fetch and prints
+    /// the unsigned transaction; the user signs out-of-band and
+    /// invokes `submit` with the witness hex.
+    ///
+    /// v1: bond escrow is the caller's responsibility — must be
+    /// arranged against the coordinator's BondLedger before
+    /// `prepare` is invoked. Phase C will move this into wraithd.
+    Mix {
+        #[command(subcommand)]
+        sub: MixCommand,
+    },
     /// Print a shell-completion script to stdout. Pipe into your shell's
     /// completion location, e.g.:
     ///   wraith completions bash > /etc/bash_completion.d/wraith
@@ -72,6 +84,68 @@ enum Command {
     Completions {
         /// Target shell.
         shell: Shell,
+    },
+}
+
+#[derive(Subcommand)]
+enum MixCommand {
+    /// Step 1: enrol in a Wraith Lite mix session against
+    /// `coordinator_url`, commit the supplied UTXO, run the blind-
+    /// sig protocol over `mix_output_address`, and fetch the
+    /// assembled unsigned tx. Prints { session_id, unsigned_tx_hex,
+    /// input_index, prev_amount_sats } on success.
+    Prepare {
+        /// HTTP URL of the wraith-coordinator endpoint.
+        #[arg(long)]
+        coordinator: String,
+        /// Optional SOCKS5 proxy for the /outputs anonymous step
+        /// (e.g. `socks5h://127.0.0.1:9050` for Tor).
+        #[arg(long)]
+        socks5_proxy: Option<String>,
+        /// Tier id from /api/v1/pool/discover (e.g. `100k_sats`).
+        #[arg(long)]
+        tier: String,
+        /// Wallet's per-round identity. Free-form; the coordinator
+        /// only uses it to dedupe against double-enrolment.
+        #[arg(long)]
+        ghost_id: String,
+        /// Placeholder bond_id passed to /find_or_create. The real
+        /// bond is verified at /inputs time against the
+        /// (ghost_id, session_id, expected_sats) tuple in the
+        /// coordinator's BondLedger; the placeholder here is just
+        /// echoed back for diagnostic logs.
+        #[arg(long, default_value = "placeholder")]
+        bond_id_placeholder: String,
+        /// UTXO outpoint as `txid:vout`.
+        #[arg(long)]
+        utxo: String,
+        /// UTXO value in satoshis.
+        #[arg(long)]
+        utxo_value: u64,
+        /// UTXO scriptPubKey, hex-encoded.
+        #[arg(long)]
+        utxo_scriptpubkey: String,
+        /// Wallet-controlled change address. Required when the
+        /// input value exceeds (denom + per-participant fee shares)
+        /// by more than dust.
+        #[arg(long)]
+        change_address: Option<String>,
+        /// Anonymous destination for the wallet's denom-sized
+        /// mixed output. Should NOT be linkable to the input.
+        #[arg(long)]
+        mix_output_address: String,
+    },
+    /// Step 2: submit the signed witness for a previously-prepared
+    /// mix session and drive the round to broadcast. Prints
+    /// { broadcast_txid, mixed_output_tx_index } on success.
+    Submit {
+        /// session_id returned by `mix prepare`.
+        #[arg(long)]
+        session_id: String,
+        /// Hex-encoded `bitcoin::Witness` (consensus-encoded
+        /// length-prefixed witness stack).
+        #[arg(long)]
+        witness_hex: String,
     },
 }
 
@@ -267,7 +341,8 @@ mod unix {
     use wraith_wallet_ipc::{default_socket_path, Envelope, Request, Response};
 
     use crate::{
-        ChainCommand, Command, GspCommand, LightCommand, LocksCommand, UpdateCommand, WalletCommand,
+        ChainCommand, Command, GspCommand, LightCommand, LocksCommand, MixCommand, UpdateCommand,
+        WalletCommand,
     };
 
     pub async fn run(command: Command, json: bool, no_spawn: bool) -> std::process::ExitCode {
@@ -411,6 +486,50 @@ mod unix {
                 WalletCommand::Restore { name, from } => Request::WalletRestore {
                     name,
                     from_path: from,
+                },
+            },
+            Command::Mix { sub } => match sub {
+                MixCommand::Prepare {
+                    coordinator,
+                    socks5_proxy,
+                    tier,
+                    ghost_id,
+                    bond_id_placeholder,
+                    utxo,
+                    utxo_value,
+                    utxo_scriptpubkey,
+                    change_address,
+                    mix_output_address,
+                } => {
+                    let (txid, vout) = match parse_outpoint(&utxo) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return io_err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                e,
+                            ));
+                        }
+                    };
+                    Request::WraithMixPrepare {
+                        coordinator_url: coordinator,
+                        socks5_proxy,
+                        tier_id: tier,
+                        ghost_id,
+                        bond_id_placeholder,
+                        utxo_txid: txid,
+                        utxo_vout: vout,
+                        utxo_value_sats: utxo_value,
+                        utxo_scriptpubkey_hex: utxo_scriptpubkey,
+                        change_address,
+                        mix_output_address,
+                    }
+                }
+                MixCommand::Submit {
+                    session_id,
+                    witness_hex,
+                } => Request::WraithMixSubmit {
+                    session_id,
+                    witness_hex,
                 },
             },
             // Handled in main() before we reach the runtime; the arm exists
@@ -813,6 +932,30 @@ mod unix {
                 println!("  path:    {}", r.derivation_path);
                 std::process::ExitCode::SUCCESS
             }
+            Ok(Response::WraithMixPrepared(p)) => {
+                println!("session_id:            {}", p.session_id);
+                println!("input_index:           {}", p.input_index);
+                println!("prev_amount_sats:      {}", p.prev_amount_sats);
+                println!("mixed_output_tx_index: {}", p.mixed_output_tx_index);
+                println!("unsigned_tx_hex:");
+                println!("  {}", p.unsigned_tx_hex);
+                println!();
+                println!(
+                    "next: sign input {} (amount {}) externally and run:",
+                    p.input_index, p.prev_amount_sats
+                );
+                println!(
+                    "  wraith mix submit --session-id {} --witness-hex <HEX>",
+                    p.session_id
+                );
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WraithMixCompleted(c)) => {
+                println!("broadcast_txid:        {}", c.broadcast_txid);
+                println!("session_id:            {}", c.session_id);
+                println!("mixed_output_tx_index: {}", c.mixed_output_tx_index);
+                std::process::ExitCode::SUCCESS
+            }
             Ok(Response::Error(e)) => {
                 eprintln!("wraithd error: {}", e.message);
                 std::process::ExitCode::FAILURE
@@ -918,6 +1061,25 @@ mod unix {
     fn io_err(e: std::io::Error) -> std::process::ExitCode {
         eprintln!("wraith: {e}");
         std::process::ExitCode::FAILURE
+    }
+
+    /// Parse a `txid:vout` outpoint string. Used by the `mix prepare`
+    /// CLI to take a single `--utxo` arg instead of separate
+    /// `--utxo-txid` + `--utxo-vout` args.
+    fn parse_outpoint(s: &str) -> Result<(String, u32), String> {
+        let (txid, vout) = s
+            .rsplit_once(':')
+            .ok_or_else(|| format!("expected txid:vout, got '{s}'"))?;
+        if txid.len() != 64 {
+            return Err(format!(
+                "txid must be 64 hex chars; '{txid}' is {}",
+                txid.len()
+            ));
+        }
+        let vout: u32 = vout
+            .parse()
+            .map_err(|e| format!("vout '{vout}' is not a u32: {e}"))?;
+        Ok((txid.to_string(), vout))
     }
 
     fn print_json(result: &Result<Response, String>) -> std::process::ExitCode {

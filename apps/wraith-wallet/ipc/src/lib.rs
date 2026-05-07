@@ -173,6 +173,49 @@ pub enum Request {
     LightReceive {
         index: u32,
     },
+    /// Phase 5b: drive the wallet's side of a Wraith Lite v1 mix
+    /// against `coordinator_url`, up through the `/round-tx` fetch.
+    /// Returns a [`WraithMixPreparedResponse`] carrying the unsigned
+    /// bitcoin transaction the caller must sign for its own input.
+    /// The daemon stashes the in-flight `PreparedMix` keyed by
+    /// session_id; subsequent [`Request::WraithMixSubmit`] consumes it.
+    ///
+    /// v1 limitation: the daemon takes bond escrow as a precondition
+    /// — the caller is responsible for arranging a real bond against
+    /// (ghost_id, session_id) via ghost-pay (or, in dev, via the
+    /// coordinator's MockBondLedger) before this call reaches
+    /// `/inputs`. Phase C wiring will move this into the daemon.
+    WraithMixPrepare {
+        coordinator_url: String,
+        /// Optional SOCKS5 proxy URL for the /outputs anonymous
+        /// submission only. e.g. `socks5h://127.0.0.1:9050` for
+        /// system Tor. None routes /outputs over the same direct
+        /// HTTP transport as the rest of the protocol — fine for
+        /// local dev, leaks the participant's IP in production.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        socks5_proxy: Option<String>,
+        tier_id: String,
+        ghost_id: String,
+        bond_id_placeholder: String,
+        utxo_txid: String,
+        utxo_vout: u32,
+        utxo_value_sats: u64,
+        utxo_scriptpubkey_hex: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change_address: Option<String>,
+        mix_output_address: String,
+    },
+    /// Phase 5b companion to [`Request::WraithMixPrepare`]. Submits
+    /// the supplied witness for the previously-prepared session and
+    /// drives the round to completion. Daemon discards the stashed
+    /// `PreparedMix` after a successful submit (or on broadcast
+    /// failure).
+    WraithMixSubmit {
+        session_id: String,
+        /// Hex-encoded `bitcoin::Witness` (consensus-encoded
+        /// length-prefixed witness stack).
+        witness_hex: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +279,13 @@ pub enum Response {
         bytes: u64,
     },
     LightReceive(LightReceiveResponse),
+    /// Reply to [`Request::WraithMixPrepare`]. Carries the assembled
+    /// unsigned bitcoin transaction + the metadata the caller needs
+    /// to compute its own input witness.
+    WraithMixPrepared(WraithMixPreparedResponse),
+    /// Reply to [`Request::WraithMixSubmit`]. Carries the broadcast
+    /// txid and the index of the wallet's mixed output.
+    WraithMixCompleted(WraithMixCompletedResponse),
     Error(ErrorResponse),
 }
 
@@ -243,6 +293,25 @@ pub enum Response {
 pub struct HealthResponse {
     pub daemon_version: String,
     pub uptime_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WraithMixPreparedResponse {
+    pub session_id: String,
+    /// Hex-encoded unsigned `bitcoin::Transaction`. Caller signs the
+    /// input at `input_index` (using `prev_amount_sats` for sighash)
+    /// and submits the witness via [`Request::WraithMixSubmit`].
+    pub unsigned_tx_hex: String,
+    pub input_index: u32,
+    pub prev_amount_sats: u64,
+    pub mixed_output_tx_index: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WraithMixCompletedResponse {
+    pub session_id: String,
+    pub broadcast_txid: String,
+    pub mixed_output_tx_index: u32,
 }
 
 /// One row in the `Doctor` summary.
