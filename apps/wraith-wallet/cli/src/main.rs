@@ -290,6 +290,60 @@ enum LocksCommand {
         #[arg(long, default_value = "normal")]
         priority: String,
     },
+    /// Prepare a lock AND fund it through a Wraith CoinJoin in one
+    /// shot. The mix's denom output is the lock's funding output, so
+    /// chain analysts see a CoinJoin — they cannot tell which output
+    /// became which user's L2 entry. This is the private-entry path
+    /// that distinguishes Ghost Locks from typical L2 funding (where
+    /// the channel-open tx is a chain-analysis goldmine).
+    ///
+    /// CLI chains three IPC calls under the hood:
+    ///   1. LocksPrepare(capacity_sats)               → funding_address
+    ///   2. WraithMixOneShot(mix_output=funding_addr) → broadcast_txid
+    ///   3. LocksConfirm(lock_id, broadcast_txid)     → block_height
+    ///
+    /// Operator-side bond escrow is the caller's responsibility (v1).
+    /// The coordinator's BondLedger must be configured to accept the
+    /// wallet's bond before the mix's /inputs phase.
+    PrepareViaWraith {
+        /// Lock capacity in satoshis. Must match a Wraith Lite tier
+        /// denomination (100k_sats / 1m_sats / 10m_sats / 100m_sats).
+        #[arg(long)]
+        capacity_sats: u64,
+        /// HTTP URL of the wraith-coordinator endpoint.
+        #[arg(long)]
+        coordinator: String,
+        /// Wraith Lite tier id matching `capacity_sats`.
+        #[arg(long)]
+        tier: String,
+        /// Wallet's per-round identity for the wraith coordinator.
+        #[arg(long)]
+        ghost_id: String,
+        /// Optional SOCKS5 proxy for the /outputs anonymous step
+        /// (e.g. `socks5h://127.0.0.1:9050` for Tor).
+        #[arg(long)]
+        socks5_proxy: Option<String>,
+        /// Bond placeholder echoed at /find_or_create.
+        #[arg(long, default_value = "placeholder")]
+        bond_id_placeholder: String,
+        /// UTXO outpoint feeding the mix as `txid:vout`.
+        #[arg(long)]
+        utxo: String,
+        /// UTXO value in satoshis.
+        #[arg(long)]
+        utxo_value: u64,
+        /// UTXO scriptPubKey, hex.
+        #[arg(long)]
+        utxo_scriptpubkey: String,
+        /// Change address — required when input value exceeds
+        /// (denom + per-participant fee shares) by ≥ dust.
+        #[arg(long)]
+        change_address: Option<String>,
+        /// Optional BIP86 derivation index of the wallet key that
+        /// owns the input UTXO. None → daemon scans 0..1024.
+        #[arg(long)]
+        bip86_index: Option<u32>,
+    },
     /// Unilateral exit — spend a Ghost Lock via the timelock recovery
     /// branch to a wallet-controlled L1 destination, without any
     /// operator cooperation. Daemon talks straight to bitcoind. Only
@@ -428,6 +482,48 @@ mod unix {
             return run_status(json).await;
         }
 
+        // Multi-call entry-via-wraith flow: chains LocksPrepare →
+        // WraithMixOneShot → LocksConfirm under the hood, so the
+        // user sees one command.
+        if let Command::Locks {
+            sub: LocksCommand::PrepareViaWraith { .. },
+        } = &command
+        {
+            if let Command::Locks {
+                sub:
+                    LocksCommand::PrepareViaWraith {
+                        capacity_sats,
+                        coordinator,
+                        tier,
+                        ghost_id,
+                        socks5_proxy,
+                        bond_id_placeholder,
+                        utxo,
+                        utxo_value,
+                        utxo_scriptpubkey,
+                        change_address,
+                        bip86_index,
+                    },
+            } = command
+            {
+                return run_prepare_via_wraith(
+                    json,
+                    capacity_sats,
+                    coordinator,
+                    tier,
+                    ghost_id,
+                    socks5_proxy,
+                    bond_id_placeholder,
+                    utxo,
+                    utxo_value,
+                    utxo_scriptpubkey,
+                    change_address,
+                    bip86_index,
+                )
+                .await;
+            }
+        }
+
         let request = match command {
             Command::Health => Request::Health,
             Command::Doctor => Request::Doctor,
@@ -493,6 +589,12 @@ mod unix {
                     destination_address: to,
                     fee_sats,
                 },
+                // Multi-call flow — handled before this match in
+                // run() proper. The arm exists only so the match
+                // is exhaustive.
+                LocksCommand::PrepareViaWraith { .. } => {
+                    unreachable!("PrepareViaWraith handled by run_prepare_via_wraith")
+                }
             },
             Command::Update { sub } => match sub {
                 UpdateCommand::Check { manifest_url } => Request::CheckForUpdate { manifest_url },
@@ -1283,6 +1385,155 @@ mod unix {
         let envelope: Envelope<Response> =
             serde_json::from_str(&response_line).map_err(|e| format!("malformed response: {e}"))?;
         Ok(envelope.payload)
+    }
+
+    /// `wraith locks prepare-via-wraith` flow. Three IPC calls under
+    /// the hood:
+    ///   1. LocksPrepare(capacity_sats)               → funding_address + lock_id
+    ///   2. WraithMixOneShot(mix_output=funding_addr) → broadcast_txid
+    ///   3. LocksConfirm(lock_id, broadcast_txid)     → block_height
+    ///
+    /// Stops at the first error and surfaces it to the user. The
+    /// printed step-by-step trail makes it obvious which phase
+    /// broke if the operator/coordinator misbehaves mid-flight.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run_prepare_via_wraith(
+        json: bool,
+        capacity_sats: u64,
+        coordinator: String,
+        tier: String,
+        ghost_id: String,
+        socks5_proxy: Option<String>,
+        bond_id_placeholder: String,
+        utxo: String,
+        utxo_value: u64,
+        utxo_scriptpubkey: String,
+        change_address: Option<String>,
+        bip86_index: Option<u32>,
+    ) -> std::process::ExitCode {
+        let (txid, vout) = match parse_outpoint(&utxo) {
+            Ok(v) => v,
+            Err(e) => {
+                return io_err(std::io::Error::new(std::io::ErrorKind::InvalidInput, e));
+            }
+        };
+
+        // Phase 1: prepare the lock.
+        if !json {
+            println!("[1/3] preparing lock ({capacity_sats} sats)");
+        }
+        let prep = match call(Request::LocksPrepare { capacity_sats }).await {
+            Ok(Response::LocksPrepared(p)) => p,
+            Ok(Response::Error(e)) => {
+                return error_out(json, format!("LocksPrepare: {}", e.message))
+            }
+            Ok(other) => {
+                return error_out(
+                    json,
+                    format!("LocksPrepare: unexpected response {other:?}"),
+                )
+            }
+            Err(e) => return error_out(json, format!("LocksPrepare: {e}")),
+        };
+        if !json {
+            println!("      lock_id:         {}", prep.lock_id);
+            println!("      funding_address: {}", prep.funding_address);
+        }
+
+        // Phase 2: run the wraith mix with the lock's funding address
+        // as the mix output. The CoinJoin's denom output IS the
+        // lock's funding output — the on-chain footprint is
+        // indistinguishable from any other Wraith mix.
+        if !json {
+            println!("[2/3] running wraith mix → {}", prep.funding_address);
+        }
+        let mix = match call(Request::WraithMixOneShot {
+            coordinator_url: coordinator,
+            socks5_proxy,
+            tier_id: tier,
+            ghost_id,
+            bond_id_placeholder,
+            utxo_txid: txid,
+            utxo_vout: vout,
+            utxo_value_sats: utxo_value,
+            utxo_scriptpubkey_hex: utxo_scriptpubkey,
+            change_address,
+            mix_output_address: prep.funding_address.clone(),
+            bip86_index,
+            bip86_scan_max: None,
+        })
+        .await
+        {
+            Ok(Response::WraithMixCompleted(m)) => m,
+            Ok(Response::Error(e)) => {
+                return error_out(json, format!("WraithMixOneShot: {}", e.message))
+            }
+            Ok(other) => {
+                return error_out(
+                    json,
+                    format!("WraithMixOneShot: unexpected response {other:?}"),
+                )
+            }
+            Err(e) => return error_out(json, format!("WraithMixOneShot: {e}")),
+        };
+        if !json {
+            println!("      session_id:     {}", mix.session_id);
+            println!("      broadcast_txid: {}", mix.broadcast_txid);
+        }
+
+        // Phase 3: confirm the lock against the broadcast txid.
+        if !json {
+            println!("[3/3] confirming lock funding");
+        }
+        let conf = match call(Request::LocksConfirm {
+            lock_id: prep.lock_id.clone(),
+            funding_txid: mix.broadcast_txid.clone(),
+        })
+        .await
+        {
+            Ok(Response::LocksConfirmed(c)) => c,
+            Ok(Response::Error(e)) => {
+                return error_out(json, format!("LocksConfirm: {}", e.message))
+            }
+            Ok(other) => {
+                return error_out(
+                    json,
+                    format!("LocksConfirm: unexpected response {other:?}"),
+                )
+            }
+            Err(e) => return error_out(json, format!("LocksConfirm: {e}")),
+        };
+
+        if json {
+            let body = serde_json::json!({
+                "lock_id": prep.lock_id,
+                "funding_address": prep.funding_address,
+                "broadcast_txid": mix.broadcast_txid,
+                "block_height": conf.block_height,
+                "session_id": mix.session_id,
+            });
+            println!("{body}");
+        } else {
+            println!();
+            println!("✓ lock funded via Wraith CoinJoin");
+            println!("  lock_id:        {}", prep.lock_id);
+            println!("  broadcast_txid: {}", mix.broadcast_txid);
+            println!("  block_height:   {}", conf.block_height);
+            println!();
+            println!("the chain shows a CoinJoin tx — chain analysts cannot tell");
+            println!("which output became this lock. that's the privacy property.");
+        }
+        std::process::ExitCode::SUCCESS
+    }
+
+    fn error_out(json: bool, msg: String) -> std::process::ExitCode {
+        if json {
+            let body = serde_json::json!({ "error": { "message": msg } });
+            println!("{body}");
+        } else {
+            eprintln!("wraith: {msg}");
+        }
+        std::process::ExitCode::FAILURE
     }
 
     /// Multi-call status summary. Issues a few cheap requests in sequence and
