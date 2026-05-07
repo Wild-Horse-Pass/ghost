@@ -52,8 +52,6 @@ members = [
     "bins/ghost-pay",
     "bins/ghost-cli",
     "bins/ghost-gsp",
-    # Node Dashboard TUI
-    "bins/ghost-node-tui",
     # Registry service for load balancing
     "bins/ghost-registry",
     # Headless setup CLI
