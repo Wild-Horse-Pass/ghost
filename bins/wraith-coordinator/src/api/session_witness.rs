@@ -40,11 +40,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use wraith_protocol::{
-    BondResolution, LiteSessionState, RefundReason, SessionGossipEvent,
+    BondLedger, BondResolution, LiteSessionState, RefundReason, SessionGossipEvent, SlashReason,
 };
 
 use crate::bond_resolution::resolve_round_bonds;
 use crate::broadcaster::BroadcastError;
+use crate::inputs::AcceptedInputs;
 use crate::state::CoordinatorState;
 use crate::witnesses::AcceptedWitness;
 
@@ -113,6 +114,30 @@ pub async fn post(
                     other.as_str()
                 ),
             );
+        }
+    }
+
+    // No-sign deadline check. If the deadline has expired, this
+    // request kicks off the failure sweep — slashing non-signers,
+    // refunding signers as RoundVoided, transitioning to Failed.
+    // The current submission is rejected with 410 Gone so the
+    // wallet learns its slot is no longer fillable.
+    //
+    // KNOWN LIMITATION: deadline only fires when SOMEONE pings the
+    // coordinator. A round where every wallet drops gets stuck in
+    // Signing forever. Production-readiness adds a background scan;
+    // see B/5e task notes.
+    let deadline = state
+        .signing_deadlines
+        .lock()
+        .expect("signing_deadlines poisoned")
+        .get(&session_id)
+        .copied();
+    if let Some(deadline) = deadline {
+        if now >= deadline {
+            warn!(%session_id, %deadline, %now, "no-sign deadline reached");
+            let resp = sweep_no_sign(&state, &session_id);
+            return resp;
         }
     }
 
@@ -421,6 +446,92 @@ fn resolve_bonds_for_round(
         .unwrap_or_default();
     let summary = resolve_round_bonds(&ledger, session_id, &inputs, resolution);
     summary.resolved
+}
+
+/// No-sign deadline fired. Walk inputs_store, partition into signers
+/// (their ghost_id appears in witnesses_store) and non-signers; slash
+/// non-signers with `Slash(NoSignDuringSigning)`, refund signers with
+/// `Refund(RoundVoided)`, transition the session to Failed.
+///
+/// Returns a 410 Gone response — semantically the resource (the
+/// in-progress signing round) is no longer available; clients should
+/// not retry in place.
+fn sweep_no_sign(state: &CoordinatorState, session_id: &str) -> Response {
+    let ledger = match state.bond_ledger.as_ref() {
+        Some(l) => l.clone(),
+        None => {
+            warn!(%session_id, "no bond ledger; can't sweep no-sign deadline");
+            // Still transition to Failed — the round can't progress
+            // either way, and operators should reconcile from logs.
+            let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
+                session_id: session_id.to_string(),
+                new_state: LiteSessionState::Failed {
+                    reason: "witness:no_sign_deadline_no_ledger".into(),
+                },
+            });
+            return error(
+                StatusCode::GONE,
+                "no_sign_deadline",
+                "signing deadline expired; round failed".into(),
+            );
+        }
+    };
+
+    let inputs = state
+        .inputs_store
+        .lock()
+        .expect("inputs_store poisoned")
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default();
+    let witnesses = state
+        .witnesses_store
+        .lock()
+        .expect("witnesses_store poisoned")
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default();
+
+    let signers: std::collections::HashSet<String> =
+        witnesses.into_iter().map(|w| w.ghost_id).collect();
+    let (present, absent): (Vec<AcceptedInputs>, Vec<AcceptedInputs>) = inputs
+        .into_iter()
+        .partition(|i| signers.contains(&i.ghost_id));
+
+    let slashed_summary = resolve_round_bonds(
+        &ledger,
+        session_id,
+        &absent,
+        BondResolution::Slash(SlashReason::NoSignDuringSigning),
+    );
+    let refunded_summary = resolve_round_bonds(
+        &ledger,
+        session_id,
+        &present,
+        BondResolution::Refund(RefundReason::RoundVoided),
+    );
+    info!(
+        %session_id,
+        slashed = slashed_summary.resolved,
+        refunded = refunded_summary.resolved,
+        "no-sign deadline sweep complete",
+    );
+
+    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
+        session_id: session_id.to_string(),
+        new_state: LiteSessionState::Failed {
+            reason: "witness:no_sign_deadline".into(),
+        },
+    });
+
+    error(
+        StatusCode::GONE,
+        "no_sign_deadline",
+        format!(
+            "signing deadline expired; {} non-signer(s) slashed, {} signer(s) refunded",
+            slashed_summary.resolved, refunded_summary.resolved
+        ),
+    )
 }
 
 fn fail_round(

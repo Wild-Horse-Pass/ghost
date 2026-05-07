@@ -2274,3 +2274,154 @@ async fn bonds_refund_coordinator_aborted_when_witness_merge_fails() {
     // Broadcaster was tried exactly once.
     assert_eq!(*rejecting.0.lock().unwrap(), 1);
 }
+
+
+// ---------------------------------------------------------------------------
+// No-sign deadline + slashing (B/5e)
+// ---------------------------------------------------------------------------
+
+/// Build a router whose state holds the supplied MockClock so the
+/// caller can advance time and trip the no-sign deadline.
+async fn deadline_test_setup(
+    initial_unix: u64,
+) -> (
+    axum::Router,
+    Arc<CoordinatorState>,
+    Arc<MockBondLedger>,
+    Arc<MockClock>,
+) {
+    let mock_clock = Arc::new(MockClock::new(initial_unix));
+    let ledger = Arc::new(MockBondLedger::new());
+    let state = Arc::new(CoordinatorState::with_components(
+        Network::Signet,
+        mock_clock.clone(),
+        Arc::new(DeterministicSessionIdGenerator::new()),
+        Some(ledger.clone() as Arc<dyn wraith_protocol::BondLedger>),
+        Some(TEST_FEE_ADDRESS.to_string()),
+        Some(Arc::new(StubBroadcaster::new())),
+    ));
+    let router = build_router(state.clone());
+    (router, state, ledger, mock_clock)
+}
+
+#[tokio::test]
+async fn witness_returns_410_when_no_one_signed_before_deadline() {
+    use wraith_protocol::{BondResolution, SlashReason};
+
+    let (router, state, ledger, clock) = deadline_test_setup(1_000_000).await;
+    let (session_id, _rt) = make_assembled_session(router.clone(), &state, &ledger).await;
+    assert_eq!(ledger.len(), 5);
+
+    // Advance well past the 600s deadline.
+    clock.advance(700);
+
+    // Any /witness now triggers the sweep.
+    let idx = find_input_index(&state, &session_id, "wallet-0");
+    let response = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/witness"),
+            serde_json::json!({
+                "ghost_id": "wallet-0",
+                "input_index": idx,
+                "witness_hex": placeholder_witness_hex(),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GONE);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "no_sign_deadline");
+
+    // Session is Failed.
+    let snapshot = state.sessions.get(&session_id).expect("present");
+    assert!(matches!(
+        snapshot.state,
+        wraith_protocol::LiteSessionState::Failed { .. }
+    ));
+
+    // Every bond slashed (nobody signed before the deadline).
+    let bonds = ledger.snapshot_all();
+    assert_eq!(bonds.len(), 5);
+    for b in &bonds {
+        match &b.status {
+            wraith_protocol::BondStatus::Resolved(BondResolution::Slash(
+                SlashReason::NoSignDuringSigning,
+            )) => {}
+            other => panic!(
+                "bond {} for {} expected slashed-no-sign; got {:?}",
+                b.bond_id, b.ghost_id, other
+            ),
+        }
+    }
+}
+
+#[tokio::test]
+async fn witness_partitions_signers_and_non_signers_at_deadline() {
+    use wraith_protocol::{BondResolution, BondStatus, RefundReason, SlashReason};
+
+    let (router, state, ledger, clock) = deadline_test_setup(1_000_000).await;
+    let (session_id, _rt) = make_assembled_session(router.clone(), &state, &ledger).await;
+
+    // Three wallets sign within the deadline window.
+    for i in 0..3 {
+        let idx = find_input_index(&state, &session_id, &format!("wallet-{i}"));
+        let resp = router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/session/{session_id}/witness"),
+                serde_json::json!({
+                    "ghost_id": format!("wallet-{i}"),
+                    "input_index": idx,
+                    "witness_hex": placeholder_witness_hex(),
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "in-window submission #{i}");
+    }
+
+    // Clock advances past the deadline.
+    clock.advance(700);
+
+    // wallet-3 (a non-signer) tries to submit late — sweep fires.
+    let idx = find_input_index(&state, &session_id, "wallet-3");
+    let response = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/witness"),
+            serde_json::json!({
+                "ghost_id": "wallet-3",
+                "input_index": idx,
+                "witness_hex": placeholder_witness_hex(),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GONE);
+
+    // Signers (0/1/2) refunded as RoundVoided; non-signers (3/4)
+    // slashed as NoSignDuringSigning.
+    let bonds = ledger.snapshot_all();
+    assert_eq!(bonds.len(), 5);
+    let mut refunded = 0u32;
+    let mut slashed = 0u32;
+    for b in &bonds {
+        let signer = matches!(b.ghost_id.as_str(), "wallet-0" | "wallet-1" | "wallet-2");
+        match (&b.status, signer) {
+            (
+                BondStatus::Resolved(BondResolution::Refund(RefundReason::RoundVoided)),
+                true,
+            ) => refunded += 1,
+            (
+                BondStatus::Resolved(BondResolution::Slash(SlashReason::NoSignDuringSigning)),
+                false,
+            ) => slashed += 1,
+            (other, signer) => panic!(
+                "bond {} (ghost={}, signer={}) unexpected status {:?}",
+                b.bond_id, b.ghost_id, signer, other
+            ),
+        }
+    }
+    assert_eq!(refunded, 3);
+    assert_eq!(slashed, 2);
+}

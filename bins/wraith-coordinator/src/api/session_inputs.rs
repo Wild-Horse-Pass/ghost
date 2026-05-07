@@ -46,6 +46,16 @@ use wraith_protocol::{
     DEFAULT_FEE_RATE_SATS_PER_VB, VBYTES_PER_INPUT, VBYTES_PER_OUTPUT,
 };
 
+/// No-sign deadline for the Signing phase, in seconds. From the moment
+/// the round transitions Locked → Signing, every enrolled participant
+/// has this long to submit their /witness; past the deadline, the
+/// round fails and non-signers' bonds get slashed.
+///
+/// Picked at 600s (10 min) to be generous: signing requires the wallet
+/// to derive a sighash, sign with a hardware wallet maybe, and post.
+/// Real-world Whirlpool clients allow ~5 min on the equivalent step.
+pub const WITNESS_DEADLINE_SECS: u64 = 600;
+
 use crate::inputs::{AcceptedInputs, TxInputRef};
 use crate::state::CoordinatorState;
 
@@ -264,6 +274,10 @@ pub async fn post(
     //    Locked → Signing we use apply_event with StateChanged so
     //    standby coordinators learn about the transition through the
     //    same gossip path as natural transitions.
+    //
+    //    Record the no-sign deadline at the same time. /witness
+    //    checks this deadline and fails the round (slashing
+    //    non-signers) if it expires before all witnesses arrive.
     let mut next_state = session.state.clone();
     if submitted_count == enrolled_count {
         next_state = LiteSessionState::Signing;
@@ -273,6 +287,11 @@ pub async fn post(
                 session_id: session_id.clone(),
                 new_state: next_state.clone(),
             });
+        state
+            .signing_deadlines
+            .lock()
+            .expect("signing_deadlines poisoned")
+            .insert(session_id.clone(), now + WITNESS_DEADLINE_SECS);
     }
 
     let body = ResponseBody {

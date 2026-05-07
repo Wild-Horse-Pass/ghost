@@ -77,6 +77,12 @@ pub struct CoordinatorState {
     /// coordinator merges them into the assembled tx and calls
     /// `broadcaster.broadcast(&tx)`.
     pub witnesses_store: Mutex<HashMap<String, Vec<AcceptedWitness>>>,
+    /// Per-session no-sign deadline (unix seconds). Recorded by /inputs
+    /// when it advances Locked → Signing. /witness checks it at the
+    /// top: if `now >= deadline` and the round hasn't completed, the
+    /// round fails, non-signers' bonds get slashed, signers' bonds
+    /// get refunded as RoundVoided.
+    pub signing_deadlines: Mutex<HashMap<String, u64>>,
     /// Network broadcast backend. `None` until phase D wires the
     /// real bitcoind RPC client; tests inject `StubBroadcaster`. The
     /// witness handler returns 503 `broadcaster_not_configured` while
@@ -138,6 +144,7 @@ impl CoordinatorState {
             assembled_rounds: Mutex::new(HashMap::new()),
             witnesses_store: Mutex::new(HashMap::new()),
             broadcaster,
+            signing_deadlines: Mutex::new(HashMap::new()),
             signers: Mutex::new(HashMap::new()),
             started_at,
         }
