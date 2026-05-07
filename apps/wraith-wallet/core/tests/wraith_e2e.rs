@@ -342,3 +342,207 @@ async fn prepare_then_submit_works_via_split_api() {
     }
     assert_eq!(stub_broadcaster.count(), 1);
 }
+
+
+// ---------------------------------------------------------------------------
+// Real BIP-341 witness signing through the full pipeline
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn five_wallets_sign_real_taproot_witnesses_end_to_end() {
+    // Same protocol pipeline as `five_wallets_complete_a_full_mix_round`,
+    // but each wallet has its own Keystore (distinct deterministic
+    // mnemonic) and its UTXO's scriptPubKey is the BIP86 idx-0 address
+    // derived from that keystore. The signer is `sign_taproot_key_path`
+    // — real BIP-341 SIGHASH_DEFAULT, real Schnorr sigs.
+    //
+    // The StubBroadcaster doesn't validate sigs (only bitcoind would),
+    // but the test cross-checks the merged tx by re-deriving the
+    // tweaked pubkey + recomputing the sighash + verifying with
+    // secp256k1::verify_schnorr. That proves the daemon's
+    // internal-signing path produces signatures that bitcoind would
+    // accept.
+    use bitcoin::secp256k1::{schnorr::Signature as SchnorrSig, Keypair, Message, Secp256k1};
+    use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+    use bitcoin::{ScriptBuf, TxOut};
+    use wraith_wallet_core::keystore::Keystore;
+    use wraith_wallet_core::wraith_signer::{sign_taproot_key_path, DEFAULT_SCAN_INDEX_MAX};
+
+    let ledger: Arc<MockBondLedger> = Arc::new(MockBondLedger::new());
+    let stub_broadcaster = StubBroadcaster::new();
+    let state = Arc::new(CoordinatorState::with_components(
+        Network::Signet,
+        Arc::new(wraith_protocol::SystemClock),
+        Arc::new(wraith_protocol::RandomSessionIdGenerator),
+        Some(ledger.clone() as Arc<dyn BondLedger>),
+        Some(signet_addr(99)),
+        Some(Arc::new(stub_broadcaster.clone()) as Arc<dyn Broadcaster>),
+    ));
+    let app = build_router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    /// Deterministic mnemonic per wallet. Real wallets have one; tests
+    /// pick a stable variant per index.
+    fn mnemonic_for(i: usize) -> &'static str {
+        match i {
+            0 => "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            1 => "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            2 => "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
+            3 => "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+            4 => "void come effort suffer camp survey warrior heavy shoot primary clutch crush open amazing screen patrol group space point ten exist slush involve unfold",
+            _ => unreachable!(),
+        }
+    }
+
+    let mut handles = Vec::with_capacity(N);
+    for i in 0..N {
+        let ledger_for_task = ledger.clone();
+        let base_url = base_url.clone();
+        let handle = tokio::spawn(async move {
+            let keystore = Keystore::from_mnemonic(mnemonic_for(i)).unwrap();
+            let my_addr = wraith_wallet_core::light::receive_address(
+                &keystore,
+                0,
+                Network::Signet,
+            )
+            .unwrap();
+            let my_spk_hex = hex::encode(my_addr.script_pubkey().as_bytes());
+            let mix_addr = wraith_wallet_core::light::receive_address(
+                &keystore,
+                1,
+                Network::Signet,
+            )
+            .unwrap();
+            let change_addr = wraith_wallet_core::light::receive_address(
+                &keystore,
+                2,
+                Network::Signet,
+            )
+            .unwrap();
+
+            let client = WraithSessionClient::new(base_url, Network::Signet);
+            let ghost = format!("wallet-{i}");
+            let req = MixRequest {
+                tier_id: TIER_ID.into(),
+                ghost_id: ghost.clone(),
+                bond_id_placeholder: format!("p-{i}"),
+                utxo: ParticipantUtxo {
+                    txid: format!("{:02x}", i + 1).repeat(32),
+                    vout: 0,
+                    value_sats: 200_000,
+                    scriptpubkey_hex: my_spk_hex,
+                },
+                change_address: Some(change_addr.to_string()),
+                mix_output_address: mix_addr.to_string(),
+            };
+            let bond_setup = move |sid: &str, expected: u64| {
+                let ledger = ledger_for_task.clone();
+                let ghost = ghost.clone();
+                let sid = sid.to_string();
+                async move {
+                    let _ = ledger.escrow(ghost, sid, expected);
+                    Ok::<(), WraithClientError>(())
+                }
+            };
+
+            let prepared = client.prepare_mix(req, bond_setup).await.unwrap();
+            // Real BIP-341 sign: scan idx 0..16 (we know it's 0).
+            let witness = sign_taproot_key_path(
+                &keystore,
+                Network::Signet,
+                &prepared.unsigned_tx,
+                prepared.input_index,
+                &prepared.prevouts,
+                DEFAULT_SCAN_INDEX_MAX.min(16),
+            )
+            .expect("real signer ok");
+            client.submit_witness(&prepared, witness).await
+        });
+        handles.push(handle);
+    }
+
+    let session_id = wait_for_quorum(&state).await;
+    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
+        session_id: session_id.clone(),
+        new_state: LiteSessionState::Locked,
+    });
+
+    let mut outcomes = Vec::with_capacity(N);
+    for h in handles {
+        outcomes.push(h.await.unwrap().unwrap());
+    }
+    let txid = outcomes[0].broadcast_txid;
+    for o in &outcomes {
+        assert_eq!(o.broadcast_txid, txid);
+    }
+
+    // Now the load-bearing assertion: every input's witness verifies
+    // against secp256k1::verify_schnorr.
+    let final_tx = stub_broadcaster.last().expect("broadcast happened");
+    assert_eq!(final_tx.input.len(), N);
+
+    // Reconstruct prevouts in tx order. inputs_store still holds the
+    // per-participant records; we walk it the same way the coordinator
+    // did when shipping prevouts on /round-tx.
+    let inputs = state
+        .inputs_store
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .cloned()
+        .unwrap_or_default();
+    let mut prev_txouts: Vec<TxOut> = Vec::with_capacity(inputs.len());
+    for inp in &inputs {
+        prev_txouts.push(TxOut {
+            value: bitcoin::Amount::from_sat(inp.input.value_sats),
+            script_pubkey: ScriptBuf::from_bytes(hex::decode(&inp.input.scriptpubkey_hex).unwrap()),
+        });
+    }
+
+    let secp = Secp256k1::new();
+    use bitcoin::hashes::Hash as _;
+    use bitcoin::key::TapTweak;
+    for (idx, inp) in inputs.iter().enumerate() {
+        // Recompute the sighash for this input.
+        let mut cache = SighashCache::new(&final_tx);
+        let sighash = cache
+            .taproot_key_spend_signature_hash(
+                idx,
+                &Prevouts::All(&prev_txouts),
+                TapSighashType::Default,
+            )
+            .unwrap();
+        let msg = Message::from_digest(*sighash.as_byte_array());
+
+        // Re-derive the tweaked pubkey from the wallet's mnemonic.
+        // We know each wallet uses BIP86 idx 0 in this test.
+        let wallet_idx: usize = inp
+            .ghost_id
+            .strip_prefix("wallet-")
+            .and_then(|n| n.parse().ok())
+            .expect("ghost_id wallet-N");
+        let keystore = Keystore::from_mnemonic(mnemonic_for(wallet_idx)).unwrap();
+        let xprv = keystore.derive_xprv(&format!(
+            "m/86'/{}'/0'/0/0",
+            wraith_wallet_core::light::GHOST_COIN_TYPE
+        ))
+        .unwrap();
+        let sk = bitcoin::secp256k1::SecretKey::from_slice(&xprv.private_key().to_bytes()).unwrap();
+        let untweaked = Keypair::from_secret_key(&secp, &sk);
+        let tweaked = untweaked.tap_tweak(&secp, None);
+        let xonly = tweaked.to_keypair().x_only_public_key().0;
+
+        // The witness should have one stack item: the 64-byte sig.
+        let txin = &final_tx.input[idx];
+        let sig_bytes = txin.witness.iter().next().expect("witness present");
+        assert_eq!(sig_bytes.len(), 64, "BIP-341 SIGHASH_DEFAULT sig is 64 bytes");
+        let sig = SchnorrSig::from_slice(sig_bytes).unwrap();
+
+        secp.verify_schnorr(&sig, &msg, &xonly).unwrap_or_else(|e| {
+            panic!("input {idx} (wallet-{wallet_idx}) signature failed verify: {e}")
+        });
+    }
+}
