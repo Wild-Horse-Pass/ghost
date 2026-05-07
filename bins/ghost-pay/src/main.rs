@@ -8021,6 +8021,16 @@ struct SendL2PaymentRequest {
     /// Optional memo (max 59 characters for OP_RETURN compatibility)
     #[serde(default)]
     memo: Option<String>,
+    /// SECURITY: the SENDER's ghost_id, supplied by the GSP server
+    /// from the authenticated WebSocket session's wallet_id. Trusted
+    /// because the X-Internal-Auth header verifies the request
+    /// originated from a known GSP server (the operator's own
+    /// trusted gateway). When absent (legacy / direct callers), the
+    /// route falls back to `state.ghost_id` — but that path is
+    /// honestly incorrect for multi-tenant L2 accounting and will
+    /// be removed once all callers migrate.
+    #[serde(default)]
+    sender_ghost_id: Option<String>,
 }
 
 /// POST /api/v1/payments/send — Send an L2 instant payment
@@ -8031,7 +8041,23 @@ async fn send_l2_payment(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SendL2PaymentRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
+    // The sender's ghost_id comes from the GSP server (which derived
+    // it from the authenticated WebSocket session). Operator-side
+    // identity is the wrong primitive here — every wallet's payment
+    // would otherwise be recorded as if the operator sent it. We
+    // still fall back to `state.ghost_id` for legacy callers, with
+    // a warning, until those are gone.
+    let ghost_id = match &req.sender_ghost_id {
+        Some(id) if !id.is_empty() => id.clone(),
+        _ => {
+            tracing::warn!(
+                "send_l2_payment: missing sender_ghost_id — falling back to operator's \
+                 identity. This is incorrect for multi-tenant accounting; the GSP \
+                 server should always supply the authenticated wallet's ghost_id."
+            );
+            state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?
+        }
+    };
 
     // Validate amount
     if req.amount_sats == 0 {

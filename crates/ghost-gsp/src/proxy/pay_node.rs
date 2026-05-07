@@ -880,16 +880,30 @@ impl PayNodeProxy {
     /// prepare/sign/submit dance for the new client path —
     /// L2 transfers don't produce on-chain txs and don't need
     /// per-payment sighash signatures.
+    ///
+    /// `sender_ghost_id` MUST be the authenticated wallet_id from
+    /// the WebSocket session (caller's job — handler reads it from
+    /// `conn_state.wallet_id`). Forwarded verbatim; ghost-pay
+    /// records the L2 ledger entry against this identity, not the
+    /// operator's.
     pub async fn send_l2_payment(
         &self,
+        sender_ghost_id: &str,
         recipient: &str,
         amount_sats: u64,
         memo: Option<&str>,
     ) -> GspResult<SendL2PaymentResult> {
         let url = format!("{}/api/v1/payments/send", self.base_url);
-        debug!(url = %url, recipient = %recipient, amount = amount_sats, "Sending L2 payment");
+        debug!(
+            url = %url,
+            sender_ghost_id = %sender_ghost_id,
+            recipient = %recipient,
+            amount = amount_sats,
+            "Sending L2 payment",
+        );
 
         let request = serde_json::json!({
+            "sender_ghost_id": sender_ghost_id,
             "recipient": recipient,
             "amount_sats": amount_sats,
             "memo": memo,

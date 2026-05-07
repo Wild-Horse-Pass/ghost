@@ -1386,7 +1386,7 @@ async fn handle_send_l2_payment(
 
     match state
         .pay_node
-        .send_l2_payment(recipient, amount_sats, memo)
+        .send_l2_payment(&wallet_id.to_string(), recipient, amount_sats, memo)
         .await
     {
         Ok(result) => Ok(Some(ServerMessage::PaymentSent {
