@@ -62,7 +62,7 @@ mod unix {
         ReleaseManifest, Request, Response, SignerInfoIpc, WalletAuthInfoResponse,
         WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
         WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
-        WraithMixCompletedResponse, WraithMixPreparedResponse,
+        WraithMixCompletedResponse, WraithMixPreparedResponse, LocksRecoveredResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -75,6 +75,13 @@ mod unix {
     /// When set, all REST traffic to ghost-pay and ghost-gsp goes through it.
     /// The persistent WebSocket session does **not** yet honour this proxy.
     const TOR_PROXY_ENV: &str = "WRAITHD_TOR_PROXY";
+    /// Optional bitcoind RPC config for the LocksRecover unilateral
+    /// exit path. None of these are required to boot — only LocksRecover
+    /// fails without them.
+    const BITCOIND_URL_ENV: &str = "WRAITHD_BITCOIND_URL";
+    const BITCOIND_COOKIE_ENV: &str = "WRAITHD_BITCOIND_COOKIE";
+    const BITCOIND_USER_ENV: &str = "WRAITHD_BITCOIND_USER";
+    const BITCOIND_PASS_ENV: &str = "WRAITHD_BITCOIND_PASS";
     const SOCKET_ENV: &str = "WRAITHD_SOCKET";
     const IDLE_LOCK_ENV: &str = "WRAITHD_IDLE_LOCK_SECS";
     const DEFAULT_IDLE_LOCK_SECS: u64 = 900;
@@ -178,6 +185,16 @@ mod unix {
         /// indices. Independent of any operator-side index. Resets on
         /// daemon restart in v1; persistence is a follow-on.
         next_recovery_index: AtomicU32,
+        /// Optional bitcoind RPC URL. Required for the LocksRecover
+        /// (unilateral exit) path — wallet talks directly to bitcoind,
+        /// not through ghost-pay. None disables the path; the IPC
+        /// returns a clear "no bitcoind configured" error.
+        bitcoind_url: Option<String>,
+        /// Cookie file path (preferred) OR explicit user/pass for
+        /// bitcoind RPC auth. At most one of these branches is set.
+        bitcoind_cookie_path: Option<PathBuf>,
+        bitcoind_user: Option<String>,
+        bitcoind_pass: Option<String>,
         /// HTTP client used for daemon-side fetches outside the GSP/ghost-pay
         /// stack (currently just the manifest fetch). Reuses rustls so we
         /// don't pull in a second TLS implementation.
@@ -274,6 +291,10 @@ mod unix {
         let gsp_raw = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
         let gsp_urls = wraith_wallet_core::gsp::GspClient::parse_urls(&gsp_raw);
         let tor_proxy = std::env::var(TOR_PROXY_ENV).ok();
+        let bitcoind_url = std::env::var(BITCOIND_URL_ENV).ok();
+        let bitcoind_cookie_path = std::env::var(BITCOIND_COOKIE_ENV).ok().map(PathBuf::from);
+        let bitcoind_user = std::env::var(BITCOIND_USER_ENV).ok();
+        let bitcoind_pass = std::env::var(BITCOIND_PASS_ENV).ok();
         let wallets_dir = default_wallets_dir();
         let network = std::env::var(NETWORK_ENV)
             .ok()
@@ -338,6 +359,10 @@ mod unix {
             wraith_mixes: RwLock::new(HashMap::new()),
             prepared_locks: RwLock::new(HashMap::new()),
             next_recovery_index: AtomicU32::new(0),
+            bitcoind_url,
+            bitcoind_cookie_path,
+            bitcoind_user,
+            bitcoind_pass,
         });
 
         // Auto-lock task. Wakes every 30 s. If idle_lock_secs is 0 the task
@@ -1594,6 +1619,208 @@ mod unix {
                     }),
                     Err(message) => Response::Error(ErrorResponse {
                         message: format!("locks jump: {message}"),
+                    }),
+                }
+            }
+            Request::LocksRecover {
+                lock_id,
+                destination_address,
+                fee_sats,
+            } => {
+                use wraith_wallet_core::bitcoind::BitcoindRpc;
+                use wraith_wallet_core::lock_recovery::{
+                    build_recovery_spend, RecoverySpendInputs,
+                };
+
+                // 1. bitcoind must be configured. Without it the
+                //    recovery path can't reach L1 — this is the only
+                //    IPC method that talks straight to bitcoind.
+                let url = match state.bitcoind_url.as_deref() {
+                    Some(u) => u,
+                    None => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: "no bitcoind RPC configured \
+                                    (set WRAITHD_BITCOIND_URL + WRAITHD_BITCOIND_COOKIE \
+                                    or WRAITHD_BITCOIND_USER+PASS)"
+                                    .into(),
+                            }),
+                        );
+                    }
+                };
+                let rpc_result = match (
+                    state.bitcoind_cookie_path.as_ref(),
+                    state.bitcoind_user.as_deref(),
+                    state.bitcoind_pass.as_deref(),
+                ) {
+                    (Some(cookie), None, None) => BitcoindRpc::from_cookie(url, cookie),
+                    (None, Some(u), Some(p)) => Ok(BitcoindRpc::new(url, u, p)),
+                    _ => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: "bitcoind auth misconfigured: supply either \
+                                    cookie path or user+pass, not both / neither"
+                                    .into(),
+                            }),
+                        );
+                    }
+                };
+                let rpc = match rpc_result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("bitcoind init: {e}"),
+                            }),
+                        );
+                    }
+                };
+
+                // 2. Pull the prepared-lock metadata from our local
+                //    stash. Without it we can't reconstruct the
+                //    witness script or know which recovery_secret to
+                //    sign with.
+                let meta = match state.prepared_locks.read().await.get(&lock_id).cloned() {
+                    Some(m) => m,
+                    None => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!(
+                                    "no local metadata for lock '{lock_id}' \
+                                    (was it prepared by THIS daemon? in-memory \
+                                    only in v1 — restarts lose the index)"
+                                ),
+                            }),
+                        );
+                    }
+                };
+                let funding_txid = match meta.funding_txid.clone() {
+                    Some(t) => t,
+                    None => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!(
+                                    "lock '{lock_id}' has no recorded funding txid \
+                                    (call locks confirm first)"
+                                ),
+                            }),
+                        );
+                    }
+                };
+
+                // 3. Resolve the funding outpoint via bitcoind. Walk
+                //    the tx vouts for one whose address matches our
+                //    funding_address. (P2WSH addresses are unique
+                //    per script so a single match is all we need.)
+                let raw_tx = match rpc.get_raw_transaction_verbose(&funding_txid) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("bitcoind getrawtransaction: {e}"),
+                            }),
+                        );
+                    }
+                };
+                let matching_vout = raw_tx
+                    .vout
+                    .iter()
+                    .find(|v| v.script_pubkey.first_address() == Some(meta.funding_address.as_str()));
+                let vout = match matching_vout {
+                    Some(v) => v,
+                    None => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!(
+                                    "funding tx {funding_txid} has no output \
+                                    paying lock address {}",
+                                    meta.funding_address
+                                ),
+                            }),
+                        );
+                    }
+                };
+
+                // 4. Maturity check.
+                let current_height = match rpc.get_block_count() {
+                    Ok(h) => h as u32,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("bitcoind getblockcount: {e}"),
+                            }),
+                        );
+                    }
+                };
+
+                // 5. Build the recovery tx using the wallet's own
+                //    recovery_secret. with_active_wallet locks the
+                //    keystore briefly for the (sync) sighash + ECDSA
+                //    sign step.
+                let prev_value_sats = vout.value_sats();
+                let funding_scriptpubkey_hex = vout.script_pubkey.hex.clone();
+                let funding_vout_n = vout.n;
+                let recovery_index = meta.recovery_index;
+                let inputs = RecoverySpendInputs {
+                    lock_pubkey_hex: meta.lock_pubkey_hex.clone(),
+                    recovery_pubkey_hex: meta.recovery_pubkey_hex.clone(),
+                    recovery_blocks: meta.recovery_blocks,
+                    funding_txid: funding_txid.clone(),
+                    funding_vout: funding_vout_n,
+                    prev_value_sats,
+                    funding_scriptpubkey_hex,
+                    destination_address: destination_address.clone(),
+                    fee_sats,
+                    network: state.network,
+                    current_height,
+                    creation_height: meta.creation_height,
+                };
+
+                let built = match with_active_wallet(state, |_, ks| {
+                    let ghost_keys = ks
+                        .ghost_keys()
+                        .map_err(|e| format!("ghost_keys: {e}"))?;
+                    let recovery_secret = ghost_keys
+                        .derive_recovery_secret(recovery_index)
+                        .map_err(|e| format!("derive_recovery_secret: {e}"))?;
+                    build_recovery_spend(&inputs, &recovery_secret)
+                        .map_err(|e| format!("build recovery: {e}"))
+                })
+                .await
+                {
+                    Ok(b) => b,
+                    Err(message) => {
+                        return Envelope::new(id, Response::Error(ErrorResponse { message }));
+                    }
+                };
+
+                // 6. Broadcast.
+                match rpc.send_raw_transaction(&built.raw_hex) {
+                    Ok(network_txid) => {
+                        tracing::info!(
+                            %lock_id,
+                            broadcast_txid = %network_txid,
+                            recovered_sats = prev_value_sats - fee_sats,
+                            "lock recovery broadcast — unilateral exit complete",
+                        );
+                        Response::LocksRecovered(LocksRecoveredResponse {
+                            lock_id,
+                            broadcast_txid: network_txid,
+                            destination_address,
+                            recovered_sats: prev_value_sats - fee_sats,
+                            fee_sats,
+                        })
+                    }
+                    Err(e) => Response::Error(ErrorResponse {
+                        message: format!("bitcoind sendrawtransaction: {e}"),
                     }),
                 }
             }

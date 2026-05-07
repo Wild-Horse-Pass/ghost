@@ -95,6 +95,25 @@ pub enum Request {
         target_address: String,
         priority: String,
     },
+    /// **Unilateral exit** — spend a Ghost Lock via the timelock
+    /// recovery branch, with no operator cooperation. Daemon talks
+    /// directly to the user-configured bitcoind, builds + signs +
+    /// broadcasts the spend tx using the wallet's own
+    /// recovery_secret. Works even if ghost-pay and ghost-gsp are
+    /// permanently down. The maturation precondition (current
+    /// height >= creation_height + recovery_blocks) is enforced
+    /// before signing — bitcoin would reject the spend anyway, but
+    /// surfacing it here gives a friendly error instead of a
+    /// cryptic mempool rejection.
+    LocksRecover {
+        lock_id: String,
+        /// Wallet-controlled L1 destination for the recovered funds.
+        destination_address: String,
+        /// Mining fee in sats. Subtracted from the lock's value.
+        /// Caller responsible for picking a sane number; daemon
+        /// refuses fee >= prev_value_sats.
+        fee_sats: u64,
+    },
     /// Prepare + sign + submit an on-chain / L2 payment.
     /// Mode is one of: "ghostpay" (default), "wraith", "confidential".
     ///
@@ -282,6 +301,9 @@ pub enum Response {
     LocksPrepared(LocksPreparedResponse),
     LocksConfirmed(LocksConfirmedResponse),
     LocksJumped(LocksJumpedResponse),
+    /// Successful response to [`Request::LocksRecover`]. The
+    /// recovery tx has been built, signed, and accepted by bitcoind.
+    LocksRecovered(LocksRecoveredResponse),
     LightSent(LightSentResponse),
     WalletCreate(WalletCreateResponse),
     /// Reply to `Request::WalletImport`. We don't echo the mnemonic back —
@@ -508,6 +530,20 @@ pub struct LocksJumpedResponse {
     pub lock_id: String,
     /// Jump transaction id, if the server broadcast it.
     pub jump_txid: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocksRecoveredResponse {
+    pub lock_id: String,
+    /// Txid bitcoind accepted into the mempool. Once it confirms,
+    /// the lock's funds are back in the wallet's L1 control.
+    pub broadcast_txid: String,
+    /// Where the recovered funds went.
+    pub destination_address: String,
+    /// How much went to the destination (lock value minus fee).
+    pub recovered_sats: u64,
+    /// Mining fee paid.
+    pub fee_sats: u64,
 }
 
 /// One binary entry in a release manifest. Mirrors the JSON shape produced

@@ -290,6 +290,22 @@ enum LocksCommand {
         #[arg(long, default_value = "normal")]
         priority: String,
     },
+    /// Unilateral exit — spend a Ghost Lock via the timelock recovery
+    /// branch to a wallet-controlled L1 destination, without any
+    /// operator cooperation. Daemon talks straight to bitcoind. Only
+    /// works once the lock's CSV timelock has matured (current height
+    /// >= creation_height + recovery_blocks).
+    Recover {
+        /// Lock to recover.
+        #[arg(long)]
+        lock_id: String,
+        /// L1 destination address for the recovered funds.
+        #[arg(long, value_name = "ADDR")]
+        to: String,
+        /// Mining fee in sats. Subtracted from the lock value.
+        #[arg(long, default_value_t = 1000)]
+        fee_sats: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -467,6 +483,15 @@ mod unix {
                     lock_id,
                     target_address,
                     priority,
+                },
+                LocksCommand::Recover {
+                    lock_id,
+                    to,
+                    fee_sats,
+                } => Request::LocksRecover {
+                    lock_id,
+                    destination_address: to,
+                    fee_sats,
                 },
             },
             Command::Update { sub } => match sub {
@@ -843,6 +868,15 @@ mod unix {
                     Some(tx) => println!("  jump txid: {tx}"),
                     None => println!("  jump txid: (queued — not yet broadcast)"),
                 }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LocksRecovered(r)) => {
+                println!("✓ unilateral exit broadcast — funds back on L1");
+                println!("  lock_id:        {}", r.lock_id);
+                println!("  broadcast_txid: {}", r.broadcast_txid);
+                println!("  destination:    {}", r.destination_address);
+                println!("  recovered_sats: {}", r.recovered_sats);
+                println!("  fee_sats:       {}", r.fee_sats);
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::LocksList(r)) => {
