@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+wraith-protocol = { workspace = true }
 aes-gcm = { workspace = true }
 argon2 = { workspace = true }
 async-trait = { workspace = true }
@@ -36,3 +37,8 @@ zeroize = { workspace = true }
 tokio = { workspace = true }
 tempfile = "3"
 axum = { workspace = true }
+# In-process Wraith coordinator for the participant-client integration
+# test. The coordinator is a binary, but it exposes a `lib` target so
+# tests can call `build_router(state)` and bind it to an ephemeral
+# port without spawning a subprocess.
+wraith-coordinator = { path = "../../../bins/wraith-coordinator" }

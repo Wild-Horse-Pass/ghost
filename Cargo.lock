@@ -9257,6 +9257,8 @@ dependencies = [
  "tokio-tungstenite 0.21.0",
  "tracing",
  "url",
+ "wraith-coordinator",
+ "wraith-protocol",
  "zeroize",
 ]
 
