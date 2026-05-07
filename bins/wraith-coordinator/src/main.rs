@@ -51,7 +51,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing::{info, warn};
 
-use wraith_coordinator::broadcaster::{Broadcaster, StubBroadcaster};
+use wraith_coordinator::broadcaster::{BitcoindBroadcaster, Broadcaster, StubBroadcaster};
 use wraith_coordinator::{build_router, CoordinatorState};
 use wraith_protocol::{BondLedger, MockBondLedger};
 
@@ -96,9 +96,30 @@ struct Cli {
     /// Use an in-memory StubBroadcaster instead of a real backend.
     /// Refused on mainnet — a stub broadcaster doesn't actually push
     /// transactions to the network. Use only in dev / signet /
-    /// regtest until phase D wires the bitcoind RPC client.
+    /// regtest. Mutually exclusive with --bitcoind-url.
     #[arg(long, env = "WRAITH_COORDINATOR_MOCK_BROADCASTER")]
     mock_broadcaster: bool,
+
+    /// Production bitcoind RPC endpoint (e.g.
+    /// `http://127.0.0.1:8332/`). The coordinator will POST a
+    /// `sendrawtransaction` call here on the round-completing
+    /// `/witness` submission. Auth comes from either
+    /// --bitcoind-cookie or --bitcoind-user/--bitcoind-pass.
+    #[arg(long, env = "WRAITH_COORDINATOR_BITCOIND_URL")]
+    bitcoind_url: Option<String>,
+
+    /// Path to bitcoind's `.cookie` file. Mutually exclusive with
+    /// --bitcoind-user / --bitcoind-pass.
+    #[arg(long, env = "WRAITH_COORDINATOR_BITCOIND_COOKIE")]
+    bitcoind_cookie: Option<std::path::PathBuf>,
+
+    /// bitcoind RPC username (from `bitcoin.conf` `rpcuser=`).
+    #[arg(long, env = "WRAITH_COORDINATOR_BITCOIND_USER")]
+    bitcoind_user: Option<String>,
+
+    /// bitcoind RPC password (from `bitcoin.conf` `rpcpassword=`).
+    #[arg(long, env = "WRAITH_COORDINATOR_BITCOIND_PASS")]
+    bitcoind_pass: Option<String>,
 }
 
 #[tokio::main]
@@ -132,9 +153,38 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    // Broadcaster: mock OR bitcoind, never both. Both absent → /witness
+    // returns 503 broadcaster_not_configured on the round-completing
+    // submission (same as before phase D landed).
+    if cli.mock_broadcaster && cli.bitcoind_url.is_some() {
+        anyhow::bail!(
+            "--mock-broadcaster and --bitcoind-url are mutually exclusive; pick one."
+        );
+    }
     let broadcaster: Option<Arc<dyn Broadcaster>> = if cli.mock_broadcaster {
         warn!("using StubBroadcaster — round transactions are NOT actually broadcast");
         Some(Arc::new(StubBroadcaster::new()))
+    } else if let Some(url) = cli.bitcoind_url.as_deref() {
+        let bb = match (
+            cli.bitcoind_cookie.as_ref(),
+            cli.bitcoind_user.as_deref(),
+            cli.bitcoind_pass.as_deref(),
+        ) {
+            (Some(cookie), None, None) => BitcoindBroadcaster::from_cookie(url, cookie),
+            (None, Some(u), Some(p)) => BitcoindBroadcaster::new(url, u, p),
+            (None, None, None) => anyhow::bail!(
+                "--bitcoind-url requires either --bitcoind-cookie or \
+                 --bitcoind-user + --bitcoind-pass for authentication"
+            ),
+            _ => anyhow::bail!(
+                "--bitcoind-cookie is mutually exclusive with \
+                 --bitcoind-user / --bitcoind-pass"
+            ),
+        }
+        .map_err(|e| anyhow::anyhow!("bitcoind broadcaster: {e}"))?;
+        info!(endpoint = %url, "using BitcoindBroadcaster");
+        Some(Arc::new(bb))
     } else {
         None
     };
@@ -152,7 +202,13 @@ async fn main() -> Result<()> {
         listen = %cli.listen,
         network = ?network,
         bond_ledger = if cli.mock_bond_ledger { "mock" } else { "none(phase-c)" },
-        broadcaster = if cli.mock_broadcaster { "stub" } else { "none(phase-d)" },
+        broadcaster = if cli.mock_broadcaster {
+            "stub"
+        } else if cli.bitcoind_url.is_some() {
+            "bitcoind"
+        } else {
+            "none"
+        },
         fee_address = ?cli.fee_address,
         "wraith-coordinator starting"
     );

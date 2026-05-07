@@ -5770,7 +5770,9 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "h2",
  "http",
  "http-body",
@@ -9173,6 +9175,7 @@ version = "1.8.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "bitcoin",
  "clap",
  "getrandom 0.2.17",

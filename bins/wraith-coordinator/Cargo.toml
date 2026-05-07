@@ -49,6 +49,12 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 hyper = { workspace = true }
 
+# Bitcoind RPC (BitcoindBroadcaster). Sync because the Broadcaster
+# trait is sync; the workspace-default reqwest is async-only, so we
+# add a local feature override.
+reqwest = { workspace = true, features = ["json", "rustls-tls", "blocking"] }
+base64 = { workspace = true }
+
 # Async runtime
 tokio = { workspace = true }
 
