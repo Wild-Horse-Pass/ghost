@@ -214,3 +214,31 @@ async fn wait_for_quorum(state: &CoordinatorState) -> String {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// SOCKS5 proxy wiring (B: Tor anonymity for /outputs)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn with_outputs_proxy_accepts_valid_socks_url() {
+    // Doesn't talk to a real Tor — just checks construction succeeds
+    // and the resulting client is usable. socks5h:// = SOCKS5 with
+    // remote DNS (Tor's recommended default).
+    let _client = WraithSessionClient::with_outputs_proxy(
+        "http://127.0.0.1:9100",
+        Network::Signet,
+        "socks5h://127.0.0.1:9050",
+    )
+    .expect("valid proxy URL accepted");
+}
+
+#[tokio::test]
+async fn with_outputs_proxy_rejects_malformed_url() {
+    let result = WraithSessionClient::with_outputs_proxy(
+        "http://127.0.0.1:9100",
+        Network::Signet,
+        "not a valid url",
+    );
+    assert!(result.is_err(), "malformed proxy URL must be rejected");
+}

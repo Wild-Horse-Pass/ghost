@@ -161,14 +161,24 @@ where
 pub struct WraithSessionClient {
     base_url: String,
     network: Network,
+    /// HTTP client used for everything that's NOT /outputs. The
+    /// coordinator already knows the participant's identity at these
+    /// endpoints (ghost_id is in the body), so anonymising them
+    /// adds latency without privacy benefit.
     http: reqwest::Client,
-    /// Separate client for /outputs anonymous submission. In v1 it's
-    /// just a clone of `http`; future iterations swap in a
-    /// Tor-routed client without touching this code.
+    /// HTTP client used for /outputs only — the one anonymous
+    /// submission. Defaults to a clone of `http`; when a SOCKS5
+    /// proxy is configured (Tor in production), routes through it
+    /// so the coordinator can't correlate input UTXOs with
+    /// mix-output addresses by source IP.
     outputs_http: reqwest::Client,
 }
 
 impl WraithSessionClient {
+    /// Construct without anonymising /outputs. Both HTTP clients use
+    /// the same direct-connect transport. Suitable for test setups
+    /// where the coordinator is on localhost; NOT suitable for
+    /// production runs against a real coordinator.
     pub fn new(base_url: impl Into<String>, network: Network) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -180,6 +190,37 @@ impl WraithSessionClient {
             outputs_http: http.clone(),
             http,
         }
+    }
+
+    /// Construct with /outputs routed through `socks5_proxy_url`
+    /// (e.g. `socks5h://127.0.0.1:9050` for system Tor). The /inputs
+    /// /nonce /blind-sign /round-tx /witness paths still go direct;
+    /// only /outputs uses the proxy, because /outputs is the one
+    /// step where the coordinator must NOT learn the participant's
+    /// IP (which would correlate them with their /inputs UTXO).
+    ///
+    /// Returns an error if the proxy URL is malformed.
+    pub fn with_outputs_proxy(
+        base_url: impl Into<String>,
+        network: Network,
+        socks5_proxy_url: &str,
+    ) -> Result<Self, WraithClientError> {
+        let direct = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?;
+        let proxy = reqwest::Proxy::all(socks5_proxy_url).map_err(|e| {
+            WraithClientError::Shape(format!("invalid SOCKS5 proxy URL: {e}"))
+        })?;
+        let outputs_http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .proxy(proxy)
+            .build()?;
+        Ok(Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            network,
+            http: direct,
+            outputs_http,
+        })
     }
 
     /// Drive a single Wraith Lite round end-to-end. The bond escrow
