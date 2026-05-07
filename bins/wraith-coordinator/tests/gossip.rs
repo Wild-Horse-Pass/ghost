@@ -109,6 +109,79 @@ async fn active_session_creation_replicates_to_standby() {
 }
 
 #[tokio::test]
+async fn second_participant_replicates_to_standby() {
+    let (standby_url, standby_state) = spawn_standby().await;
+    let (active_url, _active_state) = spawn_active_with_peer(standby_url).await;
+    let client = reqwest::Client::new();
+
+    // First wallet creates the session.
+    let resp1 = client
+        .post(format!("{}/api/v1/session/find_or_create", active_url))
+        .json(&serde_json::json!({
+            "tier_id": "100k_sats",
+            "session_type": "mix",
+            "ghost_id": "wallet_a",
+            "bond_id": "bond_a",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp1.status().is_success());
+    let body1: serde_json::Value = resp1.json().await.unwrap();
+    let session_id = body1["session"]["session_id"].as_str().unwrap().to_string();
+
+    // Wait for SessionCreated + first ParticipantAdded to land.
+    let one_ok = poll_until(|| {
+        standby_state
+            .sessions
+            .get(&session_id)
+            .map(|s| s.participants.len() == 1)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(one_ok, "standby never observed the first participant");
+
+    // Second wallet joins the same session via the same find_or_create
+    // path — same tier, different ghost_id + bond_id. The handler
+    // reuses the existing session (Filling state) and publishes a
+    // second ParticipantAdded gossip event.
+    let resp2 = client
+        .post(format!("{}/api/v1/session/find_or_create", active_url))
+        .json(&serde_json::json!({
+            "tier_id": "100k_sats",
+            "session_type": "mix",
+            "ghost_id": "wallet_b",
+            "bond_id": "bond_b",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp2.status().is_success());
+
+    // Standby should now mirror two participants on the same session.
+    let two_ok = poll_until(|| {
+        standby_state
+            .sessions
+            .get(&session_id)
+            .map(|s| s.participants.len() == 2)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(two_ok, "standby never observed the second participant");
+
+    // And both ghost_ids should be present (idempotent re-apply
+    // wouldn't drop the second one — see lite_session.apply_event).
+    let mirrored = standby_state.sessions.get(&session_id).unwrap();
+    let ghost_ids: Vec<&str> = mirrored
+        .participants
+        .iter()
+        .map(|p| p.ghost_id.as_str())
+        .collect();
+    assert!(ghost_ids.contains(&"wallet_a"));
+    assert!(ghost_ids.contains(&"wallet_b"));
+}
+
+#[tokio::test]
 async fn solo_coordinator_with_no_peers_runs_fine() {
     // Regression guard: gossip is optional. With an empty peer list
     // the binary still boots and serves traffic.
