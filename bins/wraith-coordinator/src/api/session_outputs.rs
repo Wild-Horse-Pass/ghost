@@ -46,8 +46,9 @@ use bitcoin::Address;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use wraith_protocol::{LiteSessionState, TokenVerifier, UnblindedToken};
+use wraith_protocol::{LiteSessionState, SessionGossipEvent, TokenVerifier, UnblindedToken};
 
+use crate::assembly::try_assemble_if_ready;
 use crate::outputs::AcceptedOutput;
 use crate::state::CoordinatorState;
 
@@ -243,11 +244,74 @@ pub async fn post(
         "/outputs accepted unblinded address",
     );
 
+    // If this is the Nth (final) submission, assemble the round
+    // transaction synchronously. We hold no locks across the build
+    // step — snapshot inputs + outputs first, then build, then store.
+    let mut final_state = session.state.clone();
+    if outputs_collected == enrolled_count {
+        let inputs_snapshot = state
+            .inputs_store
+            .lock()
+            .expect("inputs_store poisoned")
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_default();
+        let outputs_snapshot = state
+            .outputs_store
+            .lock()
+            .expect("outputs_store poisoned")
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_default();
+        let mut entropy = [0u8; 32];
+        getrandom::getrandom(&mut entropy)
+            .expect("OS CSPRNG failed during round assembly");
+        match try_assemble_if_ready(
+            &session_id,
+            session.tier,
+            session.session_type,
+            session.state.clone(),
+            state.network,
+            state.coordinator_fee_address.as_deref(),
+            &inputs_snapshot,
+            &outputs_snapshot,
+            enrolled_count as usize,
+            &entropy,
+            now,
+        ) {
+            Some(Ok(assembled)) => {
+                state
+                    .assembled_rounds
+                    .lock()
+                    .expect("assembled_rounds poisoned")
+                    .insert(session_id.clone(), assembled);
+            }
+            Some(Err(e)) => {
+                // Transition to Failed and surface a coordinator-side
+                // error code in the response. Bonds get refunded by
+                // B/5c via the Failed-session sweep.
+                let reason = format!("tx_assembly:{}", e.code());
+                warn!(%session_id, ?e, "assembly failed; transitioning session to Failed");
+                let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
+                    session_id: session_id.clone(),
+                    new_state: LiteSessionState::Failed { reason: reason.clone() },
+                });
+                final_state = LiteSessionState::Failed { reason };
+            }
+            None => {
+                // try_assemble_if_ready returns None when the
+                // session isn't actually ready — should be unreachable
+                // here because we just confirmed counts match.
+                warn!(%session_id, "try_assemble_if_ready returned None despite count match");
+            }
+        }
+    }
+
     (
         StatusCode::OK,
         Json(ResponseBody {
             session_id,
-            state: session.state.as_str().to_string(),
+            state: final_state.as_str().to_string(),
             outputs_collected,
             enrolled_count,
         }),

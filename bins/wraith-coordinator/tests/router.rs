@@ -1567,3 +1567,192 @@ async fn outputs_rejects_over_submission_with_409() {
         serde_json::from_slice(&to_bytes(resp.into_body(), 4096).await.unwrap()).unwrap();
     assert_eq!(json["error"], "outputs_full");
 }
+
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/session/:id/round-tx — assembled tx fetch (B/5b)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn round_tx_returns_404_for_unknown_session() {
+    let (router, _state, _ledger) = deterministic_router(1_000_000);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session/no-such-session/round-tx")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "session_not_found");
+}
+
+#[tokio::test]
+async fn round_tx_returns_409_when_session_still_filling() {
+    let (router, _state, _ledger) = deterministic_router(1_000_000);
+    let session_id = create_session_via_router(router.clone(), "wallet-a", "bond-a").await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/session/{session_id}/round-tx"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "wrong_session_state");
+}
+
+#[tokio::test]
+async fn round_tx_returns_404_when_session_signing_but_no_outputs() {
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+    // No /outputs called yet — assembly hasn't fired.
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/session/{session_id}/round-tx"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "round_not_assembled");
+}
+
+#[tokio::test]
+async fn round_tx_full_pipeline_assembles_a_valid_transaction() {
+    // Drive a complete Wraith Lite session end-to-end:
+    //   find_or_create × 5 → lock → inputs × 5 (Signing) →
+    //   nonce + blind-sign + outputs × 5 → assembly fires →
+    //   GET /round-tx returns a sane unsigned tx.
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+
+    for (i, addr) in FIVE_SIGNET_ADDRS.iter().enumerate() {
+        let (bn, sg) = run_blind_sig_for(
+            router.clone(),
+            &session_id,
+            &format!("wallet-{i}"),
+            addr.as_bytes().to_vec(),
+        )
+        .await;
+        let resp = router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/session/{session_id}/outputs"),
+                serde_json::json!({
+                    "address": addr,
+                    "blinded_nonce_point": bn,
+                    "unblinded_signature_scalar": sg,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "outputs #{i}");
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/session/{session_id}/round-tx"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["session_id"], session_id);
+    assert!(json["unsigned_tx_hex"].as_str().unwrap().len() > 100);
+    assert_eq!(json["txid"].as_str().unwrap().len(), 64);
+    assert!(json["mining_fee_sats"].as_u64().unwrap() > 0);
+
+    // Output provenance: must include 5 Mixed outputs (one per
+    // participant), 5 Change outputs, and 1 ServiceFee output.
+    let prov = json["output_provenance"].as_array().expect("array");
+    let mixed = prov.iter().filter(|p| p["kind"] == "mixed").count();
+    let change = prov.iter().filter(|p| p["kind"] == "change").count();
+    let service = prov.iter().filter(|p| p["kind"] == "service_fee").count();
+    assert_eq!(mixed, 5, "5 mixed outputs");
+    assert_eq!(change, 5, "5 change outputs");
+    assert_eq!(service, 1, "1 service-fee output");
+
+    // Mixed outputs must all be at the tier denomination (100k_sats).
+    for p in prov.iter().filter(|p| p["kind"] == "mixed") {
+        assert_eq!(p["amount_sats"].as_u64().unwrap(), 100_000);
+    }
+
+    // The session is still in Signing — assembly didn't advance it.
+    let snapshot = state.sessions.get(&session_id).expect("present");
+    assert!(matches!(
+        snapshot.state,
+        wraith_protocol::LiteSessionState::Signing
+    ));
+}
+
+#[tokio::test]
+async fn round_tx_decodes_to_a_valid_bitcoin_transaction() {
+    use bitcoin::consensus::encode::deserialize_hex;
+
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+    for (i, addr) in FIVE_SIGNET_ADDRS.iter().enumerate() {
+        let (bn, sg) = run_blind_sig_for(
+            router.clone(),
+            &session_id,
+            &format!("wallet-{i}"),
+            addr.as_bytes().to_vec(),
+        )
+        .await;
+        let _ = router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/session/{session_id}/outputs"),
+                serde_json::json!({
+                    "address": addr,
+                    "blinded_nonce_point": bn,
+                    "unblinded_signature_scalar": sg,
+                }),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/session/{session_id}/round-tx"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 16 * 1024).await.unwrap()).unwrap();
+    let tx_hex = json["unsigned_tx_hex"].as_str().unwrap();
+
+    // Round-trip the hex through bitcoin's deserializer. If it
+    // parses, the consensus encoding is sound.
+    let tx: bitcoin::Transaction = deserialize_hex(tx_hex).expect("valid consensus encoding");
+    // 5 inputs, 5 mixed + 5 change + 1 service-fee + 1 OP_RETURN = 12 outputs.
+    assert_eq!(tx.input.len(), 5);
+    assert_eq!(tx.output.len(), 12);
+
+    // Reported txid in the response must match the deserialised tx.
+    let computed_txid = tx.compute_txid().to_string();
+    assert_eq!(json["txid"].as_str().unwrap(), computed_txid);
+}

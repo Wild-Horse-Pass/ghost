@@ -16,6 +16,7 @@ use wraith_protocol::{
     RemixQueue, SessionIdGenerator, SystemClock,
 };
 
+use crate::assembly::AssembledRound;
 use crate::inputs::AcceptedInputs;
 use crate::outputs::AcceptedOutput;
 
@@ -64,6 +65,11 @@ pub struct CoordinatorState {
     /// `outputs.len() == enrolled_count`, B/5b's tx-assembly path
     /// kicks in.
     pub outputs_store: Mutex<HashMap<String, Vec<AcceptedOutput>>>,
+    /// Per-session assembled round transactions, populated by B/5b
+    /// the first time `/outputs` lands the Nth submission. Wallets
+    /// fetch the unsigned transaction hex from `GET /:id/round-tx`
+    /// and produce per-input witnesses for B/5c.
+    pub assembled_rounds: Mutex<HashMap<String, AssembledRound>>,
     /// Per-round Schnorr blind-signature signer. Lazily created on the
     /// first `/nonce` call for a session; reused for every subsequent
     /// `/nonce` and `/blind-sign` on the same session. Each signer
@@ -115,6 +121,7 @@ impl CoordinatorState {
             coordinator_fee_address,
             inputs_store: Mutex::new(HashMap::new()),
             outputs_store: Mutex::new(HashMap::new()),
+            assembled_rounds: Mutex::new(HashMap::new()),
             signers: Mutex::new(HashMap::new()),
             started_at,
         }
