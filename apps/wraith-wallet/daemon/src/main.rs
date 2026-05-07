@@ -122,10 +122,11 @@ mod unix {
     /// script details (to reconstruct the witness program), and the
     /// funding outpoint (to spend the right UTXO).
     ///
-    /// In v1 this is in-memory only — a daemon restart loses it.
-    /// Production-readiness pins this in the keystore alongside the
-    /// wallet's other persistent state.
-    #[derive(Debug, Clone)]
+    /// Persisted to `<wallets_dir>/<wallet>/locks.json` so a daemon
+    /// restart between LocksPrepare and LocksRecover doesn't lose
+    /// the recovery_index. Loaded on wallet unlock; written on
+    /// every prepare / confirm / recover.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct PreparedLockMeta {
         wallet_name: String,
         recovery_index: u32,
@@ -250,6 +251,96 @@ mod unix {
 
     fn keystore_path(wallets_dir: &Path, name: &str) -> PathBuf {
         wallets_dir.join(name).join("keystore.bin")
+    }
+
+    /// Per-wallet on-disk index of prepared Ghost Locks. Each entry
+    /// carries everything `LocksRecover` needs to spend the recovery
+    /// branch without operator cooperation: the recovery_index, the
+    /// full lock script details, and the funding outpoint.
+    ///
+    /// Stored as plain JSON at `<wallets_dir>/<name>/locks.json`
+    /// with file mode 0600. The data isn't a seed — losing the
+    /// file means the wallet can't recover via this path, but the
+    /// recovery_secret can still be re-derived from the keystore
+    /// if the user remembers / can scan back through indices.
+    /// Treating the file as plain (not encrypted) keeps the
+    /// recovery flow accessible even if the keystore is locked at
+    /// scan time. This is a deliberate trade-off; documented.
+    fn locks_path(wallets_dir: &Path, name: &str) -> PathBuf {
+        wallets_dir.join(name).join("locks.json")
+    }
+
+    /// Persist the subset of prepared_locks that belongs to
+    /// `wallet_name`. Called from every dispatch arm that mutates
+    /// the in-memory map (LocksPrepare, LocksConfirm, LocksRecover).
+    /// Filtering by wallet_name keeps each wallet's locks file
+    /// isolated even when multiple wallets are unlocked at once.
+    async fn persist_prepared_locks(state: &Arc<DaemonState>, wallet_name: &str) {
+        let snapshot: HashMap<String, PreparedLockMeta> = state
+            .prepared_locks
+            .read()
+            .await
+            .iter()
+            .filter(|(_, m)| m.wallet_name == wallet_name)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if let Err(e) = save_locks_for_wallet(&state.wallets_dir, wallet_name, &snapshot) {
+            tracing::warn!(wallet = %wallet_name, error = %e, "failed to persist locks");
+        }
+    }
+
+    /// Atomic write to `path`: serialise `locks` as pretty JSON,
+    /// write to a temp file, fsync, rename. Mode 0600.
+    fn save_locks_for_wallet(
+        wallets_dir: &Path,
+        wallet_name: &str,
+        locks: &HashMap<String, PreparedLockMeta>,
+    ) -> std::io::Result<()> {
+        let path = locks_path(wallets_dir, wallet_name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(locks)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let tmp = path.with_extension("json.tmp");
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            use std::io::Write;
+            f.write_all(&bytes)?;
+            f.sync_all()?;
+        }
+        // mode 0600 on Unix.
+        let mut perm = std::fs::metadata(&tmp)?.permissions();
+        perm.set_mode(0o600);
+        std::fs::set_permissions(&tmp, perm)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// Load whatever's at `<wallets_dir>/<name>/locks.json`. Returns
+    /// an empty map when the file doesn't exist. Logs and returns
+    /// empty on parse error rather than refusing to unlock — a
+    /// corrupt locks file shouldn't make the wallet unusable.
+    fn load_locks_for_wallet(
+        wallets_dir: &Path,
+        wallet_name: &str,
+    ) -> HashMap<String, PreparedLockMeta> {
+        let path = locks_path(wallets_dir, wallet_name);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HashMap::new(),
+            Err(e) => {
+                tracing::warn!(?path, error = %e, "could not read locks file");
+                return HashMap::new();
+            }
+        };
+        match serde_json::from_slice::<HashMap<String, PreparedLockMeta>>(&bytes) {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::warn!(?path, error = %e, "locks file is corrupt — ignoring");
+                HashMap::new()
+            }
+        }
     }
 
     /// Enumerate every directory under `wallets_dir` that contains a `keystore.bin`.
@@ -1507,7 +1598,7 @@ mod unix {
                         state.prepared_locks.write().await.insert(
                             r.lock_id.clone(),
                             PreparedLockMeta {
-                                wallet_name: active_name,
+                                wallet_name: active_name.clone(),
                                 recovery_index,
                                 lock_pubkey_hex: r.lock_pubkey.clone(),
                                 recovery_pubkey_hex: r.recovery_pubkey.clone(),
@@ -1518,6 +1609,7 @@ mod unix {
                                 funding_txid: None,
                             },
                         );
+                        persist_prepared_locks(state, &active_name).await;
 
                         Response::LocksPrepared(LocksPreparedResponse {
                             lock_id: r.lock_id,
@@ -1562,10 +1654,19 @@ mod unix {
                         // Attach the funding txid to our local lock
                         // metadata so LocksRecover can spend the right
                         // outpoint without going back to the operator.
-                        if let Some(meta) =
-                            state.prepared_locks.write().await.get_mut(&r.lock_id)
-                        {
-                            meta.funding_txid = Some(r.txid.clone());
+                        // Capture the wallet_name out of the meta so we
+                        // can persist after dropping the write guard.
+                        let wallet_to_persist = {
+                            let mut guard = state.prepared_locks.write().await;
+                            guard
+                                .get_mut(&r.lock_id)
+                                .map(|m| {
+                                    m.funding_txid = Some(r.txid.clone());
+                                    m.wallet_name.clone()
+                                })
+                        };
+                        if let Some(wallet) = wallet_to_persist {
+                            persist_prepared_locks(state, &wallet).await;
                         }
                         Response::LocksConfirmed(LocksConfirmedResponse {
                             lock_id: r.lock_id,
@@ -1811,6 +1912,18 @@ mod unix {
                             recovered_sats = prev_value_sats - fee_sats,
                             "lock recovery broadcast — unilateral exit complete",
                         );
+                        // The lock is spent — drop it from the stash
+                        // so subsequent recovery attempts on the same
+                        // lock_id fail cleanly. Persist the change.
+                        let wallet_to_persist = state
+                            .prepared_locks
+                            .write()
+                            .await
+                            .remove(&lock_id)
+                            .map(|m| m.wallet_name);
+                        if let Some(wallet) = wallet_to_persist {
+                            persist_prepared_locks(state, &wallet).await;
+                        }
                         Response::LocksRecovered(LocksRecoveredResponse {
                             lock_id,
                             broadcast_txid: network_txid,
@@ -1961,6 +2074,18 @@ mod unix {
                             Ok(ks) => {
                                 state.wallets.write().await.insert(name.clone(), ks);
                                 *state.active.write().await = Some(name.clone());
+                                // Restore the wallet's previously-prepared locks
+                                // from disk. Merges into the in-memory map so
+                                // multi-wallet setups don't clobber each other.
+                                let restored =
+                                    load_locks_for_wallet(&state.wallets_dir, &name);
+                                if !restored.is_empty() {
+                                    let mut guard = state.prepared_locks.write().await;
+                                    for (k, v) in restored {
+                                        guard.insert(k, v);
+                                    }
+                                    tracing::info!(wallet = %name, "restored prepared locks from disk");
+                                }
                                 Response::WalletUnlocked
                             }
                             Err(KeystoreError::Decrypt) => Response::Error(ErrorResponse {
@@ -2554,6 +2679,80 @@ mod unix {
 
     #[cfg(test)]
     mod tests {
+        use super::*;
+
+        fn fixture_meta(wallet: &str, lock_id: &str) -> PreparedLockMeta {
+            PreparedLockMeta {
+                wallet_name: wallet.into(),
+                recovery_index: 7,
+                lock_pubkey_hex: "02".to_string() + &"00".repeat(32),
+                recovery_pubkey_hex: "03".to_string() + &"11".repeat(32),
+                recovery_blocks: 1008,
+                creation_height: 800_000,
+                funding_address: format!("tb1q{lock_id}"),
+                capacity_sats: 100_000,
+                funding_txid: Some("aa".repeat(32)),
+            }
+        }
+
+        #[test]
+        fn round_trip_locks_to_disk_preserves_every_field() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut map = HashMap::new();
+            let meta = fixture_meta("alice", "lock-A");
+            map.insert("lock-A".to_string(), meta.clone());
+            super::save_locks_for_wallet(dir.path(), "alice", &map).unwrap();
+
+            let restored = super::load_locks_for_wallet(dir.path(), "alice");
+            assert_eq!(restored.len(), 1);
+            let r = restored.get("lock-A").unwrap();
+            assert_eq!(r.wallet_name, meta.wallet_name);
+            assert_eq!(r.recovery_index, meta.recovery_index);
+            assert_eq!(r.lock_pubkey_hex, meta.lock_pubkey_hex);
+            assert_eq!(r.recovery_pubkey_hex, meta.recovery_pubkey_hex);
+            assert_eq!(r.recovery_blocks, meta.recovery_blocks);
+            assert_eq!(r.creation_height, meta.creation_height);
+            assert_eq!(r.funding_address, meta.funding_address);
+            assert_eq!(r.capacity_sats, meta.capacity_sats);
+            assert_eq!(r.funding_txid, meta.funding_txid);
+        }
+
+        #[test]
+        fn load_returns_empty_when_file_missing() {
+            let dir = tempfile::tempdir().unwrap();
+            let restored = super::load_locks_for_wallet(dir.path(), "missing");
+            assert!(restored.is_empty());
+        }
+
+        #[test]
+        fn load_returns_empty_when_file_corrupt() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = super::locks_path(dir.path(), "borked");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"this is not json").unwrap();
+            let restored = super::load_locks_for_wallet(dir.path(), "borked");
+            assert!(
+                restored.is_empty(),
+                "corrupt file is logged + ignored, never bubbles"
+            );
+        }
+
+        #[test]
+        fn save_writes_with_mode_0600() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let mut map = HashMap::new();
+            map.insert("k".to_string(), fixture_meta("w", "k"));
+            super::save_locks_for_wallet(dir.path(), "w", &map).unwrap();
+            let path = super::locks_path(dir.path(), "w");
+            let perm = std::fs::metadata(&path).unwrap().permissions();
+            assert_eq!(
+                perm.mode() & 0o777,
+                0o600,
+                "locks file must be wallet-owner-only readable",
+            );
+        }
+
         use super::shroud_pick_delay;
 
         #[test]
