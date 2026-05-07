@@ -103,11 +103,21 @@ pub use bond::{
     MockBondLedger, RefundReason, SlashReason,
 };
 
+pub mod lite_session;
+pub use lite_session::{
+    find_or_create_session, Clock, DeterministicSessionIdGenerator, LiteSession,
+    LiteSessionError, LiteSessionParticipant, LiteSessionRegistry, LiteSessionState,
+    MockClock, RandomSessionIdGenerator, SessionDescriptor, SessionIdGenerator, SystemClock,
+};
+
 /// Session type determines fee structure
 ///
 /// Mix sessions charge a service fee + mining cost.
 /// Jump sessions (key rotation via Wraith) charge mining cost only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum SessionType {
     /// Normal CoinJoin mixing (service fee + mining cost)
     #[default]
