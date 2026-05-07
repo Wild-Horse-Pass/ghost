@@ -34,6 +34,7 @@ mod unix {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicU32;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -107,6 +108,30 @@ mod unix {
         client: Arc<wraith_wallet_core::wraith::WraithSessionClient>,
     }
 
+    /// Local metadata for a Ghost Lock the wallet has prepared.
+    /// Keyed by lock_id in `DaemonState::prepared_locks`. Required for
+    /// the `LocksRecover` (unilateral exit) path — the wallet must
+    /// know its recovery_index (to derive the secret), the full lock
+    /// script details (to reconstruct the witness program), and the
+    /// funding outpoint (to spend the right UTXO).
+    ///
+    /// In v1 this is in-memory only — a daemon restart loses it.
+    /// Production-readiness pins this in the keystore alongside the
+    /// wallet's other persistent state.
+    #[derive(Debug, Clone)]
+    struct PreparedLockMeta {
+        wallet_name: String,
+        recovery_index: u32,
+        lock_pubkey_hex: String,
+        recovery_pubkey_hex: String,
+        recovery_blocks: u32,
+        creation_height: u32,
+        funding_address: String,
+        capacity_sats: u64,
+        /// Set once `LocksConfirm` lands.
+        funding_txid: Option<String>,
+    }
+
     struct DaemonState {
         started: Instant,
         chain: Arc<dyn ChainClient>,
@@ -145,6 +170,14 @@ mod unix {
         /// `WraithSessionClient` that produced it (so submit reuses
         /// the same HTTP client / proxy config).
         wraith_mixes: RwLock<HashMap<String, StoredWraithMix>>,
+        /// Locks the wallet has prepared, keyed by lock_id. Populated
+        /// by `LocksPrepare`, consumed by `LocksRecover` (and consulted
+        /// by `LocksConfirm` to attach the funding txid).
+        prepared_locks: RwLock<HashMap<String, PreparedLockMeta>>,
+        /// Monotonic counter for the wallet's own recovery-key derivation
+        /// indices. Independent of any operator-side index. Resets on
+        /// daemon restart in v1; persistence is a follow-on.
+        next_recovery_index: AtomicU32,
         /// HTTP client used for daemon-side fetches outside the GSP/ghost-pay
         /// stack (currently just the manifest fetch). Reuses rustls so we
         /// don't pull in a second TLS implementation.
@@ -303,6 +336,8 @@ mod unix {
             update_manifest_url,
             http,
             wraith_mixes: RwLock::new(HashMap::new()),
+            prepared_locks: RwLock::new(HashMap::new()),
+            next_recovery_index: AtomicU32::new(0),
         });
 
         // Auto-lock task. Wakes every 30 s. If idle_lock_secs is 0 the task
@@ -1368,18 +1403,103 @@ mod unix {
                     }
                 };
                 let owner_pubkey = hex::encode(wraith_wallet_core::auth::xonly_pubkey_bytes(&kp));
+
+                // Derive the wallet's recovery_pubkey at the next free
+                // index. The matching recovery_secret stays in the
+                // wallet's keystore, never crossing the wire. This is
+                // what makes the timelock recovery branch a real
+                // unilateral exit: the operator holds the lock_pubkey
+                // (cooperative path), the user holds this
+                // recovery_pubkey's matching secret.
+                let recovery_index = state
+                    .next_recovery_index
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let active_name = match state.active.read().await.clone() {
+                    Some(n) => n,
+                    None => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: "no active wallet".into(),
+                            }),
+                        );
+                    }
+                };
+                let recovery_pubkey_hex = match with_active_wallet(state, |_, ks| {
+                    let ghost_keys = ks
+                        .ghost_keys()
+                        .map_err(|e| format!("ghost_keys: {e}"))?;
+                    let pk_bytes = ghost_keys
+                        .derive_recovery_pubkey(recovery_index)
+                        .map_err(|e| format!("derive_recovery_pubkey: {e}"))?;
+                    Ok::<String, String>(hex::encode(pk_bytes))
+                })
+                .await
+                {
+                    Ok(s) => s,
+                    Err(message) => {
+                        return Envelope::new(id, Response::Error(ErrorResponse { message }));
+                    }
+                };
+
                 let session = state.session.read().await;
                 let session = session.as_ref().expect("just checked above");
                 match session
                     .handle
-                    .prepare_ghost_lock(owner_pubkey, capacity_sats)
+                    .prepare_ghost_lock(
+                        owner_pubkey,
+                        capacity_sats,
+                        recovery_pubkey_hex.clone(),
+                        recovery_index,
+                    )
                     .await
                 {
-                    Ok(r) => Response::LocksPrepared(LocksPreparedResponse {
-                        lock_id: r.lock_id,
-                        funding_address: r.funding_address,
-                        required_sats: r.required_sats,
-                    }),
+                    Ok(r) => {
+                        // Belt-and-braces: server MUST echo the same
+                        // recovery_pubkey we sent. If it doesn't, the
+                        // operator has substituted its own key and the
+                        // recovery path is no longer ours. Refuse.
+                        if r.recovery_pubkey != recovery_pubkey_hex
+                            || r.recovery_index != recovery_index
+                        {
+                            return Envelope::new(
+                                id,
+                                Response::Error(ErrorResponse {
+                                    message: format!(
+                                        "operator returned mismatched recovery key \
+                                         (sent {} idx={}, got {} idx={}); refusing lock — \
+                                         possible operator substitution attack",
+                                        recovery_pubkey_hex,
+                                        recovery_index,
+                                        r.recovery_pubkey,
+                                        r.recovery_index,
+                                    ),
+                                }),
+                            );
+                        }
+
+                        // Stash everything LocksRecover will need.
+                        state.prepared_locks.write().await.insert(
+                            r.lock_id.clone(),
+                            PreparedLockMeta {
+                                wallet_name: active_name,
+                                recovery_index,
+                                lock_pubkey_hex: r.lock_pubkey.clone(),
+                                recovery_pubkey_hex: r.recovery_pubkey.clone(),
+                                recovery_blocks: r.recovery_blocks,
+                                creation_height: r.creation_height,
+                                funding_address: r.funding_address.clone(),
+                                capacity_sats: r.required_sats,
+                                funding_txid: None,
+                            },
+                        );
+
+                        Response::LocksPrepared(LocksPreparedResponse {
+                            lock_id: r.lock_id,
+                            funding_address: r.funding_address,
+                            required_sats: r.required_sats,
+                        })
+                    }
                     Err(message) => Response::Error(ErrorResponse {
                         message: format!("locks prepare: {message}"),
                     }),
@@ -1413,11 +1533,21 @@ mod unix {
                     .confirm_ghost_lock_funding(lock_id, funding_txid, proof)
                     .await
                 {
-                    Ok(r) => Response::LocksConfirmed(LocksConfirmedResponse {
-                        lock_id: r.lock_id,
-                        txid: r.txid,
-                        block_height: r.block_height,
-                    }),
+                    Ok(r) => {
+                        // Attach the funding txid to our local lock
+                        // metadata so LocksRecover can spend the right
+                        // outpoint without going back to the operator.
+                        if let Some(meta) =
+                            state.prepared_locks.write().await.get_mut(&r.lock_id)
+                        {
+                            meta.funding_txid = Some(r.txid.clone());
+                        }
+                        Response::LocksConfirmed(LocksConfirmedResponse {
+                            lock_id: r.lock_id,
+                            txid: r.txid,
+                            block_height: r.block_height,
+                        })
+                    }
                     Err(message) => Response::Error(ErrorResponse {
                         message: format!("locks confirm: {message}"),
                     }),

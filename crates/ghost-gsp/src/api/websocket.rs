@@ -690,7 +690,19 @@ async fn handle_message(
         ClientMessage::PrepareGhostLock {
             owner_pubkey,
             capacity_sats,
-        } => handle_prepare_ghost_lock(state, conn_state, &owner_pubkey, capacity_sats).await,
+            recovery_pubkey,
+            recovery_index,
+        } => {
+            handle_prepare_ghost_lock(
+                state,
+                conn_state,
+                &owner_pubkey,
+                capacity_sats,
+                &recovery_pubkey,
+                recovery_index,
+            )
+            .await
+        }
 
         ClientMessage::ConfirmGhostLockFunding {
             lock_id,
@@ -1508,6 +1520,8 @@ async fn handle_prepare_ghost_lock(
     conn_state: &ConnectionState,
     _owner_pubkey: &str,
     capacity_sats: u64,
+    recovery_pubkey: &str,
+    recovery_index: u32,
 ) -> Result<Option<ServerMessage>, GspError> {
     let wallet_id = conn_state
         .wallet_id
@@ -1517,13 +1531,22 @@ async fn handle_prepare_ghost_lock(
     info!(
         wallet_id = %wallet_id,
         capacity_sats = capacity_sats,
-        "Preparing ghost lock"
+        recovery_index = recovery_index,
+        "Preparing ghost lock with user-supplied recovery_pubkey"
     );
 
-    // Create lock via pay node
+    // Create lock via pay node — pass through the wallet's
+    // recovery_pubkey so ghost-pay builds the script with the
+    // user's recovery branch (not its own).
     match state
         .pay_node
-        .create_lock(&wallet_id.to_string(), capacity_sats, None)
+        .create_lock(
+            &wallet_id.to_string(),
+            capacity_sats,
+            None,
+            recovery_pubkey,
+            recovery_index,
+        )
         .await
     {
         Ok(lock_info) => Ok(Some(ServerMessage::LockPrepared {
@@ -1531,6 +1554,11 @@ async fn handle_prepare_ghost_lock(
             lock_id: Some(lock_info.lock_id),
             funding_address: Some(lock_info.funding_address),
             required_sats: Some(capacity_sats),
+            lock_pubkey: Some(lock_info.lock_pubkey),
+            recovery_pubkey: Some(lock_info.recovery_pubkey),
+            recovery_index: Some(lock_info.recovery_index),
+            recovery_blocks: Some(lock_info.recovery_blocks),
+            creation_height: Some(lock_info.creation_height),
             error: None,
         })),
         Err(e) => {
@@ -1545,6 +1573,11 @@ async fn handle_prepare_ghost_lock(
                 lock_id: None,
                 funding_address: None,
                 required_sats: None,
+                lock_pubkey: None,
+                recovery_pubkey: None,
+                recovery_index: None,
+                recovery_blocks: None,
+                creation_height: None,
                 // L-10 FIX: Sanitize external error message
                 error: Some(sanitize_external_error(&e.to_string(), "prepare_lock")),
             }))

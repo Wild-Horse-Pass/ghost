@@ -94,6 +94,21 @@ struct LockInfoResponse {
     /// M-11: Owner wallet ID for explicit ownership verification
     /// If present, this field is used for ownership checks in fallback path
     owner_wallet_id: Option<String>,
+    /// User-supplied recovery_pubkey echoed back by ghost-pay so the
+    /// wallet can verify operator didn't substitute. 33-byte SEC1
+    /// compressed, hex-encoded. None on legacy ghost-pay nodes that
+    /// haven't adopted the recovery-key change.
+    #[serde(default)]
+    recovery_pubkey: Option<String>,
+    /// Wallet's recovery derivation index, echoed.
+    #[serde(default)]
+    recovery_index: Option<u32>,
+    /// CSV blocks the recovery branch waits on.
+    #[serde(default)]
+    recovery_blocks: Option<u32>,
+    /// Block height the lock was created at.
+    #[serde(default)]
+    creation_height: Option<u32>,
 }
 
 /// Status response from pay node
@@ -127,6 +142,14 @@ struct CreateLockRequest {
     amount_sats: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     timelock_tier: Option<String>,
+    /// User-supplied recovery_pubkey (33-byte SEC1 compressed hex).
+    /// ghost-pay uses this verbatim in the lock script's recovery
+    /// branch instead of deriving its own. Required for unilateral
+    /// exit to be a real property.
+    recovery_pubkey: String,
+    /// Wallet-side derivation index that produced `recovery_pubkey`.
+    /// Operator records but does not use for keys.
+    recovery_index: u32,
 }
 
 /// Jump request
@@ -477,13 +500,17 @@ impl PayNodeProxy {
                 funding_address: l.address,
                 funding_txid: None,
                 funding_vout: None,
-                creation_height: 0,
+                creation_height: l.creation_height.unwrap_or(0),
                 recovery_height: l.recovery_height.unwrap_or(0) as u32,
                 next_jump_height: None,
                 needs_jump: l.needs_jump,
                 blocks_until_jump: l.blocks_until_jump.unwrap_or(0) as u32,
                 created_at: l.created_at as i64,
                 updated_at: l.created_at as i64,
+                lock_pubkey: l.output_pubkey.clone(),
+                recovery_pubkey: l.recovery_pubkey.clone().unwrap_or_default(),
+                recovery_index: l.recovery_index.unwrap_or(0),
+                recovery_blocks: l.recovery_blocks.unwrap_or(0),
             })
             .collect())
     }
@@ -614,13 +641,17 @@ impl PayNodeProxy {
             funding_address: lock.address,
             funding_txid: None,
             funding_vout: None,
-            creation_height: 0,
+            creation_height: lock.creation_height.unwrap_or(0),
             recovery_height: lock.recovery_height.unwrap_or(0) as u32,
             next_jump_height: None,
             needs_jump: lock.needs_jump,
             blocks_until_jump: lock.blocks_until_jump.unwrap_or(0) as u32,
             created_at: lock.created_at as i64,
             updated_at: lock.created_at as i64,
+            lock_pubkey: lock.output_pubkey.clone(),
+            recovery_pubkey: lock.recovery_pubkey.unwrap_or_default(),
+            recovery_index: lock.recovery_index.unwrap_or(0),
+            recovery_blocks: lock.recovery_blocks.unwrap_or(0),
         })
     }
 
@@ -873,13 +904,23 @@ impl PayNodeProxy {
         ghost_id: &str,
         amount_sats: u64,
         timelock_tier: Option<&str>,
+        recovery_pubkey: &str,
+        recovery_index: u32,
     ) -> GspResult<GhostLockInfo> {
         let url = format!("{}/api/v1/locks/create", self.base_url);
-        debug!(url = %url, ghost_id = %ghost_id, amount = amount_sats, "Creating lock");
+        debug!(
+            url = %url,
+            ghost_id = %ghost_id,
+            amount = amount_sats,
+            recovery_index = recovery_index,
+            "Creating lock with user-supplied recovery_pubkey",
+        );
 
         let request = CreateLockRequest {
             amount_sats,
             timelock_tier: timelock_tier.map(|s| s.to_string()),
+            recovery_pubkey: recovery_pubkey.to_string(),
+            recovery_index,
         };
 
         // M-15: Add internal auth header
@@ -921,13 +962,17 @@ impl PayNodeProxy {
             funding_address: lock.address,
             funding_txid: None,
             funding_vout: None,
-            creation_height: 0,
+            creation_height: lock.creation_height.unwrap_or(0),
             recovery_height: lock.recovery_height.unwrap_or(0) as u32,
             next_jump_height: None,
             needs_jump: lock.needs_jump,
             blocks_until_jump: lock.blocks_until_jump.unwrap_or(0) as u32,
             created_at: lock.created_at as i64,
             updated_at: lock.created_at as i64,
+            lock_pubkey: lock.output_pubkey.clone(),
+            recovery_pubkey: lock.recovery_pubkey.unwrap_or_default(),
+            recovery_index: lock.recovery_index.unwrap_or(0),
+            recovery_blocks: lock.recovery_blocks.unwrap_or(0),
         })
     }
 

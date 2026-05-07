@@ -929,14 +929,30 @@ struct LockInfo {
     timelock_tier: String,
     jump_risk: String,
     needs_jump: bool,
-    /// Taproot address for funding
+    /// P2WSH address for funding (note: no longer "Taproot" — Ghost
+    /// Locks are P2WSH for quantum safety per the lock spec).
     address: String,
-    /// Output public key (x-only, hex)
+    /// Output public key — this is the lock_pubkey (cooperative-path
+    /// key) the operator derived. 33-byte SEC1 compressed, hex.
     output_pubkey: String,
     /// Recovery height (block when recovery becomes available)
     recovery_height: u32,
     /// Blocks until jump needed (0 if not applicable)
     blocks_until_jump: u32,
+    /// Echo of the wallet-supplied recovery_pubkey (33-byte SEC1
+    /// compressed, hex). Wallet checks this to detect operator
+    /// substitution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_pubkey: Option<String>,
+    /// Echo of the wallet's recovery derivation index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_index: Option<u32>,
+    /// CSV blocks the recovery branch waits before becoming spendable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_blocks: Option<u32>,
+    /// Block height the lock was created at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creation_height: Option<u32>,
 }
 
 /// Session information
@@ -1405,6 +1421,13 @@ async fn main() -> Result<()> {
                                                 .next_jump_height
                                                 .unwrap_or(0)
                                                 .saturating_sub(r.creation_height),
+                                            recovery_pubkey: Some(r.recovery_pubkey.clone()),
+                                            recovery_index: None,
+                                            recovery_blocks: Some(
+                                                r.recovery_height
+                                                    .saturating_sub(r.creation_height),
+                                            ),
+                                            creation_height: Some(r.creation_height),
                                         })
                                         .collect();
 
@@ -1490,6 +1513,12 @@ async fn main() -> Result<()> {
                                     .next_jump_height
                                     .unwrap_or(0)
                                     .saturating_sub(r.creation_height),
+                                recovery_pubkey: Some(r.recovery_pubkey.clone()),
+                                recovery_index: None,
+                                recovery_blocks: Some(
+                                    r.recovery_height.saturating_sub(r.creation_height),
+                                ),
+                                creation_height: Some(r.creation_height),
                             })
                             .collect();
 
@@ -1992,6 +2021,12 @@ async fn generate_keys(
                     .next_jump_height
                     .unwrap_or(0)
                     .saturating_sub(r.creation_height),
+                recovery_pubkey: Some(r.recovery_pubkey.clone()),
+                recovery_index: None,
+                recovery_blocks: Some(
+                    r.recovery_height.saturating_sub(r.creation_height),
+                ),
+                creation_height: Some(r.creation_height),
             })
             .collect();
 
@@ -2058,6 +2093,24 @@ struct CreateLockRequest {
     source: Option<String>,
     /// Wraith service fee deducted at L2 (denomination - service_fee = shielded amount)
     wraith_fee_sats: Option<u64>,
+    /// User-derived recovery_pubkey (33-byte SEC1 compressed, hex).
+    /// Goes verbatim into the lock script's recovery branch — the
+    /// operator does NOT derive its own recovery key. This is what
+    /// makes the timelock recovery path a real unilateral exit:
+    /// after the timelock expires, the user can spend with their own
+    /// keystore, no operator cooperation needed.
+    ///
+    /// Optional only for backwards compatibility — when absent the
+    /// route logs a warning and falls back to operator-derived
+    /// recovery (legacy behaviour, broken trust model). Mainnet
+    /// callers MUST supply this.
+    #[serde(default)]
+    recovery_pubkey: Option<String>,
+    /// Wallet-side derivation index that produced `recovery_pubkey`.
+    /// Recorded for diagnostics + so the wallet's LocksRecover path
+    /// can look up which secret to sign with.
+    #[serde(default)]
+    recovery_index: Option<u32>,
 }
 
 /// Create a new ghost lock
@@ -2111,25 +2164,80 @@ async fn create_lock(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    // Derive lock and recovery secrets
+    // Derive the OPERATOR's lock_secret (cooperative-path key — used
+    // to co-sign fast L2 settlements via reconciliation). The
+    // recovery key, by contrast, comes from the WALLET, so the
+    // recovery branch is genuinely unilateral.
     let lock_secret = keys
         .derive_lock_secret(lock_index)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let recovery_secret = keys
-        .derive_recovery_secret(lock_index)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    // Create the actual GhostLock
     let secp = Secp256k1::new();
-    let ghost_lock = GhostLock::new(
-        &secp,
-        &lock_secret,
-        &recovery_secret,
+    let lock_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
+
+    // Resolve the user-supplied recovery_pubkey. Refuse silently-
+    // legacy clients that omit it on a non-test network: a missing
+    // recovery_pubkey means the operator would have to derive one
+    // and own the recovery path, which breaks the unilateral-exit
+    // property. Better to fail visibly here than silently produce a
+    // federated-custody lock the user thinks is self-custodial.
+    let recovery_pubkey = match req.recovery_pubkey.as_deref() {
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str.trim()).map_err(|e| {
+                error!("Invalid recovery_pubkey hex: {e}");
+                StatusCode::BAD_REQUEST
+            })?;
+            if bytes.len() != 33 || !(bytes[0] == 0x02 || bytes[0] == 0x03) {
+                error!("recovery_pubkey must be SEC1-compressed (33 bytes, 0x02/0x03 prefix)");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            bitcoin::secp256k1::PublicKey::from_slice(&bytes).map_err(|e| {
+                error!("Invalid recovery_pubkey: {e}");
+                StatusCode::BAD_REQUEST
+            })?
+        }
+        None => {
+            error!(
+                "create_lock called without recovery_pubkey — refusing. Wallet \
+                 must derive its own recovery key and supply it; operator-derived \
+                 recovery breaks unilateral exit."
+            );
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    // Refuse keys that defeat the 2-of-2 model — same checks as
+    // GhostLock::new but raised here because we're using
+    // from_pubkeys directly.
+    if lock_pubkey == recovery_pubkey {
+        error!("lock_pubkey == recovery_pubkey — refused");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if lock_pubkey.combine(&recovery_pubkey).is_err() {
+        error!("lock_pubkey == -recovery_pubkey (key negation attack) — refused");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let recovery_index_logged = req.recovery_index.unwrap_or(0);
+    info!(
+        owner_ghost_id = %owner_ghost_id,
+        lock_index = lock_index,
+        recovery_index = recovery_index_logged,
+        "create_lock with user-supplied recovery_pubkey"
+    );
+
+    // Build the GhostLock from pubkeys directly (no recovery secret
+    // available operator-side, by design).
+    let ghost_lock = GhostLock::from_pubkeys(
+        lock_pubkey,
+        recovery_pubkey,
         denomination,
         timelock_tier,
         creation_height,
     )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| {
+        error!("GhostLock::from_pubkeys failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // Generate P2WSH address from script pubkey (quantum-safe)
     let address = Address::from_script(ghost_lock.script_pubkey(), state.network)
@@ -2143,6 +2251,11 @@ async fn create_lock(
     // Determine jump risk based on amount
     let jump_risk = ghost_lock.jump_risk_tier();
 
+    let recovery_blocks_for_resp = match timelock_tier {
+        TimelockTier::Short => ghost_locks::TimelockTier::Short.blocks(),
+        TimelockTier::Standard => ghost_locks::TimelockTier::Standard.blocks(),
+        TimelockTier::Long => ghost_locks::TimelockTier::Long.blocks(),
+    };
     let lock_info = LockInfo {
         id: ghost_lock.lock_id_hex(),
         denomination: denomination.name().to_string(),
@@ -2156,6 +2269,10 @@ async fn create_lock(
         output_pubkey: hex::encode(ghost_lock.lock_pubkey().serialize()),
         recovery_height: ghost_lock.recovery_height(),
         blocks_until_jump: ghost_lock.blocks_until_jump(creation_height),
+        recovery_pubkey: Some(hex::encode(ghost_lock.recovery_pubkey().serialize())),
+        recovery_index: req.recovery_index,
+        recovery_blocks: Some(recovery_blocks_for_resp),
+        creation_height: Some(creation_height),
     };
 
     // Create database record

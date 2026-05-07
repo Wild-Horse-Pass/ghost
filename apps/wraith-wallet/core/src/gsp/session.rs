@@ -31,6 +31,18 @@ pub struct LockPreparedResult {
     pub lock_id: String,
     pub funding_address: String,
     pub required_sats: u64,
+    /// Operator-derived lock public key (cooperative-path key).
+    pub lock_pubkey: String,
+    /// Echo of the wallet-supplied recovery_pubkey. Caller MUST verify
+    /// it equals the value sent — substitution by the operator would
+    /// silently break unilateral exit.
+    pub recovery_pubkey: String,
+    /// Echo of the wallet's recovery derivation index.
+    pub recovery_index: u32,
+    /// CSV blocks the recovery branch waits before becoming spendable.
+    pub recovery_blocks: u32,
+    /// Block height the lock was created at.
+    pub creation_height: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -204,16 +216,25 @@ impl SessionHandle {
     }
 
     /// Issue `PrepareGhostLock` and await the matching `LockPrepared` reply.
+    ///
+    /// `recovery_pubkey_hex` is the user-derived recovery pubkey
+    /// (33-byte SEC1 compressed) that will go into the lock script's
+    /// recovery branch. The wallet keeps the matching secret locally so
+    /// the timelock recovery path is genuinely unilateral.
     pub async fn prepare_ghost_lock(
         &self,
         owner_pubkey_hex: String,
         capacity_sats: u64,
+        recovery_pubkey_hex: String,
+        recovery_index: u32,
     ) -> Result<LockPreparedResult, String> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(SessionCommand::PrepareGhostLock {
                 owner_pubkey: owner_pubkey_hex,
                 capacity_sats,
+                recovery_pubkey: recovery_pubkey_hex,
+                recovery_index,
                 reply: tx,
             })
             .await
@@ -336,6 +357,8 @@ pub enum SessionCommand {
     PrepareGhostLock {
         owner_pubkey: String,
         capacity_sats: u64,
+        recovery_pubkey: String,
+        recovery_index: u32,
         reply: oneshot::Sender<Result<LockPreparedResult, String>>,
     },
     ConfirmGhostLockFunding {
@@ -796,11 +819,15 @@ async fn run_main_loop(
                     SessionCommand::PrepareGhostLock {
                         owner_pubkey,
                         capacity_sats,
+                        recovery_pubkey,
+                        recovery_index,
                         reply,
                     } => {
                         let msg = ClientMessage::PrepareGhostLock {
                             owner_pubkey,
                             capacity_sats,
+                            recovery_pubkey,
+                            recovery_index,
                         };
                         if let Err(e) = send_client(ws, &msg).await {
                             let _ = reply.send(Err(format!("send PrepareGhostLock: {e}")));
@@ -1031,6 +1058,11 @@ async fn handle_message(
             lock_id,
             funding_address,
             required_sats,
+            lock_pubkey,
+            recovery_pubkey,
+            recovery_index,
+            recovery_blocks,
+            creation_height,
             error,
         } => {
             if let Some(idx) = pending
@@ -1039,13 +1071,40 @@ async fn handle_message(
             {
                 if let Some(PendingReply::LockPrepared(tx)) = pending.remove(idx) {
                     let result = if success {
-                        match (lock_id, funding_address, required_sats) {
-                            (Some(id), Some(addr), Some(sats)) => Ok(LockPreparedResult {
+                        match (
+                            lock_id,
+                            funding_address,
+                            required_sats,
+                            lock_pubkey,
+                            recovery_pubkey,
+                            recovery_index,
+                            recovery_blocks,
+                            creation_height,
+                        ) {
+                            (
+                                Some(id),
+                                Some(addr),
+                                Some(sats),
+                                Some(lpk),
+                                Some(rpk),
+                                Some(ridx),
+                                Some(rblocks),
+                                Some(height),
+                            ) => Ok(LockPreparedResult {
                                 lock_id: id,
                                 funding_address: addr,
                                 required_sats: sats,
+                                lock_pubkey: lpk,
+                                recovery_pubkey: rpk,
+                                recovery_index: ridx,
+                                recovery_blocks: rblocks,
+                                creation_height: height,
                             }),
-                            _ => Err("server reported success but missing fields".into()),
+                            _ => Err(
+                                "server reported success but missing lock-script fields \
+                                 — refusing to consider lock prepared"
+                                    .into(),
+                            ),
                         }
                     } else {
                         Err(error.unwrap_or_else(|| "LockPrepared failed".into()))

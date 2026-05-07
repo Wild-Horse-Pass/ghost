@@ -240,12 +240,29 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
         ClientMessage::PrepareGhostLock {
             owner_pubkey,
             capacity_sats,
+            recovery_pubkey,
+            recovery_index: _,
         } => {
-            // Validate owner pubkey (32 bytes = 64 hex chars)
+            // Validate owner pubkey (32 bytes x-only = 64 hex chars)
             if owner_pubkey.len() != 64 {
                 result.add_error("Owner pubkey must be 64 hex characters");
             } else if hex::decode(owner_pubkey).is_err() {
                 result.add_error("Invalid owner pubkey hex encoding");
+            }
+
+            // Validate recovery pubkey (33-byte SEC1 compressed = 66 hex chars).
+            // Must start with 02 or 03 (compressed prefix) — uncompressed (04)
+            // is rejected.
+            if recovery_pubkey.len() != 66 {
+                result.add_error(
+                    "recovery_pubkey must be 66 hex characters (33-byte SEC1 compressed)",
+                );
+            } else {
+                match hex::decode(recovery_pubkey) {
+                    Ok(bytes) if bytes.len() == 33 && (bytes[0] == 0x02 || bytes[0] == 0x03) => {}
+                    Ok(_) => result.add_error("recovery_pubkey must be SEC1-compressed (0x02/0x03 prefix)"),
+                    Err(_) => result.add_error("Invalid recovery_pubkey hex encoding"),
+                }
             }
 
             // Validate capacity

@@ -133,12 +133,34 @@ pub enum ClientMessage {
     // =========================================================================
     // Ghost Locks
     // =========================================================================
-    /// Prepare a new ghost lock
+    /// Prepare a new ghost lock.
+    ///
+    /// The wallet supplies its own `recovery_pubkey` so the lock script's
+    /// recovery branch is spendable by the user — not by the operator.
+    /// This is what makes the timelock recovery path a real unilateral exit:
+    /// after the timelock expires, the user can spend their lock with just
+    /// their seed phrase, no operator cooperation needed.
+    ///
+    /// The operator still derives the `lock_pubkey` (cooperative-path key)
+    /// from its own keys, because fast L2 spends require operator-side
+    /// signing. The split is: lock_pubkey = operator (fast cooperative
+    /// path), recovery_pubkey = user (slow unilateral fallback).
     PrepareGhostLock {
-        /// Owner's public key (32 bytes hex)
+        /// Owner's public key (32 bytes x-only, hex). Wallet's GSP auth
+        /// identity — not used in the lock script, kept for accounting.
         owner_pubkey: String,
-        /// Lock capacity in satoshis
+        /// Lock capacity in satoshis.
         capacity_sats: u64,
+        /// User-derived recovery public key. 33-byte SEC1-compressed,
+        /// hex-encoded (66 chars). Goes into the lock script's recovery
+        /// branch. Wallet derives it from its own GhostKeys at
+        /// `recovery_index` and keeps the matching secret locally.
+        recovery_pubkey: String,
+        /// Wallet-side derivation index used to produce `recovery_pubkey`.
+        /// Recorded by the operator alongside the lock for diagnostics
+        /// and for the wallet to look up which secret to sign with at
+        /// recovery time. Independent of any operator-side index.
+        recovery_index: u32,
     },
 
     /// Confirm ghost lock funding
@@ -457,17 +479,38 @@ pub enum ServerMessage {
     // =========================================================================
     // Ghost Lock Responses & Notifications
     // =========================================================================
-    /// Lock preparation result
+    /// Lock preparation result.
+    ///
+    /// On success the operator echoes back the full lock-script details
+    /// so the wallet can (1) verify the operator built the lock with
+    /// the wallet's supplied `recovery_pubkey`, and (2) reconstruct the
+    /// witness script later for the recovery spend. The wallet pins
+    /// these locally keyed by `lock_id`; without them recovery is
+    /// impossible (P2WSH spends require revealing the script).
     LockPrepared {
-        /// Whether preparation succeeded
         success: bool,
-        /// Lock ID
         lock_id: Option<String>,
-        /// Funding address
+        /// P2WSH funding address (`bc1q...` / `tb1q...`).
         funding_address: Option<String>,
-        /// Required amount to fund
         required_sats: Option<u64>,
-        /// Error message if failed
+        /// Operator-derived lock public key (cooperative path).
+        /// 33-byte SEC1 compressed, hex.
+        lock_pubkey: Option<String>,
+        /// Echo of the wallet-supplied recovery public key. The wallet
+        /// MUST verify this matches the value it sent before
+        /// considering the lock prepared — otherwise an operator could
+        /// silently substitute its own key and steal the recovery path.
+        recovery_pubkey: Option<String>,
+        /// Echo of the wallet's `recovery_index`. Same diligence —
+        /// the wallet checks this matches what it sent.
+        recovery_index: Option<u32>,
+        /// CSV blocks the recovery branch waits before becoming
+        /// spendable.
+        recovery_blocks: Option<u32>,
+        /// Block height the lock was created at. Combined with
+        /// `recovery_blocks` gives the absolute height after which the
+        /// recovery path is spendable.
+        creation_height: Option<u32>,
         error: Option<String>,
     },
 
