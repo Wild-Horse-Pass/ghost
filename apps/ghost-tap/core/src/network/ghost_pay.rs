@@ -605,34 +605,6 @@ impl GhostPayClient {
     }
 
     // =========================================================================
-    // Wraith Session Endpoints
-    // =========================================================================
-
-    /// List active wraith sessions.
-    pub async fn list_wraith_sessions(&self) -> Result<Vec<WraithSessionInfo>, NetworkError> {
-        let url = format!("{}/api/v1/wraith/sessions", self.config.base_url);
-        self.get_with_retry(&url).await
-    }
-
-    /// Get a specific wraith session.
-    pub async fn get_wraith_session(&self, session_id: &str) -> Result<WraithSessionInfo, NetworkError> {
-        let url = format!("{}/api/v1/wraith/sessions/{}", self.config.base_url, encode_path_segment(session_id));
-        self.get_with_retry(&url).await
-    }
-
-    /// Join a wraith session.
-    pub async fn join_wraith(&self, req: &JoinWraithRequest) -> Result<JoinWraithResponse, NetworkError> {
-        let url = format!("{}/api/v1/wraith/join", self.config.base_url);
-        self.post_authenticated(&url, req).await
-    }
-
-    /// Submit a UTXO input to a wraith session.
-    pub async fn submit_wraith_input(&self, req: &WraithSubmitInputRequest) -> Result<SuccessResponse, NetworkError> {
-        let url = format!("{}/api/v1/wraith/submit-input", self.config.base_url);
-        self.post_authenticated(&url, req).await
-    }
-
-    // =========================================================================
     // Ghost ID Endpoints
     // =========================================================================
 
@@ -756,59 +728,6 @@ pub struct SuccessResponse {
     pub success: bool,
     #[serde(default)]
     pub message: String,
-}
-
-// =============================================================================
-// Wraith Session Types
-// =============================================================================
-
-/// Wraith session info
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WraithSessionInfo {
-    pub id: String,
-    #[serde(default)]
-    pub tier: String,
-    #[serde(default)]
-    pub denomination: String,
-    #[serde(default)]
-    pub state: String,
-    #[serde(default)]
-    pub participants: u32,
-    #[serde(default)]
-    pub fill_percentage: f64,
-    #[serde(default)]
-    pub auto_sign: bool,
-}
-
-/// Request to join a wraith session
-#[derive(Debug, Clone, Serialize)]
-pub struct JoinWraithRequest {
-    pub tier: String,
-    pub denomination: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lock_id: Option<String>,
-}
-
-/// Response from joining a wraith session
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JoinWraithResponse {
-    pub success: bool,
-    pub session_id: String,
-    #[serde(default)]
-    pub participants: u32,
-    #[serde(default)]
-    pub fill_percentage: f64,
-}
-
-/// Request to submit a UTXO input
-#[derive(Debug, Clone, Serialize)]
-pub struct WraithSubmitInputRequest {
-    pub session_id: String,
-    pub ghost_id: String,
-    pub txid: String,
-    pub vout: u32,
-    pub amount: u64,
-    pub script_pubkey: String,
 }
 
 // =============================================================================

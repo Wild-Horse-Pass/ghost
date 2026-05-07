@@ -482,6 +482,14 @@ impl LiteSessionRegistry {
         }
     }
 
+    /// Install a gossip sink on an already-constructed registry. Must be
+    /// called before the registry is shared (it takes `&mut self`), so
+    /// the typical call site is `main.rs` between `with_components` and
+    /// the `Arc::new(state)` wrap.
+    pub fn set_gossip_sink(&mut self, sink: Box<dyn GossipSink>) {
+        self.gossip = Some(sink);
+    }
+
     /// Apply an inbound gossip event to this registry. Used by Standbys
     /// to mirror the Active's state. Idempotent — applying the same
     /// event twice converges to the same state, never drifts.

@@ -78,11 +78,6 @@ use ghost_zkp::{
     GhostNoteSpendProof, GhostNoteSpendPublicInputs, GhostNoteVerifier, GhostUnshieldVerifier,
     UnshieldPublicInputs, MAX_CONSOLIDATION_INPUTS,
 };
-use wraith_protocol::{
-    BlindedChallenge, BlindingContext, FileSessionPersistence, ParticipantTier,
-    PersistentSessionRegistry, SessionType, UnblindedToken, WraithCoordinator,
-    WraithDenomination, WraithInput,
-};
 
 // H-PAY-2: Cryptography for encrypted key storage
 use aes_gcm::{
@@ -859,16 +854,6 @@ async fn security_headers_middleware(request: Request, next: Next) -> Response {
     response
 }
 
-/// Convert a session ID string (UUID) to [u8; 32] via SHA-256.
-/// The session registry uses fixed-size 32-byte keys; UUIDs are strings.
-fn session_id_to_bytes(session_id: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(session_id.as_bytes());
-    let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(&hash);
-    bytes
-}
-
 /// Application state
 struct AppState {
     /// Ghost keys for this node
@@ -881,12 +866,6 @@ struct AppState {
     ghost_locks: RwLock<Vec<GhostLock>>,
     /// Lock metadata for API responses - cached from DB
     locks: RwLock<Vec<LockInfo>>,
-    /// Active Wraith sessions
-    sessions: RwLock<Vec<SessionInfo>>,
-    /// Wraith coordinators for active sessions
-    coordinators: RwLock<std::collections::HashMap<String, WraithCoordinator>>,
-    /// Wraith session registry with persistent replay detection
-    session_registry: parking_lot::Mutex<PersistentSessionRegistry>,
     /// Pending payments to scan
     scanner_tx: mpsc::Sender<ScanRequest>,
     /// Configuration
@@ -953,19 +932,6 @@ struct LockInfo {
     /// Block height the lock was created at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     creation_height: Option<u32>,
-}
-
-/// Session information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SessionInfo {
-    id: String,
-    tier: String,
-    denomination: String,
-    state: String,
-    participants: usize,
-    fill_percentage: f64,
-    #[serde(default)]
-    auto_sign: bool,
 }
 
 /// Scan request for background scanner
@@ -1042,38 +1008,6 @@ async fn main() -> Result<()> {
 
     // Create data directory
     std::fs::create_dir_all(&args.data_dir)?;
-
-    // Initialize Wraith session persistence for replay detection
-    let session_registry = {
-        let sessions_path =
-            std::path::Path::new(&args.data_dir).join("wraith_sessions.json");
-        match FileSessionPersistence::new(sessions_path) {
-            Ok(persistence) => {
-                match PersistentSessionRegistry::with_persistence(std::sync::Arc::new(persistence))
-                {
-                    Ok(registry) => {
-                        info!(
-                            sessions = registry.session_count(),
-                            "Wraith session registry loaded with persistence"
-                        );
-                        registry
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to load persistent sessions, using in-memory mode");
-                        let mut registry = PersistentSessionRegistry::new();
-                        registry.acknowledge_in_memory_mode();
-                        registry
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to initialize session persistence, using in-memory mode");
-                let mut registry = PersistentSessionRegistry::new();
-                registry.acknowledge_in_memory_mode();
-                registry
-            }
-        }
-    };
 
     // Create scanner channel
     let (scanner_tx, scanner_rx) = mpsc::channel(1000);
@@ -1233,9 +1167,6 @@ async fn main() -> Result<()> {
         ghost_id: RwLock::new(None),
         ghost_locks: RwLock::new(Vec::new()),
         locks: RwLock::new(Vec::new()),
-        sessions: RwLock::new(Vec::new()),
-        coordinators: RwLock::new(std::collections::HashMap::new()),
-        session_registry: parking_lot::Mutex::new(session_registry),
         scanner_tx,
         config: args,
         network,
@@ -1552,18 +1483,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Spawn session coordinator
-    let state_clone = Arc::clone(&state);
-    let mut shutdown_rx = shutdown_tx.subscribe();
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = run_session_coordinator(state_clone) => {}
-            _ = shutdown_rx.recv() => {
-                info!("Session coordinator shutting down");
-            }
-        }
-    });
-
     // Spawn L1 settlement monitor (only if treasury address is configured)
     if treasury_configured {
         let state_clone = Arc::clone(&state);
@@ -1610,12 +1529,6 @@ async fn main() -> Result<()> {
         // Lock management (SENSITIVE - controls funds)
         .route("/api/v1/locks/create", post(create_lock))
         .route("/api/v1/locks/:id/jump", post(initiate_jump))
-        // Wraith sessions (SENSITIVE - privacy operations)
-        .route("/api/v1/wraith/join", post(join_session))
-        .route("/api/v1/wraith/submit-input", post(wraith_submit_input))
-        .route("/api/v1/wraith/request-nonces", post(wraith_request_nonces))
-        .route("/api/v1/wraith/submit-blinded", post(wraith_submit_blinded))
-        .route("/api/v1/wraith/submit-anonymous", post(wraith_submit_anonymous))
         // Withdrawals (SENSITIVE - moves funds)
         .route("/api/v1/withdrawals/request", post(request_withdrawal))
         .route("/api/v1/withdrawals/:id/cancel", post(cancel_withdrawal))
@@ -1652,12 +1565,12 @@ async fn main() -> Result<()> {
         // Read-only lock info
         .route("/api/v1/locks", get(list_locks))
         .route("/api/v1/locks/:id", get(get_lock))
-        // Read-only session info
-        .route("/api/v1/wraith/sessions", get(list_sessions))
-        .route("/api/v1/wraith/sessions/:id", get(get_session))
         // Payments (derive address is safe, scan is read-only)
         .route("/api/v1/payments/address", post(derive_payment_address))
         .route("/api/v1/payments/scan", post(scan_transaction))
+        // L2 ledger history — surfaces sent + received instant payments
+        // for a given ghost_id. Used by `wraith light history`.
+        .route("/api/v1/transactions", get(list_transactions))
         // Read-only withdrawal info
         .route("/api/v1/withdrawals", get(list_withdrawals))
         .route("/api/v1/withdrawals/:id", get(get_withdrawal))
@@ -1699,7 +1612,6 @@ async fn main() -> Result<()> {
         .route("/api/v1/admin/verify-fee-pipeline", post(verify_fee_pipeline))
         .route("/api/v1/admin/simulate-l2-activity", post(simulate_l2_activity))
         .route("/api/v1/admin/simulate-unshield", post(simulate_unshield))
-        .route("/api/v1/admin/simulate-wraith-session", post(simulate_wraith_session))
         .route("/api/v1/admin/test-withdrawal", post(test_withdrawal))
         .route("/api/v1/admin/trigger-settlement", post(admin_trigger_settlement))
         .route("/api/v1/admin/seed-test-balance", post(seed_test_balance))
@@ -2377,124 +2289,6 @@ async fn initiate_jump(
 }
 
 // ============================================================================
-// Wraith Session Handlers
-// ============================================================================
-
-/// List active sessions
-async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionInfo>> {
-    let sessions = state.sessions.read().clone();
-    Json(sessions)
-}
-
-/// Join session request
-#[derive(Debug, Deserialize)]
-struct JoinSessionRequest {
-    tier: String,
-    denomination: String,
-    /// Lock ID to use for this session (reserved for future lock validation)
-    #[allow(dead_code)]
-    lock_id: String,
-}
-
-/// Join a Wraith mixing session
-async fn join_session(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<JoinSessionRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    // Parse tier (based on participant balance range)
-    let tier = match req.tier.to_lowercase().as_str() {
-        "micro" | "express" | "quick" => ParticipantTier::Micro,
-        "small" => ParticipantTier::Small,
-        "medium" => ParticipantTier::Medium,
-        "standard" => ParticipantTier::Standard,
-        "large" => ParticipantTier::Large,
-        "whale" => ParticipantTier::Whale,
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-
-    // Parse denomination (will be used for session matching)
-    let _denomination = match req.denomination.to_lowercase().as_str() {
-        "micro" => WraithDenomination::Micro,
-        "small" => WraithDenomination::Small,
-        "medium" => WraithDenomination::Medium,
-        "large" => WraithDenomination::Large,
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-
-    // Create or join session
-    let mut sessions = state.sessions.write();
-
-    // Look for existing session
-    let session = sessions
-        .iter_mut()
-        .find(|s| s.tier == req.tier && s.denomination == req.denomination && s.state == "waiting");
-
-    match session {
-        Some(s) => {
-            s.participants += 1;
-            s.fill_percentage = (s.participants as f64 / tier.min_participants() as f64) * 100.0;
-
-            info!(id = %s.id, participants = s.participants, "Joined existing session");
-
-            Ok(Json(serde_json::json!({
-                "success": true,
-                "session_id": s.id,
-                "participants": s.participants,
-                "fill_percentage": s.fill_percentage
-            })))
-        }
-        None => {
-            // Create new session
-            let session_id = uuid::Uuid::new_v4().to_string();
-
-            // Register session ID for replay detection
-            if let Err(e) = state
-                .session_registry
-                .lock()
-                .check_and_register(session_id_to_bytes(&session_id))
-            {
-                warn!(session_id = %session_id, error = %e, "Session ID collision/replay detected");
-                return Err(StatusCode::CONFLICT);
-            }
-
-            let new_session = SessionInfo {
-                id: session_id.clone(),
-                tier: req.tier,
-                denomination: req.denomination,
-                state: "waiting".to_string(),
-                participants: 1,
-                fill_percentage: (1.0 / tier.min_participants() as f64) * 100.0,
-                auto_sign: false,
-            };
-            sessions.push(new_session);
-
-            info!(id = %session_id, "Created new Wraith session");
-
-            Ok(Json(serde_json::json!({
-                "success": true,
-                "session_id": session_id,
-                "participants": 1,
-                "fill_percentage": (1.0 / tier.min_participants() as f64) * 100.0
-            })))
-        }
-    }
-}
-
-/// Get session details
-async fn get_session(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Json<SessionInfo>, StatusCode> {
-    let sessions = state.sessions.read();
-    let session = sessions
-        .iter()
-        .find(|s| s.id == id)
-        .cloned()
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(session))
-}
-
-// ============================================================================
 // Payment Handlers
 // ============================================================================
 
@@ -2819,13 +2613,11 @@ async fn pay_stats_handler(State(state): State<Arc<AppState>>) -> Json<serde_jso
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let has_keys = state.keys.read().is_some();
     let lock_count = state.locks.read().len();
-    let session_count = state.sessions.read().len();
 
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "has_keys": has_keys,
         "lock_count": lock_count,
-        "active_sessions": session_count,
         "network": state.config.network
     }))
 }
@@ -2983,7 +2775,7 @@ fn get_epoch_tx_count(epoch: u64) -> Result<u64, String> {
 /// Returns real L2 state from the database for verification challenges.
 /// This endpoint is used by the verification system to prove GhostPay capability.
 async fn verify_ghostpay(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Query(query): Query<GhostPayVerifyQuery>,
 ) -> impl axum::response::IntoResponse {
     // Get latest L2 state from ghost-pay's blocks table (separate L2 database)
@@ -3081,8 +2873,10 @@ async fn verify_ghostpay(
         None
     };
 
-    // Check if Wraith protocol is enabled (has active sessions)
-    let wraith_enabled = !state.sessions.read().is_empty();
+    // Wraith mixing moved to the wraith-coordinator binary; ghost-pay
+    // no longer hosts CoinJoin sessions. This flag stays in the
+    // response shape for verifier compatibility.
+    let wraith_enabled = false;
 
     // Get L2 block count for challenged epoch
     let epoch_tx_count = get_epoch_tx_count(challenge_epoch).unwrap_or(0);
@@ -4582,491 +4376,6 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
     }
 }
 
-/// Wraith session coordinator
-///
-/// Manages the lifecycle of Wraith mixing sessions:
-/// 1. Waits for minimum participants
-/// 2. Executes Phase 1 (split transaction)
-/// 3. Waits for Phase 1 confirmation
-/// 4. Executes Phase 2 (merge transaction)
-/// 5. Completes the session
-async fn run_session_coordinator(state: Arc<AppState>) {
-    use tracing::{debug, error};
-
-    info!("Starting Wraith session coordinator");
-
-    let mut cleanup_counter: u64 = 0;
-
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-
-        // Periodic session registry cleanup (~1 hour = 360 iterations * 10s)
-        cleanup_counter += 1;
-        if cleanup_counter.is_multiple_of(360) {
-            match state.session_registry.lock().cleanup_expired() {
-                Ok(removed) if removed > 0 => {
-                    info!(removed, "Cleaned up expired Wraith sessions");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    warn!(error = %e, "Failed to cleanup expired sessions");
-                }
-            }
-        }
-
-        // Get session IDs and their current states to avoid holding lock during async work
-        let session_states: Vec<(String, String)> = {
-            let sessions = state.sessions.read();
-            sessions
-                .iter()
-                .map(|s| (s.id.clone(), s.state.clone()))
-                .collect()
-        };
-
-        for (session_id, session_state) in session_states {
-            match session_state.as_str() {
-                "waiting" => {
-                    // Check if we have enough participants
-                    let mut sessions = state.sessions.write();
-                    if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-                        let tier = match session.tier.as_str() {
-                            "micro" | "express" | "quick" => ParticipantTier::Micro,
-                            "small" => ParticipantTier::Small,
-                            "medium" => ParticipantTier::Medium,
-                            "standard" => ParticipantTier::Standard,
-                            "large" => ParticipantTier::Large,
-                            "whale" => ParticipantTier::Whale,
-                            _ => continue,
-                        };
-
-                        if session.participants >= tier.min_participants() {
-                            // Parse denomination
-                            let denom = match session.denomination.to_lowercase().as_str() {
-                                "micro" => WraithDenomination::Micro,
-                                "small" => WraithDenomination::Small,
-                                "medium" => WraithDenomination::Medium,
-                                "large" => WraithDenomination::Large,
-                                _ => continue,
-                            };
-
-                            // Create the WraithCoordinator for this session
-                            let sid = session.id.clone();
-                            let auto_sign = session.auto_sign;
-                            let rpc_for_broadcast = state.rpc.clone();
-                            match WraithCoordinator::new(tier, denom, state.network, SessionType::Mix) {
-                                Ok(mut coordinator) => {
-                                    if auto_sign {
-                                        // When auto_sign, the broadcast callback signs then broadcasts
-                                        let rpc = rpc_for_broadcast;
-                                        coordinator = coordinator.with_broadcaster(move |tx_hex: &str| {
-                                            let rt = tokio::runtime::Handle::try_current()
-                                                .map_err(|e| format!("No tokio runtime: {e}"))?;
-                                            let hex = tx_hex.to_string();
-                                            let rpc = rpc.clone();
-                                            rt.block_on(async move {
-                                                let signed = rpc.sign_raw_transaction_with_wallet(&hex)
-                                                    .await
-                                                    .map_err(|e| format!("sign failed: {e}"))?;
-                                                if !signed.complete {
-                                                    return Err("Transaction signing incomplete".to_string());
-                                                }
-                                                rpc.send_raw_transaction(&signed.hex)
-                                                    .await
-                                                    .map_err(|e| format!("broadcast failed: {e}"))
-                                            })
-                                        });
-                                    }
-
-                                    state.coordinators.write().insert(sid.clone(), coordinator);
-                                    session.state = "building_phase1".to_string();
-                                    info!(id = %sid, participants = session.participants, "Session ready, coordinator created, building Phase 1");
-                                }
-                                Err(e) => {
-                                    error!(id = %sid, error = %e, "Failed to create WraithCoordinator");
-                                    session.state = "failed".to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                "building_phase1" => {
-                    // Build Phase 1 - get tx_hex first, then release lock before broadcast
-                    let tx_hex = {
-                        let mut coordinators = state.coordinators.write();
-                        if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                            match coordinator.build_phase1() {
-                                Ok(split_tx) => {
-                                    let hex = bitcoin::consensus::encode::serialize_hex(
-                                        &split_tx.transaction,
-                                    );
-                                    info!(
-                                        session_id = %session_id,
-                                        outputs = split_tx.intermediate_count,
-                                        "Phase 1 transaction built"
-                                    );
-                                    Some(hex)
-                                }
-                                Err(e) => {
-                                    error!(
-                                        session_id = %session_id,
-                                        error = %e,
-                                        "Failed to build Phase 1"
-                                    );
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        }
-                    };
-
-                    // Broadcast Phase 1 (lock released)
-                    if let Some(tx_hex) = tx_hex {
-                        match state.rpc.send_raw_transaction(&tx_hex).await {
-                            Ok(txid) => {
-                                info!(
-                                    session_id = %session_id,
-                                    txid = %txid,
-                                    "Phase 1 broadcast successful"
-                                );
-
-                                // Reacquire lock to update coordinator
-                                let mut coordinators = state.coordinators.write();
-                                if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                                    if let Err(e) = coordinator.broadcast_phase1(&txid) {
-                                        error!(error = %e, "Failed to update coordinator after broadcast");
-                                    }
-                                }
-                                drop(coordinators);
-
-                                // Update session state
-                                let mut sessions = state.sessions.write();
-                                if let Some(session) =
-                                    sessions.iter_mut().find(|s| s.id == session_id)
-                                {
-                                    session.state = "confirming_phase1".to_string();
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    session_id = %session_id,
-                                    error = %e,
-                                    "Phase 1 broadcast failed"
-                                );
-                                // Mark session as failed
-                                let mut sessions = state.sessions.write();
-                                if let Some(session) =
-                                    sessions.iter_mut().find(|s| s.id == session_id)
-                                {
-                                    session.state = "failed".to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                "confirming_phase1" => {
-                    // Check if Phase 1 is confirmed on-chain
-                    // C-3: 3 confirmations on mainnet for mixing security, 1 elsewhere
-                    let required_confirmations: u32 = match state.network {
-                        Network::Bitcoin => 3,
-                        _ => 1,
-                    };
-
-                    // Get phase 1 txid
-                    let phase1_txid = {
-                        let coordinators = state.coordinators.read();
-                        coordinators.get(&session_id).and_then(|c| c.phase1_txid())
-                    };
-
-                    if let Some(txid) = phase1_txid {
-                        // Check transaction confirmations via RPC
-                        match state.rpc.get_raw_transaction(&txid.to_string(), true).await {
-                            Ok(tx_info) => {
-                                let confirmations = tx_info
-                                    .get("confirmations")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0);
-                                if confirmations >= required_confirmations as i64 {
-                                    // Get the block height where it was confirmed
-                                    // H-21: Safe block height conversion with bounds checking
-                                    let raw_height = tx_info
-                                        .get("blockheight")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0);
-                                    let confirm_height = match safe_block_height_u64(raw_height) {
-                                        Ok(h) => h,
-                                        Err(e) => {
-                                            warn!(error = %e, "Invalid block height, skipping confirmation");
-                                            continue;
-                                        }
-                                    };
-
-                                    // Confirm phase 1
-                                    let mut coordinators = state.coordinators.write();
-                                    if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                                        if let Err(e) = coordinator.confirm_phase1(confirm_height) {
-                                            warn!(error = %e, "Failed to confirm phase 1");
-                                        } else {
-                                            info!(
-                                                session_id = %session_id,
-                                                txid = %txid,
-                                                confirmations = confirmations,
-                                                "Phase 1 confirmed on-chain"
-                                            );
-
-                                            // Update session state
-                                            drop(coordinators);
-                                            let mut sessions = state.sessions.write();
-                                            if let Some(session) =
-                                                sessions.iter_mut().find(|s| s.id == session_id)
-                                            {
-                                                session.state = "building_phase2".to_string();
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    debug!(
-                                        session_id = %session_id,
-                                        txid = %txid,
-                                        confirmations = confirmations,
-                                        required = required_confirmations,
-                                        "Waiting for more confirmations"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                // Transaction might not be indexed yet
-                                debug!(
-                                    session_id = %session_id,
-                                    txid = %txid,
-                                    error = %e,
-                                    "Cannot get phase 1 tx info"
-                                );
-                            }
-                        }
-                    } else {
-                        // No txid yet, phase 1 not broadcast
-                        debug!(session_id = %session_id, "Phase 1 not yet broadcast");
-                    }
-                }
-
-                "building_phase2" => {
-                    // Build Phase 2 - get tx_hex first, then release lock
-                    let tx_hex = {
-                        let mut coordinators = state.coordinators.write();
-                        if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                            match coordinator.build_phase2() {
-                                Ok(merge_tx) => {
-                                    let hex = bitcoin::consensus::encode::serialize_hex(
-                                        &merge_tx.transaction,
-                                    );
-                                    info!(
-                                        session_id = %session_id,
-                                        participants = merge_tx.participant_count,
-                                        "Phase 2 transaction built"
-                                    );
-                                    Some(hex)
-                                }
-                                Err(e) => {
-                                    error!(
-                                        session_id = %session_id,
-                                        error = %e,
-                                        "Failed to build Phase 2"
-                                    );
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        }
-                    };
-
-                    // Broadcast Phase 2 (lock released)
-                    if let Some(tx_hex) = tx_hex {
-                        match state.rpc.send_raw_transaction(&tx_hex).await {
-                            Ok(txid) => {
-                                info!(
-                                    session_id = %session_id,
-                                    txid = %txid,
-                                    "Phase 2 broadcast successful"
-                                );
-
-                                // Reacquire lock to update coordinator
-                                let mut coordinators = state.coordinators.write();
-                                if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                                    if let Err(e) = coordinator.broadcast_phase2(&txid) {
-                                        error!(error = %e, "Failed to update coordinator after Phase 2 broadcast");
-                                    }
-                                }
-                                drop(coordinators);
-
-                                // Update session state
-                                let mut sessions = state.sessions.write();
-                                if let Some(session) =
-                                    sessions.iter_mut().find(|s| s.id == session_id)
-                                {
-                                    session.state = "confirming_phase2".to_string();
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    session_id = %session_id,
-                                    error = %e,
-                                    "Phase 2 broadcast failed"
-                                );
-                                let mut sessions = state.sessions.write();
-                                if let Some(session) =
-                                    sessions.iter_mut().find(|s| s.id == session_id)
-                                {
-                                    session.state = "failed".to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                "confirming_phase2" => {
-                    // Check if Phase 2 is already complete
-                    let is_complete = {
-                        let coordinators = state.coordinators.read();
-                        coordinators
-                            .get(&session_id)
-                            .map(|c| matches!(c.state(), wraith_protocol::SessionState::Completed))
-                            .unwrap_or(false)
-                    };
-
-                    if is_complete {
-                        // Track wraith service fee for L2 distribution (Mix sessions only)
-                        let session_snapshot = {
-                            let sessions = state.sessions.read();
-                            sessions.iter().find(|s| s.id == session_id).cloned()
-                        };
-                        if let Some(ref snap) = session_snapshot {
-                            let denomination_str = &snap.denomination;
-                            if let Some(denom) =
-                                wraith_protocol::WraithDenomination::from_short_code(denomination_str)
-                                    .or_else(|| match denomination_str.to_lowercase().as_str() {
-                                        "micro" => Some(wraith_protocol::WraithDenomination::Micro),
-                                        "small" => Some(wraith_protocol::WraithDenomination::Small),
-                                        "medium" => Some(wraith_protocol::WraithDenomination::Medium),
-                                        "large" => Some(wraith_protocol::WraithDenomination::Large),
-                                        _ => None,
-                                    })
-                            {
-                                let fee_per_participant = denom.service_fee();
-                                let total_fee = fee_per_participant * snap.participants as u64;
-                                let block_height = state.rpc.get_block_count().await.unwrap_or(0);
-                                let epoch = ghost_common::constants::l2_epoch_from_height(block_height);
-                                if let Err(e) = state.db.increment_wraith_fee(epoch, total_fee) {
-                                    warn!(error = %e, "Failed to track wraith fee");
-                                } else {
-                                    info!(
-                                        session_id = %session_id,
-                                        denomination = %denomination_str,
-                                        participants = snap.participants,
-                                        fee_per_participant,
-                                        total_fee,
-                                        epoch,
-                                        "Tracked wraith service fee for L2 distribution"
-                                    );
-                                }
-                            }
-                        }
-
-                        let mut sessions = state.sessions.write();
-                        if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-                            session.state = "complete".to_string();
-                            info!(id = %session_id, "Wraith session complete");
-                        }
-                    } else {
-                        // Get Phase 2 txid and check on-chain confirmations
-                        let phase2_txid = {
-                            let coordinators = state.coordinators.read();
-                            coordinators.get(&session_id).and_then(|c| c.phase2_txid())
-                        };
-
-                        if let Some(txid) = phase2_txid {
-                            // C-3: 3 confirmations on mainnet for mixing security, 1 elsewhere
-                            let required_confirmations: u32 = match state.network {
-                                Network::Bitcoin => 3,
-                                _ => 1,
-                            };
-
-                            match state.rpc.get_raw_transaction(&txid.to_string(), true).await {
-                                Ok(tx_info) => {
-                                    let confirmations = tx_info
-                                        .get("confirmations")
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or(0);
-
-                                    if confirmations >= required_confirmations as i64 {
-                                        // H-21: Safe block height conversion with bounds checking
-                                        let raw_height = tx_info
-                                            .get("blockheight")
-                                            .and_then(|v| v.as_u64())
-                                            .unwrap_or(0);
-                                        let confirm_height = match safe_block_height_u64(raw_height)
-                                        {
-                                            Ok(h) => h,
-                                            Err(e) => {
-                                                warn!(error = %e, "Invalid block height, skipping phase 2 confirmation");
-                                                continue;
-                                            }
-                                        };
-
-                                        let mut coordinators = state.coordinators.write();
-                                        if let Some(coordinator) = coordinators.get_mut(&session_id)
-                                        {
-                                            if let Err(e) =
-                                                coordinator.confirm_phase2(confirm_height)
-                                            {
-                                                warn!(error = %e, "Failed to confirm phase 2");
-                                            } else {
-                                                info!(
-                                                    session_id = %session_id,
-                                                    txid = %txid,
-                                                    confirmations = confirmations,
-                                                    "Phase 2 confirmed on-chain"
-                                                );
-                                            }
-                                        }
-                                    } else {
-                                        debug!(
-                                            session_id = %session_id,
-                                            txid = %txid,
-                                            confirmations = confirmations,
-                                            required = required_confirmations,
-                                            "Waiting for Phase 2 confirmations"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    debug!(
-                                        session_id = %session_id,
-                                        txid = %txid,
-                                        error = %e,
-                                        "Cannot get phase 2 tx info"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                "complete" | "failed" => {
-                    // Clean up completed/failed sessions after some time
-                    debug!(session_id = %session_id, state = %session_state, "Session finished");
-                }
-
-                _ => {
-                    debug!(session_id = %session_id, state = %session_state, "Unknown session state");
-                }
-            }
-        }
-    }
-}
 
 /// L1 Settlement loop - reconciles L2 balances to Bitcoin L1
 /// Fee distribution context returned by ghost-pool.
@@ -5366,160 +4675,6 @@ async fn verify_fee_pipeline(
         "success": all_pass,
         "steps": steps,
     }))
-}
-
-// =============================================================================
-// Wraith Participant API Endpoints (Part 2b)
-// =============================================================================
-
-#[derive(Debug, Deserialize)]
-struct WraithSubmitInputRequest {
-    session_id: String,
-    ghost_id: String,
-    txid: String,
-    vout: u32,
-    amount: u64,
-    script_pubkey: String,
-}
-
-async fn wraith_submit_input(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<WraithSubmitInputRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let txid: bitcoin::Txid = req.txid.parse().map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("Invalid txid: {e}")})),
-        )
-    })?;
-    let script_pubkey = bitcoin::ScriptBuf::from(hex::decode(&req.script_pubkey).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("Invalid script_pubkey hex: {e}")})),
-        )
-    })?);
-
-    let mut coordinators = state.coordinators.write();
-    let coordinator = coordinators.get_mut(&req.session_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-    })?;
-
-    // Look up participant_id from ghost_id
-    let participant_id = coordinator
-        .participant_count() as u32; // fallback
-    let input = WraithInput {
-        txid,
-        vout: req.vout,
-        amount: req.amount,
-        script_pubkey,
-        participant_id,
-    };
-
-    coordinator
-        .submit_input(&req.ghost_id, input)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({"status": "input_accepted"})))
-}
-
-#[derive(Debug, Deserialize)]
-struct WraithRequestNoncesRequest {
-    session_id: String,
-    ghost_id: String,
-}
-
-async fn wraith_request_nonces(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<WraithRequestNoncesRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut coordinators = state.coordinators.write();
-    let coordinator = coordinators.get_mut(&req.session_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-    })?;
-
-    let nonces = coordinator
-        .request_nonces(&req.ghost_id)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({"nonces": nonces})))
-}
-
-#[derive(Debug, Deserialize)]
-struct WraithSubmitBlindedRequest {
-    session_id: String,
-    ghost_id: String,
-    challenges: Vec<BlindedChallenge>,
-}
-
-async fn wraith_submit_blinded(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<WraithSubmitBlindedRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut coordinators = state.coordinators.write();
-    let coordinator = coordinators.get_mut(&req.session_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-    })?;
-
-    let responses = coordinator
-        .submit_blinded_challenges(&req.ghost_id, req.challenges)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({"responses": responses})))
-}
-
-#[derive(Debug, Deserialize)]
-struct WraithSubmitAnonymousRequest {
-    session_id: String,
-    tokens: Vec<UnblindedToken>,
-    final_address: String,
-}
-
-async fn wraith_submit_anonymous(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<WraithSubmitAnonymousRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut coordinators = state.coordinators.write();
-    let coordinator = coordinators.get_mut(&req.session_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-    })?;
-
-    coordinator
-        .submit_tokens_with_address_anonymous(req.tokens, req.final_address)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({"status": "anonymous_submission_accepted"})))
 }
 
 // =============================================================================
@@ -6377,496 +5532,6 @@ async fn seed_test_balance(
     }
 }
 
-/// Simulate a full wraith session with 10 virtual participants on signet
-async fn simulate_wraith_session(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    const NUM_PARTICIPANTS: usize = 10;
-    const SATS_PER_PARTICIPANT: u64 = 101_000; // denomination (100k) + service fee (500) + buffer
-
-    // Pre-check: wallet loaded and sufficient balance
-    let balance: u64 = match state.rpc.get_balance().await {
-        Ok(b) => b,
-        Err(e) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!("No wallet loaded or RPC error: {e}. Run: bitcoin-cli createwallet ghost-test")
-                })),
-            ));
-        }
-    };
-
-    let needed = SATS_PER_PARTICIPANT * NUM_PARTICIPANTS as u64 + 50_000; // extra for mining fees
-    if balance < needed {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!(
-                    "Insufficient balance: have {} sats, need {}. Fund via signet faucet.",
-                    balance, needed
-                )
-            })),
-        ));
-    }
-
-    // Create session ID
-    let session_id = uuid::Uuid::new_v4().to_string();
-
-    // Add to sessions list
-    {
-        let mut sessions = state.sessions.write();
-        sessions.push(SessionInfo {
-            id: session_id.clone(),
-            tier: "micro".to_string(),
-            denomination: "micro".to_string(),
-            state: "sim_funding".to_string(),
-            participants: NUM_PARTICIPANTS,
-            fill_percentage: 100.0,
-            auto_sign: true,
-        });
-    }
-
-    // Spawn background task
-    let state_clone = state.clone();
-    let sid = session_id.clone();
-    tokio::spawn(async move {
-        if let Err(e) = run_wraith_simulation(state_clone.clone(), sid.clone(), NUM_PARTICIPANTS).await {
-            error!(session_id = %sid, error = %e, "Wraith simulation failed");
-            let mut sessions = state_clone.sessions.write();
-            if let Some(session) = sessions.iter_mut().find(|s| s.id == sid) {
-                session.state = format!("failed: {e}");
-            }
-        }
-    });
-
-    Ok(Json(serde_json::json!({
-        "session_id": session_id,
-        "status": "started",
-        "participants": NUM_PARTICIPANTS,
-        "estimated_duration_minutes": 30,
-    })))
-}
-
-async fn run_wraith_simulation(
-    state: Arc<AppState>,
-    session_id: String,
-    num_participants: usize,
-) -> Result<(), String> {
-    let rpc = &state.rpc;
-
-    // Step 1: Create funded UTXOs — one per participant
-    info!(session_id = %session_id, "Step 1: Creating {} funded UTXOs", num_participants);
-    update_sim_state(&state, &session_id, "sim_creating_utxos");
-
-    let mut addresses = Vec::with_capacity(num_participants);
-    for _ in 0..num_participants {
-        let addr = rpc
-            .get_new_address()
-            .await
-            .map_err(|e| format!("getnewaddress failed: {e}"))?;
-        addresses.push(addr);
-    }
-
-    // Build sendmany destinations (amounts in BTC as floats)
-    // Each participant needs: output_sats + phase2_fee_share + phase1_fee_share + buffer
-    // Micro: 100,000 + ~1,612 + ~1,462 + buffer ≈ 110,000 sats each
-    let mut destinations = serde_json::Map::new();
-    let amount_btc = 110_000.0 / 100_000_000.0;
-    for addr in &addresses {
-        destinations.insert(addr.clone(), serde_json::json!(amount_btc));
-    }
-
-    let funding_txid_val: serde_json::Value = rpc
-        .call_raw(
-            "sendmany",
-            vec![
-                serde_json::json!(""),                          // dummy
-                serde_json::Value::Object(destinations),        // amounts
-                serde_json::json!(1),                           // minconf
-                serde_json::json!(""),                          // comment
-                serde_json::json!([]),                          // subtractfeefrom
-                serde_json::json!(true),                        // replaceable
-                serde_json::Value::Null,                        // conf_target (null to avoid conflict)
-                serde_json::json!("unset"),                     // estimate_mode
-                serde_json::json!(1),                           // fee_rate: 1 sat/vB
-            ],
-        )
-        .await
-        .map_err(|e| format!("sendmany failed: {e}"))?;
-    let funding_txid = funding_txid_val
-        .as_str()
-        .ok_or_else(|| format!("sendmany returned non-string: {funding_txid_val}"))?
-        .to_string();
-
-    info!(session_id = %session_id, txid = %funding_txid, "Funding tx sent");
-
-    // Step 2: Wait briefly for tx propagation (skip confirmation wait — blocks may not be mined)
-    info!(session_id = %session_id, "Step 2: Waiting for tx propagation");
-    update_sim_state(&state, &session_id, "sim_waiting_funding");
-
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    info!(session_id = %session_id, "Funding tx in mempool, proceeding without confirmation");
-
-    // Get the UTXO details for each participant
-    let funding_tx: serde_json::Value = rpc
-        .get_raw_transaction(&funding_txid, true)
-        .await
-        .map_err(|e| format!("getrawtransaction failed: {e}"))?;
-
-    let vouts = funding_tx
-        .get("vout")
-        .and_then(|v| v.as_array())
-        .ok_or("No vout array in funding tx")?;
-
-    // Map address -> (vout, amount, scriptPubKey)
-    let mut utxo_map: std::collections::HashMap<String, (u32, u64, String)> =
-        std::collections::HashMap::new();
-    for vout_obj in vouts {
-        let n = vout_obj.get("n").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let value_btc = vout_obj
-            .get("value")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let amount_sats = (value_btc * 100_000_000.0).round() as u64;
-        let script_hex = vout_obj
-            .get("scriptPubKey")
-            .and_then(|v| v.get("hex"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let addr = vout_obj
-            .get("scriptPubKey")
-            .and_then(|v| v.get("address"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !addr.is_empty() {
-            utxo_map.insert(
-                addr.to_string(),
-                (n, amount_sats, script_hex.to_string()),
-            );
-        }
-    }
-
-    // Step 3: Create coordinator
-    info!(session_id = %session_id, "Step 3: Creating WraithCoordinator");
-    update_sim_state(&state, &session_id, "sim_creating_coordinator");
-
-    // Shared state for the broadcaster (populated during simulation steps)
-    // Keys: WIF-encoded secret keys for intermediate outputs
-    // Prevtxs: (txid, vout, scriptPubKey_hex, amount_btc) for segwit signing
-    let intermediate_keys: std::sync::Arc<parking_lot::Mutex<Vec<String>>> =
-        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let intermediate_prevtxs: std::sync::Arc<parking_lot::Mutex<Vec<serde_json::Value>>> =
-        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let keys_for_broadcast = intermediate_keys.clone();
-    let prevtxs_for_broadcast = intermediate_prevtxs.clone();
-    let rpc_for_broadcast = state.rpc.clone();
-
-    let mut coordinator = WraithCoordinator::new(
-        ParticipantTier::Micro,
-        WraithDenomination::Micro,
-        state.network,
-        SessionType::Mix,
-    )
-    .map_err(|e| format!("WraithCoordinator::new failed: {e}"))?
-    .without_utxo_required_for_registration()
-    .with_broadcaster(move |tx_hex: &str| {
-        let rpc = rpc_for_broadcast.clone();
-        let hex = tx_hex.to_string();
-        let privkeys = keys_for_broadcast.lock().clone();
-        let prevtxs = prevtxs_for_broadcast.lock().clone();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                // Try wallet signing first (works for Phase 1 inputs)
-                let signed = rpc
-                    .sign_raw_transaction_with_wallet(&hex)
-                    .await
-                    .map_err(|e| format!("wallet sign failed: {e}"))?;
-                if signed.complete {
-                    return rpc
-                        .send_raw_transaction(&signed.hex)
-                        .await
-                        .map_err(|e| format!("broadcast failed: {e}"));
-                }
-                // Phase 2: wallet signing incomplete, use intermediate privkeys + prevtxs
-                if privkeys.is_empty() {
-                    return Err("Signing incomplete and no intermediate keys available".to_string());
-                }
-                // signrawtransactionwithkey(hex, [privkeys], [prevtxs])
-                let result: serde_json::Value = rpc
-                    .call_raw(
-                        "signrawtransactionwithkey",
-                        vec![
-                            serde_json::json!(signed.hex),
-                            serde_json::json!(privkeys),
-                            serde_json::json!(prevtxs),
-                        ],
-                    )
-                    .await
-                    .map_err(|e| format!("signrawtransactionwithkey failed: {e}"))?;
-                let final_hex = result
-                    .get("hex")
-                    .and_then(|v| v.as_str())
-                    .ok_or("No hex in signrawtransactionwithkey response")?;
-                let complete = result
-                    .get("complete")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if !complete {
-                    let errors = result.get("errors").cloned().unwrap_or_default();
-                    return Err(format!("Phase 2 signing incomplete: {errors}"));
-                }
-                rpc.send_raw_transaction(final_hex)
-                    .await
-                    .map_err(|e| format!("broadcast failed: {e}"))
-            })
-        })
-    });
-
-    let coordinator_pubkey = *coordinator.coordinator_public_key();
-    let coordinator_key_id = *coordinator.coordinator_key_id();
-
-    // Step 4: Register participants
-    info!(session_id = %session_id, "Step 4: Registering {} participants", num_participants);
-    update_sim_state(&state, &session_id, "sim_registering");
-
-    let mut ghost_ids = Vec::with_capacity(num_participants);
-    for i in 0..num_participants {
-        let ghost_id = format!("ghost1_sim_{i}");
-        coordinator
-            .register_participant(ghost_id.clone())
-            .map_err(|e| format!("register_participant failed: {e}"))?;
-        ghost_ids.push(ghost_id);
-    }
-
-    // Start collecting inputs
-    coordinator
-        .start_collecting()
-        .map_err(|e| format!("start_collecting failed: {e}"))?;
-
-    // Step 5: Submit inputs
-    info!(session_id = %session_id, "Step 5: Submitting inputs");
-    update_sim_state(&state, &session_id, "sim_submitting_inputs");
-
-    let funding_txid_parsed: bitcoin::Txid = funding_txid
-        .parse()
-        .map_err(|e| format!("parse txid: {e}"))?;
-
-    for (i, ghost_id) in ghost_ids.iter().enumerate() {
-        let addr = &addresses[i];
-        let (vout, amount, script_hex) = utxo_map
-            .get(addr)
-            .ok_or_else(|| format!("No UTXO found for address {addr}"))?;
-
-        let script_bytes =
-            hex::decode(script_hex).map_err(|e| format!("decode script: {e}"))?;
-
-        let input = WraithInput {
-            txid: funding_txid_parsed,
-            vout: *vout,
-            amount: *amount,
-            script_pubkey: bitcoin::ScriptBuf::from(script_bytes),
-            participant_id: i as u32,
-        };
-
-        coordinator
-            .submit_input(ghost_id, input)
-            .map_err(|e| format!("submit_input failed for {ghost_id}: {e}"))?;
-    }
-
-    // Step 6: Blind signature ceremony
-    info!(session_id = %session_id, "Step 6: Running blind signature ceremony");
-    update_sim_state(&state, &session_id, "sim_blind_signatures");
-
-    let outputs_per = coordinator.outputs_per_participant();
-
-    for (i, ghost_id) in ghost_ids.iter().enumerate() {
-        // Request all nonces at once (returns outputs_per_participant nonces)
-        let nonces = coordinator
-            .request_nonces(ghost_id)
-            .map_err(|e| format!("request_nonces failed: {e}"))?;
-
-        // Create blinding contexts and challenges for each nonce
-        let mut contexts = Vec::with_capacity(outputs_per);
-        let mut challenges = Vec::with_capacity(outputs_per);
-
-        for nonce in &nonces {
-            // Generate a valid x-only pubkey as the message (used as intermediate output key)
-            let secp = secp256k1::Secp256k1::new();
-            let mut key_bytes = [0u8; 32];
-            getrandom::getrandom(&mut key_bytes).map_err(|e| format!("getrandom failed: {e}"))?;
-            // Ensure valid secret key (non-zero, within curve order)
-            key_bytes[0] = key_bytes[0].max(1);
-            let mut sk = secp256k1::SecretKey::from_slice(&key_bytes)
-                .map_err(|e| format!("SecretKey generation failed: {e}"))?;
-            let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
-            let (xonly, parity) = pk.x_only_public_key();
-            // Coordinator uses 0x02 (even) prefix for P2WPKH addresses.
-            // Negate the key if parity is odd so signing matches.
-            if parity == bitcoin::secp256k1::Parity::Odd {
-                sk = sk.negate();
-            }
-            // Store WIF-encoded key for Phase 2 signing
-            let privkey = bitcoin::PrivateKey::new(sk, state.network);
-            intermediate_keys.lock().push(privkey.to_wif());
-            let message = xonly.serialize().to_vec();
-            let ctx = BlindingContext::new(message, &coordinator_pubkey, nonce)
-                .map_err(|e| format!("BlindingContext::new failed: {e}"))?;
-            let challenge = ctx
-                .create_blinded_challenge()
-                .map_err(|e| format!("create_blinded_challenge failed: {e}"))?;
-            challenges.push(challenge);
-            contexts.push(ctx);
-        }
-
-        // Submit all challenges at once
-        let responses = coordinator
-            .submit_blinded_challenges(ghost_id, challenges)
-            .map_err(|e| format!("submit_blinded_challenges failed: {e}"))?;
-
-        // Unblind all tokens
-        let mut tokens = Vec::with_capacity(outputs_per);
-        for (ctx, resp) in contexts.iter().zip(responses.iter()) {
-            let token = ctx
-                .unblind(resp, coordinator_key_id)
-                .map_err(|e| format!("unblind failed: {e}"))?;
-            tokens.push(token);
-        }
-
-        // Step 7: Submit anonymous tokens with fresh final address
-        let final_addr = rpc
-            .get_new_address()
-            .await
-            .map_err(|e| format!("getnewaddress for final: {e}"))?;
-
-        coordinator
-            .submit_tokens_with_address_anonymous(tokens, final_addr)
-            .map_err(|e| format!("submit_anonymous failed for participant {i}: {e}"))?;
-    }
-
-    // Step 8: Build Phase 1
-    info!(session_id = %session_id, "Step 8: Building Phase 1");
-    update_sim_state(&state, &session_id, "sim_building_phase1");
-
-    let phase1_tx = coordinator
-        .build_phase1()
-        .map_err(|e| format!("build_phase1 failed: {e}"))?;
-    let phase1_hex = bitcoin::consensus::encode::serialize_hex(&phase1_tx.transaction);
-    // Save Phase 1 output details for Phase 2 prevtxs (extract before borrow ends)
-    let phase1_outputs_for_prevtxs: Vec<(u32, u64, String)> = phase1_tx
-        .transaction
-        .output
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| o.value.to_sat() > 0) // Skip OP_RETURN
-        .map(|(vout, o)| {
-            (
-                vout as u32,
-                o.value.to_sat(),
-                hex::encode(o.script_pubkey.as_bytes()),
-            )
-        })
-        .collect();
-    info!(
-        session_id = %session_id,
-        outputs = phase1_tx.intermediate_count,
-        "Phase 1 transaction built"
-    );
-
-    // Step 9: Sign + Broadcast Phase 1 (via coordinator's broadcast callback)
-    info!(session_id = %session_id, "Step 9: Signing and broadcasting Phase 1");
-    update_sim_state(&state, &session_id, "sim_broadcasting_phase1");
-
-    let phase1_txid = coordinator
-        .broadcast_phase1(&phase1_hex)
-        .map_err(|e| format!("broadcast_phase1 failed: {e}"))?;
-    info!(session_id = %session_id, txid = %phase1_txid, "Phase 1 broadcast");
-
-    // Step 10: Skip confirmation wait (blocks may not be mining on signet)
-    info!(session_id = %session_id, "Step 10: Phase 1 in mempool, proceeding");
-    update_sim_state(&state, &session_id, "sim_confirming_phase1");
-
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    // Step 11: Confirm Phase 1 (using current block height)
-    let block_height = rpc.get_block_count().await.unwrap_or(0) as u32;
-    coordinator
-        .confirm_phase1(block_height)
-        .map_err(|e| format!("confirm_phase1 failed: {e}"))?;
-    info!(session_id = %session_id, "Phase 1 confirmed at height {}", block_height);
-
-    // Populate prevtxs from Phase 1 outputs for Phase 2 signing
-    {
-        let mut prevtxs = intermediate_prevtxs.lock();
-        for (vout, amount_sats, script_hex) in &phase1_outputs_for_prevtxs {
-            prevtxs.push(serde_json::json!({
-                "txid": phase1_txid,
-                "vout": vout,
-                "scriptPubKey": script_hex,
-                "amount": *amount_sats as f64 / 100_000_000.0
-            }));
-        }
-    }
-
-    // Step 12: Build Phase 2
-    info!(session_id = %session_id, "Step 12: Building Phase 2");
-    update_sim_state(&state, &session_id, "sim_building_phase2");
-
-    let phase2_tx = coordinator
-        .build_phase2()
-        .map_err(|e| format!("build_phase2 failed: {e}"))?;
-    let phase2_hex = bitcoin::consensus::encode::serialize_hex(&phase2_tx.transaction);
-    info!(session_id = %session_id, "Phase 2 transaction built");
-
-    // Step 13: Sign + Broadcast Phase 2 (via coordinator's broadcast callback)
-    info!(session_id = %session_id, "Step 13: Signing and broadcasting Phase 2");
-    update_sim_state(&state, &session_id, "sim_broadcasting_phase2");
-
-    let phase2_txid = coordinator
-        .broadcast_phase2(&phase2_hex)
-        .map_err(|e| format!("broadcast_phase2 failed: {e}"))?;
-    info!(session_id = %session_id, txid = %phase2_txid, "Phase 2 broadcast");
-
-    // Step 14: Skip confirmation wait (blocks may not be mining on signet)
-    info!(session_id = %session_id, "Step 14: Phase 2 in mempool, proceeding");
-    update_sim_state(&state, &session_id, "sim_confirming_phase2");
-
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    // Step 15: Confirm Phase 2 (using current block height)
-    let block_height2 = rpc.get_block_count().await.unwrap_or(0) as u32;
-    coordinator
-        .confirm_phase2(block_height2)
-        .map_err(|e| format!("confirm_phase2 failed: {e}"))?;
-    info!(session_id = %session_id, "Phase 2 confirmed — session complete");
-
-    // Step 16: Track wraith fee
-    let epoch = ghost_common::constants::l2_epoch_from_height(block_height2 as u64);
-    let total_fee = WraithDenomination::Micro.service_fee() * num_participants as u64;
-    if let Err(e) = state.db.increment_wraith_fee(epoch, total_fee) {
-        warn!(error = %e, "Failed to track wraith simulation fee");
-    } else {
-        info!(
-            session_id = %session_id,
-            total_fee,
-            epoch,
-            "Wraith simulation fee tracked"
-        );
-    }
-
-    // Step 17: Update session state to complete
-    update_sim_state(&state, &session_id, "complete");
-    info!(session_id = %session_id, "Wraith simulation complete");
-
-    Ok(())
-}
-
-fn update_sim_state(state: &AppState, session_id: &str, new_state: &str) {
-    let mut sessions = state.sessions.write();
-    if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-        session.state = new_state.to_string();
-    }
-}
 
 /// Execute a settlement batch for a set of withdrawal requests.
 ///
@@ -8167,8 +6832,9 @@ async fn send_l2_payment(
             conn.execute(
                 "INSERT INTO accepted_instant_payments \
                  (payment_id, sender_lock_id, merchant_wallet_id, amount_sats, \
-                  accepted_at, settlement_block, confidence, sender_pubkey, signature) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 0.0, ?6, X'00')",
+                  accepted_at, settlement_block, confidence, sender_pubkey, signature, \
+                  sender_ghost_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 0.0, ?6, X'00', ?7)",
                 rusqlite::params![
                     pid.as_bytes(),
                     gid,
@@ -8176,6 +6842,7 @@ async fn send_l2_payment(
                     amount as i64,
                     now,
                     pubkey_bytes,
+                    gid,
                 ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -8200,6 +6867,143 @@ async fn send_l2_payment(
             "L2 payment of {} sats recorded. Submit ZK proof via /api/v1/confidential/transfer to complete.",
             req.amount_sats
         )
+    })))
+}
+
+/// Query parameters for `GET /api/v1/transactions`.
+#[derive(Debug, Deserialize)]
+struct TransactionsQuery {
+    ghost_id: String,
+    #[serde(default = "default_tx_limit")]
+    limit: u32,
+    #[serde(default)]
+    offset: u32,
+}
+
+fn default_tx_limit() -> u32 {
+    50
+}
+
+/// GET /api/v1/transactions — L2 ledger entries for a given ghost_id.
+///
+/// Returns both sent and received L2 instant payments, signed so the wallet
+/// can render them as a single time-ordered history. `block_height` is the
+/// L1 settlement block (None while pending); `confirmations` is computed
+/// against the bitcoin RPC tip. There is no on-chain tx for L2 transfers,
+/// so `txid` carries the L2 `payment_id`.
+async fn list_transactions(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<TransactionsQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if q.ghost_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let limit = q.limit.clamp(1, 500);
+    let offset = q.offset;
+
+    let tip_height = state.rpc.get_block_count().await.unwrap_or(0) as i64;
+
+    let gid_recv = q.ghost_id.clone();
+    let gid_send = q.ghost_id.clone();
+    let rows: Vec<(String, i64, i64, i64, String, Option<String>)> = state
+        .db
+        .with_connection(|conn| {
+            // Two arms: receive (merchant_wallet_id matches) and send
+            // (sender_ghost_id matches). UNION ALL preserves both sides
+            // of a self-payment, which is what the wallet wants.
+            let sql = "
+                SELECT
+                    hex(payment_id)        AS txid_hex,
+                    settlement_block       AS block_height,
+                    accepted_at            AS ts,
+                    amount_sats            AS amount_abs,
+                    'receive'              AS tx_type,
+                    NULL                   AS memo
+                FROM accepted_instant_payments
+                WHERE merchant_wallet_id = ?1
+                UNION ALL
+                SELECT
+                    hex(payment_id),
+                    settlement_block,
+                    accepted_at,
+                    amount_sats,
+                    'send',
+                    NULL
+                FROM accepted_instant_payments
+                WHERE sender_ghost_id = ?2
+                ORDER BY ts DESC
+                LIMIT ?3 OFFSET ?4
+            ";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            let mut out = Vec::new();
+            let mut q_rows = stmt
+                .query(rusqlite::params![
+                    gid_recv,
+                    gid_send,
+                    limit as i64,
+                    offset as i64,
+                ])
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            while let Some(row) = q_rows
+                .next()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+            {
+                let txid: String = row.get(0).map_err(|e| GhostError::Database(e.to_string()))?;
+                let block_height: i64 =
+                    row.get(1).map_err(|e| GhostError::Database(e.to_string()))?;
+                let ts: i64 = row.get(2).map_err(|e| GhostError::Database(e.to_string()))?;
+                let amount_abs: i64 =
+                    row.get(3).map_err(|e| GhostError::Database(e.to_string()))?;
+                let tx_type: String =
+                    row.get(4).map_err(|e| GhostError::Database(e.to_string()))?;
+                let memo: Option<String> =
+                    row.get(5).map_err(|e| GhostError::Database(e.to_string()))?;
+                out.push((txid, block_height, ts, amount_abs, tx_type, memo));
+            }
+            Ok(out)
+        })
+        .map_err(|e| {
+            error!("Failed to query L2 transactions: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let total = rows.len() as u32;
+    let transactions: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(txid, block_height, ts, amount_abs, tx_type, memo)| {
+            let signed_amount = if tx_type == "send" {
+                -amount_abs
+            } else {
+                amount_abs
+            };
+            let block_height_json = if block_height > 0 {
+                serde_json::json!(block_height as u32)
+            } else {
+                serde_json::Value::Null
+            };
+            let confirmations = if block_height > 0 && tip_height >= block_height {
+                (tip_height - block_height + 1) as u32
+            } else {
+                0
+            };
+            serde_json::json!({
+                "txid": txid.to_lowercase(),
+                "block_height": block_height_json,
+                "timestamp": ts,
+                "amount_sats": signed_amount,
+                "fee_sats": 0u64,
+                "tx_type": tx_type,
+                "confirmations": confirmations,
+                "memo": memo,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "transactions": transactions,
+        "total": total,
     })))
 }
 
