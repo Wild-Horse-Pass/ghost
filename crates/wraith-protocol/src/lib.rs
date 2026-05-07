@@ -105,9 +105,10 @@ pub use bond::{
 
 pub mod lite_session;
 pub use lite_session::{
-    find_or_create_session, Clock, DeterministicSessionIdGenerator, LiteSession,
-    LiteSessionError, LiteSessionParticipant, LiteSessionRegistry, LiteSessionState,
-    MockClock, RandomSessionIdGenerator, SessionDescriptor, SessionIdGenerator, SystemClock,
+    find_or_create_session, Clock, DeterministicSessionIdGenerator, GossipSink, LiteSession,
+    LiteSessionError, LiteSessionParticipant, LiteSessionRegistry, LiteSessionState, MockClock,
+    NullGossipSink, RandomSessionIdGenerator, RecordingGossipSink, SessionDescriptor,
+    SessionGossipEvent, SessionIdGenerator, SystemClock,
 };
 
 /// Session type determines fee structure

@@ -329,25 +329,214 @@ impl SessionIdGenerator for DeterministicSessionIdGenerator {
 }
 
 // ---------------------------------------------------------------------------
+// Gossip events — replicate session state Active → Standbys
+// ---------------------------------------------------------------------------
+
+/// Atomic state-change event emitted by the Active coordinator and
+/// applied by Standbys to mirror the Active's `LiteSessionRegistry`.
+///
+/// On Active failover (DESIGN_LITE.md §7), the highest-trust Standby is
+/// promoted; whichever events that Standby has received form the new
+/// Active's starting state. Events are designed to be **idempotent** —
+/// applying the same event twice produces the same end state — so a
+/// Standby that briefly disconnects and reconnects can safely replay
+/// the missed range.
+///
+/// Events are NOT designed for cross-coordinator-pool replay. The
+/// Active's session_id namespace is the pool's; a fresh pool starts
+/// from an empty registry and accumulates state via these events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionGossipEvent {
+    /// New session was created on the Active. Carries the full initial
+    /// session state. Standby creates the session if missing,
+    /// overwrites if present (the Active's view is canonical).
+    SessionCreated { session: LiteSession },
+
+    /// A participant was added to a session. Carries the new
+    /// participant + the resulting state (the state may have advanced
+    /// from `Filling` to `Locked` if this was the last slot).
+    ///
+    /// On the receiving side, if the session is missing, the event is
+    /// dropped with a warning — the receiver missed `SessionCreated`
+    /// and a future snapshot will reconcile.
+    ParticipantAdded {
+        session_id: String,
+        participant: LiteSessionParticipant,
+        new_state: LiteSessionState,
+    },
+
+    /// State transition that wasn't already covered by a
+    /// `ParticipantAdded` (e.g. tick-driven `Filling → Locked` /
+    /// `Filling → Failed`, or strict transitions to `Signing` /
+    /// `Broadcasting` / `Complete`).
+    StateChanged {
+        session_id: String,
+        new_state: LiteSessionState,
+    },
+}
+
+/// Sink for outbound gossip events from the Active coordinator.
+/// Production binding wraps the existing heartbeat / messaging layer in
+/// `coordinator_redundancy.rs` (task #40 wires this up). Tests use
+/// `RecordingGossipSink` to capture and assert on the event stream.
+///
+/// Sync (not async) so the registry's mutating methods can publish
+/// without leaking `Future`s through the public API. Production sinks
+/// are expected to enqueue and return immediately, doing the actual
+/// network I/O on a background task — slow sinks will back up the
+/// coordinator's hot path.
+pub trait GossipSink: Send + Sync {
+    fn publish(&self, event: SessionGossipEvent);
+}
+
+/// `Vec<SessionGossipEvent>` capture for tests + diagnostics.
+/// Thread-safe via internal `Mutex`. Use `events()` to snapshot the
+/// captured queue without consuming it.
+pub struct RecordingGossipSink {
+    events: Mutex<Vec<SessionGossipEvent>>,
+}
+
+impl Default for RecordingGossipSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RecordingGossipSink {
+    pub fn new() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Snapshot the captured events. Drains by `clone()`, doesn't
+    /// consume — multiple snapshots of the same sink return the same
+    /// (or growing) sequence.
+    pub fn events(&self) -> Vec<SessionGossipEvent> {
+        self.events.lock().expect("sink mutex").clone()
+    }
+
+    /// Number of events captured so far.
+    pub fn len(&self) -> usize {
+        self.events.lock().expect("sink mutex").len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl GossipSink for RecordingGossipSink {
+    fn publish(&self, event: SessionGossipEvent) {
+        self.events.lock().expect("sink mutex").push(event);
+    }
+}
+
+/// `GossipSink` that drops every event. Used by Standby registries
+/// (which receive events but don't republish — preventing event echo
+/// loops) and by tests that don't care about captured events.
+pub struct NullGossipSink;
+
+impl GossipSink for NullGossipSink {
+    fn publish(&self, _event: SessionGossipEvent) {}
+}
+
+// ---------------------------------------------------------------------------
 // Registry — collection of all in-flight sessions on the Active coordinator
 // ---------------------------------------------------------------------------
 
 /// Coordinator-side registry of in-flight Wraith Lite sessions. One
-/// instance per Active coordinator; standbys hold a replicated copy
-/// updated via gossip (task #38).
+/// instance per Active coordinator; Standbys hold a replicated copy
+/// updated via [`SessionGossipEvent`]s.
 ///
 /// Internally a `Mutex<HashMap>`. Reads are common (every wallet RPC
 /// pokes the registry) but contention should be low — operations are
 /// short and the hashmap is small (sessions in flight, not lifetime
 /// total).
+///
+/// The optional `gossip` sink is set on Active registries; mutating
+/// methods publish events to it after applying changes. Standby
+/// registries leave it unset (or use `NullGossipSink`) — they receive
+/// events via [`apply_event`](Self::apply_event) instead.
 pub struct LiteSessionRegistry {
     sessions: Mutex<HashMap<String, LiteSession>>,
+    gossip: Option<Box<dyn GossipSink>>,
 }
 
 impl LiteSessionRegistry {
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            gossip: None,
+        }
+    }
+
+    /// Construct a registry that publishes state changes to `sink`. Used
+    /// on the Active coordinator. The sink takes ownership; clone
+    /// `Arc<dyn GossipSink>` externally if you need shared ownership
+    /// across more than one consumer.
+    pub fn with_gossip_sink(sink: Box<dyn GossipSink>) -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            gossip: Some(sink),
+        }
+    }
+
+    /// Apply an inbound gossip event to this registry. Used by Standbys
+    /// to mirror the Active's state. Idempotent — applying the same
+    /// event twice converges to the same state, never drifts.
+    ///
+    /// `Ok(())` even on no-op apply (event already reflected in
+    /// state); only returns `Err` for events that reference a session
+    /// the Standby has never seen (`ParticipantAdded`/`StateChanged`
+    /// without a prior `SessionCreated`). The caller logs the warning
+    /// and waits for the next snapshot to reconcile — the event itself
+    /// isn't replayable in isolation.
+    pub fn apply_event(&self, event: SessionGossipEvent) -> Result<(), LiteSessionError> {
+        let mut guard = self.sessions.lock().expect("registry mutex");
+        match event {
+            SessionGossipEvent::SessionCreated { session } => {
+                // Insert or overwrite — Active's view is canonical.
+                guard.insert(session.session_id.clone(), session);
+                Ok(())
+            }
+            SessionGossipEvent::ParticipantAdded {
+                session_id,
+                participant,
+                new_state,
+            } => {
+                let session = guard
+                    .get_mut(&session_id)
+                    .ok_or_else(|| LiteSessionError::NotFound(session_id.clone()))?;
+                // Idempotency: if the participant is already there, no-op.
+                if !session
+                    .participants
+                    .iter()
+                    .any(|p| p.ghost_id == participant.ghost_id)
+                {
+                    session.participants.push(participant);
+                }
+                session.state = new_state;
+                Ok(())
+            }
+            SessionGossipEvent::StateChanged {
+                session_id,
+                new_state,
+            } => {
+                let session = guard
+                    .get_mut(&session_id)
+                    .ok_or_else(|| LiteSessionError::NotFound(session_id.clone()))?;
+                session.state = new_state;
+                Ok(())
+            }
+        }
+    }
+
+    /// Internal: publish to the gossip sink if one is configured. No-op
+    /// on Standby registries.
+    fn gossip(&self, event: SessionGossipEvent) {
+        if let Some(sink) = &self.gossip {
+            sink.publish(event);
         }
     }
 
@@ -399,21 +588,30 @@ impl LiteSessionRegistry {
     /// Refuses to overwrite an existing session_id (would indicate an
     /// id-generator collision; production CSPRNG makes this
     /// vanishingly unlikely but the assert catches dev/test mistakes).
+    /// Publishes `SessionCreated` to the gossip sink.
     fn insert_new(&self, session: LiteSession) -> SessionDescriptor {
         let descriptor = SessionDescriptor::from_session(&session);
-        let mut guard = self.sessions.lock().expect("registry mutex");
-        assert!(
-            !guard.contains_key(&session.session_id),
-            "session_id collision (csprng broken or dev test using duplicate id): {}",
-            session.session_id
-        );
-        guard.insert(session.session_id.clone(), session);
+        let event = SessionGossipEvent::SessionCreated {
+            session: session.clone(),
+        };
+        {
+            let mut guard = self.sessions.lock().expect("registry mutex");
+            assert!(
+                !guard.contains_key(&session.session_id),
+                "session_id collision (csprng broken or dev test using duplicate id): {}",
+                session.session_id
+            );
+            guard.insert(session.session_id.clone(), session);
+        }
+        self.gossip(event);
         descriptor
     }
 
     /// Add a participant to an existing session. Validates state +
     /// uniqueness, transitions to `Locked` if the round is now full.
-    /// Returns the updated descriptor.
+    /// Returns the updated descriptor. Publishes `ParticipantAdded` to
+    /// the gossip sink — Standbys learn about both the new slot and
+    /// any state transition that fell out of it.
     pub fn add_participant(
         &self,
         session_id: &str,
@@ -421,52 +619,64 @@ impl LiteSessionRegistry {
         bond_id: BondId,
         now: u64,
     ) -> Result<SessionDescriptor, LiteSessionError> {
-        let mut guard = self.sessions.lock().expect("registry mutex");
-        let session = guard
-            .get_mut(session_id)
-            .ok_or_else(|| LiteSessionError::NotFound(session_id.to_string()))?;
-        // Must be Filling, and not yet expired/full.
-        match &session.state {
-            LiteSessionState::Filling {
-                fill_window_expires_at,
-            } => {
-                if now >= *fill_window_expires_at {
+        let (descriptor, event) = {
+            let mut guard = self.sessions.lock().expect("registry mutex");
+            let session = guard
+                .get_mut(session_id)
+                .ok_or_else(|| LiteSessionError::NotFound(session_id.to_string()))?;
+            // Must be Filling, and not yet expired/full.
+            match &session.state {
+                LiteSessionState::Filling {
+                    fill_window_expires_at,
+                } => {
+                    if now >= *fill_window_expires_at {
+                        return Err(LiteSessionError::NotAcceptingParticipants(
+                            session_id.to_string(),
+                            "filling-expired",
+                        ));
+                    }
+                }
+                other => {
                     return Err(LiteSessionError::NotAcceptingParticipants(
                         session_id.to_string(),
-                        "filling-expired",
+                        other.as_str(),
                     ));
                 }
             }
-            other => {
-                return Err(LiteSessionError::NotAcceptingParticipants(
+            if session.participants.len() >= session.tier.max_participants() {
+                return Err(LiteSessionError::Full(
                     session_id.to_string(),
-                    other.as_str(),
+                    session.tier.max_participants() as u32,
                 ));
             }
-        }
-        if session.participants.len() >= session.tier.max_participants() {
-            return Err(LiteSessionError::Full(
-                session_id.to_string(),
-                session.tier.max_participants() as u32,
-            ));
-        }
-        if session.participants.iter().any(|p| p.ghost_id == ghost_id) {
-            return Err(LiteSessionError::AlreadyRegistered(
-                ghost_id.to_string(),
-                session_id.to_string(),
-            ));
-        }
-        session.participants.push(LiteSessionParticipant {
-            ghost_id: ghost_id.to_string(),
-            bond_id,
-            registered_at: now,
-        });
-        // Lock immediately if we hit max — otherwise wait for the fill
-        // window to expire.
-        if session.participants.len() >= session.tier.max_participants() {
-            session.state = LiteSessionState::Locked;
-        }
-        Ok(SessionDescriptor::from_session(session))
+            if session.participants.iter().any(|p| p.ghost_id == ghost_id) {
+                return Err(LiteSessionError::AlreadyRegistered(
+                    ghost_id.to_string(),
+                    session_id.to_string(),
+                ));
+            }
+            let participant = LiteSessionParticipant {
+                ghost_id: ghost_id.to_string(),
+                bond_id,
+                registered_at: now,
+            };
+            session.participants.push(participant.clone());
+            // Lock immediately if we hit max — otherwise wait for the
+            // fill window to expire.
+            if session.participants.len() >= session.tier.max_participants() {
+                session.state = LiteSessionState::Locked;
+            }
+            (
+                SessionDescriptor::from_session(session),
+                SessionGossipEvent::ParticipantAdded {
+                    session_id: session_id.to_string(),
+                    participant,
+                    new_state: session.state.clone(),
+                },
+            )
+        };
+        self.gossip(event);
+        Ok(descriptor)
     }
 
     /// Process time-based transitions: any session whose fill window has
@@ -479,25 +689,35 @@ impl LiteSessionRegistry {
     /// in task #38).
     pub fn tick(&self, now: u64) -> Vec<String> {
         let mut changed = Vec::new();
-        let mut guard = self.sessions.lock().expect("registry mutex");
-        for (id, session) in guard.iter_mut() {
-            let should_advance = match &session.state {
-                LiteSessionState::Filling {
-                    fill_window_expires_at,
-                } => now >= *fill_window_expires_at,
-                _ => false,
-            };
-            if !should_advance {
-                continue;
-            }
-            if session.participants.len() >= session.tier.min_participants() {
-                session.state = LiteSessionState::Locked;
-            } else {
-                session.state = LiteSessionState::Failed {
-                    reason: "fill-window-expired-without-quorum".to_string(),
+        let mut events: Vec<SessionGossipEvent> = Vec::new();
+        {
+            let mut guard = self.sessions.lock().expect("registry mutex");
+            for (id, session) in guard.iter_mut() {
+                let should_advance = match &session.state {
+                    LiteSessionState::Filling {
+                        fill_window_expires_at,
+                    } => now >= *fill_window_expires_at,
+                    _ => false,
                 };
+                if !should_advance {
+                    continue;
+                }
+                if session.participants.len() >= session.tier.min_participants() {
+                    session.state = LiteSessionState::Locked;
+                } else {
+                    session.state = LiteSessionState::Failed {
+                        reason: "fill-window-expired-without-quorum".to_string(),
+                    };
+                }
+                events.push(SessionGossipEvent::StateChanged {
+                    session_id: id.clone(),
+                    new_state: session.state.clone(),
+                });
+                changed.push(id.clone());
             }
-            changed.push(id.clone());
+        }
+        for ev in events {
+            self.gossip(ev);
         }
         changed
     }
@@ -512,23 +732,33 @@ impl LiteSessionRegistry {
         session_id: &str,
         reason: impl Into<String>,
     ) -> Result<SessionDescriptor, LiteSessionError> {
-        let mut guard = self.sessions.lock().expect("registry mutex");
-        let session = guard
-            .get_mut(session_id)
-            .ok_or_else(|| LiteSessionError::NotFound(session_id.to_string()))?;
-        match &session.state {
-            LiteSessionState::Complete | LiteSessionState::Failed { .. } => {
-                return Err(LiteSessionError::InvalidTransition {
-                    from: session.state.as_str(),
-                    to: "failed",
-                });
+        let (descriptor, event) = {
+            let mut guard = self.sessions.lock().expect("registry mutex");
+            let session = guard
+                .get_mut(session_id)
+                .ok_or_else(|| LiteSessionError::NotFound(session_id.to_string()))?;
+            match &session.state {
+                LiteSessionState::Complete | LiteSessionState::Failed { .. } => {
+                    return Err(LiteSessionError::InvalidTransition {
+                        from: session.state.as_str(),
+                        to: "failed",
+                    });
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        session.state = LiteSessionState::Failed {
-            reason: reason.into(),
+            session.state = LiteSessionState::Failed {
+                reason: reason.into(),
+            };
+            (
+                SessionDescriptor::from_session(session),
+                SessionGossipEvent::StateChanged {
+                    session_id: session_id.to_string(),
+                    new_state: session.state.clone(),
+                },
+            )
         };
-        Ok(SessionDescriptor::from_session(session))
+        self.gossip(event);
+        Ok(descriptor)
     }
 
     /// Advance a `Locked` session to `Signing`. Called after the round
@@ -565,18 +795,28 @@ impl LiteSessionRegistry {
         from_label: &'static str,
         new_state: LiteSessionState,
     ) -> Result<SessionDescriptor, LiteSessionError> {
-        let mut guard = self.sessions.lock().expect("registry mutex");
-        let session = guard
-            .get_mut(session_id)
-            .ok_or_else(|| LiteSessionError::NotFound(session_id.to_string()))?;
-        if session.state.as_str() != from_label {
-            return Err(LiteSessionError::InvalidTransition {
-                from: session.state.as_str(),
-                to: new_state.as_str(),
-            });
-        }
-        session.state = new_state;
-        Ok(SessionDescriptor::from_session(session))
+        let (descriptor, event) = {
+            let mut guard = self.sessions.lock().expect("registry mutex");
+            let session = guard
+                .get_mut(session_id)
+                .ok_or_else(|| LiteSessionError::NotFound(session_id.to_string()))?;
+            if session.state.as_str() != from_label {
+                return Err(LiteSessionError::InvalidTransition {
+                    from: session.state.as_str(),
+                    to: new_state.as_str(),
+                });
+            }
+            session.state = new_state.clone();
+            (
+                SessionDescriptor::from_session(session),
+                SessionGossipEvent::StateChanged {
+                    session_id: session_id.to_string(),
+                    new_state,
+                },
+            )
+        };
+        self.gossip(event);
+        Ok(descriptor)
     }
 }
 
@@ -1076,6 +1316,441 @@ mod tests {
         assert_eq!(g.next_id(), "test-session-0000");
         assert_eq!(g.next_id(), "test-session-0001");
         assert_eq!(g.next_id(), "test-session-0002");
+    }
+
+    // -- Gossip / failover tests ---------------------------------------
+
+    /// Helper: build a fixture with an Active registry that publishes to
+    /// a `RecordingGossipSink`, plus a Standby registry that consumes
+    /// from it manually.
+    fn gossip_fixtures() -> (
+        LiteSessionRegistry,
+        std::sync::Arc<RecordingGossipSink>,
+        LiteSessionRegistry,
+        MockClock,
+        DeterministicSessionIdGenerator,
+    ) {
+        let sink = std::sync::Arc::new(RecordingGossipSink::new());
+        let active = LiteSessionRegistry::with_gossip_sink(Box::new(SinkHandle(sink.clone())));
+        let standby = LiteSessionRegistry::new();
+        (
+            active,
+            sink,
+            standby,
+            MockClock::new(1_000_000),
+            DeterministicSessionIdGenerator::new(),
+        )
+    }
+
+    /// Tiny sink wrapper so an `Arc<RecordingGossipSink>` can be handed to
+    /// the registry's `Box<dyn GossipSink>` slot. The Arc is cloned for
+    /// inspection in tests; the registry just sees a Box impl.
+    struct SinkHandle(std::sync::Arc<RecordingGossipSink>);
+    impl GossipSink for SinkHandle {
+        fn publish(&self, event: SessionGossipEvent) {
+            self.0.publish(event);
+        }
+    }
+
+    #[test]
+    fn session_created_event_published_on_find_or_create() {
+        let (active, sink, _standby, clock, gen) = gossip_fixtures();
+        assert!(sink.is_empty());
+        let _ = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        assert_eq!(sink.len(), 1);
+        match &sink.events()[0] {
+            SessionGossipEvent::SessionCreated { session } => {
+                assert_eq!(session.session_id, "test-session-0000");
+                assert_eq!(session.tier, LiteTier::Denom100kSats);
+                assert!(matches!(session.state, LiteSessionState::Filling { .. }));
+            }
+            other => panic!("expected SessionCreated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn participant_added_event_carries_new_state() {
+        let (active, sink, _standby, clock, gen) = gossip_fixtures();
+        let d = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        active
+            .add_participant(&d.session_id, "alice", BondId::new("bond-a"), 1_000_000)
+            .unwrap();
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            SessionGossipEvent::ParticipantAdded {
+                session_id,
+                participant,
+                new_state,
+            } => {
+                assert_eq!(session_id, &d.session_id);
+                assert_eq!(participant.ghost_id, "alice");
+                assert!(matches!(new_state, LiteSessionState::Filling { .. }));
+            }
+            other => panic!("expected ParticipantAdded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn participant_added_at_max_publishes_locked_state() {
+        let (active, sink, _standby, clock, gen) = gossip_fixtures();
+        let d = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        for i in 0..LiteTier::Denom100kSats.max_participants() {
+            active
+                .add_participant(
+                    &d.session_id,
+                    &format!("g-{i}"),
+                    BondId::new(format!("b-{i}")),
+                    1_000_000,
+                )
+                .unwrap();
+        }
+        // Last ParticipantAdded should carry Locked.
+        let events = sink.events();
+        let last = events.last().unwrap();
+        match last {
+            SessionGossipEvent::ParticipantAdded { new_state, .. } => {
+                assert!(matches!(new_state, LiteSessionState::Locked));
+            }
+            other => panic!("expected ParticipantAdded with Locked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_publishes_state_changed_for_each_advancing_session() {
+        let (active, sink, _standby, clock, gen) = gossip_fixtures();
+        // Two sessions, one will lock, one will fail-without-quorum.
+        let d_quorum = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        for i in 0..LiteTier::Denom100kSats.min_participants() {
+            active
+                .add_participant(
+                    &d_quorum.session_id,
+                    &format!("g-{i}"),
+                    BondId::new(format!("b-{i}")),
+                    clock.unix_secs(),
+                )
+                .unwrap();
+        }
+        let _d_empty = find_or_create_session(
+            LiteTier::Denom1mSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        sink.events(); // checkpoint baseline
+        let baseline = sink.len();
+        clock.advance(LITE_FILL_WINDOW_SECS + 1);
+        let changed = active.tick(clock.unix_secs());
+        assert_eq!(changed.len(), 2);
+        let new_events = &sink.events()[baseline..];
+        assert_eq!(new_events.len(), 2);
+        let states: Vec<_> = new_events
+            .iter()
+            .map(|e| match e {
+                SessionGossipEvent::StateChanged { new_state, .. } => new_state.as_str(),
+                _ => "wrong-event-kind",
+            })
+            .collect();
+        assert!(states.contains(&"locked"));
+        assert!(states.contains(&"failed"));
+    }
+
+    #[test]
+    fn strict_transitions_publish_state_changed() {
+        let (active, sink, _standby, clock, gen) = gossip_fixtures();
+        let d = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        // Fill to max so we're Locked.
+        for i in 0..LiteTier::Denom100kSats.max_participants() {
+            active
+                .add_participant(
+                    &d.session_id,
+                    &format!("g-{i}"),
+                    BondId::new(format!("b-{i}")),
+                    clock.unix_secs(),
+                )
+                .unwrap();
+        }
+        let baseline = sink.len();
+        active.transition_to_signing(&d.session_id).unwrap();
+        active.transition_to_broadcasting(&d.session_id).unwrap();
+        active.transition_to_complete(&d.session_id).unwrap();
+        let new_events = &sink.events()[baseline..];
+        assert_eq!(new_events.len(), 3);
+        let states: Vec<_> = new_events
+            .iter()
+            .filter_map(|e| match e {
+                SessionGossipEvent::StateChanged { new_state, .. } => Some(new_state.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(states, vec!["signing", "broadcasting", "complete"]);
+    }
+
+    #[test]
+    fn fail_session_publishes_state_changed_with_failed() {
+        let (active, sink, _standby, clock, gen) = gossip_fixtures();
+        let d = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        let baseline = sink.len();
+        active.fail_session(&d.session_id, "test-abort").unwrap();
+        let new_events = &sink.events()[baseline..];
+        assert_eq!(new_events.len(), 1);
+        match &new_events[0] {
+            SessionGossipEvent::StateChanged { new_state, .. } => {
+                match new_state {
+                    LiteSessionState::Failed { reason } => assert_eq!(reason, "test-abort"),
+                    other => panic!("expected Failed, got {other:?}"),
+                }
+            }
+            other => panic!("expected StateChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn standby_apply_event_session_created_idempotent() {
+        let (active, sink, standby, clock, gen) = gossip_fixtures();
+        let _ = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        // Apply the captured event.
+        for ev in sink.events() {
+            standby.apply_event(ev).unwrap();
+        }
+        assert_eq!(standby.len(), 1);
+        // Apply the same events again — idempotent, still 1 session.
+        for ev in sink.events() {
+            standby.apply_event(ev).unwrap();
+        }
+        assert_eq!(standby.len(), 1);
+    }
+
+    #[test]
+    fn standby_apply_event_participant_added_is_idempotent() {
+        let (active, sink, standby, clock, gen) = gossip_fixtures();
+        let d = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        active
+            .add_participant(&d.session_id, "alice", BondId::new("bond-a"), 1_000_000)
+            .unwrap();
+        for ev in sink.events() {
+            standby.apply_event(ev).unwrap();
+        }
+        let snap = standby.get(&d.session_id).unwrap();
+        assert_eq!(snap.participants.len(), 1);
+        // Replay all events: still one alice, not two.
+        for ev in sink.events() {
+            standby.apply_event(ev).unwrap();
+        }
+        let snap = standby.get(&d.session_id).unwrap();
+        assert_eq!(snap.participants.len(), 1);
+    }
+
+    #[test]
+    fn standby_apply_event_orphan_participant_yields_not_found() {
+        // Receiving ParticipantAdded for a session we've never seen
+        // returns NotFound — caller logs warning and waits for snapshot.
+        let standby = LiteSessionRegistry::new();
+        let event = SessionGossipEvent::ParticipantAdded {
+            session_id: "ghost-session".into(),
+            participant: LiteSessionParticipant {
+                ghost_id: "alice".into(),
+                bond_id: BondId::new("bond-a"),
+                registered_at: 1_000_000,
+            },
+            new_state: LiteSessionState::Locked,
+        };
+        let err = standby.apply_event(event).unwrap_err();
+        assert!(matches!(err, LiteSessionError::NotFound(_)));
+    }
+
+    #[test]
+    fn standby_apply_event_orphan_state_change_yields_not_found() {
+        let standby = LiteSessionRegistry::new();
+        let event = SessionGossipEvent::StateChanged {
+            session_id: "ghost-session".into(),
+            new_state: LiteSessionState::Locked,
+        };
+        let err = standby.apply_event(event).unwrap_err();
+        assert!(matches!(err, LiteSessionError::NotFound(_)));
+    }
+
+    #[test]
+    fn failover_simulation_standby_inherits_active_state() {
+        // The big one. Active runs through realistic operations; Standby
+        // applies every event as it arrives. After failover (= Active
+        // crashes, Standby promotes), the new Active's session view is
+        // byte-equal to the old Active's. This is the property
+        // DESIGN_LITE.md §7 promises.
+        let (active, sink, standby, clock, gen) = gossip_fixtures();
+
+        // Session A: 100k tier, fills the floor (5), tick to Locked,
+        // strict transition to Signing.
+        let d_a = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        for i in 0..5 {
+            active
+                .add_participant(
+                    &d_a.session_id,
+                    &format!("alice-{i}"),
+                    BondId::new(format!("a-{i}")),
+                    clock.unix_secs(),
+                )
+                .unwrap();
+        }
+        clock.advance(LITE_FILL_WINDOW_SECS + 1);
+        active.tick(clock.unix_secs());
+        active.transition_to_signing(&d_a.session_id).unwrap();
+
+        // Session B: created AFTER A's fill window closed, so its own
+        // fill window starts from the new clock — independent of A.
+        let d_b = find_or_create_session(
+            LiteTier::Denom1mSats,
+            SessionType::Mix,
+            &active,
+            &clock,
+            &gen,
+        );
+        for i in 0..3 {
+            active
+                .add_participant(
+                    &d_b.session_id,
+                    &format!("bob-{i}"),
+                    BondId::new(format!("b-{i}")),
+                    clock.unix_secs(),
+                )
+                .unwrap();
+        }
+        active.fail_session(&d_b.session_id, "operator-abort").unwrap();
+
+        // Failover: Standby applies every captured event in order.
+        // Realistic gossip ordering — the events were emitted in the
+        // same order the operations happened on the Active.
+        for ev in sink.events() {
+            standby
+                .apply_event(ev)
+                .expect("ordered application must succeed");
+        }
+
+        // Promoted Standby's view must equal Active's view —
+        // session-by-session, including state and participant lists.
+        let active_a = active.get(&d_a.session_id).unwrap();
+        let standby_a = standby.get(&d_a.session_id).unwrap();
+        assert_eq!(active_a, standby_a, "100k session diverged");
+
+        let active_b = active.get(&d_b.session_id).unwrap();
+        let standby_b = standby.get(&d_b.session_id).unwrap();
+        assert_eq!(active_b, standby_b, "1m session diverged");
+
+        assert_eq!(standby.len(), active.len());
+    }
+
+    #[test]
+    fn null_gossip_sink_drops_events_silently() {
+        // Standbys explicitly use NullGossipSink to prevent event echo
+        // loops if some misconfigured caller passes a sink to a Standby.
+        let registry = LiteSessionRegistry::with_gossip_sink(Box::new(NullGossipSink));
+        let clock = MockClock::new(1_000_000);
+        let gen = DeterministicSessionIdGenerator::new();
+        let _ = find_or_create_session(
+            LiteTier::Denom100kSats,
+            SessionType::Mix,
+            &registry,
+            &clock,
+            &gen,
+        );
+        // No way to inspect the null sink (by design), but no panic = pass.
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn gossip_event_round_trips_through_serde() {
+        // Wire format must be stable across coordinator pool versions —
+        // pin every variant.
+        let session = LiteSession {
+            session_id: "test".into(),
+            tier: LiteTier::Denom100kSats,
+            session_type: SessionType::Mix,
+            created_at: 1_000_000,
+            state: LiteSessionState::Filling {
+                fill_window_expires_at: 1_000_300,
+            },
+            participants: Vec::new(),
+        };
+        let events = [
+            SessionGossipEvent::SessionCreated {
+                session: session.clone(),
+            },
+            SessionGossipEvent::ParticipantAdded {
+                session_id: "test".into(),
+                participant: LiteSessionParticipant {
+                    ghost_id: "alice".into(),
+                    bond_id: BondId::new("bond-a"),
+                    registered_at: 1_000_000,
+                },
+                new_state: LiteSessionState::Locked,
+            },
+            SessionGossipEvent::StateChanged {
+                session_id: "test".into(),
+                new_state: LiteSessionState::Failed {
+                    reason: "test".into(),
+                },
+            },
+        ];
+        for ev in events {
+            let s = serde_json::to_string(&ev).unwrap();
+            let back: SessionGossipEvent = serde_json::from_str(&s).unwrap();
+            assert_eq!(ev, back);
+        }
     }
 
     #[test]
