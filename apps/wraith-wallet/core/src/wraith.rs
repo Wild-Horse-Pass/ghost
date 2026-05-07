@@ -127,6 +127,36 @@ pub struct MixOutcome {
     pub mixed_output_tx_index: usize,
 }
 
+/// The intermediate result of `prepare_mix`. Carries the assembled
+/// (unsigned) tx and all the metadata the caller needs to produce a
+/// `bitcoin::Witness` for its own input. Pass this to
+/// `submit_witness` once the witness is computed.
+///
+/// Holding a `PreparedMix` does NOT keep the round alive on the
+/// coordinator side — the Signing-state no-sign deadline is ticking.
+/// Sign and submit promptly.
+#[derive(Debug, Clone)]
+pub struct PreparedMix {
+    pub session_id: String,
+    /// The full unsigned round transaction — already mixed with
+    /// other participants' inputs and outputs, just missing
+    /// witnesses.
+    pub unsigned_tx: Transaction,
+    /// Index into `unsigned_tx.input` of THIS wallet's UTXO. The
+    /// caller's signer needs this to compute the right sighash.
+    pub input_index: usize,
+    /// Value of the wallet's input UTXO. Required for BIP-143 /
+    /// BIP-341 sighash computation; not derivable from the unsigned
+    /// tx (it's the prev-out amount, not a tx-internal value).
+    pub prev_amount_sats: u64,
+    /// Index in `unsigned_tx.output` where the wallet's mixed output
+    /// landed. Carry-through to `MixOutcome.mixed_output_tx_index`.
+    pub mixed_output_tx_index: usize,
+    /// Wallet identity — kept for the /witness POST; not used by
+    /// the caller.
+    pub ghost_id: String,
+}
+
 /// The wallet's signing callback. Given the unsigned tx + the index
 /// of this wallet's input, return a `Witness` that satisfies the
 /// input's `script_pubkey`. Real wallets compute the proper sighash
@@ -223,22 +253,65 @@ impl WraithSessionClient {
         })
     }
 
-    /// Drive a single Wraith Lite round end-to-end. The bond escrow
-    /// step is NOT performed by this client — the caller must arrange
-    /// for `BondLedger::verify_bond(ghost_id, session_id, expected)`
-    /// to succeed against the coordinator's ledger before this call
-    /// reaches /inputs. `bond_setup` is a hook that runs once we
-    /// know the session_id, intended for the test path
-    /// (MockBondLedger.escrow) or the production wallet's
-    /// ghost-pay client invocation.
+    /// Drive a single Wraith Lite round end-to-end with a synchronous
+    /// signer callback. Convenience wrapper over `prepare_mix` +
+    /// `submit_witness`; equivalent to:
+    ///
+    /// ```ignore
+    /// let prepared = client.prepare_mix(req, bond_setup).await?;
+    /// let witness = signer.sign(&prepared.unsigned_tx,
+    ///                            prepared.input_index,
+    ///                            prepared.prev_amount_sats)?;
+    /// let outcome = client.submit_witness(&prepared, witness).await?;
+    /// ```
+    ///
+    /// Use the split form when the signer is async (hardware wallet,
+    /// remote signer service) or when the caller wants to inspect
+    /// `prepared.unsigned_tx` before signing — e.g. the
+    /// daemon-integrated CLI.
     pub async fn execute_mix<S, B, BFut>(
         &self,
         request: MixRequest,
         mut signer: S,
-        mut bond_setup: B,
+        bond_setup: B,
     ) -> Result<MixOutcome, WraithClientError>
     where
         S: WitnessSigner,
+        B: FnMut(&str, u64) -> BFut,
+        BFut: std::future::Future<Output = Result<(), WraithClientError>>,
+    {
+        let prepared = self.prepare_mix(request, bond_setup).await?;
+        let witness = signer
+            .sign(
+                &prepared.unsigned_tx,
+                prepared.input_index,
+                prepared.prev_amount_sats,
+            )
+            .map_err(|e| match e {
+                WraithClientError::Signer { .. } => e,
+                other => WraithClientError::Signer {
+                    input_index: prepared.input_index,
+                    detail: other.to_string(),
+                },
+            })?;
+        self.submit_witness(&prepared, witness).await
+    }
+
+    /// Drive the protocol from /find_or_create through /round-tx.
+    /// Returns a `PreparedMix` with the assembled unsigned transaction
+    /// and the metadata the caller needs to produce its own input
+    /// witness. The caller signs asynchronously (hardware wallet,
+    /// remote signer, etc.) and then calls `submit_witness`.
+    ///
+    /// `bond_setup` runs after /find_or_create returns the session_id
+    /// — the wallet's bond ledger client (or test-time MockBondLedger
+    /// escrow) plugs in here.
+    pub async fn prepare_mix<B, BFut>(
+        &self,
+        request: MixRequest,
+        mut bond_setup: B,
+    ) -> Result<PreparedMix, WraithClientError>
+    where
         B: FnMut(&str, u64) -> BFut,
         BFut: std::future::Future<Output = Result<(), WraithClientError>>,
     {
@@ -364,25 +437,43 @@ impl WraithSessionClient {
                 WraithClientError::Shape("our input is not in the assembled tx".into())
             })?;
 
-        // 9. Sign.
-        let witness = signer
-            .sign(&tx, input_index, request.utxo.value_sats)
-            .map_err(|e| match e {
-                WraithClientError::Signer { .. } => e,
-                other => WraithClientError::Signer {
-                    input_index,
-                    detail: other.to_string(),
-                },
-            })?;
-        let witness_hex = bitcoin::consensus::encode::serialize_hex(&witness);
+        // 9. Locate the mixed output tx index by scriptPubKey match.
+        //    The wallet's mix_output_address is unique within the
+        //    round (coordinator rejects duplicates), so the address
+        //    parses to a single scriptPubKey we can find in tx.output.
+        let mixed_output_tx_index = locate_mix_output_index(
+            &tx,
+            &request.mix_output_address,
+            self.network,
+        )?;
 
-        // 10. /witness — final submission triggers merge + broadcast.
+        Ok(PreparedMix {
+            session_id,
+            unsigned_tx: tx,
+            input_index,
+            prev_amount_sats: request.utxo.value_sats,
+            mixed_output_tx_index,
+            ghost_id: request.ghost_id,
+        })
+    }
+
+    /// Submit the signed witness for a prepared mix. Drives /witness
+    /// and (for non-final submitters) waits for the round to reach
+    /// Complete before returning. Returns the broadcast txid.
+    pub async fn submit_witness(
+        &self,
+        prepared: &PreparedMix,
+        witness: Witness,
+    ) -> Result<MixOutcome, WraithClientError> {
+        let witness_hex = bitcoin::consensus::encode::serialize_hex(&witness);
+        let session_id = &prepared.session_id;
+
         let wresp: WitnessResponse = self
             .post_json(
                 &format!("/api/v1/session/{session_id}/witness"),
                 &serde_json::json!({
-                    "ghost_id": request.ghost_id,
-                    "input_index": input_index,
+                    "ghost_id": prepared.ghost_id,
+                    "input_index": prepared.input_index,
                     "witness_hex": witness_hex,
                 }),
             )
@@ -391,33 +482,21 @@ impl WraithSessionClient {
         // Only the Nth (last) submitter gets `broadcast_txid` directly
         // in the /witness response — the other N-1 wallets see a
         // non-terminal acknowledgement and have to wait for the
-        // session to flip to Complete. Poll /status until done, then
-        // re-read the assembled txid (same as broadcast txid, the
-        // coordinator cross-checks).
+        // session to flip to Complete.
         let broadcast_txid = match wresp.broadcast_txid {
             Some(txid_hex) => Txid::from_str_hex(&txid_hex)?,
             None => {
-                self.wait_for_complete(&session_id).await?;
-                Txid::from_str_hex(&rt.txid)?
+                self.wait_for_complete(session_id).await?;
+                Txid::from_str_hex(
+                    &prepared.unsigned_tx.compute_txid().to_string(),
+                )?
             }
         };
 
-        // Locate the mixed output tx index from the round-tx
-        // provenance. The wallet's mixed_output_address is unique
-        // within the round (the coordinator rejects duplicates); we
-        // walk the tx outputs for the matching scriptPubKey. (Round-tx
-        // provenance has participant_id but NOT address, by design —
-        // looking up by address bytes is the canonical method.)
-        let mixed_output_tx_index = locate_mix_output_index(
-            &tx,
-            &request.mix_output_address,
-            self.network,
-        )?;
-
         Ok(MixOutcome {
-            session_id,
+            session_id: session_id.clone(),
             broadcast_txid,
-            mixed_output_tx_index,
+            mixed_output_tx_index: prepared.mixed_output_tx_index,
         })
     }
 

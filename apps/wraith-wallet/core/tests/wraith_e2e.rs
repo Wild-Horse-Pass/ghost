@@ -242,3 +242,103 @@ async fn with_outputs_proxy_rejects_malformed_url() {
     );
     assert!(result.is_err(), "malformed proxy URL must be rejected");
 }
+
+
+// ---------------------------------------------------------------------------
+// prepare_mix / submit_witness split (async-signer-friendly API)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn prepare_then_submit_works_via_split_api() {
+    // Same fixture as the happy-path full mix, but each wallet uses
+    // prepare_mix + submit_witness separately instead of the
+    // execute_mix wrapper. Confirms the split API delivers the same
+    // PreparedMix-shaped result and can be witness-signed asynchronously.
+    let ledger: Arc<MockBondLedger> = Arc::new(MockBondLedger::new());
+    let stub_broadcaster = StubBroadcaster::new();
+    let state = Arc::new(CoordinatorState::with_components(
+        Network::Signet,
+        Arc::new(wraith_protocol::SystemClock),
+        Arc::new(wraith_protocol::RandomSessionIdGenerator),
+        Some(ledger.clone() as Arc<dyn BondLedger>),
+        Some(signet_addr(99)),
+        Some(Arc::new(stub_broadcaster.clone()) as Arc<dyn Broadcaster>),
+    ));
+    let app = build_router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let mut handles = Vec::with_capacity(N);
+    for i in 0..N {
+        let ledger_for_task = ledger.clone();
+        let base_url = base_url.clone();
+        handles.push(tokio::spawn(async move {
+            let client = WraithSessionClient::new(base_url, Network::Signet);
+            let ghost = format!("wallet-{i}");
+            let req = MixRequest {
+                tier_id: TIER_ID.into(),
+                ghost_id: ghost.clone(),
+                bond_id_placeholder: format!("p-{i}"),
+                utxo: ParticipantUtxo {
+                    txid: "11".repeat(32),
+                    vout: i as u32,
+                    value_sats: 200_000,
+                    scriptpubkey_hex: "deadbeef".into(),
+                },
+                change_address: Some(signet_addr(50 + i as u8)),
+                mix_output_address: signet_addr(i as u8 + 1),
+            };
+            let bond_setup = move |sid: &str, expected: u64| {
+                let ledger = ledger_for_task.clone();
+                let ghost = ghost.clone();
+                let sid = sid.to_string();
+                async move {
+                    let _ = ledger.escrow(ghost, sid, expected);
+                    Ok::<(), WraithClientError>(())
+                }
+            };
+
+            // Phase 1: prepare. Returns PreparedMix.
+            let prepared = client
+                .prepare_mix(req, bond_setup)
+                .await
+                .expect("prepare_mix");
+
+            // Inspect the unsigned tx — that's the whole point of the
+            // split. A real signer would derive the sighash from
+            // prepared.unsigned_tx + prepared.input_index +
+            // prepared.prev_amount_sats and sign with the keystore.
+            assert_eq!(prepared.unsigned_tx.input.len(), N);
+            assert!(prepared.input_index < N);
+
+            // Compute "witness" asynchronously (placeholder bytes
+            // here; production would do BIP-143 / BIP-341 sighash +
+            // Schnorr / ECDSA sign).
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let mut w = Witness::new();
+            w.push([0xab, 0xcd, 0xef]);
+
+            // Phase 2: submit.
+            client.submit_witness(&prepared, w).await
+        }));
+    }
+
+    let session_id = wait_for_quorum(&state).await;
+    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
+        session_id: session_id.clone(),
+        new_state: LiteSessionState::Locked,
+    });
+
+    let mut outcomes = Vec::with_capacity(N);
+    for h in handles {
+        outcomes.push(h.await.unwrap().expect("submit_witness"));
+    }
+    let txid = outcomes[0].broadcast_txid;
+    for o in &outcomes {
+        assert_eq!(o.session_id, session_id);
+        assert_eq!(o.broadcast_txid, txid);
+    }
+    assert_eq!(stub_broadcaster.count(), 1);
+}
