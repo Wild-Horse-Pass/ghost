@@ -11,6 +11,7 @@ use std::sync::Arc;
 use axum::Router;
 
 pub mod api;
+pub mod inputs;
 pub mod state;
 
 pub use state::CoordinatorState;
@@ -31,6 +32,10 @@ pub fn build_router(state: Arc<CoordinatorState>) -> Router {
         .route(
             "/api/v1/session/:session_id",
             axum::routing::get(api::session_status::get),
+        )
+        .route(
+            "/api/v1/session/:session_id/inputs",
+            axum::routing::post(api::session_inputs::post),
         )
         .with_state(state)
 }

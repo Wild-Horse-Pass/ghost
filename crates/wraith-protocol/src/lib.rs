@@ -88,7 +88,8 @@ pub use tier::{ParticipantTier, WraithMode};
 // ParticipantTier above during the v1 refactor; once every caller has
 // migrated, the legacy types are deleted and `LiteTier` becomes `Tier`.
 pub use tier::{
-    LiteTier, LITE_BOND_BPS, LITE_FILL_WINDOW_SECS, LITE_SERVICE_FEE_BPS,
+    LiteTier, LITE_BOND_BPS, LITE_FILL_WINDOW_SECS, LITE_SERVICE_FEE_BPS, VBYTES_PER_INPUT,
+    VBYTES_PER_OUTPUT,
 };
 
 pub mod single_round;

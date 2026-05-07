@@ -1,0 +1,354 @@
+//! `POST /api/v1/session/:session_id/inputs` — commit-phase submission.
+//!
+//! Once a session is `Locked` (fill window closed and quorum hit), each
+//! enrolled participant submits their input UTXO + change address here.
+//! The coordinator validates and stashes the submission, and once every
+//! enrolled participant has submitted, advances the session to
+//! `Signing`.
+//!
+//! ## What this commit (B/4a) covers
+//!
+//! - Pluggable [`BondLedger`] verification — the bond is checked against
+//!   `(ghost_id, session_id, expected_sats = tier.bond_sats)`. Without a
+//!   ledger configured, the endpoint returns 503 — see
+//!   `CoordinatorState::bond_ledger`.
+//! - Identity check: `ghost_id` must already be enrolled on the session.
+//! - Input arithmetic: `input.value_sats` ≥ denom + per-participant
+//!   service share + per-participant mining share. Surplus over that
+//!   total goes to the change output; if the surplus is ≥ dust, a
+//!   change address is required.
+//! - Idempotent acceptance: submitting again with the same `ghost_id`
+//!   replaces the previous record (covers wallet retries).
+//! - Locked → Signing transition once all enrolled have submitted.
+//!
+//! ## What's deferred to B/4b
+//!
+//! - Schnorr blind-signature issuance over the participant's blinded
+//!   mix-output tag. The wallet supplies `blinded_tag` here as an
+//!   opaque hex blob; B/4a accepts it but does not sign it. Once B/4b
+//!   lands, the response carries the blind sig and the wallet
+//!   unblinds + re-presents on `/outputs` (a future endpoint).
+
+use std::sync::Arc;
+
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
+
+use wraith_protocol::{
+    BondError, LiteSession, LiteSessionState, LiteTier, SessionType, CHANGE_DUST_THRESHOLD_SATS,
+    DEFAULT_FEE_RATE_SATS_PER_VB, VBYTES_PER_INPUT, VBYTES_PER_OUTPUT,
+};
+
+use crate::inputs::{AcceptedInputs, TxInputRef};
+use crate::state::CoordinatorState;
+
+#[derive(Debug, Deserialize)]
+pub struct Request {
+    pub ghost_id: String,
+    pub input: TxInputRef,
+    /// Optional change address. Required when input value exceeds
+    /// (denom + fee shares) by ≥ dust threshold.
+    #[serde(default)]
+    pub change_address: Option<String>,
+    /// Hex-encoded blinded mix-output tag. Accepted but not signed in
+    /// B/4a — see module docstring.
+    #[serde(default)]
+    pub blinded_tag: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    error: &'static str,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResponseBody {
+    pub session_id: String,
+    pub state: String,
+    pub submitted_count: u32,
+    pub enrolled_count: u32,
+    /// Echoed for wallet correlation. None until B/4b wires the
+    /// blind-signature issuance — wallet should not assume the slot
+    /// is final until it sees a signed token.
+    pub blind_signature: Option<String>,
+}
+
+pub async fn post(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(session_id): Path<String>,
+    Json(req): Json<Request>,
+) -> Response {
+    // 1. Bond ledger must be configured. Phase C wires the real one;
+    //    until then production binaries refuse commit-phase submissions.
+    let ledger = match state.bond_ledger.as_ref() {
+        Some(l) => l.clone(),
+        None => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ledger_not_configured",
+                "bond ledger backend is not yet wired (phase C)".into(),
+            );
+        }
+    };
+
+    // 2. Refresh time-driven transitions and snapshot the session.
+    let now = state.now();
+    let _changed = state.sessions.tick(now);
+    let session = match state.sessions.get(&session_id) {
+        Some(s) => s,
+        None => {
+            return error(
+                StatusCode::NOT_FOUND,
+                "session_not_found",
+                format!("no session with id '{session_id}'"),
+            );
+        }
+    };
+
+    // 3. Session must be Locked. Filling sessions still accept
+    //    /find_or_create joins; Signing/Broadcasting/Complete/Failed
+    //    sessions are past the commit phase.
+    match &session.state {
+        LiteSessionState::Locked => {}
+        other => {
+            return error(
+                StatusCode::CONFLICT,
+                "wrong_session_state",
+                format!(
+                    "session '{session_id}' is in state '{}', expected 'locked'",
+                    other.as_str()
+                ),
+            );
+        }
+    }
+
+    // 4. Participant must be enrolled. The coordinator's view of who's
+    //    in the round is authoritative; an unenrolled ghost_id is
+    //    either a bug or a probe.
+    if !session
+        .participants
+        .iter()
+        .any(|p| p.ghost_id == req.ghost_id)
+    {
+        return error(
+            StatusCode::FORBIDDEN,
+            "not_enrolled",
+            format!(
+                "ghost_id '{}' is not enrolled in session '{}'",
+                req.ghost_id, session_id
+            ),
+        );
+    }
+
+    // 5. Verify the bond against the ledger. Bond amount comes from
+    //    the tier — the wallet doesn't get to negotiate this.
+    let expected_bond = session.tier.bond_sats();
+    let verified_bond_id = match ledger.verify_bond(&req.ghost_id, &session_id, expected_bond) {
+        Ok(id) => id,
+        Err(BondError::NotBonded { .. }) => {
+            return error(
+                StatusCode::PAYMENT_REQUIRED,
+                "bond_not_found",
+                format!(
+                    "no escrowed bond for ghost_id '{}' in session '{}'",
+                    req.ghost_id, session_id
+                ),
+            );
+        }
+        Err(BondError::AmountMismatch {
+            expected_sats,
+            actual_sats,
+            ..
+        }) => {
+            return error(
+                StatusCode::PAYMENT_REQUIRED,
+                "bond_amount_mismatch",
+                format!("bond is {actual_sats} sats; expected {expected_sats}"),
+            );
+        }
+        Err(BondError::AlreadyResolved { .. }) => {
+            return error(
+                StatusCode::CONFLICT,
+                "bond_already_resolved",
+                "this bond has already been resolved against another round".into(),
+            );
+        }
+        Err(BondError::LedgerUnreachable(detail)) => {
+            warn!(?detail, "bond ledger unreachable during /inputs");
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ledger_unreachable",
+                detail,
+            );
+        }
+        Err(other) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ledger_error",
+                other.to_string(),
+            );
+        }
+    };
+
+    // The ledger is authoritative for bond existence at /inputs time.
+    // The bond_id stored on `LiteSessionParticipant` at find_or_create
+    // time is an informational placeholder — wallets typically don't
+    // know the eventual session_id when first calling find_or_create,
+    // so they post the real bond against (ghost_id, session_id) AFTER
+    // the session exists, and `verify_bond` is what locks identity to
+    // the L2 escrow. No cross-check on the participant record's
+    // bond_id is meaningful here.
+
+    // 6. Validate input arithmetic. Compute per-participant fee shares
+    //    against the tier; reject inputs below the minimum or with
+    //    surplus-over-dust missing a change address.
+    let min_input = match minimum_participant_input(&session, &state) {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+
+    if req.input.value_sats < min_input {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "insufficient_input",
+            format!(
+                "input {} sats < required {} sats (denom + fee shares)",
+                req.input.value_sats, min_input
+            ),
+        );
+    }
+
+    let surplus = req.input.value_sats - min_input;
+    if surplus >= CHANGE_DUST_THRESHOLD_SATS && req.change_address.is_none() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "missing_change_address",
+            format!(
+                "input has {} sats surplus over minimum; change_address required",
+                surplus
+            ),
+        );
+    }
+
+    // 7. Stash the accepted submission. Idempotent: if this ghost_id
+    //    already submitted, the entry is replaced (wallet retry path).
+    let accepted = AcceptedInputs {
+        ghost_id: req.ghost_id.clone(),
+        bond_id: verified_bond_id,
+        input: req.input.clone(),
+        change_address: req.change_address.clone(),
+        accepted_at: now,
+    };
+    let (submitted_count, enrolled_count) = {
+        let mut store = state.inputs_store.lock().expect("inputs_store poisoned");
+        let entry = store.entry(session_id.clone()).or_default();
+        if let Some(existing) = entry.iter_mut().find(|a| a.ghost_id == req.ghost_id) {
+            *existing = accepted;
+        } else {
+            entry.push(accepted);
+        }
+        (entry.len() as u32, session.participants.len() as u32)
+    };
+
+    debug!(
+        session_id = %session_id,
+        ghost_id = %req.ghost_id,
+        submitted = submitted_count,
+        enrolled = enrolled_count,
+        "/inputs accepted submission",
+    );
+
+    // 8. Advance Locked → Signing once every enrolled participant has
+    //    submitted. The protocol crate's registry only exposes
+    //    apply_event() and add_participant for state mutation — for
+    //    Locked → Signing we use apply_event with StateChanged so
+    //    standby coordinators learn about the transition through the
+    //    same gossip path as natural transitions.
+    let mut next_state = session.state.clone();
+    if submitted_count == enrolled_count {
+        next_state = LiteSessionState::Signing;
+        let _ = state
+            .sessions
+            .apply_event(wraith_protocol::SessionGossipEvent::StateChanged {
+                session_id: session_id.clone(),
+                new_state: next_state.clone(),
+            });
+    }
+
+    let body = ResponseBody {
+        session_id,
+        state: next_state.as_str().to_string(),
+        submitted_count,
+        enrolled_count,
+        blind_signature: None,
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+/// Compute the minimum acceptable per-participant input for the round
+/// described by `session`. Mirrors `LiteRoundBuilder::min_participant_input`
+/// without instantiating a builder — keeps the validation path
+/// allocation-free and avoids needing the coordinator_fee_address for
+/// Mix rounds at /inputs time.
+///
+/// Returns either the minimum sat value or a pre-built error response
+/// for the conditions the caller can't recover from (Mix round with no
+/// fee address configured — the round can't be built later, so we fail
+/// the input now).
+fn minimum_participant_input(
+    session: &LiteSession,
+    state: &CoordinatorState,
+) -> Result<u64, Response> {
+    if session.session_type == SessionType::Mix && state.coordinator_fee_address.is_none() {
+        return Err(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "fee_address_not_configured",
+            "operator has not configured a coordinator fee address; \
+             Mix rounds cannot accept inputs without one"
+                .into(),
+        ));
+    }
+    let tier = session.tier;
+    let mining_share = per_participant_mining_share(tier, session.session_type);
+    let service_share = match session.session_type {
+        SessionType::Mix => tier.service_fee_sats(),
+        SessionType::Jump => 0,
+    };
+    Ok(tier.denomination_sats() + mining_share + service_share)
+}
+
+/// Worst-case mining-fee share per participant. Mirrors
+/// `LiteRoundBuilder::per_participant_mining_share`: computed against
+/// `tier.min_participants()` (smallest N — fixed overhead amortised
+/// across fewest participants → highest per-share).
+fn per_participant_mining_share(tier: LiteTier, session_type: SessionType) -> u64 {
+    let n = tier.min_participants() as u64;
+    let outputs = (n as usize)
+        + (n as usize)
+        + match session_type {
+            SessionType::Mix => 1,
+            SessionType::Jump => 0,
+        }
+        + 1; // OP_RETURN
+    let vbytes = ((n as usize * VBYTES_PER_INPUT) + (outputs * VBYTES_PER_OUTPUT)) as u64;
+    let total = vbytes * DEFAULT_FEE_RATE_SATS_PER_VB;
+    total.div_ceil(n)
+}
+
+fn error(status: StatusCode, code: &'static str, detail: String) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: code,
+            detail,
+        }),
+    )
+        .into_response()
+}
