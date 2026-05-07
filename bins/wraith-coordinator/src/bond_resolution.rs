@@ -37,9 +37,12 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use wraith_protocol::{BondLedger, BondResolution};
+use wraith_protocol::{
+    BondLedger, BondResolution, LiteSessionState, RefundReason, SessionGossipEvent, SlashReason,
+};
 
 use crate::inputs::AcceptedInputs;
+use crate::state::CoordinatorState;
 
 /// Outcome of a bond-resolution pass. Surfaced in logs and (in
 /// future) in the round-status endpoint so operators can confirm
@@ -98,5 +101,109 @@ pub fn resolve_round_bonds(
             }
         }
     }
+    summary
+}
+
+/// Outcome of a no-sign deadline sweep — partition + counts.
+#[derive(Debug, Clone, Default)]
+pub struct NoSignSweepSummary {
+    /// Non-signers slashed with `Slash(NoSignDuringSigning)`.
+    pub slashed: u32,
+    /// In-window signers refunded with `Refund(RoundVoided)`.
+    pub refunded: u32,
+    /// True if no bond ledger was configured. The session still
+    /// transitions to Failed; bonds are reconciled out of band.
+    pub ledger_missing: bool,
+}
+
+/// Run the no-sign-deadline sweep on a session. Walks inputs_store,
+/// partitions into signers (their ghost_id appears in
+/// witnesses_store) and non-signers; slashes non-signers, refunds
+/// signers as RoundVoided, and emits a Failed StateChanged event
+/// for the session.
+///
+/// Pure side-effects on the supplied state — no HTTP response, no
+/// channel notifications. Caller (background tick OR /witness
+/// handler) decides what to do with the summary.
+pub fn execute_no_sign_sweep(
+    state: &CoordinatorState,
+    session_id: &str,
+) -> NoSignSweepSummary {
+    let inputs = state
+        .inputs_store
+        .lock()
+        .expect("inputs_store poisoned")
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default();
+    let witnesses = state
+        .witnesses_store
+        .lock()
+        .expect("witnesses_store poisoned")
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default();
+
+    let signers: std::collections::HashSet<String> =
+        witnesses.into_iter().map(|w| w.ghost_id).collect();
+    let (present, absent): (Vec<AcceptedInputs>, Vec<AcceptedInputs>) = inputs
+        .into_iter()
+        .partition(|i| signers.contains(&i.ghost_id));
+
+    let summary = match state.bond_ledger.as_ref() {
+        Some(ledger) => {
+            let slashed = resolve_round_bonds(
+                ledger,
+                session_id,
+                &absent,
+                BondResolution::Slash(SlashReason::NoSignDuringSigning),
+            );
+            let refunded = resolve_round_bonds(
+                ledger,
+                session_id,
+                &present,
+                BondResolution::Refund(RefundReason::RoundVoided),
+            );
+            info!(
+                %session_id,
+                slashed = slashed.resolved,
+                refunded = refunded.resolved,
+                "no-sign deadline sweep complete",
+            );
+            NoSignSweepSummary {
+                slashed: slashed.resolved,
+                refunded: refunded.resolved,
+                ledger_missing: false,
+            }
+        }
+        None => {
+            warn!(%session_id, "no bond ledger; can't sweep no-sign deadline");
+            NoSignSweepSummary {
+                slashed: 0,
+                refunded: 0,
+                ledger_missing: true,
+            }
+        }
+    };
+
+    let reason = if summary.ledger_missing {
+        "witness:no_sign_deadline_no_ledger"
+    } else {
+        "witness:no_sign_deadline"
+    };
+    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
+        session_id: session_id.to_string(),
+        new_state: LiteSessionState::Failed {
+            reason: reason.into(),
+        },
+    });
+
+    // Drop the deadline entry so a subsequent tick doesn't re-sweep.
+    state
+        .signing_deadlines
+        .lock()
+        .expect("signing_deadlines poisoned")
+        .remove(session_id);
+
     summary
 }

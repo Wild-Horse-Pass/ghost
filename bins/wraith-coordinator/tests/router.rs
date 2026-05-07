@@ -2425,3 +2425,51 @@ async fn witness_partitions_signers_and_non_signers_at_deadline() {
     assert_eq!(refunded, 3);
     assert_eq!(slashed, 2);
 }
+
+
+// ---------------------------------------------------------------------------
+// Background tick — deadline sweep without anyone pinging /witness
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn background_tick_sweeps_expired_signing_sessions_without_a_witness_ping() {
+    use wraith_coordinator::tick::run_one_pass;
+    use wraith_protocol::{BondResolution, BondStatus, SlashReason};
+
+    let (router, state, ledger, clock) = deadline_test_setup(1_000_000).await;
+    let (session_id, _rt) = make_assembled_session(router.clone(), &state, &ledger).await;
+    assert_eq!(ledger.len(), 5);
+
+    // Advance past the 600s deadline.
+    clock.advance(700);
+
+    // No /witness submission. Just run the background tick directly.
+    run_one_pass(&state);
+
+    // Session is in Failed.
+    let snapshot = state.sessions.get(&session_id).expect("present");
+    assert!(matches!(
+        snapshot.state,
+        wraith_protocol::LiteSessionState::Failed { .. }
+    ));
+
+    // All 5 bonds slashed (nobody signed before the deadline).
+    let bonds = ledger.snapshot_all();
+    assert_eq!(bonds.len(), 5);
+    for b in &bonds {
+        match &b.status {
+            BondStatus::Resolved(BondResolution::Slash(SlashReason::NoSignDuringSigning)) => {}
+            other => panic!(
+                "bond {} for {} not slashed-no-sign: {:?}",
+                b.bond_id, b.ghost_id, other
+            ),
+        }
+    }
+
+    // Deadline entry was cleaned up so a second tick is a no-op.
+    assert!(
+        state.signing_deadlines.lock().unwrap().is_empty(),
+        "deadline entry should be removed after sweep"
+    );
+    run_one_pass(&state); // second pass: no panic, no double-resolve
+}

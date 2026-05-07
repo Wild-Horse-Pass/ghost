@@ -17,6 +17,7 @@ pub mod broadcaster;
 pub mod inputs;
 pub mod outputs;
 pub mod state;
+pub mod tick;
 pub mod witnesses;
 
 pub use state::CoordinatorState;

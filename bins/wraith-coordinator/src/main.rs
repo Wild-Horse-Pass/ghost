@@ -213,6 +213,12 @@ async fn main() -> Result<()> {
         "wraith-coordinator starting"
     );
 
+    // Background tick: sweeps no-sign-deadline-expired sessions and
+    // runs time-driven Filling-→-Locked / Filling-→-Failed transitions
+    // even when no wallet is polling /status. Detached — terminates
+    // when the runtime tears down.
+    let _tick_handle = wraith_coordinator::tick::spawn_background_tick(state.clone());
+
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(cli.listen)
         .await
