@@ -150,8 +150,9 @@ For the remix queue:
 
 ## 6. Coordinator pool & gossip protocol
 
-Standbys learn about sessions through a small gossip protocol piggybacked on
-the existing heartbeat channel. State replicated per session:
+Standbys learn about sessions through a small gossip protocol that pushes
+session state changes from the Active to every other coordinator in the
+pool. State replicated per session:
 
 - Session metadata: `{ id, tier, denomination, created_at, expires_at }`
 - Participant list: `{ ghost_id, bond_id, blinded_request, registered_at }` per participant
@@ -165,10 +166,35 @@ State NOT replicated:
 - Already-issued blind signatures. (These are valid only under Active's key;
   on failover wallets re-blind under the new Active's key, see §7.)
 
-Replication is best-effort. Standbys pull missing state from each other on
-promotion. A Standby that's never been online for a session loses that
-session on promotion; mitigation is that Standbys maintain warm connections
-to the Active and pull continuously, so cold-Standby promotions are rare.
+### Wire format (v1 implementation)
+
+The gossip protocol ships as `SessionGossipEvent` JSON over an HTTP POST
+to `/api/v1/internal/gossip` on every peer coordinator. Three variants:
+
+- `SessionCreated { session: LiteSession }` — new session created. Standby
+  inserts (or overwrites — Active's view is canonical).
+- `ParticipantAdded { session_id, participant, new_state }` — wallet joined.
+  Standby appends the participant if not already present (idempotent).
+- `StateChanged { session_id, new_state }` — phase transition that wasn't
+  already covered by `ParticipantAdded` (e.g. tick-driven `Filling → Locked`,
+  forced `→ Failed`, the `Locked → Signing → Broadcasting → Complete` chain).
+
+Each event is fire-and-forget per peer with a 5s timeout. A peer that's slow
+or unreachable is logged and the event is dropped — every event is idempotent
+and the next event (or future reconciliation snapshot) catches the peer up.
+Events are pushed only; v1 has no pull-on-promotion path. A Standby that
+joins late stays empty until the next event lands.
+
+### Configuration
+
+The Active is configured with `--peers` (or `WRAITH_COORDINATOR_PEERS`,
+comma-separated base URLs of every other coordinator in the pool). Standbys
+expose the receive endpoint by default; an empty `--peers` list runs solo
+with no replication.
+
+The `/api/v1/internal/` prefix is operator-firewalled to the pool's address
+range until a shared-secret HMAC header lands. v1 trusts peers on a private
+network.
 
 ## 7. Failover semantics — the re-blind handoff
 
@@ -408,6 +434,12 @@ Listed so they don't get rediscovered as gaps later:
 - **Multi-coordinator co-signing** (option (b) failover from the
   discussion). Not strictly necessary if re-blind on failover is
   acceptable, but reduces wallet-side complexity.
+- **Gossip pull-on-promotion / reconciliation snapshot.** v1 ships push-only
+  HTTP gossip (§6). A Standby that boots after the Active has been running
+  starts empty until the next event lands. v2 adds a `GET /api/v1/internal/snapshot`
+  endpoint so a fresh Standby can catch up to the current session set on
+  startup, plus an HMAC header on `/api/v1/internal/*` so the routes can
+  safely live on a public address.
 
 ## 15. Resolved decisions (v1.0 sign-off)
 
