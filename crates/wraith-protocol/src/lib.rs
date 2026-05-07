@@ -91,6 +91,12 @@ pub use tier::{
     LiteTier, LITE_BOND_BPS, LITE_FILL_WINDOW_SECS, LITE_SERVICE_FEE_BPS,
 };
 
+pub mod single_round;
+pub use single_round::{
+    LiteOutputKind, LiteOutputProvenance, LiteParticipantInput, LiteRound,
+    LiteRoundBuilder, CHANGE_DUST_THRESHOLD_SATS, DEFAULT_FEE_RATE_SATS_PER_VB,
+};
+
 /// Session type determines fee structure
 ///
 /// Mix sessions charge a service fee + mining cost.
