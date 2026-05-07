@@ -15,6 +15,7 @@ pub mod assembly;
 pub mod bond_ledger_http;
 pub mod bond_resolution;
 pub mod broadcaster;
+pub mod gossip_http;
 pub mod inputs;
 pub mod outputs;
 pub mod state;
@@ -63,6 +64,14 @@ pub fn build_router(state: Arc<CoordinatorState>) -> Router {
         .route(
             "/api/v1/session/:session_id/witness",
             axum::routing::post(api::session_witness::post),
+        )
+        // Internal coordinator-to-coordinator state replication.
+        // Operator firewalls this prefix to the pool's address range
+        // until the auth header lands; v1 trusts peers on a private
+        // network. See `gossip_http.rs`.
+        .route(
+            "/api/v1/internal/gossip",
+            axum::routing::post(api::gossip::post),
         )
         .with_state(state)
 }

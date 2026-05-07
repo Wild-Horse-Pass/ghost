@@ -134,6 +134,14 @@ struct Cli {
     /// bitcoind RPC password (from `bitcoin.conf` `rpcpassword=`).
     #[arg(long, env = "WRAITH_COORDINATOR_BITCOIND_PASS")]
     bitcoind_pass: Option<String>,
+
+    /// Comma-separated base URLs of every other coordinator in the
+    /// pool. Each session-state change on this Active is POSTed to
+    /// `<peer>/api/v1/internal/gossip` so Standbys mirror the
+    /// in-flight session set. Empty (the default) runs as a
+    /// solo coordinator with no replication.
+    #[arg(long, env = "WRAITH_COORDINATOR_PEERS", value_delimiter = ',')]
+    peers: Vec<String>,
 }
 
 #[tokio::main]
@@ -216,14 +224,32 @@ async fn main() -> Result<()> {
         None
     };
 
-    let state = Arc::new(CoordinatorState::with_components(
+    let mut state = CoordinatorState::with_components(
         network,
         Arc::new(wraith_protocol::SystemClock),
         Arc::new(wraith_protocol::RandomSessionIdGenerator),
         bond_ledger,
         cli.fee_address.clone(),
         broadcaster,
-    ));
+    );
+
+    // Active/Standby state replication. When the operator supplies
+    // peers, every session mutation publishes to all of them; the
+    // peers' `/api/v1/internal/gossip` route applies the events.
+    if !cli.peers.is_empty() {
+        let runtime_handle = tokio::runtime::Handle::current();
+        let sink = wraith_coordinator::gossip_http::HttpGossipSink::spawn(
+            cli.peers.clone(),
+            &runtime_handle,
+        );
+        state.sessions.set_gossip_sink(Box::new(sink));
+        info!(
+            peers = ?cli.peers,
+            "gossip enabled — session state replicates to peer coordinators"
+        );
+    }
+
+    let state = Arc::new(state);
 
     info!(
         listen = %cli.listen,
