@@ -4,8 +4,9 @@
   "version": "0.1.0",
   "identifier": "org.bitcoinghost.wraith.wallet",
   "build": {
-    "beforeBuildCommand": "",
-    "beforeDevCommand": "",
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
   "app": {

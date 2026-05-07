@@ -1,0 +1,329 @@
+/* Wraith Wallet — global styles. Carries over the dark-theme
+   palette from the previous static `dist/index.html` so the
+   migration is visually continuous. */
+
+:root {
+  --bg: #0e0f12;
+  --panel: #181a1f;
+  --panel-hover: #1f2127;
+  --border: #232328;
+  --border-soft: #1c1d22;
+  --fg: #d8d8d8;
+  --fg-mute: #9ca3af;
+  --fg-strong: #f3f4f6;
+  --accent: #1d4ed8;
+  --accent-hover: #1e3a8a;
+  --pass: #4ade80;
+  --fail: #f87171;
+  --warn: #fbbf24;
+  --skip: #9ca3af;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* ----- Layout shell ----- */
+
+.app {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: 56px 1fr;
+  height: 100%;
+  width: 100%;
+}
+
+.app-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.app-header .title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.app-header .spacer {
+  flex: 1;
+}
+
+.app-header .status {
+  color: var(--fg-mute);
+  font-size: 12px;
+}
+
+.app-sidebar {
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  padding: 12px 0;
+  overflow-y: auto;
+}
+
+.app-sidebar nav {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-sidebar nav button {
+  background: transparent;
+  border: none;
+  color: var(--fg-mute);
+  text-align: left;
+  padding: 10px 20px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+
+.app-sidebar nav button:hover {
+  background: var(--panel-hover);
+  color: var(--fg);
+}
+
+.app-sidebar nav button.active {
+  color: var(--fg-strong);
+  background: var(--panel-hover);
+  border-left-color: var(--accent);
+}
+
+.app-main {
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 920px;
+}
+
+.screen h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--fg-strong);
+}
+
+.screen h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--fg-strong);
+}
+
+/* ----- Cards / panels ----- */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+
+.kv .k {
+  color: var(--fg-mute);
+}
+
+.kv .v {
+  color: var(--fg);
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ----- Forms ----- */
+
+label {
+  font-size: 12px;
+  color: var(--fg-mute);
+  display: block;
+  margin-bottom: 4px;
+}
+
+input,
+select,
+textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+button.primary {
+  background: var(--accent);
+  border: none;
+  color: white;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--panel-hover);
+}
+
+button.danger {
+  background: transparent;
+  border: 1px solid var(--fail);
+  color: var(--fail);
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* ----- Status pills ----- */
+
+.pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.pill.pass {
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--pass);
+}
+
+.pill.fail {
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--fail);
+}
+
+.pill.warn {
+  background: rgba(251, 191, 36, 0.12);
+  color: var(--warn);
+}
+
+.pill.mute {
+  background: var(--border);
+  color: var(--fg-mute);
+}
+
+/* ----- Tables ----- */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.table th {
+  text-align: left;
+  color: var(--fg-mute);
+  font-weight: 500;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.table tbody tr:hover {
+  background: var(--panel-hover);
+}
+
+/* ----- Misc ----- */
+
+.muted {
+  color: var(--fg-mute);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.hidden {
+  display: none !important;
+}
