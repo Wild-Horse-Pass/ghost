@@ -2,4 +2,5 @@
 //! file stays focused on its own request/response contract.
 
 pub mod discover;
+pub mod find_or_create;
 pub mod health;

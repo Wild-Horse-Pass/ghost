@@ -6,7 +6,6 @@
 //! to this, the process is wedged.
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use axum::{extract::State, Json};
 use serde::Serialize;
@@ -22,19 +21,17 @@ pub struct HealthResponse {
     pub version: &'static str,
     /// Network name, lowercase: `mainnet` / `signet` / `testnet` / `regtest`.
     pub network: &'static str,
-    /// Seconds since the coordinator process started.
+    /// Seconds since the coordinator process started, measured against
+    /// the state's clock. Under SystemClock this is wall-clock uptime;
+    /// under MockClock it lets tests assert against fixed values.
     pub uptime_secs: u64,
 }
 
 pub async fn get(State(state): State<Arc<CoordinatorState>>) -> Json<HealthResponse> {
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(state.started_at);
     Json(HealthResponse {
         service: "wraith-coordinator",
         version: env!("CARGO_PKG_VERSION"),
         network: state.network_name(),
-        uptime_secs: now.saturating_sub(state.started_at),
+        uptime_secs: state.uptime_secs(),
     })
 }

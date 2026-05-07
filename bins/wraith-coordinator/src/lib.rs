@@ -24,5 +24,9 @@ pub fn build_router(state: Arc<CoordinatorState>) -> Router {
             "/api/v1/pool/discover",
             axum::routing::get(api::discover::get),
         )
+        .route(
+            "/api/v1/session/find_or_create",
+            axum::routing::post(api::find_or_create::post),
+        )
         .with_state(state)
 }
