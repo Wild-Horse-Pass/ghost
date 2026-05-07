@@ -12,6 +12,7 @@ use axum::Router;
 
 pub mod api;
 pub mod inputs;
+pub mod outputs;
 pub mod state;
 
 pub use state::CoordinatorState;
@@ -44,6 +45,10 @@ pub fn build_router(state: Arc<CoordinatorState>) -> Router {
         .route(
             "/api/v1/session/:session_id/blind-sign",
             axum::routing::post(api::blind_sig::post_blind_sign),
+        )
+        .route(
+            "/api/v1/session/:session_id/outputs",
+            axum::routing::post(api::session_outputs::post),
         )
         .with_state(state)
 }

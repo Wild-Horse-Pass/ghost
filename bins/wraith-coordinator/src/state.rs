@@ -17,6 +17,7 @@ use wraith_protocol::{
 };
 
 use crate::inputs::AcceptedInputs;
+use crate::outputs::AcceptedOutput;
 
 /// One Schnorr blind-signature signer per active round, lazily created
 /// the first time a participant hits `/nonce`. Kept inside an
@@ -57,6 +58,12 @@ pub struct CoordinatorState {
     /// participants hit `/inputs`. Once every enrolled participant has
     /// submitted, the session transitions Locked → Signing.
     pub inputs_store: Mutex<HashMap<String, Vec<AcceptedInputs>>>,
+    /// Per-session unblinded mix-output addresses, accumulated as
+    /// wallets hit `/outputs` over anonymous connections. NO ghost_id
+    /// is recorded — that's the unlinkability invariant. Once
+    /// `outputs.len() == enrolled_count`, B/5b's tx-assembly path
+    /// kicks in.
+    pub outputs_store: Mutex<HashMap<String, Vec<AcceptedOutput>>>,
     /// Per-round Schnorr blind-signature signer. Lazily created on the
     /// first `/nonce` call for a session; reused for every subsequent
     /// `/nonce` and `/blind-sign` on the same session. Each signer
@@ -107,6 +114,7 @@ impl CoordinatorState {
             bond_ledger,
             coordinator_fee_address,
             inputs_store: Mutex::new(HashMap::new()),
+            outputs_store: Mutex::new(HashMap::new()),
             signers: Mutex::new(HashMap::new()),
             started_at,
         }

@@ -14,9 +14,24 @@ use wraith_coordinator::{build_router, CoordinatorState};
 use wraith_protocol::{DeterministicSessionIdGenerator, MockBondLedger, MockClock};
 
 /// Signet P2WPKH address used as the placeholder coordinator fee
-/// destination in tests. Address validation is a build-time concern;
-/// for /inputs validation alone the string just needs to be present.
-const TEST_FEE_ADDRESS: &str = "tb1qsdvdgnp5ckj5d8z9wnz4tmkx7fdrfgnktdv60d";
+/// destination + change destination in tests. Real bech32 with a
+/// valid checksum so /outputs's address parser accepts it.
+const TEST_FEE_ADDRESS: &str = "tb1q0xcqpzrky6eff2g52qdye53xkk9jxkvraulyla";
+
+/// Five distinct valid signet P2WPKH addresses for the
+/// outputs-over-submission test. Generated from `[i; 32]` secret keys
+/// 1..=5 — deterministic so the strings are stable.
+const FIVE_SIGNET_ADDRS: [&str; 5] = [
+    "tb1q0xcqpzrky6eff2g52qdye53xkk9jxkvraulyla",
+    "tb1qa0qwuze2h85zw7nqpsj3ga0z9geyrgwptrz29s",
+    "tb1qg975h6gdx5mryeac72h6lj2nzygugxhyk6dnhr",
+    "tb1q3zxmh4ue370cp48c9d8eeek43qhnzzhvz4t84j",
+    "tb1qn454ga9rqwkx6ax309knw5hs0z2erz7jg4x4y7",
+];
+
+/// A sixth distinct valid signet P2WPKH address for the
+/// outputs-full over-submission test (key = [6; 32]).
+const SIXTH_SIGNET_ADDR: &str = "tb1q6jlzchtg6pl8sstn4m42uaz7xmnkhv3606kk9z";
 
 fn router() -> axum::Router {
     build_router(Arc::new(CoordinatorState::new(Network::Signet)))
@@ -890,7 +905,7 @@ async fn inputs_idempotent_on_resubmission() {
 #[tokio::test]
 async fn nonce_returns_200_with_valid_shape() {
     let (router, state, ledger) = deterministic_router(1_000_000);
-    let session_id = make_locked_session(router.clone(), &state, &ledger).await;
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
     let response = router
         .oneshot(post_json(
             &format!("/api/v1/session/{session_id}/nonce"),
@@ -915,7 +930,7 @@ async fn nonce_returns_200_with_valid_shape() {
 #[tokio::test]
 async fn nonce_returns_403_for_unenrolled_ghost_id() {
     let (router, state, ledger) = deterministic_router(1_000_000);
-    let session_id = make_locked_session(router.clone(), &state, &ledger).await;
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
     let response = router
         .oneshot(post_json(
             &format!("/api/v1/session/{session_id}/nonce"),
@@ -966,7 +981,7 @@ async fn nonce_returns_404_for_unknown_session() {
 async fn blind_sign_returns_400_when_no_signer_for_round() {
     // /blind-sign before any /nonce on this round → 400 no_active_signer.
     let (router, state, ledger) = deterministic_router(1_000_000);
-    let session_id = make_locked_session(router.clone(), &state, &ledger).await;
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
     let response = router
         .oneshot(post_json(
             &format!("/api/v1/session/{session_id}/blind-sign"),
@@ -987,7 +1002,7 @@ async fn blind_sign_returns_400_when_no_signer_for_round() {
 #[tokio::test]
 async fn blind_sign_returns_400_for_bad_hex() {
     let (router, state, ledger) = deterministic_router(1_000_000);
-    let session_id = make_locked_session(router.clone(), &state, &ledger).await;
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
     // Prime a signer so we get past the no_active_signer gate.
     let _ = router
         .clone()
@@ -1017,7 +1032,7 @@ async fn blind_sign_returns_400_for_bad_hex() {
 #[tokio::test]
 async fn blind_sign_rejects_cross_participant_nonce_hijack() {
     let (router, state, ledger) = deterministic_router(1_000_000);
-    let session_id = make_locked_session(router.clone(), &state, &ledger).await;
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
 
     // wallet-0 requests a nonce.
     let nonce_resp = router
@@ -1065,7 +1080,7 @@ async fn blind_sign_full_round_trip_produces_valid_signature() {
     };
 
     let (router, state, ledger) = deterministic_router(1_000_000);
-    let session_id = make_locked_session(router.clone(), &state, &ledger).await;
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
 
     // Step 1 — wallet asks coordinator for a fresh nonce.
     let nonce_resp = router
@@ -1155,4 +1170,400 @@ async fn blind_sign_full_round_trip_produces_valid_signature() {
     // challenge is c' = c + β where c = H(X || R' || message). The
     // coordinator returns s = k + c'*x without learning c (β was
     // generated locally and never transmitted). Unlinkability holds.
+}
+
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/session/:id/outputs — anonymous output submission (B/5a)
+// ---------------------------------------------------------------------------
+
+/// Drive a session all the way through to Signing state with all 5
+/// participants having submitted /inputs. Returns the session_id; the
+/// session is ready for /nonce + /blind-sign + /outputs.
+async fn make_signing_session(
+    router: axum::Router,
+    state: &Arc<CoordinatorState>,
+    ledger: &Arc<MockBondLedger>,
+) -> String {
+    let session_id = make_locked_session(router.clone(), state, ledger).await;
+    // 5 participants submit /inputs → session advances to Signing.
+    for i in 0..MIN_5 {
+        let resp = router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/session/{session_id}/inputs"),
+                serde_json::json!({
+                    "ghost_id": format!("wallet-{i}"),
+                    "input": {
+                        "txid": "11".repeat(32),
+                        "vout": i as u32,
+                        "value_sats": 200_000,
+                        "scriptpubkey_hex": "deadbeef",
+                    },
+                    "change_address": TEST_FEE_ADDRESS,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "inputs #{i}");
+    }
+    // Confirm we're now in Signing.
+    let snapshot = state.sessions.get(&session_id).expect("present");
+    assert!(matches!(
+        snapshot.state,
+        wraith_protocol::LiteSessionState::Signing
+    ));
+    session_id
+}
+
+/// One pass of the wallet-side blind-sig protocol: call /nonce, build
+/// a `BlindingContext` over `message`, post the blinded challenge to
+/// /blind-sign, return everything needed for an /outputs submission.
+async fn run_blind_sig_for(
+    router: axum::Router,
+    session_id: &str,
+    ghost_id: &str,
+    message: Vec<u8>,
+) -> (String, String) {
+    use secp256k1::PublicKey;
+    use wraith_protocol::{BlindSignatureResponse, BlindingContext, PublicNonce};
+
+    let nonce_resp = router
+        .clone()
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/nonce"),
+            serde_json::json!({ "ghost_id": ghost_id }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(nonce_resp.status(), StatusCode::OK);
+    let nj: serde_json::Value =
+        serde_json::from_slice(&to_bytes(nonce_resp.into_body(), 4096).await.unwrap()).unwrap();
+
+    let pubkey =
+        PublicKey::from_slice(&hex::decode(nj["signing_pubkey"].as_str().unwrap()).unwrap())
+            .unwrap();
+    let mut nonce_point = [0u8; 33];
+    nonce_point.copy_from_slice(&hex::decode(nj["nonce_point"].as_str().unwrap()).unwrap());
+    let mut blind_sid = [0u8; 32];
+    blind_sid.copy_from_slice(&hex::decode(nj["blind_session_id"].as_str().unwrap()).unwrap());
+    let mut key_id = [0u8; 32];
+    key_id.copy_from_slice(&hex::decode(nj["signing_key_id"].as_str().unwrap()).unwrap());
+
+    let public_nonce = PublicNonce {
+        nonce_point,
+        session_id: blind_sid,
+    };
+    let ctx = BlindingContext::new(message, &pubkey, &public_nonce).unwrap();
+    let blinded = ctx.create_blinded_challenge().unwrap();
+    let blinded_nonce = ctx.blinded_nonce().serialize();
+
+    let sign_resp = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/blind-sign"),
+            serde_json::json!({
+                "ghost_id": ghost_id,
+                "blinded_challenge": hex::encode(blinded.challenge),
+                "blind_session_id": hex::encode(blinded.session_id),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(sign_resp.status(), StatusCode::OK);
+    let sj: serde_json::Value =
+        serde_json::from_slice(&to_bytes(sign_resp.into_body(), 4096).await.unwrap()).unwrap();
+    let mut s_bytes = [0u8; 32];
+    s_bytes.copy_from_slice(&hex::decode(sj["signature_scalar"].as_str().unwrap()).unwrap());
+
+    let response = BlindSignatureResponse {
+        signature_scalar: s_bytes,
+        session_id: blind_sid,
+    };
+    let token = ctx.unblind(&response, key_id).unwrap();
+
+    (
+        hex::encode(blinded_nonce),
+        hex::encode(token.signature_scalar),
+    )
+}
+
+#[tokio::test]
+async fn outputs_returns_404_for_unknown_session() {
+    let (router, _state, _ledger) = deterministic_router(1_000_000);
+    let response = router
+        .oneshot(post_json(
+            "/api/v1/session/no-such-session/outputs",
+            serde_json::json!({
+                "address": TEST_FEE_ADDRESS,
+                "blinded_nonce_point": "00".repeat(33),
+                "unblinded_signature_scalar": "00".repeat(32),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "session_not_found");
+}
+
+#[tokio::test]
+async fn outputs_returns_409_when_session_still_locked() {
+    // /outputs only accepts in Signing state. A session in Locked
+    // (post-/nonce, pre-all-/inputs) is not yet accepting outputs.
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_locked_session(router.clone(), &state, &ledger).await;
+    let response = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/outputs"),
+            serde_json::json!({
+                "address": TEST_FEE_ADDRESS,
+                "blinded_nonce_point": "00".repeat(33),
+                "unblinded_signature_scalar": "00".repeat(32),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "wrong_session_state");
+}
+
+#[tokio::test]
+async fn outputs_rejects_address_for_wrong_network() {
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+    // Need a signer to exist before signature checks would matter,
+    // but address parsing happens first — exercise that path with
+    // a mainnet-format address against this signet coordinator.
+    let response = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/outputs"),
+            serde_json::json!({
+                // Mainnet bech32 prefix (`bc1`) not valid for signet.
+                "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+                "blinded_nonce_point": "00".repeat(33),
+                "unblinded_signature_scalar": "00".repeat(32),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "wrong_network");
+}
+
+#[tokio::test]
+async fn outputs_rejects_when_no_signer_initialised() {
+    // Session in Signing but nobody ever called /nonce, so no signer
+    // exists. /outputs has nothing to verify against.
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+    // Sanity: signers map is empty.
+    assert!(state
+        .signers
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .is_none());
+
+    let response = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/outputs"),
+            serde_json::json!({
+                "address": TEST_FEE_ADDRESS,
+                "blinded_nonce_point": "00".repeat(33),
+                "unblinded_signature_scalar": "00".repeat(32),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "no_active_signer");
+}
+
+#[tokio::test]
+async fn outputs_rejects_invalid_signature_with_403() {
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+    // Prime the signer so the no_active_signer gate doesn't fire.
+    let _ = router
+        .clone()
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/nonce"),
+            serde_json::json!({ "ghost_id": "wallet-0" }),
+        ))
+        .await
+        .unwrap();
+    // Submit a syntactically-valid but cryptographically-junk sig.
+    let response = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/outputs"),
+            serde_json::json!({
+                "address": TEST_FEE_ADDRESS,
+                // 33-byte point that's actually a valid SEC1 generator-G
+                // serialisation (not zero, which from_slice rejects).
+                "blinded_nonce_point": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                "unblinded_signature_scalar": "01".repeat(32),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "verification_failed");
+}
+
+#[tokio::test]
+async fn outputs_full_round_trip_accepts_valid_signature() {
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+
+    let address = TEST_FEE_ADDRESS.to_string();
+    let (blinded_nonce_hex, unblinded_sig_hex) = run_blind_sig_for(
+        router.clone(),
+        &session_id,
+        "wallet-0",
+        address.as_bytes().to_vec(),
+    )
+    .await;
+
+    let response = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/outputs"),
+            serde_json::json!({
+                "address": address,
+                "blinded_nonce_point": blinded_nonce_hex,
+                "unblinded_signature_scalar": unblinded_sig_hex,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["session_id"], session_id);
+    assert_eq!(json["state"], "signing");
+    assert_eq!(json["outputs_collected"], 1);
+    assert_eq!(json["enrolled_count"], 5);
+}
+
+#[tokio::test]
+async fn outputs_rejects_duplicate_address_with_409() {
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+
+    let address = TEST_FEE_ADDRESS.to_string();
+    let (n1, s1) = run_blind_sig_for(
+        router.clone(),
+        &session_id,
+        "wallet-0",
+        address.as_bytes().to_vec(),
+    )
+    .await;
+
+    let body = |bn: &str, us: &str| {
+        serde_json::json!({
+            "address": &address,
+            "blinded_nonce_point": bn,
+            "unblinded_signature_scalar": us,
+        })
+    };
+
+    let first = router
+        .clone()
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/outputs"),
+            body(&n1, &s1),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    // Second wallet runs a fresh blind-sig over the SAME address.
+    // Both signatures verify, but the coordinator refuses to record
+    // the duplicate.
+    let (n2, s2) = run_blind_sig_for(
+        router.clone(),
+        &session_id,
+        "wallet-1",
+        address.as_bytes().to_vec(),
+    )
+    .await;
+    let second = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/outputs"),
+            body(&n2, &s2),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+    let json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(second.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(json["error"], "duplicate_output");
+}
+
+#[tokio::test]
+async fn outputs_rejects_over_submission_with_409() {
+    // 5 distinct outputs accepted, then a sixth with a fresh address
+    // fails because the round set is full.
+    let (router, state, ledger) = deterministic_router(1_000_000);
+    let session_id = make_signing_session(router.clone(), &state, &ledger).await;
+
+    // Five distinct signet P2WPKH addresses to accept.
+    let addrs = FIVE_SIGNET_ADDRS;
+    for (i, a) in addrs.iter().enumerate() {
+        let (bn, sg) = run_blind_sig_for(
+            router.clone(),
+            &session_id,
+            &format!("wallet-{i}"),
+            a.as_bytes().to_vec(),
+        )
+        .await;
+        let resp = router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/session/{session_id}/outputs"),
+                serde_json::json!({
+                    "address": a,
+                    "blinded_nonce_point": bn,
+                    "unblinded_signature_scalar": sg,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "address {i}");
+    }
+
+    // Sixth submission (fresh address, fresh blind sig from wallet-0
+    // again — they could theoretically request multiple nonces, the
+    // rate limit allows it). Should be rejected because outputs is full.
+    let extra_addr = SIXTH_SIGNET_ADDR;
+    let (bn, sg) = run_blind_sig_for(
+        router.clone(),
+        &session_id,
+        "wallet-0",
+        extra_addr.as_bytes().to_vec(),
+    )
+    .await;
+    let resp = router
+        .oneshot(post_json(
+            &format!("/api/v1/session/{session_id}/outputs"),
+            serde_json::json!({
+                "address": extra_addr,
+                "blinded_nonce_point": bn,
+                "unblinded_signature_scalar": sg,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(json["error"], "outputs_full");
 }

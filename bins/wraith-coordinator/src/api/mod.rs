@@ -6,4 +6,5 @@ pub mod discover;
 pub mod find_or_create;
 pub mod health;
 pub mod session_inputs;
+pub mod session_outputs;
 pub mod session_status;

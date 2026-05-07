@@ -82,14 +82,20 @@ fn check_session(
             ));
         }
     };
+    // /nonce + /blind-sign run in Signing state — the wallet first
+    // commits its UTXO via /inputs (which auto-advances Locked →
+    // Signing once all enrolled participants have submitted), then
+    // requests blind sigs over its mix-output address. Allowing /nonce
+    // before /inputs would let a non-paying participant burn the
+    // coordinator's crypto budget without ever escrowing a bond.
     match &session.state {
-        LiteSessionState::Locked => {}
+        LiteSessionState::Signing => {}
         other => {
             return Err(error(
                 StatusCode::CONFLICT,
                 "wrong_session_state",
                 format!(
-                    "session '{session_id}' is in state '{}', expected 'locked'",
+                    "session '{session_id}' is in state '{}', expected 'signing'",
                     other.as_str()
                 ),
             ));
