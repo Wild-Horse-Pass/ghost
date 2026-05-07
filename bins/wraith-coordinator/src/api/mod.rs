@@ -9,3 +9,4 @@ pub mod round_tx;
 pub mod session_inputs;
 pub mod session_outputs;
 pub mod session_status;
+pub mod session_witness;

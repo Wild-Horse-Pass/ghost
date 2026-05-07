@@ -17,8 +17,10 @@ use wraith_protocol::{
 };
 
 use crate::assembly::AssembledRound;
+use crate::broadcaster::Broadcaster;
 use crate::inputs::AcceptedInputs;
 use crate::outputs::AcceptedOutput;
+use crate::witnesses::AcceptedWitness;
 
 /// One Schnorr blind-signature signer per active round, lazily created
 /// the first time a participant hits `/nonce`. Kept inside an
@@ -70,6 +72,16 @@ pub struct CoordinatorState {
     /// fetch the unsigned transaction hex from `GET /:id/round-tx`
     /// and produce per-input witnesses for B/5c.
     pub assembled_rounds: Mutex<HashMap<String, AssembledRound>>,
+    /// Per-session witness submissions accumulated as wallets hit
+    /// `/witness`. Once `witnesses.len() == enrolled_count`, the
+    /// coordinator merges them into the assembled tx and calls
+    /// `broadcaster.broadcast(&tx)`.
+    pub witnesses_store: Mutex<HashMap<String, Vec<AcceptedWitness>>>,
+    /// Network broadcast backend. `None` until phase D wires the
+    /// real bitcoind RPC client; tests inject `StubBroadcaster`. The
+    /// witness handler returns 503 `broadcaster_not_configured` while
+    /// this is None on the round-completing submission.
+    pub broadcaster: Option<Arc<dyn Broadcaster>>,
     /// Per-round Schnorr blind-signature signer. Lazily created on the
     /// first `/nonce` call for a session; reused for every subsequent
     /// `/nonce` and `/blind-sign` on the same session. Each signer
@@ -88,7 +100,7 @@ pub struct CoordinatorState {
 impl CoordinatorState {
     /// Production constructor — system clock, CSPRNG-based session ids,
     /// no bond ledger (phase C wires it), no fee address (operator
-    /// configures it).
+    /// configures it), no broadcaster (phase D wires it).
     pub fn new(network: Network) -> Self {
         Self::with_components(
             network,
@@ -96,19 +108,21 @@ impl CoordinatorState {
             Arc::new(RandomSessionIdGenerator),
             None,
             None,
+            None,
         )
     }
 
     /// Test / advanced-config constructor — caller supplies clock, id
-    /// generator, bond ledger, and fee address. Used by integration
-    /// tests under `tests/` to pin deterministic session IDs and
-    /// inject `MockBondLedger`.
+    /// generator, bond ledger, fee address, and broadcaster. Used by
+    /// integration tests under `tests/` to pin deterministic session
+    /// IDs and inject `MockBondLedger` + `StubBroadcaster`.
     pub fn with_components(
         network: Network,
         clock: Arc<dyn Clock>,
         id_gen: Arc<dyn SessionIdGenerator>,
         bond_ledger: Option<Arc<dyn BondLedger>>,
         coordinator_fee_address: Option<String>,
+        broadcaster: Option<Arc<dyn Broadcaster>>,
     ) -> Self {
         let started_at = clock.unix_secs();
         Self {
@@ -122,6 +136,8 @@ impl CoordinatorState {
             inputs_store: Mutex::new(HashMap::new()),
             outputs_store: Mutex::new(HashMap::new()),
             assembled_rounds: Mutex::new(HashMap::new()),
+            witnesses_store: Mutex::new(HashMap::new()),
+            broadcaster,
             signers: Mutex::new(HashMap::new()),
             started_at,
         }
