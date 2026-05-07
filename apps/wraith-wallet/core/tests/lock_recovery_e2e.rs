@@ -23,7 +23,7 @@ use std::thread::JoinHandle;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Network;
 use ghost_locks::{Denomination, GhostLock, TimelockTier};
-use wraith_wallet_core::bitcoind::BitcoindRpc;
+use wraith_wallet_core::ghostd::GhostdRpc;
 use wraith_wallet_core::keystore::Keystore;
 use wraith_wallet_core::lock_recovery::{build_recovery_spend, RecoverySpendInputs};
 
@@ -226,7 +226,7 @@ fn unilateral_exit_e2e_recovers_locked_funds_with_no_operator_cooperation() {
     );
 
     let (rpc_url, server_handle) = spawn_mock(mock.clone(), 3);
-    let rpc = BitcoindRpc::new(rpc_url, "user", "pass");
+    let rpc = GhostdRpc::new(rpc_url, "user", "pass");
 
     // 5. Resolve the funding outpoint via getrawtransaction (same
     //    code path the daemon's LocksRecover handler uses).

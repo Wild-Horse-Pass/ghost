@@ -10,7 +10,7 @@
 //! ## What this module does NOT do
 //!
 //! - **Broadcast.** The caller (daemon) hands the resulting raw tx
-//!   hex to a `BitcoindRpc::send_raw_transaction` call. Decoupling
+//!   hex to a `GhostdRpc::send_raw_transaction` call. Decoupling
 //!   build-and-sign from broadcast means tests can assert tx shape
 //!   without spinning up a node, and the daemon can dry-run an
 //!   exit before sending.

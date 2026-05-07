@@ -78,10 +78,10 @@ mod unix {
     /// Optional bitcoind RPC config for the LocksRecover unilateral
     /// exit path. None of these are required to boot — only LocksRecover
     /// fails without them.
-    const BITCOIND_URL_ENV: &str = "WRAITHD_BITCOIND_URL";
-    const BITCOIND_COOKIE_ENV: &str = "WRAITHD_BITCOIND_COOKIE";
-    const BITCOIND_USER_ENV: &str = "WRAITHD_BITCOIND_USER";
-    const BITCOIND_PASS_ENV: &str = "WRAITHD_BITCOIND_PASS";
+    const GHOSTD_URL_ENV: &str = "WRAITHD_GHOSTD_URL";
+    const GHOSTD_COOKIE_ENV: &str = "WRAITHD_GHOSTD_COOKIE";
+    const GHOSTD_USER_ENV: &str = "WRAITHD_GHOSTD_USER";
+    const GHOSTD_PASS_ENV: &str = "WRAITHD_GHOSTD_PASS";
     const SOCKET_ENV: &str = "WRAITHD_SOCKET";
     const IDLE_LOCK_ENV: &str = "WRAITHD_IDLE_LOCK_SECS";
     const DEFAULT_IDLE_LOCK_SECS: u64 = 900;
@@ -190,12 +190,12 @@ mod unix {
         /// (unilateral exit) path — wallet talks directly to bitcoind,
         /// not through ghost-pay. None disables the path; the IPC
         /// returns a clear "no bitcoind configured" error.
-        bitcoind_url: Option<String>,
+        ghostd_url: Option<String>,
         /// Cookie file path (preferred) OR explicit user/pass for
         /// bitcoind RPC auth. At most one of these branches is set.
-        bitcoind_cookie_path: Option<PathBuf>,
-        bitcoind_user: Option<String>,
-        bitcoind_pass: Option<String>,
+        ghostd_cookie_path: Option<PathBuf>,
+        ghostd_user: Option<String>,
+        ghostd_pass: Option<String>,
         /// HTTP client used for daemon-side fetches outside the GSP/ghost-pay
         /// stack (currently just the manifest fetch). Reuses rustls so we
         /// don't pull in a second TLS implementation.
@@ -382,10 +382,10 @@ mod unix {
         let gsp_raw = std::env::var(GSP_ENV).unwrap_or_else(|_| DEFAULT_GSP.to_string());
         let gsp_urls = wraith_wallet_core::gsp::GspClient::parse_urls(&gsp_raw);
         let tor_proxy = std::env::var(TOR_PROXY_ENV).ok();
-        let bitcoind_url = std::env::var(BITCOIND_URL_ENV).ok();
-        let bitcoind_cookie_path = std::env::var(BITCOIND_COOKIE_ENV).ok().map(PathBuf::from);
-        let bitcoind_user = std::env::var(BITCOIND_USER_ENV).ok();
-        let bitcoind_pass = std::env::var(BITCOIND_PASS_ENV).ok();
+        let ghostd_url = std::env::var(GHOSTD_URL_ENV).ok();
+        let ghostd_cookie_path = std::env::var(GHOSTD_COOKIE_ENV).ok().map(PathBuf::from);
+        let ghostd_user = std::env::var(GHOSTD_USER_ENV).ok();
+        let ghostd_pass = std::env::var(GHOSTD_PASS_ENV).ok();
         let wallets_dir = default_wallets_dir();
         let network = std::env::var(NETWORK_ENV)
             .ok()
@@ -450,10 +450,10 @@ mod unix {
             wraith_mixes: RwLock::new(HashMap::new()),
             prepared_locks: RwLock::new(HashMap::new()),
             next_recovery_index: AtomicU32::new(0),
-            bitcoind_url,
-            bitcoind_cookie_path,
-            bitcoind_user,
-            bitcoind_pass,
+            ghostd_url,
+            ghostd_cookie_path,
+            ghostd_user,
+            ghostd_pass,
         });
 
         // Auto-lock task. Wakes every 30 s. If idle_lock_secs is 0 the task
@@ -1724,7 +1724,7 @@ mod unix {
                 destination_address,
                 fee_sats,
             } => {
-                use wraith_wallet_core::bitcoind::BitcoindRpc;
+                use wraith_wallet_core::ghostd::GhostdRpc;
                 use wraith_wallet_core::lock_recovery::{
                     build_recovery_spend, RecoverySpendInputs,
                 };
@@ -1732,27 +1732,27 @@ mod unix {
                 // 1. bitcoind must be configured. Without it the
                 //    recovery path can't reach L1 — this is the only
                 //    IPC method that talks straight to bitcoind.
-                let url = match state.bitcoind_url.as_deref() {
+                let url = match state.ghostd_url.as_deref() {
                     Some(u) => u,
                     None => {
                         return Envelope::new(
                             id,
                             Response::Error(ErrorResponse {
                                 message: "no bitcoind RPC configured \
-                                    (set WRAITHD_BITCOIND_URL + WRAITHD_BITCOIND_COOKIE \
-                                    or WRAITHD_BITCOIND_USER+PASS)"
+                                    (set WRAITHD_GHOSTD_URL + WRAITHD_GHOSTD_COOKIE \
+                                    or WRAITHD_GHOSTD_USER+PASS)"
                                     .into(),
                             }),
                         );
                     }
                 };
                 let rpc_result = match (
-                    state.bitcoind_cookie_path.as_ref(),
-                    state.bitcoind_user.as_deref(),
-                    state.bitcoind_pass.as_deref(),
+                    state.ghostd_cookie_path.as_ref(),
+                    state.ghostd_user.as_deref(),
+                    state.ghostd_pass.as_deref(),
                 ) {
-                    (Some(cookie), None, None) => BitcoindRpc::from_cookie(url, cookie),
-                    (None, Some(u), Some(p)) => Ok(BitcoindRpc::new(url, u, p)),
+                    (Some(cookie), None, None) => GhostdRpc::from_cookie(url, cookie),
+                    (None, Some(u), Some(p)) => Ok(GhostdRpc::new(url, u, p)),
                     _ => {
                         return Envelope::new(
                             id,

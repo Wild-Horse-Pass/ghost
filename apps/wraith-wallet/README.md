@@ -44,7 +44,7 @@ Assuming `cargo` is on your PATH and you've cloned the monorepo:
 # 1. Build everything (first build pulls + compiles a lot of deps).
 cargo build -p wraith-wallet-daemon -p wraith-wallet-cli -p wraith-wallet-gui
 
-# 2. Bring up the dev stack (needs a local signet bitcoind on :38335).
+# 2. Bring up the dev stack (needs a local signet ghostd on :38335).
 bash scripts/run-wraith-stack.sh up
 
 # 3. Open the GUI — it kicks off onboarding automatically when there
@@ -79,9 +79,10 @@ cargo build -p wraith-wallet-gui      # produces `wraith-gui`
 ## Local dev stack
 
 `scripts/run-wraith-stack.sh` brings up `ghost-pay`, `ghost-gsp`, and `wraithd` on
-loopback for end-to-end testing. Requires a local signet `bitcoind` (default
-`http://127.0.0.1:38335`, override with `BITCOIN_RPC_URL` / `BITCOIN_RPC_USER` /
-`BITCOIN_RPC_PASSWORD`).
+loopback for end-to-end testing. Requires a local signet `ghostd` — the Ghost Core
+binary, a Bitcoin Core v30 fork (default `http://127.0.0.1:38335`, override with
+`GHOSTD_RPC_URL` / `GHOSTD_RPC_USER` / `GHOSTD_RPC_PASSWORD`). `bitcoind` works
+interchangeably since the RPC interfaces are identical.
 
 ```sh
 bash scripts/run-wraith-stack.sh up      # start the stack

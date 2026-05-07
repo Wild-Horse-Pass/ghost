@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Regtest demo of the Ghost Lock unilateral-exit path.
 #
-# Spins up bitcoind in regtest, prepares a Ghost Lock against a
+# Spins up ghostd in regtest, prepares a Ghost Lock against a
 # running ghost-pay + ghost-gsp + wraithd stack, funds it, kills
 # every operator service, mines past the timelock, and runs
 # `wraith locks recover` — proving the user gets their bitcoin back
 # with zero operator cooperation.
 #
 # Prerequisites:
-#   - bitcoind, bitcoin-cli installed and on PATH
+#   - ghostd + ghost-cli on PATH (Ghost Core, Bitcoin Core v30 fork).
+#     bitcoind/bitcoin-cli also work — the RPC interface is identical —
+#     and this script falls back to them if ghostd isn't installed.
 #   - this repo built (`cargo build --workspace`)
 #   - ghost-pay, ghost-gsp, wraithd binaries in target/debug/
 #
@@ -16,7 +18,7 @@
 #   ./scripts/regtest-recovery-demo.sh
 #
 # What "success" looks like at the end: the recovery tx confirms,
-# bitcoin-cli getbalance shows the recovered amount on the receiving
+# `ghost-cli getbalance` shows the recovered amount on the receiving
 # address, and the operator services were down for the second half
 # of the run.
 
@@ -27,10 +29,19 @@ BIN="$REPO/target/debug"
 DATADIR="$(mktemp -d -t ghost-regtest-demo.XXXXXX)"
 trap 'rm -rf "$DATADIR"' EXIT
 
-BITCOIND_DIR="$DATADIR/bitcoind"
-BITCOIND_PORT=18443
-BITCOIND_RPC_URL="http://127.0.0.1:${BITCOIND_PORT}/"
-mkdir -p "$BITCOIND_DIR"
+# Prefer ghostd/ghost-cli; fall back to bitcoind/bitcoin-cli for
+# environments that haven't installed Ghost Core yet.
+GHOSTD="${GHOSTD:-$(command -v ghostd || command -v bitcoind || true)}"
+GHOST_CLI="${GHOST_CLI:-$(command -v ghost-cli || command -v bitcoin-cli || true)}"
+if [ -z "$GHOSTD" ] || [ -z "$GHOST_CLI" ]; then
+    echo "ERROR: neither ghostd/ghost-cli nor bitcoind/bitcoin-cli found on PATH" >&2
+    exit 1
+fi
+
+GHOSTD_DIR="$DATADIR/ghostd"
+GHOSTD_PORT=18443
+GHOSTD_RPC_URL="http://127.0.0.1:${GHOSTD_PORT}/"
+mkdir -p "$GHOSTD_DIR"
 
 GHOST_PAY_DIR="$DATADIR/ghost-pay"
 GHOST_PAY_URL="http://127.0.0.1:8800"
@@ -39,20 +50,20 @@ WRAITHD_SOCK="$DATADIR/wraithd.sock"
 
 step() { echo; echo "--- $* ---"; }
 
-step "starting bitcoind regtest"
-bitcoind -regtest \
-    -datadir="$BITCOIND_DIR" \
+step "starting ghostd regtest ($GHOSTD)"
+"$GHOSTD" -regtest \
+    -datadir="$GHOSTD_DIR" \
     -rpcuser=demo -rpcpassword=demo \
-    -rpcport=$BITCOIND_PORT \
+    -rpcport=$GHOSTD_PORT \
     -port=18444 \
     -fallbackfee=0.0001 \
     -daemon \
     -txindex
 sleep 2
 
-BCLI="bitcoin-cli -regtest -datadir=$BITCOIND_DIR -rpcuser=demo -rpcpassword=demo"
+BCLI="$GHOST_CLI -regtest -datadir=$GHOSTD_DIR -rpcuser=demo -rpcpassword=demo"
 
-# Bring up a wallet on the bitcoind side so we can fund things.
+# Bring up a wallet on the ghostd side so we can fund things.
 $BCLI -named createwallet wallet_name=demo descriptors=true || true
 $BCLI loadwallet demo || true
 DEMO_ADDR=$($BCLI -rpcwallet=demo getnewaddress)
@@ -62,7 +73,7 @@ echo "regtest funded — current balance: $($BCLI -rpcwallet=demo getbalance) BT
 step "starting ghost-pay (mock-mode for demo)"
 "$BIN/ghost-pay" \
     --network regtest \
-    --bitcoin-rpc-url "$BITCOIND_RPC_URL" \
+    --bitcoin-rpc-url "$GHOSTD_RPC_URL" \
     --bitcoin-rpc-user demo \
     --bitcoin-rpc-pass demo \
     --listen 127.0.0.1:8800 \
@@ -84,9 +95,9 @@ WRAITHD_SOCKET="$WRAITHD_SOCK" \
 WRAITHD_NETWORK=regtest \
 WRAITHD_GHOST_PAY="$GHOST_PAY_URL" \
 WRAITHD_GSP="$GSP_URL" \
-WRAITHD_BITCOIND_URL="$BITCOIND_RPC_URL" \
-WRAITHD_BITCOIND_USER=demo \
-WRAITHD_BITCOIND_PASS=demo \
+WRAITHD_GHOSTD_URL="$GHOSTD_RPC_URL" \
+WRAITHD_GHOSTD_USER=demo \
+WRAITHD_GHOSTD_PASS=demo \
 "$BIN/wraithd" \
     >"$DATADIR/wraithd.log" 2>&1 &
 WRAITHD_PID=$!
@@ -141,5 +152,5 @@ $BCLI stop || true
 echo
 echo "=== DEMO COMPLETE ==="
 echo "ghost-pay + ghost-gsp were dead for the entire recovery."
-echo "wraithd talked only to bitcoind. The user's funds came back."
+echo "wraithd talked only to ghostd. The user's funds came back."
 echo "this is the trust model the design promised."

@@ -2,7 +2,7 @@
 # Regtest demo of the L2 instant-transfer flow.
 #
 # Two wraithd instances (alice + bob) talk to a single
-# ghost-pay + ghost-gsp + bitcoind stack. Alice funds a Ghost
+# ghost-pay + ghost-gsp + ghostd stack. Alice funds a Ghost
 # Lock, then runs `wraith light send <bob_ghost_id> 5000`. The
 # demo asserts the L2 ledger entry was recorded under ALICE's
 # ghost_id (not the operator's), proving the SendL2Payment
@@ -15,7 +15,10 @@
 # without liquidity).
 #
 # Prerequisites:
-#   - bitcoind, bitcoin-cli, sqlite3, jq on PATH
+#   - ghostd + ghost-cli on PATH (Ghost Core, Bitcoin Core v30 fork).
+#     bitcoind/bitcoin-cli also work — the RPC interface is identical —
+#     and this script falls back to them if ghostd isn't installed.
+#   - sqlite3, jq on PATH
 #   - this repo built (`cargo build --workspace`)
 #   - the wraith stack binaries in target/debug/
 #
@@ -34,10 +37,19 @@ BIN="$REPO/target/debug"
 DATADIR="$(mktemp -d -t ghost-regtest-l2-demo.XXXXXX)"
 trap 'rm -rf "$DATADIR"' EXIT
 
-BITCOIND_DIR="$DATADIR/bitcoind"
-BITCOIND_PORT=18443
-BITCOIND_RPC_URL="http://127.0.0.1:${BITCOIND_PORT}/"
-mkdir -p "$BITCOIND_DIR"
+# Prefer ghostd/ghost-cli; fall back to bitcoind/bitcoin-cli for
+# environments that haven't installed Ghost Core yet.
+GHOSTD="${GHOSTD:-$(command -v ghostd || command -v bitcoind || true)}"
+GHOST_CLI="${GHOST_CLI:-$(command -v ghost-cli || command -v bitcoin-cli || true)}"
+if [ -z "$GHOSTD" ] || [ -z "$GHOST_CLI" ]; then
+    echo "ERROR: neither ghostd/ghost-cli nor bitcoind/bitcoin-cli found on PATH" >&2
+    exit 1
+fi
+
+GHOSTD_DIR="$DATADIR/ghostd"
+GHOSTD_PORT=18443
+GHOSTD_RPC_URL="http://127.0.0.1:${GHOSTD_PORT}/"
+mkdir -p "$GHOSTD_DIR"
 
 GHOST_PAY_DIR="$DATADIR/ghost-pay"
 GHOST_PAY_URL="http://127.0.0.1:8800"
@@ -47,18 +59,18 @@ BOB_SOCK="$DATADIR/bob.sock"
 
 step() { echo; echo "--- $* ---"; }
 
-# ---- bitcoind ---------------------------------------------------------------
-step "starting bitcoind regtest"
-bitcoind -regtest \
-    -datadir="$BITCOIND_DIR" \
+# ---- ghostd ---------------------------------------------------------------
+step "starting ghostd regtest ($GHOSTD)"
+"$GHOSTD" -regtest \
+    -datadir="$GHOSTD_DIR" \
     -rpcuser=demo -rpcpassword=demo \
-    -rpcport=$BITCOIND_PORT \
+    -rpcport=$GHOSTD_PORT \
     -port=18444 \
     -fallbackfee=0.0001 \
     -daemon \
     -txindex
 sleep 2
-BCLI="bitcoin-cli -regtest -datadir=$BITCOIND_DIR -rpcuser=demo -rpcpassword=demo"
+BCLI="$GHOST_CLI -regtest -datadir=$GHOSTD_DIR -rpcuser=demo -rpcpassword=demo"
 $BCLI -named createwallet wallet_name=demo descriptors=true || true
 $BCLI loadwallet demo || true
 DEMO_ADDR=$($BCLI -rpcwallet=demo getnewaddress)
@@ -68,7 +80,7 @@ $BCLI -rpcwallet=demo generatetoaddress 101 "$DEMO_ADDR" >/dev/null
 step "starting ghost-pay"
 "$BIN/ghost-pay" \
     --network regtest \
-    --bitcoin-rpc-url "$BITCOIND_RPC_URL" \
+    --bitcoin-rpc-url "$GHOSTD_RPC_URL" \
     --bitcoin-rpc-user demo \
     --bitcoin-rpc-pass demo \
     --listen 127.0.0.1:8800 \
@@ -93,9 +105,9 @@ spawn_wraithd() {
     WRAITHD_NETWORK=regtest \
     WRAITHD_GHOST_PAY="$GHOST_PAY_URL" \
     WRAITHD_GSP="$GSP_URL" \
-    WRAITHD_BITCOIND_URL="$BITCOIND_RPC_URL" \
-    WRAITHD_BITCOIND_USER=demo \
-    WRAITHD_BITCOIND_PASS=demo \
+    WRAITHD_GHOSTD_URL="$GHOSTD_RPC_URL" \
+    WRAITHD_GHOSTD_USER=demo \
+    WRAITHD_GHOSTD_PASS=demo \
     WRAITHD_WALLETS_DIR="$DATADIR/$name-wallets" \
     "$BIN/wraithd" \
         >"$DATADIR/$name.log" 2>&1 &

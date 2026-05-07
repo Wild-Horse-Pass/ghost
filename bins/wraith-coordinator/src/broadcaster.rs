@@ -2,7 +2,7 @@
 //!
 //! Same shape as the `BondLedger` trait elsewhere. Tests inject
 //! `StubBroadcaster` which just records the call; production wires
-//! `BitcoindBroadcaster` which forwards to a bitcoind JSON-RPC node.
+//! `GhostdBroadcaster` which forwards to a bitcoind JSON-RPC node.
 //! The coordinator's broadcast path is deliberately decoupled from
 //! the network layer so the tx-merge logic can be unit-tested without
 //! a full node, and so a malfunctioning broadcaster doesn't poison
@@ -114,13 +114,13 @@ impl Broadcaster for StubBroadcaster {
 /// runtime. `reqwest::blocking` would panic on Drop inside the
 /// surrounding axum/tokio runtime (it tries to drop its own runtime
 /// from within ours).
-pub struct BitcoindBroadcaster {
+pub struct GhostdBroadcaster {
     endpoint: String,
     auth_header: String,
     agent: ureq::Agent,
 }
 
-impl BitcoindBroadcaster {
+impl GhostdBroadcaster {
     /// Construct from a bitcoind RPC URL + (user, password). The pair
     /// is base64-encoded into the Authorization header at construction
     /// so we don't repeat the work on every call.
@@ -179,7 +179,7 @@ struct RpcError {
     message: String,
 }
 
-impl Broadcaster for BitcoindBroadcaster {
+impl Broadcaster for GhostdBroadcaster {
     fn broadcast(&self, tx: &Transaction) -> Result<bitcoin::Txid, BroadcastError> {
         let raw_hex = serialize_hex(tx);
         let body = RpcRequest {
@@ -253,7 +253,7 @@ mod tests {
 
     /// Tiny one-shot HTTP/1.1 server that accepts ONE request,
     /// asserts the JSON body matches `expected_method`, and replies
-    /// with the supplied body. Lets us drive `BitcoindBroadcaster`
+    /// with the supplied body. Lets us drive `GhostdBroadcaster`
     /// end-to-end without pulling in a full mock HTTP framework.
     fn one_shot_rpc(
         expected_method: &'static str,
@@ -337,7 +337,7 @@ mod tests {
                 "id": "wraith-coordinator",
             }),
         );
-        let bb = BitcoindBroadcaster::new(url, "user", "pass").unwrap();
+        let bb = GhostdBroadcaster::new(url, "user", "pass").unwrap();
         let txid = bb.broadcast(&fixture_tx()).expect("broadcast ok");
         assert_eq!(txid.to_string(), returned_txid);
         let req_body = server.join().unwrap();
@@ -357,7 +357,7 @@ mod tests {
                 "id": "wraith-coordinator",
             }),
         );
-        let bb = BitcoindBroadcaster::new(url, "u", "p").unwrap();
+        let bb = GhostdBroadcaster::new(url, "u", "p").unwrap();
         let err = bb.broadcast(&fixture_tx()).expect_err("rejected");
         match err {
             BroadcastError::Rejected(detail) => {
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn bitcoind_broadcaster_surfaces_connect_failures_as_unreachable() {
         // 127.0.0.1:1 is reserved-low and rejects connect immediately.
-        let bb = BitcoindBroadcaster::new("http://127.0.0.1:1/", "u", "p").unwrap();
+        let bb = GhostdBroadcaster::new("http://127.0.0.1:1/", "u", "p").unwrap();
         let err = bb.broadcast(&fixture_tx()).expect_err("unreachable");
         match err {
             BroadcastError::Unreachable(_) => {}

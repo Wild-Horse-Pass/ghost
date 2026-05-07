@@ -2,10 +2,12 @@
 # run-wraith-stack.sh — bring up the local Wraith Wallet dev stack.
 #
 # Starts (or reuses, if already running):
-#   • bitcoind (signet)        — assumed running on 127.0.0.1:38335
+#   • ghostd (signet)          — assumed running on 127.0.0.1:38335
 #                                with rpcuser=local rpcpassword=localtest.
-#                                Override via $BITCOIN_RPC_URL +
-#                                $BITCOIN_RPC_USER + $BITCOIN_RPC_PASSWORD.
+#                                Override via $GHOSTD_RPC_URL +
+#                                $GHOSTD_RPC_USER + $GHOSTD_RPC_PASSWORD.
+#                                bitcoind is RPC-compatible and works
+#                                interchangeably here.
 #   • ghost-pay                — :8800, REST API
 #   • ghost-gsp                — :8900, REST + WS (--insecure-http for dev)
 #   • wraithd                  — local Unix socket
@@ -26,19 +28,19 @@ GHOST_PAY_DATA="${WRAITH_STACK_GHOST_PAY_DIR:-/tmp/wraith-stack/ghost-pay}"
 GSP_DATA="${WRAITH_STACK_GSP_DIR:-/tmp/wraith-stack/gsp}"
 WALLETS_DIR="${WRAITH_STACK_WALLETS_DIR:-/tmp/wraith-stack/wallets}"
 
-BITCOIN_RPC_URL="${BITCOIN_RPC_URL:-http://127.0.0.1:38335}"
-BITCOIN_RPC_USER="${BITCOIN_RPC_USER:-local}"
-BITCOIN_RPC_PASSWORD="${BITCOIN_RPC_PASSWORD:-localtest}"
+GHOSTD_RPC_URL="${GHOSTD_RPC_URL:-http://127.0.0.1:38335}"
+GHOSTD_RPC_USER="${GHOSTD_RPC_USER:-local}"
+GHOSTD_RPC_PASSWORD="${GHOSTD_RPC_PASSWORD:-localtest}"
 
 mkdir -p "$LOG_DIR" "$GHOST_PAY_DATA" "$GSP_DATA" "$WALLETS_DIR"
 
 action="${1:-up}"
 
-probe_bitcoind() {
-  curl -s --user "$BITCOIN_RPC_USER:$BITCOIN_RPC_PASSWORD" \
+probe_ghostd() {
+  curl -s --user "$GHOSTD_RPC_USER:$GHOSTD_RPC_PASSWORD" \
     -H 'content-type: text/plain' \
     --data '{"jsonrpc":"1.0","id":"x","method":"getblockchaininfo","params":[]}' \
-    "$BITCOIN_RPC_URL/" | head -c 80
+    "$GHOSTD_RPC_URL/" | head -c 80
 }
 
 stop_one() {
@@ -61,11 +63,13 @@ stop_one() {
 start_ghost_pay() {
   stop_one ghost-pay
   echo "starting ghost-pay → $LOG_DIR/ghost-pay.log"
-  BITCOIN_RPC_USER="$BITCOIN_RPC_USER" \
-  BITCOIN_RPC_PASSWORD="$BITCOIN_RPC_PASSWORD" \
+  # ghost-pay reads BITCOIN_RPC_{USER,PASSWORD} from env (upstream
+  # Bitcoin Core convention — ghostd is RPC-compatible).
+  BITCOIN_RPC_USER="$GHOSTD_RPC_USER" \
+  BITCOIN_RPC_PASSWORD="$GHOSTD_RPC_PASSWORD" \
   GHOST_PAY_API_SECRET="$(openssl rand -base64 32)" \
     "$ROOT/target/debug/ghost-pay" \
-      --bitcoin-rpc "$BITCOIN_RPC_URL" \
+      --bitcoin-rpc "$GHOSTD_RPC_URL" \
       --network signet \
       --api-listen 127.0.0.1:8800 \
       --data-dir "$GHOST_PAY_DATA" \
@@ -111,10 +115,10 @@ status() {
 
 case "$action" in
   up)
-    if ! probe_bitcoind > /dev/null 2>&1; then
-      echo "ERROR: bitcoind not reachable at $BITCOIN_RPC_URL"
-      echo "       expected creds $BITCOIN_RPC_USER:$BITCOIN_RPC_PASSWORD"
-      echo "       set BITCOIN_RPC_URL / _USER / _PASSWORD env if elsewhere."
+    if ! probe_ghostd > /dev/null 2>&1; then
+      echo "ERROR: ghostd not reachable at $GHOSTD_RPC_URL"
+      echo "       expected creds $GHOSTD_RPC_USER:$GHOSTD_RPC_PASSWORD"
+      echo "       set GHOSTD_RPC_URL / _USER / _PASSWORD env if elsewhere."
       exit 1
     fi
     start_ghost_pay

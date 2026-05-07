@@ -27,7 +27,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
-pub enum BitcoindError {
+pub enum GhostdError {
     #[error("bitcoind unreachable: {0}")]
     Unreachable(String),
     #[error("bitcoind RPC rejected request: code {code}: {message}")]
@@ -38,13 +38,13 @@ pub enum BitcoindError {
     Hex(#[from] hex::FromHexError),
 }
 
-pub struct BitcoindRpc {
+pub struct GhostdRpc {
     endpoint: String,
     auth_header: String,
     agent: ureq::Agent,
 }
 
-impl BitcoindRpc {
+impl GhostdRpc {
     pub fn new(endpoint: impl Into<String>, user: &str, password: &str) -> Self {
         use base64::Engine;
         let creds = format!("{user}:{password}");
@@ -62,13 +62,13 @@ impl BitcoindRpc {
     pub fn from_cookie(
         endpoint: impl Into<String>,
         cookie_path: impl AsRef<std::path::Path>,
-    ) -> Result<Self, BitcoindError> {
+    ) -> Result<Self, GhostdError> {
         let raw = std::fs::read_to_string(cookie_path.as_ref())
-            .map_err(|e| BitcoindError::Unreachable(format!("cookie read: {e}")))?;
+            .map_err(|e| GhostdError::Unreachable(format!("cookie read: {e}")))?;
         let raw = raw.trim();
         let (user, password) = raw
             .split_once(':')
-            .ok_or_else(|| BitcoindError::Unreachable("malformed cookie file".into()))?;
+            .ok_or_else(|| GhostdError::Unreachable("malformed cookie file".into()))?;
         Ok(Self::new(endpoint, user, password))
     }
 
@@ -76,7 +76,7 @@ impl BitcoindRpc {
         &self,
         method: &str,
         params: Vec<serde_json::Value>,
-    ) -> Result<R, BitcoindError> {
+    ) -> Result<R, GhostdError> {
         let body = RpcRequest {
             jsonrpc: "1.0",
             id: "wraithd",
@@ -92,7 +92,7 @@ impl BitcoindRpc {
             Ok(r) => r,
             Err(ureq::Error::Status(_, response)) => response,
             Err(ureq::Error::Transport(t)) => {
-                return Err(BitcoindError::Unreachable(format!(
+                return Err(GhostdError::Unreachable(format!(
                     "{:?}: {t}",
                     t.kind()
                 )));
@@ -100,28 +100,28 @@ impl BitcoindRpc {
         };
         let parsed: RpcResponse<R> = resp
             .into_json()
-            .map_err(|e| BitcoindError::Parse(e.to_string()))?;
+            .map_err(|e| GhostdError::Parse(e.to_string()))?;
         if let Some(err) = parsed.error {
-            return Err(BitcoindError::Rpc {
+            return Err(GhostdError::Rpc {
                 code: err.code,
                 message: err.message,
             });
         }
         parsed.result.ok_or_else(|| {
-            BitcoindError::Parse("RPC returned neither result nor error".into())
+            GhostdError::Parse("RPC returned neither result nor error".into())
         })
     }
 
     /// Current best-block height. Used to check whether a lock's
     /// CSV-relative timelock has matured.
-    pub fn get_block_count(&self) -> Result<u64, BitcoindError> {
+    pub fn get_block_count(&self) -> Result<u64, GhostdError> {
         self.rpc("getblockcount", vec![])
     }
 
     /// Fetch a transaction in verbose mode. Returns enough to find
     /// the vout whose scriptPubKey matches the lock's funding
     /// address.
-    pub fn get_raw_transaction_verbose(&self, txid: &str) -> Result<RawTransaction, BitcoindError> {
+    pub fn get_raw_transaction_verbose(&self, txid: &str) -> Result<RawTransaction, GhostdError> {
         self.rpc(
             "getrawtransaction",
             vec![
@@ -133,10 +133,10 @@ impl BitcoindRpc {
 
     /// Push a signed transaction to the mempool. Returns the txid the
     /// node accepted. Errors map cleanly:
-    ///   - bitcoind RPC error → `BitcoindError::Rpc { code, message }`
+    ///   - bitcoind RPC error → `GhostdError::Rpc { code, message }`
     ///     (e.g. bad-txns-inputs-missingorspent, premature-spend, etc.)
-    ///   - transport / connect → `BitcoindError::Unreachable`
-    pub fn send_raw_transaction(&self, raw_hex: &str) -> Result<String, BitcoindError> {
+    ///   - transport / connect → `GhostdError::Unreachable`
+    pub fn send_raw_transaction(&self, raw_hex: &str) -> Result<String, GhostdError> {
         self.rpc(
             "sendrawtransaction",
             vec![serde_json::Value::String(raw_hex.to_string())],
