@@ -111,6 +111,12 @@ pub use lite_session::{
     SessionGossipEvent, SessionIdGenerator, SystemClock,
 };
 
+pub mod remix;
+pub use remix::{
+    RemixEnrolment, RemixError, RemixId, RemixQueue, RemixStatus, DEFAULT_QUEUE_TIMEOUT_SECS,
+    DEFAULT_REMIX_COUNT, MAX_REMIX_COUNT,
+};
+
 /// Session type determines fee structure
 ///
 /// Mix sessions charge a service fee + mining cost.
