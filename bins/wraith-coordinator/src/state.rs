@@ -12,11 +12,17 @@ use std::time::SystemTime;
 use bitcoin::Network;
 
 use wraith_protocol::{
-    BondLedger, Clock, LiteSessionRegistry, LiteTier, RandomSessionIdGenerator, RemixQueue,
-    SessionIdGenerator, SystemClock,
+    BondLedger, Clock, CoordinatorSigner, LiteSessionRegistry, LiteTier, RandomSessionIdGenerator,
+    RemixQueue, SessionIdGenerator, SystemClock,
 };
 
 use crate::inputs::AcceptedInputs;
+
+/// One Schnorr blind-signature signer per active round, lazily created
+/// the first time a participant hits `/nonce`. Kept inside an
+/// `Arc<Mutex<…>>` so handlers can lock briefly during crypto operations
+/// without holding the outer registry mutex.
+pub type SharedSigner = Arc<Mutex<CoordinatorSigner>>;
 
 /// Process-global state shared across HTTP handlers.
 pub struct CoordinatorState {
@@ -51,6 +57,17 @@ pub struct CoordinatorState {
     /// participants hit `/inputs`. Once every enrolled participant has
     /// submitted, the session transitions Locked → Signing.
     pub inputs_store: Mutex<HashMap<String, Vec<AcceptedInputs>>>,
+    /// Per-round Schnorr blind-signature signer. Lazily created on the
+    /// first `/nonce` call for a session; reused for every subsequent
+    /// `/nonce` and `/blind-sign` on the same session. Each signer
+    /// holds its own ephemeral signing keypair so the coordinator
+    /// can't link blinded requests to unblinded outputs.
+    ///
+    /// Failover note: signers are in-memory only — a coordinator
+    /// restart drops them, and B/6 (Active/Standby gossip) will need
+    /// the re-blinding-on-failover path described in DESIGN_LITE §7
+    /// before standbys can serve a round started by a now-dead Active.
+    pub signers: Mutex<HashMap<String, SharedSigner>>,
     /// Unix-seconds the binary started. `/health` reports uptime.
     pub started_at: u64,
 }
@@ -90,8 +107,32 @@ impl CoordinatorState {
             bond_ledger,
             coordinator_fee_address,
             inputs_store: Mutex::new(HashMap::new()),
+            signers: Mutex::new(HashMap::new()),
             started_at,
         }
+    }
+
+    /// Get-or-create the per-round signer. Idempotent under concurrent
+    /// access — only one signer is ever created per session_id, even
+    /// if multiple `/nonce` requests race.
+    pub fn signer_for(&self, session_id: &str) -> Result<SharedSigner, wraith_protocol::WraithError> {
+        let mut signers = self.signers.lock().expect("signers poisoned");
+        if let Some(existing) = signers.get(session_id) {
+            return Ok(existing.clone());
+        }
+        // Derive a 32-byte signer-internal session id from the textual
+        // round id. The signer's `session_id` is opaque internally — it
+        // just needs to be a stable per-round value.
+        let mut digest = [0u8; 32];
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"wraith-coordinator/signer-session-id/v1");
+        h.update(session_id.as_bytes());
+        digest.copy_from_slice(&h.finalize());
+        let signer = CoordinatorSigner::new(&digest)?;
+        let arc = Arc::new(Mutex::new(signer));
+        signers.insert(session_id.to_string(), arc.clone());
+        Ok(arc)
     }
 
     /// Stable lowercase name of the network — matches the wallet's

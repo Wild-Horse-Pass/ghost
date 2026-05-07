@@ -21,13 +21,14 @@
 //!   replaces the previous record (covers wallet retries).
 //! - Locked → Signing transition once all enrolled have submitted.
 //!
-//! ## What's deferred to B/4b
+//! ## Blind-sig protocol (B/4b, separate endpoints)
 //!
-//! - Schnorr blind-signature issuance over the participant's blinded
-//!   mix-output tag. The wallet supplies `blinded_tag` here as an
-//!   opaque hex blob; B/4a accepts it but does not sign it. Once B/4b
-//!   lands, the response carries the blind sig and the wallet
-//!   unblinds + re-presents on `/outputs` (a future endpoint).
+//! Schnorr blind-signature issuance lives on its own endpoints
+//! (`/nonce` + `/blind-sign`, see `api::blind_sig`) so the input-set
+//! validation here stays bounded and the crypto path is exercised
+//! independently. Wallets call /inputs once to commit their UTXO set,
+//! then /nonce + /blind-sign to obtain a signature over their (still
+//! unrevealed) mix-output.
 
 use std::sync::Arc;
 
@@ -56,10 +57,6 @@ pub struct Request {
     /// (denom + fee shares) by ≥ dust threshold.
     #[serde(default)]
     pub change_address: Option<String>,
-    /// Hex-encoded blinded mix-output tag. Accepted but not signed in
-    /// B/4a — see module docstring.
-    #[serde(default)]
-    pub blinded_tag: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,10 +71,6 @@ pub struct ResponseBody {
     pub state: String,
     pub submitted_count: u32,
     pub enrolled_count: u32,
-    /// Echoed for wallet correlation. None until B/4b wires the
-    /// blind-signature issuance — wallet should not assume the slot
-    /// is final until it sees a signed token.
-    pub blind_signature: Option<String>,
 }
 
 pub async fn post(
@@ -287,7 +280,6 @@ pub async fn post(
         state: next_state.as_str().to_string(),
         submitted_count,
         enrolled_count,
-        blind_signature: None,
     };
     (StatusCode::OK, Json(body)).into_response()
 }

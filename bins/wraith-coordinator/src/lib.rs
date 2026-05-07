@@ -37,5 +37,13 @@ pub fn build_router(state: Arc<CoordinatorState>) -> Router {
             "/api/v1/session/:session_id/inputs",
             axum::routing::post(api::session_inputs::post),
         )
+        .route(
+            "/api/v1/session/:session_id/nonce",
+            axum::routing::post(api::blind_sig::post_nonce),
+        )
+        .route(
+            "/api/v1/session/:session_id/blind-sign",
+            axum::routing::post(api::blind_sig::post_blind_sign),
+        )
         .with_state(state)
 }

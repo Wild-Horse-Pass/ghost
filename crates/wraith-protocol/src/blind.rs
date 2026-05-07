@@ -640,6 +640,13 @@ impl CoordinatorSigner {
         &self.public_key
     }
 
+    /// Get the per-signer session id. Stable across nonce issuance and
+    /// the eventual `TokenVerifier::new(pubkey, &session_id)` call so
+    /// wallets can verify their unblinded signatures end-to-end.
+    pub fn session_id(&self) -> &[u8; 32] {
+        &self.session_id
+    }
+
     /// Step 1: Create a new signing nonce bound to a specific participant
     ///
     /// Returns a public nonce that should be sent to the participant.
