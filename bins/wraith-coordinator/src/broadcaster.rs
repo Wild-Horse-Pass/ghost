@@ -109,12 +109,15 @@ impl Broadcaster for StubBroadcaster {
 ///   - we explicitly want the HTTP handler to block briefly until the
 ///     network has accepted the tx so the `/witness` response carries
 ///     the truth and can transition the session correctly.
+///
+/// HTTP transport is `ureq` — pure-sync with no internal tokio
+/// runtime. `reqwest::blocking` would panic on Drop inside the
+/// surrounding axum/tokio runtime (it tries to drop its own runtime
+/// from within ours).
 pub struct BitcoindBroadcaster {
     endpoint: String,
     auth_header: String,
-    /// Wall-clock client. Built once at construction; reused per call.
-    /// `reqwest::blocking` because we're in a sync trait method.
-    http: reqwest::blocking::Client,
+    agent: ureq::Agent,
 }
 
 impl BitcoindBroadcaster {
@@ -129,14 +132,13 @@ impl BitcoindBroadcaster {
         use base64::Engine;
         let creds = format!("{user}:{password}");
         let encoded = base64::engine::general_purpose::STANDARD.encode(creds);
-        let http = reqwest::blocking::Client::builder()
+        let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| BroadcastError::Unreachable(e.to_string()))?;
+            .build();
         Ok(Self {
             endpoint: endpoint.into(),
             auth_header: format!("Basic {encoded}"),
-            http,
+            agent,
         })
     }
 
@@ -189,24 +191,24 @@ impl Broadcaster for BitcoindBroadcaster {
         debug!(endpoint = %self.endpoint, txid = %tx.compute_txid(), "sending sendrawtransaction");
 
         let resp = self
-            .http
+            .agent
             .post(&self.endpoint)
-            .header(reqwest::header::AUTHORIZATION, &self.auth_header)
-            .json(&body)
-            .send()
-            .map_err(|e| {
-                if e.is_timeout() {
-                    BroadcastError::Unreachable(format!("timeout: {e}"))
-                } else if e.is_connect() {
-                    BroadcastError::Unreachable(format!("connect: {e}"))
-                } else {
-                    BroadcastError::Unreachable(format!("transport: {e}"))
-                }
-            })?;
+            .set("Authorization", &self.auth_header)
+            .send_json(&body);
 
+        let resp = match resp {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, response)) => response,
+            Err(ureq::Error::Transport(t)) => {
+                let kind = t.kind();
+                let msg = format!("{t}");
+                let detail = format!("{kind:?}: {msg}");
+                return Err(BroadcastError::Unreachable(detail));
+            }
+        };
         let status = resp.status();
         let parsed: RpcResponse = resp
-            .json()
+            .into_json()
             .map_err(|e| BroadcastError::Unreachable(format!("parse: {e}")))?;
 
         if let Some(err) = parsed.error {

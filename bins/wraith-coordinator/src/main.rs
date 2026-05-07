@@ -51,6 +51,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing::{info, warn};
 
+use wraith_coordinator::bond_ledger_http::GhostPayBondLedger;
 use wraith_coordinator::broadcaster::{BitcoindBroadcaster, Broadcaster, StubBroadcaster};
 use wraith_coordinator::{build_router, CoordinatorState};
 use wraith_protocol::{BondLedger, MockBondLedger};
@@ -89,9 +90,22 @@ struct Cli {
     /// Use an in-memory MockBondLedger instead of a real backend.
     /// Refused on mainnet — a mock ledger holds no real escrows, so
     /// "verified" bonds aren't actually paid. Use only in dev /
-    /// signet / regtest until phase C wires the ghost-pay RPC client.
+    /// signet / regtest. Mutually exclusive with --bond-ledger-url.
     #[arg(long, env = "WRAITH_COORDINATOR_MOCK_BOND_LEDGER")]
     mock_bond_ledger: bool,
+
+    /// Production ghost-pay BondLedger HTTP endpoint, e.g.
+    /// `http://127.0.0.1:8800/`. Calls the `/api/v1/wraith/bond/*`
+    /// endpoint set defined in `bond_ledger_http.rs`. Auth via the
+    /// matching --bond-ledger-token (HTTP Bearer).
+    #[arg(long, env = "WRAITH_COORDINATOR_BOND_LEDGER_URL")]
+    bond_ledger_url: Option<String>,
+
+    /// Bearer token sent to ghost-pay's BondLedger endpoints. The
+    /// operator rotates this; the wraith-coordinator picks it up at
+    /// boot. Required when --bond-ledger-url is set.
+    #[arg(long, env = "WRAITH_COORDINATOR_BOND_LEDGER_TOKEN")]
+    bond_ledger_token: Option<String>,
 
     /// Use an in-memory StubBroadcaster instead of a real backend.
     /// Refused on mainnet — a stub broadcaster doesn't actually push
@@ -147,9 +161,22 @@ async fn main() -> Result<()> {
         }
     }
 
+    if cli.mock_bond_ledger && cli.bond_ledger_url.is_some() {
+        anyhow::bail!(
+            "--mock-bond-ledger and --bond-ledger-url are mutually exclusive; pick one."
+        );
+    }
     let bond_ledger: Option<Arc<dyn BondLedger>> = if cli.mock_bond_ledger {
         warn!("using MockBondLedger — bonds are NOT escrowed against real funds");
         Some(Arc::new(MockBondLedger::new()))
+    } else if let Some(url) = cli.bond_ledger_url.as_deref() {
+        let token = cli.bond_ledger_token.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("--bond-ledger-url requires --bond-ledger-token")
+        })?;
+        let ledger = GhostPayBondLedger::new(url, token)
+            .map_err(|e| anyhow::anyhow!("ghost-pay bond ledger: {e}"))?;
+        info!(endpoint = %url, "using GhostPayBondLedger");
+        Some(Arc::new(ledger))
     } else {
         None
     };
@@ -201,7 +228,13 @@ async fn main() -> Result<()> {
     info!(
         listen = %cli.listen,
         network = ?network,
-        bond_ledger = if cli.mock_bond_ledger { "mock" } else { "none(phase-c)" },
+        bond_ledger = if cli.mock_bond_ledger {
+            "mock"
+        } else if cli.bond_ledger_url.is_some() {
+            "ghost-pay"
+        } else {
+            "none"
+        },
         broadcaster = if cli.mock_broadcaster {
             "stub"
         } else if cli.bitcoind_url.is_some() {
