@@ -27,15 +27,35 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$REPO/target/debug"
 DATADIR="$(mktemp -d -t ghost-regtest-demo.XXXXXX)"
-trap 'rm -rf "$DATADIR"' EXIT
+# Preserve service logs for post-mortem; remove the data on exit.
+SAVED_LOGS_DIR="${SAVED_LOGS_DIR:-/tmp/wraith-recovery-demo-logs}"
+mkdir -p "$SAVED_LOGS_DIR"
+cleanup() {
+    cp "$DATADIR/"*.log "$SAVED_LOGS_DIR/" 2>/dev/null || true
+    rm -rf "$DATADIR"
+    echo "(logs preserved at $SAVED_LOGS_DIR)"
+}
+trap cleanup EXIT
 
-# Prefer ghostd/ghost-cli; fall back to bitcoind/bitcoin-cli for
-# environments that haven't installed Ghost Core yet.
+# Prefer ghostd/ghost-cli; fall back to bitcoind/bitcoin-cli (RPC-
+# compatible) or to the Bitcoin Core v30 multitool form (`ghost rpc`
+# / `bitcoin rpc`) for layouts that ship a single binary instead of
+# the separate cli.
 GHOSTD="${GHOSTD:-$(command -v ghostd || command -v bitcoind || true)}"
 GHOST_CLI="${GHOST_CLI:-$(command -v ghost-cli || command -v bitcoin-cli || true)}"
-if [ -z "$GHOSTD" ] || [ -z "$GHOST_CLI" ]; then
-    echo "ERROR: neither ghostd/ghost-cli nor bitcoind/bitcoin-cli found on PATH" >&2
+if [ -z "$GHOSTD" ]; then
+    echo "ERROR: neither ghostd nor bitcoind found on PATH" >&2
     exit 1
+fi
+if [ -z "$GHOST_CLI" ]; then
+    if command -v ghost > /dev/null 2>&1; then
+        GHOST_CLI="ghost rpc"
+    elif command -v bitcoin > /dev/null 2>&1; then
+        GHOST_CLI="bitcoin rpc"
+    else
+        echo "ERROR: no RPC client found (looked for ghost-cli, bitcoin-cli, ghost, bitcoin)" >&2
+        exit 1
+    fi
 fi
 
 GHOSTD_DIR="$DATADIR/ghostd"
@@ -70,25 +90,48 @@ DEMO_ADDR=$($BCLI -rpcwallet=demo getnewaddress)
 $BCLI -rpcwallet=demo generatetoaddress 101 "$DEMO_ADDR" >/dev/null
 echo "regtest funded — current balance: $($BCLI -rpcwallet=demo getbalance) BTC"
 
-step "starting ghost-pay (mock-mode for demo)"
+# Shared secrets for the local stack:
+#   * GHOST_PAY_API_SECRET — HMAC for external callers of ghost-pay's
+#     /api/v1/* routes. Required even on regtest.
+#   * GHOST_PAY_INTERNAL_SECRET — HMAC ghost-gsp uses to talk to
+#     ghost-pay. Same value on both sides.
+GHOST_PAY_API_SECRET="$(openssl rand -base64 32)"
+GHOST_PAY_INTERNAL_SECRET="$(openssl rand -base64 32)"
+
+step "starting ghost-pay"
+BITCOIN_RPC_USER=demo \
+BITCOIN_RPC_PASSWORD=demo \
+GHOST_PAY_API_SECRET="$GHOST_PAY_API_SECRET" \
+GHOST_PAY_INTERNAL_SECRET="$GHOST_PAY_INTERNAL_SECRET" \
 "$BIN/ghost-pay" \
     --network regtest \
-    --bitcoin-rpc-url "$GHOSTD_RPC_URL" \
-    --bitcoin-rpc-user demo \
-    --bitcoin-rpc-pass demo \
-    --listen 127.0.0.1:8800 \
-    --datadir "$GHOST_PAY_DIR" \
+    --bitcoin-rpc "$GHOSTD_RPC_URL" \
+    --api-listen 127.0.0.1:8800 \
+    --data-dir "$GHOST_PAY_DIR" \
     >"$DATADIR/ghost-pay.log" 2>&1 &
 GHOST_PAY_PID=$!
 
 step "starting ghost-gsp"
+GHOST_PAY_INTERNAL_SECRET="$GHOST_PAY_INTERNAL_SECRET" \
 "$BIN/ghost-gsp" \
     --network regtest \
     --pay-node-url "$GHOST_PAY_URL" \
     --listen 127.0.0.1:8900 \
-    --datadir "$DATADIR/gsp" \
+    --data-dir "$DATADIR/gsp" \
+    --insecure-http \
     >"$DATADIR/gsp.log" 2>&1 &
 GSP_PID=$!
+sleep 2
+
+# Bootstrap ghost-pay's operator keys. Without this, every
+# /api/v1/locks/* call returns 404 because state.keys is None
+# until the operator generates them. In production this happens
+# once on operator install; the demo scripts have to do it inline.
+step "bootstrapping ghost-pay operator keys"
+curl -fsS -X POST -H "X-Internal-Auth: $GHOST_PAY_INTERNAL_SECRET" \
+    -H "Content-Type: application/json" \
+    "$GHOST_PAY_URL/api/v1/keys/generate" -d '{}' > "$DATADIR/keys-init.json"
+echo "  ghost_id: $(jq -r '.ghost_id // empty' < "$DATADIR/keys-init.json" 2>/dev/null || echo '<missing>')"
 
 step "starting wraithd"
 WRAITHD_SOCKET="$WRAITHD_SOCK" \
@@ -98,6 +141,7 @@ WRAITHD_GSP="$GSP_URL" \
 WRAITHD_GHOSTD_URL="$GHOSTD_RPC_URL" \
 WRAITHD_GHOSTD_USER=demo \
 WRAITHD_GHOSTD_PASS=demo \
+WRAITHD_WALLETS_DIR="$DATADIR/wallets" \
 "$BIN/wraithd" \
     >"$DATADIR/wraithd.log" 2>&1 &
 WRAITHD_PID=$!
@@ -115,8 +159,8 @@ WRAITH gsp auth
 step "preparing a Ghost Lock (capacity = Tiny = 100,000 sats)"
 PREPARE_OUT=$(WRAITH locks prepare 100000)
 echo "$PREPARE_OUT"
-LOCK_ID=$(echo "$PREPARE_OUT" | awk -F'lock_id:' '{print $2}' | awk '{print $1}')
-FUNDING_ADDR=$(echo "$PREPARE_OUT" | awk -F'funding_address:' '{print $2}' | awk '{print $1}')
+LOCK_ID=$(echo "$PREPARE_OUT" | grep -m1 'lock_id:' | awk '{print $NF}')
+FUNDING_ADDR=$(echo "$PREPARE_OUT" | grep -m1 'funding address:' | awk '{print $NF}')
 echo "lock_id=$LOCK_ID funding_addr=$FUNDING_ADDR"
 
 step "funding the lock from regtest wallet"

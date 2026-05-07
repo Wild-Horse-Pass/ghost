@@ -15,10 +15,17 @@ pub const JSONRPC_VERSION: &str = "2.0";
 
 /// Default socket path discovery.
 ///
-/// On Unix: `${XDG_RUNTIME_DIR:-/tmp}/wraithd-${UID}.sock`.
+/// On Unix, in this order:
+///   1. `WRAITHD_SOCKET` env var (explicit override — used by demos
+///      and tests that want multiple instances on the same host)
+///   2. `${XDG_RUNTIME_DIR}/wraithd-${UID}.sock`
+///   3. `/tmp/wraithd-${UID}.sock` if XDG_RUNTIME_DIR is unset
 #[cfg(unix)]
 pub fn default_socket_path() -> std::path::PathBuf {
     use std::path::PathBuf;
+    if let Some(explicit) = std::env::var_os("WRAITHD_SOCKET") {
+        return PathBuf::from(explicit);
+    }
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));

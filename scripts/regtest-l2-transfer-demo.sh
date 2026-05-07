@@ -37,13 +37,25 @@ BIN="$REPO/target/debug"
 DATADIR="$(mktemp -d -t ghost-regtest-l2-demo.XXXXXX)"
 trap 'rm -rf "$DATADIR"' EXIT
 
-# Prefer ghostd/ghost-cli; fall back to bitcoind/bitcoin-cli for
-# environments that haven't installed Ghost Core yet.
+# Prefer ghostd/ghost-cli; fall back to bitcoind/bitcoin-cli (RPC-
+# compatible) or to the Bitcoin Core v30 multitool form (`ghost rpc`
+# / `bitcoin rpc`) for layouts that ship a single binary instead of
+# the separate cli.
 GHOSTD="${GHOSTD:-$(command -v ghostd || command -v bitcoind || true)}"
 GHOST_CLI="${GHOST_CLI:-$(command -v ghost-cli || command -v bitcoin-cli || true)}"
-if [ -z "$GHOSTD" ] || [ -z "$GHOST_CLI" ]; then
-    echo "ERROR: neither ghostd/ghost-cli nor bitcoind/bitcoin-cli found on PATH" >&2
+if [ -z "$GHOSTD" ]; then
+    echo "ERROR: neither ghostd nor bitcoind found on PATH" >&2
     exit 1
+fi
+if [ -z "$GHOST_CLI" ]; then
+    if command -v ghost > /dev/null 2>&1; then
+        GHOST_CLI="ghost rpc"
+    elif command -v bitcoin > /dev/null 2>&1; then
+        GHOST_CLI="bitcoin rpc"
+    else
+        echo "ERROR: no RPC client found (looked for ghost-cli, bitcoin-cli, ghost, bitcoin)" >&2
+        exit 1
+    fi
 fi
 
 GHOSTD_DIR="$DATADIR/ghostd"
@@ -76,25 +88,33 @@ $BCLI loadwallet demo || true
 DEMO_ADDR=$($BCLI -rpcwallet=demo getnewaddress)
 $BCLI -rpcwallet=demo generatetoaddress 101 "$DEMO_ADDR" >/dev/null
 
+# Shared secrets — see regtest-recovery-demo.sh for the explanation.
+GHOST_PAY_API_SECRET="$(openssl rand -base64 32)"
+GHOST_PAY_INTERNAL_SECRET="$(openssl rand -base64 32)"
+
 # ---- ghost-pay --------------------------------------------------------------
 step "starting ghost-pay"
+BITCOIN_RPC_USER=demo \
+BITCOIN_RPC_PASSWORD=demo \
+GHOST_PAY_API_SECRET="$GHOST_PAY_API_SECRET" \
+GHOST_PAY_INTERNAL_SECRET="$GHOST_PAY_INTERNAL_SECRET" \
 "$BIN/ghost-pay" \
     --network regtest \
-    --bitcoin-rpc-url "$GHOSTD_RPC_URL" \
-    --bitcoin-rpc-user demo \
-    --bitcoin-rpc-pass demo \
-    --listen 127.0.0.1:8800 \
-    --datadir "$GHOST_PAY_DIR" \
+    --bitcoin-rpc "$GHOSTD_RPC_URL" \
+    --api-listen 127.0.0.1:8800 \
+    --data-dir "$GHOST_PAY_DIR" \
     >"$DATADIR/ghost-pay.log" 2>&1 &
 GHOST_PAY_PID=$!
 
 # ---- ghost-gsp --------------------------------------------------------------
 step "starting ghost-gsp"
+GHOST_PAY_INTERNAL_SECRET="$GHOST_PAY_INTERNAL_SECRET" \
 "$BIN/ghost-gsp" \
     --network regtest \
     --pay-node-url "$GHOST_PAY_URL" \
     --listen 127.0.0.1:8900 \
-    --datadir "$DATADIR/gsp" \
+    --data-dir "$DATADIR/gsp" \
+    --insecure-http \
     >"$DATADIR/gsp.log" 2>&1 &
 GSP_PID=$!
 
@@ -149,8 +169,8 @@ echo "alice's ghost_id: $ALICE_GHOST_ID"
 step "alice prepares a Ghost Lock (Tiny = 100,000 sats)"
 PREP_OUT=$(ALICE_WRAITH locks prepare 100000)
 echo "$PREP_OUT"
-LOCK_ID=$(echo "$PREP_OUT" | awk -F'lock_id:' '{print $2}' | awk '{print $1}')
-FUND_ADDR=$(echo "$PREP_OUT" | awk -F'funding_address:' '{print $2}' | awk '{print $1}')
+LOCK_ID=$(echo "$PREP_OUT" | grep -m1 'lock_id:' | awk '{print $NF}')
+FUND_ADDR=$(echo "$PREP_OUT" | grep -m1 'funding address:' | awk '{print $NF}')
 
 step "funding the lock from regtest BTC"
 FUND_TXID=$($BCLI -rpcwallet=demo sendtoaddress "$FUND_ADDR" 0.001)

@@ -133,6 +133,13 @@ struct Args {
     #[arg(long, env = "GHOST_PAY_API_SECRET")]
     api_secret: Option<String>,
 
+    /// Shared bearer secret for trusted ghost-gsp callers. When set,
+    /// requests with a matching `X-Internal-Auth` header skip HMAC
+    /// — used by the operator's own GSP gateway. Leave unset on
+    /// hosts that don't run a co-located ghost-gsp.
+    #[arg(long, env = "GHOST_PAY_INTERNAL_SECRET")]
+    internal_secret: Option<String>,
+
     /// TLS certificate PEM file path (enables HTTPS)
     /// When provided, --tls-key is also required.
     #[arg(long)]
@@ -704,12 +711,44 @@ use sha2::Sha256;
 #[derive(Clone)]
 struct ApiAuth {
     secret: Option<String>,
+    /// Shared bearer secret for trusted GSP-server callers. When set,
+    /// requests with a matching `X-Internal-Auth` header skip HMAC
+    /// verification — used by ghost-gsp's PayClient (a known operator-
+    /// run gateway). Validated in constant time. Distinct from
+    /// `secret` so operators can rotate them independently.
+    internal_secret: Option<String>,
     network: Network,
 }
 
 impl ApiAuth {
-    fn new(secret: Option<String>, network: Network) -> Self {
-        Self { secret, network }
+    fn new(secret: Option<String>, internal_secret: Option<String>, network: Network) -> Self {
+        Self {
+            secret,
+            internal_secret,
+            network,
+        }
+    }
+
+    /// Constant-time check for the `X-Internal-Auth` bearer header.
+    /// Returns true only when the configured internal secret is set
+    /// AND matches the supplied header value byte-for-byte.
+    fn internal_auth_matches(&self, headers: &HeaderMap) -> bool {
+        let configured = match &self.internal_secret {
+            Some(s) => s,
+            None => return false,
+        };
+        let provided = match headers.get("X-Internal-Auth").and_then(|h| h.to_str().ok()) {
+            Some(s) => s,
+            None => return false,
+        };
+        if provided.len() != configured.len() {
+            return false;
+        }
+        let mut diff = 0u8;
+        for (a, b) in provided.bytes().zip(configured.bytes()) {
+            diff |= a ^ b;
+        }
+        diff == 0
     }
 
     /// Verify HMAC signature from request headers
@@ -797,11 +836,18 @@ async fn require_api_auth(
         Err(_) => return Err(StatusCode::BAD_REQUEST),
     };
 
-    // Verify signature
-    if !auth.verify_signature(&parts.headers, &body_bytes) {
+    // Trusted GSP-server bypass: a configured `X-Internal-Auth`
+    // header that matches the operator's GSP-internal secret skips
+    // HMAC verification. This is the path ghost-gsp's PayClient
+    // takes — it sits behind the operator's perimeter and
+    // authenticates wallets itself via JWT WebSocket. External
+    // callers without the bearer fall through to HMAC.
+    let auth_ok = auth.internal_auth_matches(&parts.headers)
+        || auth.verify_signature(&parts.headers, &body_bytes);
+    if !auth_ok {
         warn!(
             path = %parts.uri.path(),
-            "H-2: Authentication failed - invalid signature"
+            "H-2: Authentication failed - no valid HMAC and no matching X-Internal-Auth"
         );
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -1499,7 +1545,11 @@ async fn main() -> Result<()> {
     }
 
     // H-2: Create API authentication state
-    let api_auth = ApiAuth::new(state.config.api_secret.clone(), state.network);
+    let api_auth = ApiAuth::new(
+        state.config.api_secret.clone(),
+        state.config.internal_secret.clone(),
+        state.network,
+    );
 
     // HIGH-API-1: Fail startup if api_secret not configured on mainnet
     if api_auth.secret.is_none() {
