@@ -182,6 +182,67 @@ async fn second_participant_replicates_to_standby() {
 }
 
 #[tokio::test]
+async fn state_change_replicates_to_standby() {
+    use wraith_protocol::LiteSessionState;
+
+    let (standby_url, standby_state) = spawn_standby().await;
+    let (active_url, active_state) = spawn_active_with_peer(standby_url).await;
+    let client = reqwest::Client::new();
+
+    // Create the session via the Active's HTTP route so SessionCreated
+    // + ParticipantAdded both fire and Standby has the session.
+    let resp = client
+        .post(format!("{}/api/v1/session/find_or_create", active_url))
+        .json(&serde_json::json!({
+            "tier_id": "100k_sats",
+            "session_type": "mix",
+            "ghost_id": "wallet_a",
+            "bond_id": "bond_a",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let session_id = body["session"]["session_id"].as_str().unwrap().to_string();
+
+    // Wait for Standby to mirror the initial Filling state.
+    let mirrored = poll_until(|| {
+        standby_state
+            .sessions
+            .get(&session_id)
+            .map(|s| matches!(s.state, LiteSessionState::Filling { .. }))
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(mirrored, "standby never observed initial Filling state");
+
+    // Force a Filling → Failed transition on the Active. This goes
+    // straight through the registry's `fail_session` path which
+    // publishes a StateChanged gossip event.
+    active_state
+        .sessions
+        .fail_session(&session_id, "test-injected-failure")
+        .expect("fail_session on Active");
+
+    // Standby should reflect the new Failed state with the same reason.
+    let failed_ok = poll_until(|| {
+        standby_state
+            .sessions
+            .get(&session_id)
+            .map(|s| {
+                matches!(
+                    &s.state,
+                    LiteSessionState::Failed { reason } if reason == "test-injected-failure"
+                )
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(failed_ok, "standby never observed StateChanged → Failed");
+}
+
+#[tokio::test]
 async fn solo_coordinator_with_no_peers_runs_fine() {
     // Regression guard: gossip is optional. With an empty peer list
     // the binary still boots and serves traffic.
