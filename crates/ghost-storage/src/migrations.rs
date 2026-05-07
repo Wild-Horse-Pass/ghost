@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 36;
+const SCHEMA_VERSION: u32 = 37;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -92,6 +92,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (34, migrate_v34),
         (35, migrate_v35),
         (36, migrate_v36),
+        (37, migrate_v37),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1892,6 +1893,23 @@ fn migrate_v36(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added l2_node_rewards_sats column to reconciliation_state");
+    Ok(())
+}
+
+/// v37: Add `sender_ghost_id` to accepted_instant_payments so the transactions
+/// route can find an L2 payment by either the sender's or the recipient's
+/// ghost_id. Existing rows have NULL — historic payments simply won't show up
+/// on the sender's side until they're re-issued.
+fn migrate_v37(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v37: Add sender_ghost_id to accepted_instant_payments");
+
+    conn.execute_batch(
+        "ALTER TABLE accepted_instant_payments ADD COLUMN sender_ghost_id TEXT;
+         CREATE INDEX IF NOT EXISTS idx_instant_payments_sender_ghost_id ON accepted_instant_payments(sender_ghost_id);",
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added sender_ghost_id column + index to accepted_instant_payments");
     Ok(())
 }
 

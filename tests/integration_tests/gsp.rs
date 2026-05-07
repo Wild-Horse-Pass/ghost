@@ -669,6 +669,11 @@ mod error_handling {
             funding_address: None,
             required_sats: None,
             error: Some("Amount below minimum lock size".to_string()),
+            lock_pubkey: None,
+            recovery_pubkey: None,
+            recovery_index: None,
+            recovery_blocks: None,
+            creation_height: None,
         };
         let json = serde_json::to_string(&lock_failed).unwrap();
         assert!(json.contains("false"));

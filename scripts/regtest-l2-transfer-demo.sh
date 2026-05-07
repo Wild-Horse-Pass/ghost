@@ -124,11 +124,11 @@ BOB_WRAITH   gsp auth
 
 # Pull bob's ghost_id (BIP-352 receive identity) — that's what
 # alice will pay.
-BOB_GHOST_ID=$(BOB_WRAITH wallet ghost-id --json | jq -r '.ghost_id')
+BOB_GHOST_ID=$(BOB_WRAITH --json wallet ghost-id | jq -r '.WalletGhostId.ghost_id // .ghost_id')
 echo "bob's ghost_id: $BOB_GHOST_ID"
 
 # Alice's ghost_id for the assertion at the end.
-ALICE_GHOST_ID=$(ALICE_WRAITH wallet ghost-id --json | jq -r '.ghost_id')
+ALICE_GHOST_ID=$(ALICE_WRAITH --json wallet ghost-id | jq -r '.WalletGhostId.ghost_id // .ghost_id')
 echo "alice's ghost_id: $ALICE_GHOST_ID"
 
 # ---- alice prepares + funds a lock -----------------------------------------
@@ -170,11 +170,43 @@ else
     exit 1
 fi
 
-# Note: sender_pubkey here is alice's GhostKeys.spend_pubkey, which
-# the ghost-pay route currently reads from `state.keys`. After
-# commit 9a2c698 the ROW's sender_ghost_id is alice's wallet_id.
-# (The pubkey field is operator-side metadata; the ghost_id
-# attribution is what the multi-tenant fix targeted.)
+# sender_ghost_id was added in v37 to make the wallet's history
+# query return both sides of the L2 transfer. Confirm the column
+# was populated for this row.
+SENDER_GID=$(sqlite3 "$GHOST_PAY_DB" \
+    "SELECT sender_ghost_id FROM accepted_instant_payments \
+     ORDER BY accepted_at DESC LIMIT 1;")
+if [ "$SENDER_GID" = "$ALICE_GHOST_ID" ]; then
+    echo "✓ sender_ghost_id column matches alice"
+else
+    echo "✗ sender_ghost_id mismatch — got '$SENDER_GID' expected '$ALICE_GHOST_ID'"
+    exit 1
+fi
+
+# ---- assertion: BOTH wallets see the L2 entry via `light history` ----------
+step "verifying bob sees +5000 in his L2 history"
+BOB_HIST=$(BOB_WRAITH --json light history --limit 5)
+echo "$BOB_HIST"
+BOB_AMOUNT=$(echo "$BOB_HIST" | jq -r '.LightHistory.transactions[0].amount_sats // .transactions[0].amount_sats')
+BOB_TYPE=$(echo   "$BOB_HIST" | jq -r '.LightHistory.transactions[0].tx_type // .transactions[0].tx_type')
+if [ "$BOB_AMOUNT" = "5000" ] && [ "$BOB_TYPE" = "receive" ]; then
+    echo "✓ bob's wallet sees +5000 receive"
+else
+    echo "✗ bob history mismatch — amount=$BOB_AMOUNT type=$BOB_TYPE"
+    exit 1
+fi
+
+step "verifying alice sees -5000 in her L2 history"
+ALICE_HIST=$(ALICE_WRAITH --json light history --limit 5)
+echo "$ALICE_HIST"
+ALICE_AMOUNT=$(echo "$ALICE_HIST" | jq -r '.LightHistory.transactions[0].amount_sats // .transactions[0].amount_sats')
+ALICE_TYPE=$(echo   "$ALICE_HIST" | jq -r '.LightHistory.transactions[0].tx_type // .transactions[0].tx_type')
+if [ "$ALICE_AMOUNT" = "-5000" ] && [ "$ALICE_TYPE" = "send" ]; then
+    echo "✓ alice's wallet sees -5000 send"
+else
+    echo "✗ alice history mismatch — amount=$ALICE_AMOUNT type=$ALICE_TYPE"
+    exit 1
+fi
 
 # ---- teardown ---------------------------------------------------------------
 step "tearing down"

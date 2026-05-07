@@ -9067,6 +9067,7 @@ mod tests {
             status: ReconciliationStatus::Pending,
             created_at: now,
             finalized_at: None,
+            l2_node_rewards_sats: 0,
         };
 
         db.insert_reconciliation_batch(&batch)
@@ -9624,7 +9625,10 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
 
-        // Insert old share (48 hours ago)
+        // Insert old share (48 hours ago) belonging to a miner that has
+        // been dark for >7 days. delete_old_shares only prunes unpaid
+        // shares of inactive miners, so the miner row is required for
+        // the inactive-cutoff JOIN to match.
         let old_share = ShareRecord {
             id: None,
             round_id: 1,
@@ -9636,6 +9640,19 @@ mod tests {
             received_by: "node1".to_string(),
             valid: true,
         };
+        db.upsert_miner(&MinerRecord {
+            miner_id: "miner_old".to_string(),
+            payout_address: String::new(),
+            first_seen: now_s - (10 * 24 * 3600),
+            last_seen: now_s - (8 * 24 * 3600),
+            connected_node: None,
+            total_shares: 1,
+            total_work: 1000.0,
+            blocks_won: 0,
+            total_payouts_sats: 0,
+            avg_hashrate_ths: 0.0,
+        })
+        .expect("Failed to insert inactive miner");
         db.insert_share(&old_share)
             .expect("Failed to insert old share");
 
