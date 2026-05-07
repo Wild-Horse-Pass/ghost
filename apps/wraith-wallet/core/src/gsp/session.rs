@@ -215,6 +215,31 @@ impl SessionHandle {
         rx.await.map_err(|_| "reply dropped".to_string())?
     }
 
+    /// One-shot L2 payment. Issues `SendL2Payment` and awaits the
+    /// matching `PaymentSent` reply. Replaces the prepare/sign/
+    /// submit dance for the new wallet path — L2 transfers are
+    /// session-authenticated ledger ops, not Bitcoin txs.
+    pub async fn send_l2_payment(
+        &self,
+        recipient: String,
+        amount_sats: u64,
+        proof: WalletProof,
+        memo: Option<String>,
+    ) -> Result<SentL2PaymentResult, String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::SendL2Payment {
+                recipient,
+                amount_sats,
+                proof,
+                memo,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| "session task closed".to_string())?;
+        rx.await.map_err(|_| "reply dropped".to_string())?
+    }
+
     /// Issue `PrepareGhostLock` and await the matching `LockPrepared` reply.
     ///
     /// `recovery_pubkey_hex` is the user-derived recovery pubkey
@@ -324,6 +349,7 @@ enum PendingReply {
     LockConfirmed(oneshot::Sender<Result<LockConfirmedResult, String>>),
     JumpRequested(oneshot::Sender<Result<JumpRequestedResult, String>>),
     ScanKeyRegistered(oneshot::Sender<Result<(), String>>),
+    PaymentSent(oneshot::Sender<Result<SentL2PaymentResult, String>>),
 }
 
 /// Commands the daemon can send into the session task.
@@ -379,6 +405,21 @@ pub enum SessionCommand {
         proof: WalletProof,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    SendL2Payment {
+        recipient: String,
+        amount_sats: u64,
+        proof: WalletProof,
+        memo: Option<String>,
+        reply: oneshot::Sender<Result<SentL2PaymentResult, String>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SentL2PaymentResult {
+    pub payment_id: String,
+    pub status: String,
+    pub recipient: String,
+    pub amount_sats: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -687,6 +728,9 @@ async fn run(
                 PendingReply::ScanKeyRegistered(tx) => {
                     let _ = tx.send(Err("session disconnected".into()));
                 }
+                PendingReply::PaymentSent(tx) => {
+                    let _ = tx.send(Err("session disconnected".into()));
+                }
             }
         }
 
@@ -894,6 +938,27 @@ async fn run_main_loop(
                         }
                         pending.push_back(PendingReply::ScanKeyRegistered(reply));
                     }
+                    SessionCommand::SendL2Payment {
+                        recipient,
+                        amount_sats,
+                        proof,
+                        memo,
+                        reply,
+                    } => {
+                        let msg = ClientMessage::SendL2Payment {
+                            recipient,
+                            amount_sats,
+                            proof,
+                            memo,
+                        };
+                        if let Err(e) = send_client(ws, &msg).await {
+                            let _ = reply.send(Err(format!("send SendL2Payment: {e}")));
+                            return MainLoopOutcome::Disconnect(format!(
+                                "send SendL2Payment: {e}"
+                            ));
+                        }
+                        pending.push_back(PendingReply::PaymentSent(reply));
+                    }
                 }
             }
             frame = ws.next() => {
@@ -1050,6 +1115,42 @@ async fn handle_message(
                 }
             }
             tracing::debug!("gsp session: unmatched PaymentSubmitted message");
+        }
+
+        // Response to SendL2Payment.
+        ServerMessage::PaymentSent {
+            success,
+            payment_id,
+            amount_sats,
+            recipient,
+            status,
+            error,
+        } => {
+            if let Some(idx) = pending
+                .iter()
+                .position(|p| matches!(p, PendingReply::PaymentSent(_)))
+            {
+                if let Some(PendingReply::PaymentSent(tx)) = pending.remove(idx) {
+                    let result = if success {
+                        match payment_id {
+                            Some(pid) => Ok(SentL2PaymentResult {
+                                payment_id: pid,
+                                status: status.unwrap_or_else(|| "pending".into()),
+                                recipient,
+                                amount_sats,
+                            }),
+                            None => Err(
+                                "server reported success but no payment_id".into(),
+                            ),
+                        }
+                    } else {
+                        Err(error.unwrap_or_else(|| "PaymentSent failed".into()))
+                    };
+                    let _ = tx.send(result);
+                    return;
+                }
+            }
+            tracing::debug!("gsp session: unmatched PaymentSent message");
         }
 
         // Response to PrepareGhostLock.
@@ -1216,6 +1317,9 @@ async fn handle_message(
                         let _ = tx.send(Err(err));
                     }
                     PendingReply::ScanKeyRegistered(tx) => {
+                        let _ = tx.send(Err(err));
+                    }
+                    PendingReply::PaymentSent(tx) => {
                         let _ = tx.send(Err(err));
                     }
                 }

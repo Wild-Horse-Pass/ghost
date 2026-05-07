@@ -198,6 +198,36 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             }
         }
 
+        ClientMessage::SendL2Payment {
+            recipient,
+            amount_sats,
+            proof,
+            memo,
+        } => {
+            if recipient.is_empty() {
+                result.add_error("Recipient cannot be empty");
+            } else if !is_valid_recipient(recipient) {
+                result.add_error("Invalid recipient format");
+            }
+            if *amount_sats == 0 {
+                result.add_error("Amount must be greater than 0");
+            }
+            if *amount_sats < 546 {
+                result.add_warning("Amount below dust threshold");
+            }
+            if let Some(m) = memo {
+                if m.len() > 59 {
+                    result.add_error("Memo exceeds 59-char limit");
+                }
+            }
+            if let Err(e) = proof.validate_structure() {
+                result.add_error(format!("Invalid proof: {}", e));
+            }
+            if !proof.is_timestamp_valid() {
+                result.add_error("Proof timestamp out of range");
+            }
+        }
+
         ClientMessage::SubmitSignedPayment {
             payment_id,
             signature,

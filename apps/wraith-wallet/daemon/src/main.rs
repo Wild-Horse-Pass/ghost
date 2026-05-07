@@ -755,6 +755,11 @@ mod unix {
         memo: Option<String>,
         shroud_override_ms: Option<u64>,
     ) -> Result<LightSentResponse, String> {
+        // The `mode` field on the IPC is parsed for validation /
+        // forward-compat (we may want to differentiate L2 transfer
+        // tiers later) but the wire path is the same one-shot
+        // SendL2Payment for every mode in v1. ghost-pay's L2 ledger
+        // doesn't differentiate.
         let mode = parse_payment_mode(&mode_str)?;
         let mode_label = format!("{mode}");
 
@@ -763,7 +768,7 @@ mod unix {
             .as_ref()
             .ok_or_else(|| "no GSP session — run `wraith gsp auth` first".to_string())?;
 
-        // Get the auth keypair from the active wallet (must match the session's wallet).
+        // Auth keypair from the active wallet (must match session's wallet).
         let kp = {
             let wallets = state.wallets.read().await;
             let ks = wallets.get(&session.wallet_name).ok_or_else(|| {
@@ -775,58 +780,49 @@ mod unix {
             wraith_wallet_core::auth::auth_keypair(ks).map_err(|e| format!("auth keypair: {e}"))?
         };
 
-        // 1. Sign a fresh `prepare_payment` proof.
-        let proof = wraith_wallet_core::auth::make_proof(&kp, "prepare_payment")
-            .map_err(|e| format!("prepare_payment proof: {e}"))?;
-
-        // 2. PreparePayment over the persistent session.
-        let prepared = session
-            .handle
-            .prepare_payment(recipient.clone(), amount_sats, mode, proof, memo.clone())
-            .await
-            .map_err(|e| format!("PreparePayment: {e}"))?;
-
-        // 3. Sign the sighash with the auth key + tagged hash "Ghost/Data/v1"
-        //    (matches ghost-light-wallet::signing::sign_data).
-        let sighash_bytes = prepared
-            .sighash_bytes()
-            .map_err(|e| format!("decoding sighash hex: {e}"))?;
-        let signature = wraith_wallet_core::auth::sign_data(&kp, &sighash_bytes);
-        let pubkey = wraith_wallet_core::auth::xonly_pubkey_bytes(&kp);
-
-        // 4. Phase 9 Shroud: hold the signed payment for a uniform random
-        //    delay in [0, max] before submitting. Breaks the timing seam
-        //    between (wallet → ghost-pay HTTP) and (ghost-pay → P2P broadcast)
-        //    that an observer with both vantage points could otherwise
-        //    correlate to identify origin.
+        // Phase 9 Shroud: hold the request for a uniform random delay
+        // in [0, max] before sending. For L2 ledger ops there's no P2P
+        // broadcast to correlate against, but a network observer with
+        // both wallet→ghost-pay HTTP and ghost-pay→peer ledger update
+        // vantage points could still correlate "user typed send" with
+        // "ledger updated" — the shroud breaks that timing seam.
         let max_ms = shroud_override_ms.unwrap_or(state.shroud_max_ms);
         let shroud_delay_ms = shroud_pick_delay(max_ms);
         if let Some(chosen) = shroud_delay_ms {
             tracing::debug!(
                 shroud_max_ms = max_ms,
                 chosen_ms = chosen,
-                "shroud relay: holding signed payment before broadcast"
+                "shroud relay: holding L2 send before submit"
             );
             tokio::time::sleep(std::time::Duration::from_millis(chosen)).await;
         }
 
-        // 5. SubmitSignedPayment.
+        // Fresh per-call auth proof and a single SendL2Payment.
+        // Replaces the prepare/sign/submit dance — L2 transfers are
+        // session-authenticated ledger ops, not Bitcoin txs requiring
+        // per-payment sighash signatures.
+        let proof = wraith_wallet_core::auth::make_proof(&kp, "send_l2_payment")
+            .map_err(|e| format!("send_l2_payment proof: {e}"))?;
+
         let result = session
             .handle
-            .submit_signed_payment(
-                prepared.payment_id.clone(),
-                hex::encode(signature),
-                hex::encode(pubkey),
-            )
+            .send_l2_payment(recipient.clone(), amount_sats, proof, memo.clone())
             .await
-            .map_err(|e| format!("SubmitSignedPayment: {e}"))?;
+            .map_err(|e| format!("SendL2Payment: {e}"))?;
 
         Ok(LightSentResponse {
             payment_id: result.payment_id,
-            txid: result.txid,
+            // L2 transfers are off-chain ledger ops — there's no
+            // bitcoin txid until the eventual settlement step
+            // (reconciliation or confidential-transfer ZK proof).
+            txid: None,
             recipient,
-            amount_sats: prepared.amount_sats,
-            fee_sats: prepared.fee_sats,
+            amount_sats: result.amount_sats,
+            // ghost-pay's L2 send doesn't currently expose a fee
+            // breakdown in its response. v1 reports 0; the
+            // operator-side fee accounting can surface later via
+            // a separate query if/when needed.
+            fee_sats: 0,
             mode: mode_label,
             shroud_delay_ms,
         })

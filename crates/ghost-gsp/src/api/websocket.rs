@@ -678,6 +678,16 @@ async fn handle_message(
                 .await
         }
 
+        ClientMessage::SendL2Payment {
+            recipient,
+            amount_sats,
+            proof,
+            memo,
+        } => {
+            handle_send_l2_payment(state, conn_state, &recipient, amount_sats, &proof, memo.as_deref())
+                .await
+        }
+
         ClientMessage::GetPaymentStatus { payment_id, proof } => {
             handle_get_payment_status(state, conn_state, &payment_id, &proof).await
         }
@@ -1319,6 +1329,83 @@ async fn handle_submit_signed_payment(
                 txid: None,
                 // L-10 FIX: Sanitize external error message
                 error: Some(sanitize_external_error(&e.to_string(), "submit_payment")),
+            }))
+        }
+    }
+}
+
+/// One-shot L2 send. Calls PayClient::send_l2_payment which
+/// forwards to ghost-pay's `/api/v1/payments/send`. Replaces the
+/// prepare/sign/submit dance for the new wallet path — L2
+/// transfers are session-authenticated ledger ops, not Bitcoin
+/// txs requiring per-payment sighashes.
+async fn handle_send_l2_payment(
+    state: &Arc<GspState>,
+    conn_state: &ConnectionState,
+    recipient: &str,
+    amount_sats: u64,
+    proof: &WalletProof,
+    memo: Option<&str>,
+) -> Result<Option<ServerMessage>, GspError> {
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
+
+    // QUANTUM SAFETY: Reject P2TR recipient addresses (same rule
+    // as PreparePayment — applies to anything that could end up
+    // as an on-chain output during settlement).
+    if let Err(e) = validate_quantum_safe_address(recipient) {
+        return Ok(Some(ServerMessage::PaymentSent {
+            success: false,
+            payment_id: None,
+            amount_sats,
+            recipient: recipient.to_string(),
+            status: None,
+            error: Some(e.to_string()),
+        }));
+    }
+
+    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+        return Ok(Some(ServerMessage::PaymentSent {
+            success: false,
+            payment_id: None,
+            amount_sats,
+            recipient: recipient.to_string(),
+            status: None,
+            error: Some(e),
+        }));
+    }
+
+    info!(
+        wallet_id = %wallet_id,
+        recipient = %recipient,
+        amount_sats = amount_sats,
+        "L2 send_l2_payment"
+    );
+
+    match state
+        .pay_node
+        .send_l2_payment(recipient, amount_sats, memo)
+        .await
+    {
+        Ok(result) => Ok(Some(ServerMessage::PaymentSent {
+            success: true,
+            payment_id: Some(result.payment_id),
+            amount_sats: result.amount_sats,
+            recipient: result.recipient,
+            status: Some(result.status),
+            error: None,
+        })),
+        Err(e) => {
+            warn!(wallet_id = %wallet_id, error = %e, "L2 send_l2_payment failed");
+            Ok(Some(ServerMessage::PaymentSent {
+                success: false,
+                payment_id: None,
+                amount_sats,
+                recipient: recipient.to_string(),
+                status: None,
+                error: Some(sanitize_external_error(&e.to_string(), "send_l2_payment")),
             }))
         }
     }

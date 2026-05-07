@@ -166,6 +166,18 @@ struct ConfirmFundingRequest {
     funding_vout: u32,
 }
 
+/// Result from a one-shot `send_l2_payment` call. Mirrors the
+/// useful subset of ghost-pay's `/api/v1/payments/send` response.
+#[derive(Debug, Clone)]
+pub struct SendL2PaymentResult {
+    pub payment_id: String,
+    /// Operator-side status — typically "pending" until the
+    /// confidential-transfer ZK proof step completes.
+    pub status: String,
+    pub recipient: String,
+    pub amount_sats: u64,
+}
+
 /// M-15 FIX: Internal authentication header name
 /// Used to authenticate GSP requests to the ghost-pay backend.
 const INTERNAL_AUTH_HEADER: &str = "X-Internal-Auth";
@@ -859,6 +871,73 @@ impl PayNodeProxy {
             .json()
             .await
             .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+
+    /// One-shot L2 payment. Forwards to ghost-pay's
+    /// `POST /api/v1/payments/send` and returns the recorded
+    /// payment intent (operator-assigned `payment_id`, status,
+    /// recipient/amount echo). Replaces the
+    /// prepare/sign/submit dance for the new client path —
+    /// L2 transfers don't produce on-chain txs and don't need
+    /// per-payment sighash signatures.
+    pub async fn send_l2_payment(
+        &self,
+        recipient: &str,
+        amount_sats: u64,
+        memo: Option<&str>,
+    ) -> GspResult<SendL2PaymentResult> {
+        let url = format!("{}/api/v1/payments/send", self.base_url);
+        debug!(url = %url, recipient = %recipient, amount = amount_sats, "Sending L2 payment");
+
+        let request = serde_json::json!({
+            "recipient": recipient,
+            "amount_sats": amount_sats,
+            "memo": memo,
+        });
+
+        let response = self
+            .add_internal_auth(self.client.post(&url).json(&request))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(format!("send_l2_payment parse: {e}")))?;
+
+        // ghost-pay's /payments/send returns either:
+        //   { success:true, payment_id, sender, recipient, amount_sats, memo, status, ... }
+        //   { success:false, error, ... }
+        // Both are 200 OK at the HTTP layer (the failure is in the body).
+        let success = body.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !status.is_success() || !success {
+            let err_msg = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("send_l2_payment failed")
+                .to_string();
+            return Err(GspError::PayNodeError(err_msg));
+        }
+        let payment_id = body
+            .get("payment_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                GspError::PayNodeError("send_l2_payment: missing payment_id".into())
+            })?
+            .to_string();
+        let pay_status = body
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pending")
+            .to_string();
+        Ok(SendL2PaymentResult {
+            payment_id,
+            status: pay_status,
+            recipient: recipient.to_string(),
+            amount_sats,
+        })
     }
 
     /// Submit a signed payment

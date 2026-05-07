@@ -112,6 +112,26 @@ pub enum ClientMessage {
         public_key: String,
     },
 
+    /// One-shot L2 payment. Replaces the misshapen
+    /// `PreparePayment` → wallet-signs-sighash → `SubmitSignedPayment`
+    /// dance. L2 transfers don't produce a Bitcoin tx — they're
+    /// authenticated debits/credits against the operator's ledger.
+    /// The session auth proof is the right primitive; per-payment
+    /// sighash signing was a wire-format mismatch.
+    SendL2Payment {
+        /// Recipient Ghost ID or payment address.
+        recipient: String,
+        /// Amount in satoshis.
+        amount_sats: u64,
+        /// Authentication proof (per-call, prevents replay).
+        proof: WalletProof,
+        /// Optional memo (max 59 chars — OP_RETURN-compatible
+        /// length even though L2 transfers don't actually emit
+        /// OP_RETURN).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memo: Option<String>,
+    },
+
     /// Get payment status
     ///
     /// H-1: Requires wallet proof for authorization to prevent information leakage
@@ -420,6 +440,25 @@ pub enum ServerMessage {
         /// Transaction ID if broadcast
         txid: Option<String>,
         /// Error message if failed
+        error: Option<String>,
+    },
+
+    /// Reply to [`ClientMessage::SendL2Payment`]. Carries the
+    /// operator-assigned `payment_id` on success so the wallet can
+    /// reference the L2 ledger entry later (e.g. for status polls
+    /// or settlement reconciliation).
+    PaymentSent {
+        success: bool,
+        /// Operator-assigned payment_id. None on failure.
+        payment_id: Option<String>,
+        /// Echoed amount and recipient for confirmation.
+        amount_sats: u64,
+        recipient: String,
+        /// Operator-side status string (e.g. "pending",
+        /// "settled"). Pending means the L2 entry was recorded
+        /// but the ZK proof / settlement step is still required.
+        status: Option<String>,
+        /// Error message if failed.
         error: Option<String>,
     },
 
@@ -970,6 +1009,7 @@ impl ClientMessage {
                 | ClientMessage::GetTransactions { .. }
                 | ClientMessage::PreparePayment { .. }
                 | ClientMessage::SubmitSignedPayment { .. }
+                | ClientMessage::SendL2Payment { .. }
                 | ClientMessage::GetPaymentStatus { .. }
                 | ClientMessage::CancelPayment { .. }
                 | ClientMessage::PrepareGhostLock { .. }
@@ -1006,6 +1046,7 @@ impl ClientMessage {
                 | ClientMessage::RequestJump { .. }
                 | ClientMessage::AcceptInstantPayment { .. }
                 | ClientMessage::ShieldBalance { .. }
+                | ClientMessage::SendL2Payment { .. }
         )
     }
 }
