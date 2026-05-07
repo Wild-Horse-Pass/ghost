@@ -97,6 +97,12 @@ pub use single_round::{
     LiteRoundBuilder, CHANGE_DUST_THRESHOLD_SATS, DEFAULT_FEE_RATE_SATS_PER_VB,
 };
 
+pub mod bond;
+pub use bond::{
+    BondError, BondId, BondLedger, BondRecord, BondResolution, BondStatus,
+    MockBondLedger, RefundReason, SlashReason,
+};
+
 /// Session type determines fee structure
 ///
 /// Mix sessions charge a service fee + mining cost.
