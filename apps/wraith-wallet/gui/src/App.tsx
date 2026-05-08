@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   daemonEnv,
+  gspAuth,
+  gspSessionStatus,
   onPaymentDetected,
   onWatchError,
   startWatch,
@@ -55,6 +57,12 @@ export default function App() {
   // enforced server-side too.
   const [kioskMode, setKioskMode] = useState(false);
 
+  // Tracks whether we've already kicked off auto gsp_auth for the
+  // current wallet. Without this guard, the 4s tick would refire
+  // gsp_auth on every loop while the first call is still in flight.
+  // Reset whenever the active wallet changes.
+  const autoAuthInFlight = useRef<string | null>(null);
+
   // Refresh the header status every 4s. Cheap — both calls are
   // local IPC round-trips.
   useEffect(() => {
@@ -78,6 +86,37 @@ export default function App() {
           ? `${w.active}${w.unlocked ? "" : " (locked)"}`
           : "no wallet";
         setStatusText(`${env.network} • ${wpart}`);
+
+        // Auto-auth: if a wallet is active + unlocked but there's
+        // no GSP session, kick off `gsp_auth` once. This is what
+        // makes the dashboard balance show up without the user
+        // having to know about the Network screen's Re-auth button.
+        // Idempotent on the daemon side — repeat calls just return
+        // the existing session.
+        if (
+          w.active &&
+          w.unlocked &&
+          autoAuthInFlight.current !== w.active
+        ) {
+          try {
+            const session = await gspSessionStatus();
+            if (!alive) return;
+            if (!session.have_token) {
+              autoAuthInFlight.current = w.active;
+              gspAuth()
+                .catch(() => {
+                  // Silent — the user can hit Re-auth manually on
+                  // the Network screen if they care. Auto-auth
+                  // failure shouldn't block the rest of the app.
+                  if (alive) autoAuthInFlight.current = null;
+                });
+            }
+          } catch {
+            /* gsp_session_status transient failure — try again next tick */
+          }
+        } else if (!w.active) {
+          autoAuthInFlight.current = null;
+        }
       } catch (e) {
         if (!alive) return;
         setStatusText(`daemon offline (${(e as Error).message ?? e})`);
