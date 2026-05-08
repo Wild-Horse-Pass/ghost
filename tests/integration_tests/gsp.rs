@@ -195,6 +195,7 @@ mod message_validation {
         let msg = ClientMessage::GetTransactions {
             limit: 50,
             offset: 0,
+            wallet_bech32: None,
         };
         let result = validate_message(&msg);
         assert!(result.valid);
@@ -205,6 +206,7 @@ mod message_validation {
         let msg = ClientMessage::GetTransactions {
             limit: 1001,
             offset: 0,
+            wallet_bech32: None,
         };
         let result = validate_message(&msg);
         assert!(!result.valid);
@@ -453,7 +455,8 @@ mod auth_requirements {
         assert!(ClientMessage::GetGhostLocks.requires_auth());
         assert!(ClientMessage::GetTransactions {
             limit: 10,
-            offset: 0
+            offset: 0,
+            wallet_bech32: None,
         }
         .requires_auth());
     }
