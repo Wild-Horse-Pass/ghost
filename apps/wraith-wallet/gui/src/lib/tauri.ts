@@ -206,6 +206,42 @@ export async function lightUtxos(
   return unwrap<LightUtxosResponse>(resp).payload;
 }
 
+export interface LightL1UtxoEntry {
+  txid: string;
+  vout: number;
+  amount_sats: number;
+  scriptpubkey_hex: string;
+  /// BIP86 derivation index that produced the address holding this
+  /// UTXO. Drop into a Wraith mix request's `bip86_index` to skip
+  /// the daemon-side scan.
+  bip86_index: number;
+  address: string;
+  confirmations: number;
+  height: number;
+}
+
+export interface LightL1UtxosResponse {
+  utxos: LightL1UtxoEntry[];
+  total_sats: number;
+  chain_height: number;
+  scanned_max_index: number;
+}
+
+/// Scan ghost-pay's bitcoind for unspent L1 outputs at the active
+/// wallet's BIP86 receive addresses 0..`scan_max_index`. Mainnet
+/// scantxoutset takes 5-15s; signet/regtest sub-second. Surface
+/// the latency in any UI.
+export async function lightL1Utxos(
+  scan_max_index = 32,
+  min_confirmations = 0,
+): Promise<LightL1UtxosResponse> {
+  const resp = await invoke("light_l1_utxos", {
+    scanMaxIndex: scan_max_index,
+    minConfirmations: min_confirmations,
+  });
+  return unwrap<LightL1UtxosResponse>(resp).payload;
+}
+
 // ----- Wraith Lite (CoinJoin mix) ----------------------------------------
 
 export interface WraithMixCompleted {

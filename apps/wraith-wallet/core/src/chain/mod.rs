@@ -7,7 +7,7 @@ mod ghost_pay;
 
 use async_trait::async_trait;
 
-pub use ghost_pay::GhostPayClient;
+pub use ghost_pay::{GhostPayClient, ScanUtxosResponse, ScannedL1Utxo};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainStatus {
@@ -31,4 +31,18 @@ pub enum ChainError {
 #[async_trait]
 pub trait ChainClient: Send + Sync {
     async fn status(&self) -> Result<ChainStatus, ChainError>;
+
+    /// Scan the chain UTXO set for outputs at any of `addresses`.
+    /// Default impl returns `ChainError::Backend("scan not supported")`
+    /// — concrete clients that talk to a node with `scantxoutset`
+    /// (or equivalent) override this.
+    async fn scan_utxos(
+        &self,
+        _addresses: &[String],
+        _min_confirmations: u32,
+    ) -> Result<ScanUtxosResponse, ChainError> {
+        Err(ChainError::Backend(
+            "this chain client does not support L1 UTXO scanning".into(),
+        ))
+    }
 }

@@ -33,6 +33,14 @@ pub fn default_socket_path() -> std::path::PathBuf {
     dir.join(format!("wraithd-{uid}.sock"))
 }
 
+/// Default upper bound on BIP86 indices to derive when scanning L1
+/// UTXOs. 32 is small enough that even mainnet's scantxoutset
+/// completes in a few seconds, and matches the typical address-gap
+/// limit a wallet would have given out.
+pub(crate) fn default_l1_scan_max_index() -> u32 {
+    32
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
@@ -54,6 +62,24 @@ pub enum Request {
     /// List the active wallet's UTXOs via the persistent GSP session.
     LightUtxos {
         /// Minimum number of confirmations. Default 1.
+        min_confirmations: u32,
+    },
+    /// List unspent L1 outputs at the active wallet's BIP86 receive
+    /// addresses. Daemon derives addresses 0..`scan_max_index` and
+    /// asks ghost-pay to run `scantxoutset` against them.
+    /// Authenticated against ghost-pay via the
+    /// `WRAITHD_GHOST_PAY_INTERNAL_AUTH` shared secret. Returns
+    /// each matching UTXO tagged with the BIP86 index that produced
+    /// its address — drop straight into Wraith mix's `bip86_index`
+    /// field to skip the daemon-side scan.
+    LightL1Utxos {
+        /// Highest BIP86 index to derive. Daemon scans 0..this.
+        /// Capped server-side at 1024 (ghost-pay's scantxoutset
+        /// limit).
+        #[serde(default = "default_l1_scan_max_index")]
+        scan_max_index: u32,
+        /// Minimum number of confirmations. 0 includes mempool entries.
+        #[serde(default)]
         min_confirmations: u32,
     },
     /// List the active wallet's transaction history via the persistent GSP session.
@@ -305,6 +331,7 @@ pub enum Response {
     },
     LightBalance(LightBalanceResponse),
     LightUtxos(LightUtxosResponse),
+    LightL1Utxos(LightL1UtxosResponse),
     LightHistory(LightHistoryResponse),
     LightDetected(LightDetectedResponse),
     DaemonEnv(DaemonEnvResponse),
@@ -473,6 +500,35 @@ pub struct LightUtxoEntry {
 pub struct LightUtxosResponse {
     pub utxos: Vec<LightUtxoEntry>,
     pub total_sats: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightL1UtxoEntry {
+    pub txid: String,
+    pub vout: u32,
+    pub amount_sats: u64,
+    /// Hex-encoded scriptPubKey of the output. Drop straight into
+    /// the Wraith mix request's `utxo_scriptpubkey_hex`.
+    pub scriptpubkey_hex: String,
+    /// BIP86 derivation index that produced the address holding this
+    /// UTXO. Drop into the mix request's `bip86_index` to skip the
+    /// daemon's auto-scan.
+    pub bip86_index: u32,
+    pub address: String,
+    pub confirmations: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightL1UtxosResponse {
+    pub utxos: Vec<LightL1UtxoEntry>,
+    pub total_sats: u64,
+    /// Block height at which the underlying scantxoutset was taken,
+    /// surfaced for diagnostic UI.
+    pub chain_height: u32,
+    /// The highest BIP86 index actually scanned. Echoes the request
+    /// parameter back so the UI can show "scanned 0..N".
+    pub scanned_max_index: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

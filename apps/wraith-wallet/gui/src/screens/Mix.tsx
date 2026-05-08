@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  lightL1Utxos,
   lightReceive,
   walletGhostId,
   wraithMixRun,
+  type LightL1UtxoEntry,
   type WraithMixCompleted,
 } from "../lib/tauri";
 
@@ -45,8 +47,13 @@ export function Mix({ activeWallet }: MixProps) {
   const [changeAddr, setChangeAddr] = useState("");
 
   const [busy, setBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<WraithMixCompleted | null>(null);
+
+  const [utxos, setUtxos] = useState<LightL1UtxoEntry[]>([]);
+  const [chainHeight, setChainHeight] = useState<number | null>(null);
+  const [scanMax, setScanMax] = useState(32);
 
   const tier = useMemo(
     () => TIERS.find((t) => t.id === tierId) ?? TIERS[0],
@@ -94,6 +101,28 @@ export function Mix({ activeWallet }: MixProps) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onScan = async () => {
+    setErr(null);
+    setScanning(true);
+    try {
+      const r = await lightL1Utxos(scanMax, 0);
+      setUtxos(r.utxos);
+      setChainHeight(r.chain_height);
+    } catch (e) {
+      setErr((e as Error).message ?? String(e));
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const onPick = (u: LightL1UtxoEntry) => {
+    setUtxoTxid(u.txid);
+    setUtxoVout(String(u.vout));
+    setUtxoValue(String(u.amount_sats));
+    setUtxoScript(u.scriptpubkey_hex);
+    setBip86Index(String(u.bip86_index));
   };
 
   const onRun = async () => {
@@ -253,12 +282,102 @@ export function Mix({ activeWallet }: MixProps) {
       </div>
 
       <div className="card">
+        <div className="card-header">
+          <h2>Wallet UTXOs</h2>
+          <div className="row">
+            <label style={{ margin: 0 }}>Scan up to index</label>
+            <input
+              type="number"
+              min={1}
+              max={1024}
+              value={scanMax}
+              onChange={(e) =>
+                setScanMax(Math.max(1, Math.min(1024, Number(e.target.value) || 32)))
+              }
+              style={{ width: 80 }}
+              disabled={scanning || busy}
+            />
+            <button
+              className="secondary"
+              onClick={onScan}
+              disabled={scanning || busy}
+              title="Ask ghost-pay to run scantxoutset against this wallet's BIP86 receive addresses"
+            >
+              {scanning ? "Scanning…" : "Scan L1"}
+            </button>
+          </div>
+        </div>
+        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+          Unspent outputs at this wallet's BIP86 receive addresses
+          0..{scanMax}. Backed by Bitcoin Core's{" "}
+          <code>scantxoutset</code> via ghost-pay
+          {chainHeight != null && (
+            <> (chain height {chainHeight.toLocaleString()})</>
+          )}
+          . Mainnet scans take 5-15s; signet/regtest are sub-second.
+        </p>
+        {utxos.length > 0 && (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Index</th>
+                <th>Outpoint</th>
+                <th>Amount (sats)</th>
+                <th>Conf</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {utxos.map((u) => {
+                const enough =
+                  u.amount_sats >= tier.denom_sats + tier.bond_sats;
+                return (
+                  <tr key={`${u.txid}:${u.vout}`}>
+                    <td className="mono">{u.bip86_index}</td>
+                    <td className="mono muted">
+                      {u.txid.slice(0, 12)}…:{u.vout}
+                    </td>
+                    <td>
+                      {u.amount_sats.toLocaleString()}{" "}
+                      {!enough && (
+                        <span
+                          className="pill warn"
+                          title={`Needs ≥ ${(
+                            tier.denom_sats + tier.bond_sats
+                          ).toLocaleString()} for current tier`}
+                        >
+                          too small
+                        </span>
+                      )}
+                    </td>
+                    <td>{u.confirmations}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <button
+                        className="secondary"
+                        onClick={() => onPick(u)}
+                        disabled={busy}
+                      >
+                        Use
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+        {!scanning && utxos.length === 0 && chainHeight !== null && (
+          <p className="muted" style={{ margin: 0 }}>
+            No unspent outputs found at indices 0..{scanMax}.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
         <h2>Input UTXO</h2>
         <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-          The L1 UTXO to mix. Must be owned by this wallet at a
-          BIP86 derivation index (the daemon scans 0..1024 by
-          default; supply an explicit index to skip the scan). Value
-          must be at least denom + bond + dust.
+          The L1 UTXO to mix. Pick from the list above, or enter
+          manually. Value must be at least denom + bond + dust.
         </p>
         <div className="row">
           <div className="col" style={{ flex: 3 }}>

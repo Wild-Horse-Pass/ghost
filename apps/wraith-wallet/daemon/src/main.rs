@@ -57,7 +57,8 @@ mod unix {
         DetectedPaymentEntry, DoctorCheck, DoctorResponse, Envelope, ErrorResponse,
         GspAuthResponse, GspPingResponse, GspSessionStatusResponse, HealthResponse,
         LightBalanceResponse, LightDetectedResponse, LightHistoryEntry, LightHistoryResponse,
-        LightReceiveResponse, LightSentResponse, LightUtxoEntry, LightUtxosResponse, LockEntry,
+        LightL1UtxoEntry, LightL1UtxosResponse, LightReceiveResponse, LightSentResponse,
+        LightUtxoEntry, LightUtxosResponse, LockEntry,
         LocksConfirmedResponse, LocksJumpedResponse, LocksListResponse, LocksPreparedResponse,
         ReleaseManifest, Request, Response, SignerInfoIpc, WalletAuthInfoResponse,
         WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
@@ -68,6 +69,12 @@ mod unix {
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
     const DEFAULT_GSP: &str = "ws://127.0.0.1:8900/ws/v1";
     const GHOST_PAY_ENV: &str = "WRAITHD_GHOST_PAY";
+    /// Optional shared secret for ghost-pay's `X-Internal-Auth`
+    /// bypass. When set, the wallet can call ghost-pay's
+    /// authenticated routes (e.g. `/api/v1/utxos/scan`) without
+    /// HMAC. Required for the L1 UTXO scanner; other routes work
+    /// without it.
+    const GHOST_PAY_INTERNAL_AUTH_ENV: &str = "WRAITHD_GHOST_PAY_INTERNAL_AUTH";
     const GSP_ENV: &str = "WRAITHD_GSP";
     const WALLETS_DIR_ENV: &str = "WRAITHD_WALLETS_DIR";
     const NETWORK_ENV: &str = "WRAITHD_NETWORK";
@@ -400,11 +407,19 @@ mod unix {
             "node endpoints + wallets dir + network configured",
         );
 
-        let chain = wraith_wallet_core::chain::GhostPayClient::with_urls_and_proxy(
-            ghost_pay_urls.clone(),
-            tor_proxy.as_deref(),
-        )
-        .map_err(|e| std::io::Error::other(format!("ghost-pay client: {e}")))?;
+        let chain = {
+            let mut c = wraith_wallet_core::chain::GhostPayClient::with_urls_and_proxy(
+                ghost_pay_urls.clone(),
+                tor_proxy.as_deref(),
+            )
+            .map_err(|e| std::io::Error::other(format!("ghost-pay client: {e}")))?;
+            if let Ok(secret) = std::env::var(GHOST_PAY_INTERNAL_AUTH_ENV) {
+                if !secret.is_empty() {
+                    c = c.with_internal_secret(secret);
+                }
+            }
+            c
+        };
         let gsp = wraith_wallet_core::gsp::GspClient::with_urls_and_proxy(
             gsp_urls.clone(),
             tor_proxy.as_deref(),
@@ -1416,6 +1431,81 @@ mod unix {
                         }),
                     },
                 }
+            }
+            Request::LightL1Utxos {
+                scan_max_index,
+                min_confirmations,
+            } => {
+                use std::collections::HashMap;
+                let scan_max = scan_max_index.min(1024);
+                let network = state.network;
+                // Derive 0..scan_max receive addresses from the active
+                // keystore. Each address goes into a lookup so we can
+                // attribute each UTXO ghost-pay returns to the index
+                // that produced it.
+                let derived: Result<Vec<(String, u32)>, String> = with_active_wallet(state, |_, ks| {
+                    let mut out = Vec::with_capacity(scan_max as usize);
+                    for i in 0..scan_max {
+                        let a = light::receive_address(ks, i, network)
+                            .map_err(|e| format!("derive index {i}: {e}"))?;
+                        out.push((a.to_string(), i));
+                    }
+                    Ok(out)
+                })
+                .await;
+                let pairs = match derived {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse { message: e }),
+                        );
+                    }
+                };
+                let addr_to_idx: HashMap<String, u32> =
+                    pairs.iter().cloned().collect();
+                let addresses: Vec<String> =
+                    pairs.into_iter().map(|(a, _)| a).collect();
+                let scan = match state
+                    .chain
+                    .scan_utxos(&addresses, min_confirmations)
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("ghost-pay scan: {e}"),
+                            }),
+                        );
+                    }
+                };
+                let utxos: Vec<LightL1UtxoEntry> = scan
+                    .utxos
+                    .into_iter()
+                    .filter_map(|u| {
+                        let addr = u.address.clone()?;
+                        let bip86_index = *addr_to_idx.get(&addr)?;
+                        Some(LightL1UtxoEntry {
+                            txid: u.txid,
+                            vout: u.vout,
+                            amount_sats: u.amount_sats,
+                            scriptpubkey_hex: u.scriptpubkey_hex,
+                            bip86_index,
+                            address: addr,
+                            confirmations: u.confirmations,
+                            height: u.height,
+                        })
+                    })
+                    .collect();
+                let total_sats = utxos.iter().map(|u| u.amount_sats).sum();
+                Response::LightL1Utxos(LightL1UtxosResponse {
+                    utxos,
+                    total_sats,
+                    chain_height: scan.chain_height,
+                    scanned_max_index: scan_max,
+                })
             }
             Request::LightDetected => {
                 let guard = state.session.read().await;

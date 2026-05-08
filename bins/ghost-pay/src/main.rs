@@ -1603,6 +1603,10 @@ async fn main() -> Result<()> {
         .route("/api/v1/payments/send", post(send_l2_payment))
         // GhostGlyph (SENSITIVE - binds identity permanently)
         .route("/api/v1/glyph/claim", post(claim_glyph))
+        // L1 UTXO scan via Bitcoin Core's scantxoutset. Authenticated
+        // because the call is expensive (5-15s on mainnet) and the
+        // response reveals UTXO state for the supplied addresses.
+        .route("/api/v1/utxos/scan", post(scan_utxos))
         .layer(axum::middleware::from_fn_with_state(
             api_auth.clone(),
             require_api_auth,
@@ -2540,6 +2544,159 @@ async fn scan_transaction(
         "success": true,
         "message": "Transaction queued for scanning"
     })))
+}
+
+/// Request body for `POST /api/v1/utxos/scan`.
+#[derive(Debug, Deserialize)]
+struct ScanUtxosRequest {
+    /// Addresses to scan. Each is wrapped in a Bitcoin Core
+    /// `addr(...)` descriptor for the underlying scantxoutset call.
+    /// Capped at 1024 per call — chunk above that on the caller.
+    addresses: Vec<String>,
+    /// Minimum confirmations for the UTXO to be included. 0 means
+    /// mempool/coinbase outputs are returned too. Default 0 to match
+    /// Bitcoin Core's listunspent default.
+    #[serde(default)]
+    min_confirmations: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct ScannedUtxo {
+    txid: String,
+    vout: u32,
+    amount_sats: u64,
+    /// Hex-encoded scriptPubKey of the output. Wallets need this
+    /// for sighash construction when signing the spend.
+    scriptpubkey_hex: String,
+    /// The user-supplied address that matched this output. Re-derived
+    /// from the scantxoutset result's `desc` field, so only set when
+    /// the descriptor was an `addr(...)` (which this endpoint always
+    /// emits internally).
+    address: Option<String>,
+    confirmations: u32,
+    /// Block height at which this output was confirmed. 0 for
+    /// mempool entries.
+    height: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct ScanUtxosResponse {
+    utxos: Vec<ScannedUtxo>,
+    total_sats: u64,
+    /// Block height at which the underlying scantxoutset was taken.
+    /// Useful for clients that want to attribute confirmations against
+    /// the same chain state.
+    chain_height: u32,
+}
+
+/// Scan the chain UTXO set for outputs at the supplied addresses.
+/// Backed by Bitcoin Core's `scantxoutset start [addr(...), ...]`,
+/// which walks the full UTXO set on each call (5-15s on mainnet,
+/// sub-second on signet/regtest). Authenticated because the call
+/// is expensive and the result reveals UTXO state of the supplied
+/// addresses.
+async fn scan_utxos(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ScanUtxosRequest>,
+) -> Result<Json<ScanUtxosResponse>, (StatusCode, String)> {
+    if req.addresses.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "addresses must be non-empty".to_string(),
+        ));
+    }
+    if req.addresses.len() > 1024 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "too many addresses (max 1024 per call — chunk client-side)".to_string(),
+        ));
+    }
+
+    // Validate each address against the configured network before
+    // hitting bitcoind. Saves a round-trip on bad input and gives a
+    // clear error.
+    let expected_network = match state.network {
+        Network::Bitcoin => ghost_common::config::BitcoinNetwork::Mainnet,
+        Network::Signet => ghost_common::config::BitcoinNetwork::Signet,
+        Network::Testnet => ghost_common::config::BitcoinNetwork::Testnet,
+        Network::Regtest => ghost_common::config::BitcoinNetwork::Regtest,
+        // bitcoin::Network is non-exhaustive in 0.32+; fall back to
+        // mainnet's stricter prefix check on any future variant.
+        _ => ghost_common::config::BitcoinNetwork::Mainnet,
+    };
+    for a in &req.addresses {
+        state
+            .rpc
+            .validate_address_for_network(a, expected_network)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("address {a}: {e}")))?;
+    }
+
+    let scan_objs: Vec<String> = req
+        .addresses
+        .iter()
+        .map(|a| format!("addr({a})"))
+        .collect();
+    let scan_refs: Vec<&str> = scan_objs.iter().map(String::as_str).collect();
+
+    let scan = state.rpc.scan_tx_out_set(scan_refs).await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("scantxoutset failed: {e}"),
+        )
+    })?;
+    if !scan.success {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "scantxoutset returned success=false (bitcoind already scanning?)".to_string(),
+        ));
+    }
+
+    let chain_height = scan.height;
+    let mut utxos = Vec::with_capacity(scan.unspents.len());
+    let mut total_sats: u64 = 0;
+    for u in scan.unspents {
+        // scantxoutset's f64 amount field round-trips exactly for any
+        // value < 2^53 sats, which is well above 21M BTC. Multiply
+        // and round; this is the same pattern Bitcoin Core's own RPC
+        // wrappers use.
+        let amount_sats = (u.amount * SATS_PER_BTC_F64).round() as u64;
+        let confirmations = if u.height == 0 {
+            0
+        } else {
+            chain_height.saturating_sub(u.height).saturating_add(1)
+        };
+        if confirmations < req.min_confirmations {
+            continue;
+        }
+        let address = parse_addr_from_desc(&u.desc);
+        total_sats = total_sats.saturating_add(amount_sats);
+        utxos.push(ScannedUtxo {
+            txid: u.txid,
+            vout: u.vout,
+            amount_sats,
+            scriptpubkey_hex: u.script_pubkey,
+            address,
+            confirmations,
+            height: u.height,
+        });
+    }
+
+    Ok(Json(ScanUtxosResponse {
+        utxos,
+        total_sats,
+        chain_height,
+    }))
+}
+
+/// Pull the `<addr>` out of a scantxoutset desc field, which has the
+/// shape `addr(<addr>)#<checksum>`. Returns None on any other
+/// descriptor shape; callers that rely on the address being present
+/// must filter accordingly.
+fn parse_addr_from_desc(desc: &str) -> Option<String> {
+    let inner = desc.strip_prefix("addr(")?;
+    let close = inner.find(')')?;
+    Some(inner[..close].to_string())
 }
 
 // ============================================================================
@@ -7783,6 +7940,34 @@ async fn check_glyph_availability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // =========================================================================
+    // parse_addr_from_desc tests
+    // =========================================================================
+
+    #[test]
+    fn parse_addr_from_desc_extracts_inner_address() {
+        assert_eq!(
+            parse_addr_from_desc("addr(bcrt1qxyz123)#abcd1234").as_deref(),
+            Some("bcrt1qxyz123"),
+        );
+        assert_eq!(
+            parse_addr_from_desc("addr(tb1pqqqq)#deadbeef").as_deref(),
+            Some("tb1pqqqq"),
+        );
+    }
+
+    #[test]
+    fn parse_addr_from_desc_returns_none_for_other_descriptors() {
+        // tr() / wpkh() / pkh() etc are valid scantxoutset descriptors
+        // but not what scan_utxos emits. Returning None here means
+        // these rows get filtered out of the response (no
+        // attributable address), which is the conservative default.
+        assert!(parse_addr_from_desc("tr(xpub...)").is_none());
+        assert!(parse_addr_from_desc("wpkh([fingerprint/0]xpub.../0/*)").is_none());
+        assert!(parse_addr_from_desc("").is_none());
+        assert!(parse_addr_from_desc("addr(unterminated").is_none());
+    }
 
     // =========================================================================
     // derive_encryption_key tests

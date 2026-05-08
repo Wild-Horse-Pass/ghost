@@ -250,6 +250,23 @@ async fn light_utxos(
     to_value(&resp)
 }
 
+/// Scan ghost-pay's bitcoind for unspent L1 outputs at the active
+/// wallet's BIP86 receive addresses 0..`scan_max_index`. Each row
+/// comes back tagged with the BIP86 index that derived its address,
+/// ready to feed straight into a Wraith mix request.
+#[tauri::command]
+async fn light_l1_utxos(
+    scan_max_index: Option<u32>,
+    min_confirmations: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LightL1Utxos {
+        scan_max_index: scan_max_index.unwrap_or(32),
+        min_confirmations: min_confirmations.unwrap_or(0),
+    })
+    .await?;
+    to_value(&resp)
+}
+
 /// One-shot Wraith Lite mix. Daemon enrols, signs the BIP-341
 /// taproot key-path witness using the active wallet's BIP86
 /// keystore, and drives the round to broadcast.
@@ -510,6 +527,7 @@ pub fn run() {
             light_history,
             light_send,
             light_utxos,
+            light_l1_utxos,
             wraith_mix_run,
             wallet_ghost_id,
             wallet_auth_info,
