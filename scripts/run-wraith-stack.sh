@@ -113,6 +113,7 @@ start_wraithd() {
   WRAITHD_GSP=ws://127.0.0.1:8900/ws/v1 \
   WRAITHD_GHOST_PAY=http://127.0.0.1:8800 \
   WRAITHD_GHOST_PAY_INTERNAL_AUTH="$INTERNAL_SECRET" \
+  WRAITHD_WRAITH_COORDINATOR=http://127.0.0.1:9100 \
     "$ROOT/target/debug/wraithd" \
       > "$LOG_DIR/wraithd.log" 2>&1 &
   echo $! > "$LOG_DIR/wraithd.pid"

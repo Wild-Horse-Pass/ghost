@@ -76,6 +76,12 @@ mod unix {
     /// HMAC. Required for the L1 UTXO scanner; other routes work
     /// without it.
     const GHOST_PAY_INTERNAL_AUTH_ENV: &str = "WRAITHD_GHOST_PAY_INTERNAL_AUTH";
+    /// Optional default wraith-coordinator URL. When set, the
+    /// `Doctor` check probes its `/api/v1/pool/discover` endpoint
+    /// for liveness. Mixes still use the per-call URL the wallet
+    /// supplies — this is purely for diagnostic / dev-stack
+    /// purposes.
+    const WRAITH_COORDINATOR_ENV: &str = "WRAITHD_WRAITH_COORDINATOR";
     const GSP_ENV: &str = "WRAITHD_GSP";
     const WALLETS_DIR_ENV: &str = "WRAITHD_WALLETS_DIR";
     const NETWORK_ENV: &str = "WRAITHD_NETWORK";
@@ -159,6 +165,11 @@ mod unix {
         /// Optional SOCKS5 proxy for both REST and WS (e.g. socks5h://127.0.0.1:9050).
         /// Threaded into spawn_session so the persistent WS routes through Tor too.
         tor_proxy: Option<String>,
+        /// Optional default wraith-coordinator URL — used by Doctor
+        /// to probe coordinator liveness in the dev stack. None
+        /// when unset, in which case Doctor skips the coordinator
+        /// check.
+        wraith_coordinator_url: Option<String>,
         wallets_dir: PathBuf,
         wallets: RwLock<HashMap<String, Keystore>>,
         active: RwLock<Option<String>>,
@@ -445,6 +456,10 @@ mod unix {
             .build()
             .map_err(|e| std::io::Error::other(format!("http client: {e}")))?;
 
+        let wraith_coordinator_url = std::env::var(WRAITH_COORDINATOR_ENV)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             chain: Arc::new(chain),
@@ -452,6 +467,7 @@ mod unix {
             ghost_pay_urls,
             gsp_urls,
             tor_proxy: tor_proxy.clone(),
+            wraith_coordinator_url,
             wallets_dir,
             wallets: RwLock::new(HashMap::new()),
             active: RwLock::new(None),
@@ -1000,6 +1016,39 @@ mod unix {
                         s.token.remaining_secs()
                     ),
                 });
+            }
+        }
+
+        // 6. wraith-coordinator probe (only when WRAITHD_WRAITH_COORDINATOR
+        //    is set — mixes use a per-call URL from the wallet, so this is
+        //    purely a dev-stack diagnostic).
+        if let Some(url) = state.wraith_coordinator_url.as_deref() {
+            use wraith_wallet_core::wraith::WraithSessionClient;
+            let client = WraithSessionClient::new(url.to_string(), state.network);
+            let t0 = std::time::Instant::now();
+            match client.discover().await {
+                Ok((_, payload)) => {
+                    let rtt = t0.elapsed().as_millis();
+                    checks.push(DoctorCheck {
+                        name: "wraith-coordinator".into(),
+                        status: "pass".into(),
+                        detail: format!(
+                            "{} ({}) — {} tier(s) — round-trip {rtt}ms",
+                            payload.pool_id,
+                            payload.network,
+                            payload.tiers.len()
+                        ),
+                    });
+                }
+                Err(e) => {
+                    all_pass = false;
+                    let rtt = t0.elapsed().as_millis();
+                    checks.push(DoctorCheck {
+                        name: "wraith-coordinator".into(),
+                        status: "fail".into(),
+                        detail: format!("{url}: {e} (after {rtt}ms)"),
+                    });
+                }
             }
         }
 
