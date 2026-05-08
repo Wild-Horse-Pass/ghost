@@ -1529,15 +1529,34 @@ mod unix {
                 let scan_max = scan_max_index.min(1024);
                 let network = state.network;
                 // Derive 0..scan_max receive addresses from the active
-                // keystore. Each address goes into a lookup so we can
-                // attribute each UTXO ghost-pay returns to the index
-                // that produced it.
-                let derived: Result<Vec<(String, u32)>, String> = with_active_wallet(state, |_, ks| {
+                // keystore. We need both the address (to send to
+                // ghost-pay) and the scriptPubKey (to attribute each
+                // returned UTXO back to its derivation index).
+                //
+                // Why scriptPubKey, not address: bitcoind's
+                // scantxoutset normalises `addr(<bech32>)` into
+                // `rawtr(<spk-hex>)` (or `wpkh(<spk-hex>)`, etc.) in
+                // its response — the address descriptor is not
+                // round-tripped. Matching on the canonical
+                // scriptPubKey instead avoids depending on which
+                // descriptor format bitcoind chooses to echo back.
+                #[derive(Clone)]
+                struct DerivedAddr {
+                    address: String,
+                    scriptpubkey_hex: String,
+                    index: u32,
+                }
+                let derived: Result<Vec<DerivedAddr>, String> = with_active_wallet(state, |_, ks| {
                     let mut out = Vec::with_capacity(scan_max as usize);
                     for i in 0..scan_max {
                         let a = light::receive_address(ks, i, network)
                             .map_err(|e| format!("derive index {i}: {e}"))?;
-                        out.push((a.to_string(), i));
+                        let spk_hex = hex::encode(a.script_pubkey().as_bytes());
+                        out.push(DerivedAddr {
+                            address: a.to_string(),
+                            scriptpubkey_hex: spk_hex,
+                            index: i,
+                        });
                     }
                     Ok(out)
                 })
@@ -1551,10 +1570,19 @@ mod unix {
                         );
                     }
                 };
-                let addr_to_idx: HashMap<String, u32> =
-                    pairs.iter().cloned().collect();
+                // scriptpubkey_hex → (bip86_index, address). The
+                // canonical match key — see comment above.
+                let spk_to_idx: HashMap<String, (u32, String)> = pairs
+                    .iter()
+                    .map(|d| {
+                        (
+                            d.scriptpubkey_hex.clone(),
+                            (d.index, d.address.clone()),
+                        )
+                    })
+                    .collect();
                 let addresses: Vec<String> =
-                    pairs.into_iter().map(|(a, _)| a).collect();
+                    pairs.into_iter().map(|d| d.address).collect();
                 let scan = match state
                     .chain
                     .scan_utxos(&addresses, min_confirmations)
@@ -1574,15 +1602,22 @@ mod unix {
                     .utxos
                     .into_iter()
                     .filter_map(|u| {
-                        let addr = u.address.clone()?;
-                        let bip86_index = *addr_to_idx.get(&addr)?;
+                        // Match by scriptPubKey — independent of
+                        // whether bitcoind echoed `addr(...)` or
+                        // `rawtr(...)` in the response descriptor.
+                        let (bip86_index, address) =
+                            spk_to_idx.get(&u.scriptpubkey_hex).cloned()?;
                         Some(LightL1UtxoEntry {
                             txid: u.txid,
                             vout: u.vout,
                             amount_sats: u.amount_sats,
                             scriptpubkey_hex: u.scriptpubkey_hex,
                             bip86_index,
-                            address: addr,
+                            // Use the daemon-derived address — the
+                            // ghost-pay-side parser may have lost it
+                            // when the descriptor came back as
+                            // rawtr(...).
+                            address,
                             confirmations: u.confirmations,
                             height: u.height,
                         })
