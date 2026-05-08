@@ -34,6 +34,18 @@ GHOSTD_RPC_PASSWORD="${GHOSTD_RPC_PASSWORD:-localtest}"
 
 mkdir -p "$LOG_DIR" "$GHOST_PAY_DATA" "$GSP_DATA" "$WALLETS_DIR"
 
+# Shared X-Internal-Auth secret. ghost-pay accepts it as the
+# authenticated-route bypass; ghost-gsp uses it when proxying to
+# ghost-pay; wraithd uses it for the L1 UTXO scanner endpoint.
+# Persist across `up` invocations in the same stack so restarts
+# don't break already-authenticated connections.
+SECRET_FILE="$LOG_DIR/internal-secret"
+if [[ ! -f "$SECRET_FILE" ]]; then
+    openssl rand -base64 32 > "$SECRET_FILE"
+fi
+INTERNAL_SECRET="$(cat "$SECRET_FILE")"
+export INTERNAL_SECRET
+
 action="${1:-up}"
 
 probe_ghostd() {
@@ -65,9 +77,12 @@ start_ghost_pay() {
   echo "starting ghost-pay → $LOG_DIR/ghost-pay.log"
   # ghost-pay reads BITCOIN_RPC_{USER,PASSWORD} from env (upstream
   # Bitcoin Core convention — ghostd is RPC-compatible).
+  # GHOST_PAY_INTERNAL_SECRET is the X-Internal-Auth bypass secret
+  # shared with ghost-gsp and wraithd.
   BITCOIN_RPC_USER="$GHOSTD_RPC_USER" \
   BITCOIN_RPC_PASSWORD="$GHOSTD_RPC_PASSWORD" \
   GHOST_PAY_API_SECRET="$(openssl rand -base64 32)" \
+  GHOST_PAY_INTERNAL_SECRET="$INTERNAL_SECRET" \
     "$ROOT/target/debug/ghost-pay" \
       --bitcoin-rpc "$GHOSTD_RPC_URL" \
       --network signet \
@@ -80,7 +95,7 @@ start_ghost_pay() {
 start_ghost_gsp() {
   stop_one ghost-gsp
   echo "starting ghost-gsp → $LOG_DIR/ghost-gsp.log"
-  GHOST_PAY_INTERNAL_SECRET="$(openssl rand -base64 32)" \
+  GHOST_PAY_INTERNAL_SECRET="$INTERNAL_SECRET" \
     "$ROOT/target/debug/ghost-gsp" \
       --network signet \
       --listen 127.0.0.1:8900 \
@@ -97,6 +112,7 @@ start_wraithd() {
   WRAITHD_WALLETS_DIR="$WALLETS_DIR" \
   WRAITHD_GSP=ws://127.0.0.1:8900/ws/v1 \
   WRAITHD_GHOST_PAY=http://127.0.0.1:8800 \
+  WRAITHD_GHOST_PAY_INTERNAL_AUTH="$INTERNAL_SECRET" \
     "$ROOT/target/debug/wraithd" \
       > "$LOG_DIR/wraithd.log" 2>&1 &
   echo $! > "$LOG_DIR/wraithd.pid"

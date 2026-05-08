@@ -228,6 +228,20 @@ enum LightCommand {
         #[arg(short = 'c', long, default_value_t = 1)]
         min_confirmations: u32,
     },
+    /// Scan ghost-pay's bitcoind for unspent L1 outputs at the
+    /// active wallet's BIP86 receive addresses 0..`scan_max_index`.
+    /// Each row comes back tagged with the BIP86 derivation index
+    /// that produced its address — drop straight into a Wraith mix
+    /// request to skip the daemon-side address scan.
+    L1Utxos {
+        /// Highest BIP86 index to derive. Daemon scans 0..this.
+        /// Capped at 1024.
+        #[arg(long, default_value_t = 32)]
+        scan_max_index: u32,
+        /// Minimum number of confirmations. 0 includes mempool.
+        #[arg(short = 'c', long, default_value_t = 0)]
+        min_confirmations: u32,
+    },
     /// Show BIP-352 silent-payment matches detected by the persistent
     /// session's local scanner since `wraith gsp auth` ran.
     Detected,
@@ -554,6 +568,13 @@ mod unix {
                 LightCommand::Utxos { min_confirmations } => {
                     Request::LightUtxos { min_confirmations }
                 }
+                LightCommand::L1Utxos {
+                    scan_max_index,
+                    min_confirmations,
+                } => Request::LightL1Utxos {
+                    scan_max_index,
+                    min_confirmations,
+                },
                 LightCommand::History { limit, offset } => Request::LightHistory { limit, offset },
                 LightCommand::Detected => Request::LightDetected,
                 LightCommand::Watch => unreachable!("Watch handled above"),
@@ -881,6 +902,37 @@ mod unix {
                     if u.utxos.iter().any(|x| !x.spendable) {
                         println!("  * = not currently spendable");
                     }
+                }
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::LightL1Utxos(u)) => {
+                if u.utxos.is_empty() {
+                    println!(
+                        "(no L1 UTXOs at indices 0..{} — chain height {})",
+                        u.scanned_max_index, u.chain_height
+                    );
+                } else {
+                    println!(
+                        "L1 UTXOs at indices 0..{} (chain height {})",
+                        u.scanned_max_index, u.chain_height
+                    );
+                    for x in &u.utxos {
+                        println!(
+                            "  [bip86 {:>3}] {}:{}  {:>15} sats  {} confs  {}",
+                            x.bip86_index,
+                            x.txid,
+                            x.vout,
+                            x.amount_sats,
+                            x.confirmations,
+                            x.address,
+                        );
+                        println!("              spk={}", x.scriptpubkey_hex);
+                    }
+                    println!(
+                        "\ntotal: {} sats ({} utxos)",
+                        u.total_sats,
+                        u.utxos.len()
+                    );
                 }
                 std::process::ExitCode::SUCCESS
             }
