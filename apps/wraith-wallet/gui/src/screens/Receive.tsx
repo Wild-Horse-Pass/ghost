@@ -1,11 +1,25 @@
 import { useEffect, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { lightReceive, walletGhostId } from "../lib/tauri";
+
+/// Build a BIP-21 URI for the L1 receive address. Same shape the
+/// Merchant screen emits, minus the amount param (Receive is a
+/// "send anything" address — the sender picks the amount). The
+/// `ghost=` extension carries the bech32 ghost-id so Ghost-aware
+/// wallets can route via BIP-352 silent payments instead.
+function bip21ReceiveUri(address: string, ghost_id: string | null): string {
+  if (!ghost_id) return `bitcoin:${address}`;
+  const params = new URLSearchParams();
+  params.set("ghost", ghost_id);
+  return `bitcoin:${address}?${params.toString()}`;
+}
 
 export function Receive() {
   const [ghostId, setGhostId] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState<"ghost" | "address" | null>(null);
 
   const refresh = async () => {
     setErr(null);
@@ -23,13 +37,13 @@ export function Receive() {
     refresh();
   }, [index]);
 
-  const copy = async (text: string) => {
+  const copy = async (text: string, tag: "ghost" | "address") => {
     try {
       await navigator.clipboard.writeText(text);
+      setCopied(tag);
+      setTimeout(() => setCopied(null), 1500);
     } catch {
-      // best-effort — clipboard may not be available in some webview
-      // sandboxes; rely on the user-visible "copied" feedback only
-      // when it succeeds.
+      /* clipboard unavailable in some webview sandboxes */
     }
   };
 
@@ -44,20 +58,47 @@ export function Receive() {
 
       <div className="card">
         <h2>Ghost ID (for L2 payments)</h2>
-        <p className="muted" style={{ margin: 0 }}>
+        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
           Share this with senders. They use it to send you L2 instant
           payments — no on-chain transaction, no liquidity setup.
+          Receivers using a Ghost-aware wallet pick this up via the
+          BIP-352 silent-payment scanner; senders can also paste it
+          into the Send screen of any wallet that speaks the Ghost
+          protocol.
         </p>
-        <div className="row" style={{ alignItems: "stretch" }}>
-          <input readOnly value={ghostId ?? "—"} className="mono" />
-          <button
-            className="secondary"
-            onClick={() => ghostId && copy(ghostId)}
-            disabled={!ghostId}
+        {ghostId && (
+          <div
+            style={{
+              display: "flex",
+              gap: 16,
+              alignItems: "flex-start",
+              marginTop: 8,
+            }}
           >
-            Copy
-          </button>
-        </div>
+            <div
+              style={{
+                padding: 12,
+                background: "white",
+                borderRadius: 6,
+                flexShrink: 0,
+              }}
+            >
+              <QRCodeSVG value={ghostId} size={140} level="M" />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="row" style={{ alignItems: "stretch" }}>
+                <input readOnly value={ghostId} className="mono" />
+                <button
+                  className="secondary"
+                  onClick={() => copy(ghostId, "ghost")}
+                  style={{ marginLeft: 6 }}
+                >
+                  {copied === "ghost" ? "copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -74,21 +115,56 @@ export function Receive() {
             />
           </div>
         </div>
-        <p className="muted" style={{ margin: 0 }}>
-          A fresh receive address derived at the supplied index.
-          Anyone sending to it generates a payment your wallet detects
-          via BIP-352 silent payments.
+        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+          A fresh receive address derived at the supplied index. Any
+          wallet can send to it directly — Ghost-aware wallets pick
+          up the embedded ghost-id and route via BIP-352 silent
+          payments instead. The QR encodes a BIP-21 URI with both
+          forms so one scan works everywhere.
         </p>
-        <div className="row" style={{ alignItems: "stretch" }}>
-          <input readOnly value={address ?? "—"} className="mono" />
-          <button
-            className="secondary"
-            onClick={() => address && copy(address)}
-            disabled={!address}
+        {address && (
+          <div
+            style={{
+              display: "flex",
+              gap: 16,
+              alignItems: "flex-start",
+              marginTop: 8,
+            }}
           >
-            Copy
-          </button>
-        </div>
+            <div
+              style={{
+                padding: 12,
+                background: "white",
+                borderRadius: 6,
+                flexShrink: 0,
+              }}
+            >
+              <QRCodeSVG
+                value={bip21ReceiveUri(address, ghostId)}
+                size={140}
+                level="M"
+              />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="row" style={{ alignItems: "stretch" }}>
+                <input readOnly value={address} className="mono" />
+                <button
+                  className="secondary"
+                  onClick={() => copy(address, "address")}
+                  style={{ marginLeft: 6 }}
+                >
+                  {copied === "address" ? "copied" : "Copy"}
+                </button>
+              </div>
+              <span
+                className="muted"
+                style={{ fontSize: 12, marginTop: 4, display: "block" }}
+              >
+                BIP86 path: m/86'/531'/0'/0/{index}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
