@@ -94,6 +94,20 @@ struct Cli {
     #[arg(long, env = "WRAITH_COORDINATOR_MOCK_BOND_LEDGER")]
     mock_bond_ledger: bool,
 
+    /// Auto-escrow mode for the mock bond ledger: every
+    /// `verify_bond` call lazily creates a matching record on
+    /// first hit, so participants don't need to escrow before /inputs.
+    /// Only meaningful when --mock-bond-ledger is also set. Refused
+    /// on mainnet via the same gate (since mock-bond-ledger is
+    /// already refused there). Lets demo / regtest scripts run a
+    /// full mix without standing up the wallet's L2 escrow flow.
+    #[arg(
+        long,
+        env = "WRAITH_COORDINATOR_MOCK_BOND_LEDGER_AUTO_ESCROW",
+        requires = "mock_bond_ledger"
+    )]
+    mock_bond_ledger_auto_escrow: bool,
+
     /// Production ghost-pay BondLedger HTTP endpoint, e.g.
     /// `http://127.0.0.1:8800/`. Calls the `/api/v1/wraith/bond/*`
     /// endpoint set defined in `bond_ledger_http.rs`. Auth via the
@@ -185,8 +199,16 @@ async fn main() -> Result<()> {
         );
     }
     let bond_ledger: Option<Arc<dyn BondLedger>> = if cli.mock_bond_ledger {
-        warn!("using MockBondLedger — bonds are NOT escrowed against real funds");
-        Some(Arc::new(MockBondLedger::new()))
+        if cli.mock_bond_ledger_auto_escrow {
+            warn!(
+                "using MockBondLedger with auto-escrow — verify_bond \
+                 lazily creates records, no real bond verification at all"
+            );
+            Some(Arc::new(MockBondLedger::with_auto_escrow()))
+        } else {
+            warn!("using MockBondLedger — bonds are NOT escrowed against real funds");
+            Some(Arc::new(MockBondLedger::new()))
+        }
     } else if let Some(url) = cli.bond_ledger_url.as_deref() {
         let token = cli.bond_ledger_token.as_deref().ok_or_else(|| {
             anyhow::anyhow!("--bond-ledger-url requires --bond-ledger-token")

@@ -254,6 +254,14 @@ pub struct MockBondLedger {
     /// assertions can check exact IDs without fishing them out of
     /// non-deterministic structures.
     counter: Mutex<u64>,
+    /// Auto-escrow mode: when true, `verify_bond` auto-creates a
+    /// matching bond record on first call instead of returning
+    /// `NotBonded`. Lets dev/regtest demo flows skip the wallet-side
+    /// L2 escrow plumbing entirely. Production / mainnet must NOT
+    /// use this — there's no real money behind the bond, so a Sybil
+    /// attacker can fill any round for free. Coordinator binary
+    /// gates this behind `--mock-bond-ledger-auto-escrow`.
+    auto_escrow: bool,
 }
 
 impl Default for MockBondLedger {
@@ -267,6 +275,18 @@ impl MockBondLedger {
         Self {
             bonds: Mutex::new(HashMap::new()),
             counter: Mutex::new(0),
+            auto_escrow: false,
+        }
+    }
+
+    /// Construct a mock ledger that auto-escrows on first
+    /// `verify_bond` call. See `auto_escrow` field docs for why
+    /// this is dev/regtest-only and what attack surface it opens.
+    pub fn with_auto_escrow() -> Self {
+        Self {
+            bonds: Mutex::new(HashMap::new()),
+            counter: Mutex::new(0),
+            auto_escrow: true,
         }
     }
 
@@ -325,6 +345,23 @@ impl BondLedger for MockBondLedger {
         session_id: &str,
         expected_sats: u64,
     ) -> Result<BondId, BondError> {
+        // Auto-escrow path: if no bond exists for this
+        // (ghost_id, session_id) and auto_escrow is on, create one
+        // implicitly so verify succeeds. Drops to the normal path
+        // for already-recorded bonds (so amount-mismatch detection
+        // still works). Locked outside the inner block so we don't
+        // hold the lock across self.escrow() (which re-locks).
+        if self.auto_escrow {
+            let needs_escrow = {
+                let bonds = self.bonds.lock().expect("mock ledger poisoned");
+                !bonds
+                    .values()
+                    .any(|r| r.ghost_id == ghost_id && r.session_id == session_id)
+            };
+            if needs_escrow {
+                self.escrow(ghost_id, session_id, expected_sats);
+            }
+        }
         let bonds = self.bonds.lock().expect("mock ledger poisoned");
         let found = bonds
             .values()
@@ -587,5 +624,45 @@ mod tests {
             let back: SlashReason = serde_json::from_str(&serialised).unwrap();
             assert_eq!(reason, back);
         }
+    }
+
+    // -- auto-escrow mode -----------------------------------------------
+
+    #[test]
+    fn auto_escrow_creates_record_on_first_verify() {
+        let ledger = MockBondLedger::with_auto_escrow();
+        // No escrow() call — verify_bond should lazily create a record.
+        let id = ledger
+            .verify_bond("alice", "session-1", 500)
+            .expect("auto-escrow must succeed without a prior escrow");
+        // Record persists — second call returns the same id.
+        let again = ledger
+            .verify_bond("alice", "session-1", 500)
+            .expect("verify_bond on the auto-created record must succeed");
+        assert_eq!(id, again);
+        assert_eq!(ledger.len(), 1, "auto-escrow created exactly one record");
+    }
+
+    #[test]
+    fn auto_escrow_still_enforces_amount_match() {
+        // Auto-escrow lazily creates with whatever amount was first
+        // requested. Subsequent verifies with a DIFFERENT amount
+        // must still fail with AmountMismatch — auto-escrow doesn't
+        // bypass amount checking, only the existence check.
+        let ledger = MockBondLedger::with_auto_escrow();
+        ledger
+            .verify_bond("alice", "session-1", 500)
+            .expect("first verify creates record at amount 500");
+        let result = ledger.verify_bond("alice", "session-1", 1000);
+        assert!(matches!(result, Err(BondError::AmountMismatch { .. })));
+    }
+
+    #[test]
+    fn default_ledger_does_not_auto_escrow() {
+        // The plain new() ledger preserves existing behaviour:
+        // verify_bond without a prior escrow returns NotBonded.
+        let ledger = MockBondLedger::new();
+        let result = ledger.verify_bond("alice", "session-1", 500);
+        assert!(matches!(result, Err(BondError::NotBonded { .. })));
     }
 }
