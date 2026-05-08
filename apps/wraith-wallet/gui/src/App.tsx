@@ -147,7 +147,7 @@ export default function App() {
       </aside>
 
       <main className="app-main">
-        {screen === "wallet" && <Wallet />}
+        {screen === "wallet" && <Wallet paymentTick={paymentTick} />}
         {screen === "receive" && <Receive />}
         {screen === "send" && (
           <Send activeWallet={activeWallet} />

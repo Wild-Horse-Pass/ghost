@@ -92,11 +92,40 @@ export async function walletStatus(): Promise<WalletStatusResponse> {
   return unwrap<WalletStatusResponse>(resp).payload;
 }
 
+export interface WalletCreateResult {
+  name: string;
+  /// 12-word BIP39 mnemonic. Returned exactly once at create time.
+  /// The caller MUST display this and prompt the user to write it
+  /// down — without it, fund recovery is impossible. After the
+  /// initial display, retrieving the mnemonic requires the
+  /// passphrase via `walletShowMnemonic`.
+  mnemonic: string;
+  path: string;
+}
+
 export async function walletCreate(
   name: string,
   passphrase: string,
-): Promise<unknown> {
-  return await invoke("wallet_create", { name, passphrase });
+): Promise<WalletCreateResult> {
+  const resp = await invoke("wallet_create", { name, passphrase });
+  return unwrap<WalletCreateResult>(resp).payload;
+}
+
+export async function walletImport(
+  name: string,
+  mnemonic: string,
+  passphrase: string,
+): Promise<{ name: string; path: string }> {
+  const resp = await invoke("wallet_import", { name, mnemonic, passphrase });
+  return unwrap<{ name: string; path: string }>(resp).payload;
+}
+
+export async function walletShowMnemonic(
+  name: string,
+  passphrase: string,
+): Promise<{ name: string; mnemonic: string }> {
+  const resp = await invoke("wallet_show_mnemonic", { name, passphrase });
+  return unwrap<{ name: string; mnemonic: string }>(resp).payload;
 }
 
 export async function walletUnlock(
