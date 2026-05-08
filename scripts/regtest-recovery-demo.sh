@@ -32,6 +32,9 @@ SAVED_LOGS_DIR="${SAVED_LOGS_DIR:-/tmp/wraith-recovery-demo-logs}"
 mkdir -p "$SAVED_LOGS_DIR"
 cleanup() {
     cp "$DATADIR/"*.log "$SAVED_LOGS_DIR/" 2>/dev/null || true
+    # Also preserve the wallet's prepared_locks.json so we can inspect
+    # what creation_height / recovery_blocks the wallet recorded.
+    find "$DATADIR/wallets" -name 'locks.json' -exec cp {} "$SAVED_LOGS_DIR/" \; 2>/dev/null || true
     rm -rf "$DATADIR"
     echo "(logs preserved at $SAVED_LOGS_DIR)"
 }
@@ -121,7 +124,7 @@ GHOST_PAY_INTERNAL_SECRET="$GHOST_PAY_INTERNAL_SECRET" \
     --insecure-http \
     >"$DATADIR/gsp.log" 2>&1 &
 GSP_PID=$!
-sleep 2
+sleep 4
 
 # Bootstrap ghost-pay's operator keys. Without this, every
 # /api/v1/locks/* call returns 404 because state.keys is None
@@ -174,9 +177,12 @@ kill -9 "$GHOST_PAY_PID" "$GSP_PID" || true
 sleep 1
 echo "operators dead; wraithd is still up but its GSP session is gone"
 
-step "mining past the timelock (Short = 26280 blocks)"
-echo "this would take a long time on signet/mainnet — regtest mines instantly"
-$BCLI -rpcwallet=demo generatetoaddress 26281 "$DEMO_ADDR" >/dev/null
+step "mining past the timelock"
+# On regtest, ghost-pay collapses CSV durations to small constants
+# (TimelockTier::blocks_for_network → Short=5, Standard=10, Long=20)
+# so the demo doesn't have to mine ~52k blocks. Production networks
+# keep the real durations.
+$BCLI -rpcwallet=demo generatetoaddress 15 "$DEMO_ADDR" >/dev/null
 echo "current height: $($BCLI getblockcount)"
 
 step "running unilateral exit — wraith locks recover"

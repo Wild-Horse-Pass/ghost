@@ -35,7 +35,14 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$REPO/target/debug"
 DATADIR="$(mktemp -d -t ghost-regtest-l2-demo.XXXXXX)"
-trap 'rm -rf "$DATADIR"' EXIT
+SAVED_LOGS_DIR="${SAVED_LOGS_DIR:-/tmp/wraith-l2-transfer-demo-logs}"
+mkdir -p "$SAVED_LOGS_DIR"
+cleanup() {
+    cp "$DATADIR/"*.log "$SAVED_LOGS_DIR/" 2>/dev/null || true
+    rm -rf "$DATADIR"
+    echo "(logs preserved at $SAVED_LOGS_DIR)"
+}
+trap cleanup EXIT
 
 # Prefer ghostd/ghost-cli; fall back to bitcoind/bitcoin-cli (RPC-
 # compatible) or to the Bitcoin Core v30 multitool form (`ghost rpc`
@@ -117,6 +124,16 @@ GHOST_PAY_INTERNAL_SECRET="$GHOST_PAY_INTERNAL_SECRET" \
     --insecure-http \
     >"$DATADIR/gsp.log" 2>&1 &
 GSP_PID=$!
+sleep 4
+
+# Bootstrap ghost-pay's operator keys (same reason as
+# regtest-recovery-demo.sh — without these the lock-prepare path
+# returns 404 because state.keys is None).
+step "bootstrapping ghost-pay operator keys"
+curl -fsS -X POST -H "X-Internal-Auth: $GHOST_PAY_INTERNAL_SECRET" \
+    -H "Content-Type: application/json" \
+    "$GHOST_PAY_URL/api/v1/keys/generate" -d '{}' > "$DATADIR/keys-init.json"
+echo "  ghost_id: $(jq -r '.ghost_id // empty' < "$DATADIR/keys-init.json" 2>/dev/null || echo '<missing>')"
 
 # ---- two wraithd instances --------------------------------------------------
 spawn_wraithd() {

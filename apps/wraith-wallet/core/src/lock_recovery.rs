@@ -48,7 +48,7 @@ use bitcoin::{
 };
 use std::str::FromStr;
 
-use ghost_locks::{build_wsh_witness_script, RECOVERY_NSEQUENCE};
+use ghost_locks::build_wsh_witness_script;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LockRecoveryError {
@@ -177,10 +177,20 @@ pub fn build_recovery_spend(
         script_pubkey: dest.script_pubkey(),
     };
 
-    // 4. Assemble the unsigned tx. CRITICAL: nSequence must be
-    //    `RECOVERY_NSEQUENCE` (0xFFFFFFFE) so CSV can fire. Setting
-    //    final (0xFFFFFFFF) would disable the timelock check and
-    //    the script would reject the spend.
+    // 4. Assemble the unsigned tx. CRITICAL: nSequence must encode
+    //    the relative-locktime block count for BIP-68/112 to fire.
+    //    Per BIP-112 the input's nSequence must:
+    //      * have bit 31 (disable flag) CLEAR — otherwise relative
+    //        locktime is disabled and CSV becomes a no-op-disabled
+    //        check that REJECTS,
+    //      * have bit 22 (time-flag) CLEAR — block-based encoding
+    //        matching the script's `<n> OP_CSV`,
+    //      * have a value ≥ the script's pushed `n`.
+    //    Setting `nSequence = recovery_blocks` directly satisfies all
+    //    three. The legacy `0xFFFFFFFE` constant looked correct (and
+    //    is what BIP-125 RBF docs cite) but its bit 31 is SET,
+    //    disabling relative locktime — so CSV always fails. See
+    //    BIP-68/112 for the encoding rules.
     let funding_txid = Txid::from_str(inputs.funding_txid.trim())
         .map_err(|e| LockRecoveryError::Bitcoin(format!("funding_txid: {e}")))?;
     let txin = TxIn {
@@ -189,7 +199,7 @@ pub fn build_recovery_spend(
             vout: inputs.funding_vout,
         },
         script_sig: ScriptBuf::new(),
-        sequence: Sequence::from_consensus(RECOVERY_NSEQUENCE),
+        sequence: Sequence::from_consensus(inputs.recovery_blocks),
         witness: Witness::new(),
     };
     let mut tx = Transaction {

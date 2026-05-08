@@ -597,9 +597,18 @@ fn validate_payment_id(id: &str, result: &mut ValidationResult) {
 
 /// Check if recipient is a valid Ghost ID or Bitcoin address
 fn is_valid_recipient(recipient: &str) -> bool {
-    // Ghost ID format: ghost1...
-    if recipient.starts_with("ghost1") {
-        return recipient.len() >= 20 && recipient.len() <= 100;
+    // Ghost ID format: <network>ghost1... where the network prefix is
+    // empty on mainnet (`ghost1`), `t` on testnet (`tghost1`), `s` on
+    // signet (`sghost1`), or `r` on regtest (`rghost1`).
+    if recipient.contains("ghost1") {
+        let i = recipient.find("ghost1").unwrap();
+        // Allow only an empty prefix or one of the single-letter
+        // network discriminators — anything else is a malformed ID.
+        let prefix = &recipient[..i];
+        let ok = matches!(prefix, "" | "t" | "s" | "r");
+        if ok && recipient.len() >= 20 && recipient.len() <= 130 {
+            return true;
+        }
     }
 
     // Bitcoin address

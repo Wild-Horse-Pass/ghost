@@ -158,18 +158,32 @@ fn validate_quantum_safe_address(address: &str) -> Result<(), GspError> {
 /// 5. Nonce replay protection (tracked in registry database)
 ///
 /// Returns Ok(()) on success or a descriptive error message.
+/// Verify a per-action `WalletProof` against the connection's
+/// authenticated wallet. The proof is checked against the connection's
+/// **static** wallet ID (`conn_state.static_wallet_id`), NOT the
+/// session-rotating one — `verify_proof_for_wallet` internally
+/// derives the wallet ID from the proof's pubkey using
+/// `WalletId::from_pubkey`, so comparing it against a session-rotating
+/// ID (which mixes in the session nonce) would always fail.
+///
+/// Sessions issued before the static-id JWT field landed have
+/// `static_wallet_id == None`; we refuse those with a clear "session
+/// predates per-action proofs, re-authenticate" error rather than
+/// falling back to the broken comparison.
 fn verify_websocket_proof(
     state: &Arc<GspState>,
     proof: &WalletProof,
-    session_wallet_id: &WalletId,
+    conn_state: &ConnectionState,
 ) -> Result<(), String> {
-    // Use the registry's comprehensive verification which includes:
-    // - Signature verification
-    // - Wallet ID derivation check
-    // - Nonce replay protection
+    let static_wallet_id = conn_state
+        .static_wallet_id
+        .as_ref()
+        .ok_or_else(|| {
+            "session predates static-wallet-id binding; re-authenticate".to_string()
+        })?;
     state
         .registry
-        .verify_proof_for_wallet(proof, session_wallet_id)
+        .verify_proof_for_wallet(proof, static_wallet_id)
         .map_err(|e| e.to_string())
 }
 
@@ -203,8 +217,19 @@ pub async fn ws_handler(
 
 /// Connection state
 struct ConnectionState {
-    /// Authenticated wallet ID (None if not yet authenticated)
+    /// Authenticated wallet ID (None if not yet authenticated).
+    /// This is the *session-rotating* ID; used for routing,
+    /// subscriptions, and on-the-wire identity.
     wallet_id: Option<WalletId>,
+
+    /// Static wallet ID derived from the wallet's public key
+    /// (`WalletId::from_pubkey`). Populated from the JWT at
+    /// `Authenticate` time. Used by `verify_websocket_proof` so
+    /// per-action `WalletProof` ownership checks compare against the
+    /// static derivation (the proof's pubkey hashes statically) —
+    /// matching `wallet_id` (rotating) is incorrect because the
+    /// proof carries the pubkey alone, not the session nonce.
+    static_wallet_id: Option<WalletId>,
 
     /// MED-DOS-2 FIX: Active subscriptions stored in HashSet to prevent duplicates
     /// Using HashSet eliminates duplicate subscription attacks where malicious clients
@@ -233,6 +258,7 @@ impl ConnectionState {
     fn new(client_ip: String) -> Self {
         Self {
             wallet_id: None,
+            static_wallet_id: None,
             subscriptions: HashSet::new(),
             lock_state_subscriptions: HashSet::new(),
             last_activity: None,
@@ -844,15 +870,17 @@ async fn handle_authenticate(
     // M-26: Pass client IP to token validation for IP binding check
     match state
         .jwt
-        .validate_token_with_ip(token, Some(&conn_state.client_ip))
+        .validate_token_full(token, Some(&conn_state.client_ip))
     {
-        Ok(wallet_id) => {
+        Ok((wallet_id, static_wallet_id)) => {
             info!(
                 wallet_id = %wallet_id,
+                static_wallet_id = ?static_wallet_id,
                 client_ip = %conn_state.client_ip,
                 "M-26: WebSocket authenticated (IP validated)"
             );
             conn_state.wallet_id = Some(wallet_id.clone());
+            conn_state.static_wallet_id = static_wallet_id;
 
             Ok(Some(ServerMessage::AuthResult {
                 success: true,
@@ -1052,7 +1080,7 @@ async fn handle_request_jump(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::JumpRequested {
             success: false,
             lock_id: lock_id.to_string(),
@@ -1149,7 +1177,7 @@ async fn handle_prepare_payment(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::PaymentPrepared {
             success: false,
             payment: None,
@@ -1366,7 +1394,7 @@ async fn handle_send_l2_payment(
         }));
     }
 
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::PaymentSent {
             success: false,
             payment_id: None,
@@ -1429,7 +1457,7 @@ async fn handle_get_payment_status(
 
     // H-AUTH-1 FIX: Verify wallet proof before returning payment information
     // Return proper auth error, not a fake payment status that could confuse clients
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         warn!(
             wallet_id = %wallet_id,
             payment_id = %payment_id,
@@ -1536,7 +1564,7 @@ async fn handle_cancel_payment(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::PaymentCancelled {
             success: false,
             payment_id: payment_id.to_string(),
@@ -1692,7 +1720,7 @@ async fn handle_confirm_ghost_lock_funding(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::Error {
             code: "PROOF_VERIFICATION_FAILED".to_string(),
             message: e,
@@ -2145,7 +2173,7 @@ async fn handle_accept_instant_payment(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::Error {
             code: "PROOF_VERIFICATION_FAILED".to_string(),
             message: e,

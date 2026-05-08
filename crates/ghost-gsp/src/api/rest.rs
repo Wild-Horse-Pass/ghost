@@ -285,11 +285,14 @@ pub async fn create_session(
         .derive_wallet_id()
         .map_err(|e| GspError::BadRequest(format!("Session nonce error: {}", e)))?;
 
-    // CRIT-AUTH-3: Create session token bound to client IP
-    // Uses rotating session ID to prevent cross-session linking
+    // CRIT-AUTH-3: Create session token bound to client IP.
+    // `sub` is the rotating session ID (privacy-preserving on the
+    // wire); `static_wallet_id` is the permanent ID so per-action
+    // WalletProof checks can re-derive it without the wallet
+    // embedding the session nonce in every proof.
     let token = state
         .jwt
-        .create_token_with_ip(&session_id, client_ip.clone())?;
+        .create_token_full(&session_id, Some(&permanent_id), client_ip.clone())?;
 
     if let Some(ref ip) = client_ip {
         info!(wallet_id = %session_id, client_ip = %ip, "Session created with IP binding");

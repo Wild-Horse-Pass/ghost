@@ -59,6 +59,17 @@ struct Claims {
     /// If IP changes, a new token must be obtained.
     #[serde(skip_serializing_if = "Option::is_none")]
     client_ip: Option<String>,
+
+    /// Static wallet ID derived directly from the wallet's public key
+    /// (`WalletId::from_pubkey`). Distinct from `sub`, which carries
+    /// the session-rotating wallet ID. We need both so that
+    /// per-action `WalletProof` checks (which compare against the
+    /// static derivation) can find the right wallet without needing
+    /// the wallet to embed the session nonce in every proof.
+    /// Optional for backwards compatibility with tokens issued
+    /// before this field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    static_wallet_id: Option<String>,
 }
 
 /// H-10/M-2: Duration during which the previous key remains valid (graceful rotation window)
@@ -133,13 +144,25 @@ impl JwtManager {
     }
 
     /// M-13 FIX: Create a new session token bound to a specific client IP
-    ///
-    /// When client_ip is provided, the token will only validate if the request
-    /// comes from the same IP address. This prevents token theft and session
-    /// hijacking attacks.
     pub fn create_token_with_ip(
         &self,
         wallet_id: &WalletId,
+        client_ip: Option<String>,
+    ) -> GspResult<SessionToken> {
+        self.create_token_full(wallet_id, None, client_ip)
+    }
+
+    /// Create a session token carrying both the rotating session wallet ID
+    /// (`sub`) AND the static wallet ID derived directly from the
+    /// wallet's public key (`static_wallet_id`). The static ID lets
+    /// per-action `WalletProof` checks find the wallet by its
+    /// pubkey-derived ID without the wallet having to embed its
+    /// session nonce in every proof — the rotating `sub` stays the
+    /// privacy-preserving on-the-wire identifier.
+    pub fn create_token_full(
+        &self,
+        wallet_id: &WalletId,
+        static_wallet_id: Option<&WalletId>,
         client_ip: Option<String>,
     ) -> GspResult<SessionToken> {
         let now = chrono::Utc::now().timestamp();
@@ -152,6 +175,7 @@ impl JwtManager {
             iss: JWT_ISSUER.to_string(),
             aud: JWT_AUDIENCE.to_string(),
             client_ip,
+            static_wallet_id: static_wallet_id.map(|w| w.to_string()),
         };
 
         let token = encode(&Header::default(), &claims, &self.encoding_key)?;
@@ -191,6 +215,23 @@ impl JwtManager {
         token: &str,
         current_ip: Option<&str>,
     ) -> GspResult<WalletId> {
+        self.validate_token_full(token, current_ip)
+            .map(|(session_id, _static)| session_id)
+    }
+
+    /// Validate the token and return BOTH the session-rotating wallet
+    /// ID (`sub`) and the static wallet ID derived from the wallet's
+    /// public key. The static ID is `None` for tokens issued before
+    /// `static_wallet_id` was added to the JWT claims (backwards
+    /// compatibility window). Callers that need the static ID for
+    /// per-action `WalletProof` checks should refuse on `None` and
+    /// surface a clear "session predates static-id binding,
+    /// re-authenticate" error to the wallet.
+    pub fn validate_token_full(
+        &self,
+        token: &str,
+        current_ip: Option<&str>,
+    ) -> GspResult<(WalletId, Option<WalletId>)> {
         let mut validation = Validation::default();
         // M-14: Require correct issuer
         validation.set_issuer(&[JWT_ISSUER]);
@@ -200,18 +241,21 @@ impl JwtManager {
         // Try current key first
         match decode::<Claims>(token, &self.decoding_key, &validation) {
             Ok(token_data) => {
-                // M-13: Check IP binding if present
                 self.verify_ip_binding(&token_data.claims, current_ip)?;
-                Ok(WalletId::from(token_data.claims.sub))
+                let session_id = WalletId::from(token_data.claims.sub);
+                let static_id = token_data.claims.static_wallet_id.map(WalletId::from);
+                Ok((session_id, static_id))
             }
             Err(e) => {
                 // M-2: If current key fails and we have a previous key in rotation window, try it
                 if self.is_previous_key_valid() {
                     if let Some(ref prev_key) = self.previous_decoding_key {
                         if let Ok(token_data) = decode::<Claims>(token, prev_key, &validation) {
-                            // M-13: Check IP binding if present
                             self.verify_ip_binding(&token_data.claims, current_ip)?;
-                            return Ok(WalletId::from(token_data.claims.sub));
+                            let session_id = WalletId::from(token_data.claims.sub);
+                            let static_id =
+                                token_data.claims.static_wallet_id.map(WalletId::from);
+                            return Ok((session_id, static_id));
                         }
                     }
                 }

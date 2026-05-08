@@ -1578,6 +1578,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/keys/export", get(export_keys))
         // Lock management (SENSITIVE - controls funds)
         .route("/api/v1/locks/create", post(create_lock))
+        .route("/api/v1/locks/:id/confirm", post(confirm_lock_funding))
         .route("/api/v1/locks/:id/jump", post(initiate_jump))
         // Withdrawals (SENSITIVE - moves funds)
         .route("/api/v1/withdrawals/request", post(request_withdrawal))
@@ -2184,17 +2185,21 @@ async fn create_lock(
         owner_ghost_id = %owner_ghost_id,
         lock_index = lock_index,
         recovery_index = recovery_index_logged,
+        creation_height = creation_height,
         "create_lock with user-supplied recovery_pubkey"
     );
 
     // Build the GhostLock from pubkeys directly (no recovery secret
-    // available operator-side, by design).
-    let ghost_lock = GhostLock::from_pubkeys(
+    // available operator-side, by design). Network-aware: on regtest
+    // the CSV duration collapses so demos / e2e tests can mine past
+    // the timelock without production-scale block counts.
+    let ghost_lock = GhostLock::from_pubkeys_for_network(
         lock_pubkey,
         recovery_pubkey,
         denomination,
         timelock_tier,
         creation_height,
+        state.network,
     )
     .map_err(|e| {
         error!("GhostLock::from_pubkeys failed: {e}");
@@ -2213,11 +2218,11 @@ async fn create_lock(
     // Determine jump risk based on amount
     let jump_risk = ghost_lock.jump_risk_tier();
 
-    let recovery_blocks_for_resp = match timelock_tier {
-        TimelockTier::Short => ghost_locks::TimelockTier::Short.blocks(),
-        TimelockTier::Standard => ghost_locks::TimelockTier::Standard.blocks(),
-        TimelockTier::Long => ghost_locks::TimelockTier::Long.blocks(),
-    };
+    // Use the SAME network-aware block count we baked into the
+    // witness script's CSV; otherwise the wallet's recovery TX
+    // would be either rejected (CSV under-fulfilled) or unable to
+    // build at all (mismatch with stored prepared_locks metadata).
+    let recovery_blocks_for_resp = timelock_tier.blocks_for_network(state.network);
     let lock_info = LockInfo {
         id: ghost_lock.lock_id_hex(),
         denomination: denomination.name().to_string(),
@@ -2299,6 +2304,130 @@ async fn get_lock(
         .cloned()
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(lock))
+}
+
+/// `POST /api/v1/locks/:id/confirm` — record that the lock's funding
+/// transaction has been broadcast.
+///
+/// The wallet (via ghost-gsp) calls this once it has sent the
+/// funding output to the lock's P2WSH address. We update the lock's
+/// row with the funding txid + vout and flip its state from
+/// `pending` to `active`. Confirmation depth tracking happens
+/// elsewhere on a background scanner.
+#[derive(Debug, Deserialize)]
+struct ConfirmFundingRequest {
+    funding_txid: String,
+    funding_vout: u32,
+}
+
+async fn confirm_lock_funding(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<ConfirmFundingRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Validate the txid format up front so a typo from the wallet
+    // surfaces as a clean 400 rather than corrupting the row.
+    if hex::decode(&req.funding_txid).map(|b| b.len()).unwrap_or(0) != 32 {
+        warn!(
+            lock_id = %id,
+            txid = %req.funding_txid,
+            "confirm_lock_funding: malformed funding_txid (expected 32 bytes hex)"
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // The lock must already exist in the database — refuse confirms
+    // on locks we never created.
+    let existing = state.db.get_ghost_lock(&id).map_err(|e| {
+        error!(lock_id = %id, error = %e, "confirm_lock_funding: db lookup failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let existing = existing.ok_or_else(|| {
+        warn!(lock_id = %id, "confirm_lock_funding: unknown lock_id");
+        StatusCode::NOT_FOUND
+    })?;
+    if existing.state == ghost_storage::GhostLockState::Active
+        && existing.funding_txid.as_deref() == Some(req.funding_txid.as_str())
+    {
+        // Idempotent re-confirm — no-op success.
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "lock_id": id,
+            "state": "active",
+            "funding_txid": req.funding_txid,
+            "block_height": 0,
+            "message": "already confirmed"
+        })));
+    }
+
+    state
+        .db
+        .update_ghost_lock_funding(&id, &req.funding_txid, req.funding_vout)
+        .map_err(|e| {
+            error!(lock_id = %id, error = %e, "confirm_lock_funding: update failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Refresh the in-memory lock cache so subsequent /api/v1/locks
+    // listings reflect the new state without waiting for a restart.
+    if let Ok(db_locks) = state.db.get_ghost_locks_by_owner(
+        state
+            .ghost_id
+            .read()
+            .clone()
+            .unwrap_or_default()
+            .as_str(),
+    ) {
+        let network = state.network;
+        let lock_infos: Vec<LockInfo> = db_locks
+            .iter()
+            .filter(|r| {
+                r.state != ghost_storage::GhostLockState::Spent
+                    && r.state != ghost_storage::GhostLockState::PendingSettlement
+            })
+            .map(|r| LockInfo {
+                id: r.lock_id.clone(),
+                denomination: r.denomination.clone(),
+                amount_sats: r.amount_sats,
+                state: r.state.as_str().to_string(),
+                created_at: r.created_at as u64,
+                timelock_tier: r.timelock_tier.clone(),
+                jump_risk: r.jump_risk_tier.clone(),
+                needs_jump: r
+                    .next_jump_height
+                    .map(|h| h <= r.creation_height + 1000)
+                    .unwrap_or(false),
+                address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
+                output_pubkey: r.lock_pubkey.clone(),
+                recovery_height: r.recovery_height,
+                blocks_until_jump: r
+                    .next_jump_height
+                    .unwrap_or(0)
+                    .saturating_sub(r.creation_height),
+                recovery_pubkey: Some(r.recovery_pubkey.clone()),
+                recovery_index: None,
+                recovery_blocks: Some(r.recovery_height.saturating_sub(r.creation_height)),
+                creation_height: Some(r.creation_height),
+            })
+            .collect();
+        *state.locks.write() = lock_infos;
+    }
+
+    info!(
+        lock_id = %id,
+        funding_txid = %req.funding_txid,
+        funding_vout = req.funding_vout,
+        "Lock funding confirmed (state → active)"
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "lock_id": id,
+        "state": "active",
+        "funding_txid": req.funding_txid,
+        "funding_vout": req.funding_vout,
+        "block_height": 0
+    })))
 }
 
 /// Initiate jump for a lock

@@ -214,8 +214,30 @@ pub fn build_lock_script(
     _creation_height: u32,
     timelock_tier: TimelockTier,
 ) -> Result<(ScriptBuf, ScriptBuf), GhostLockError> {
-    // Get relative block count for CSV (NOT absolute height)
-    let recovery_blocks = timelock_tier.recovery_blocks();
+    // Backwards-compatible default: production block counts. Callers
+    // that need the regtest-aware shortened CSV go through
+    // `build_lock_script_for_network`.
+    build_lock_script_for_network(
+        lock_pubkey,
+        recovery_pubkey,
+        _creation_height,
+        timelock_tier,
+        bitcoin::Network::Bitcoin,
+    )
+}
+
+/// Network-aware lock-script builder. On regtest, uses the shorter
+/// CSV durations from `TimelockTier::blocks_for_network` so demos
+/// can mine past the timelock without waiting on full production
+/// block counts. Other networks use the production durations.
+pub fn build_lock_script_for_network(
+    lock_pubkey: &PublicKey,
+    recovery_pubkey: &PublicKey,
+    _creation_height: u32,
+    timelock_tier: TimelockTier,
+    network: bitcoin::Network,
+) -> Result<(ScriptBuf, ScriptBuf), GhostLockError> {
+    let recovery_blocks = timelock_tier.blocks_for_network(network);
 
     // Build the witness script (H-BTC-3: now returns Result)
     let witness_script = build_wsh_witness_script(lock_pubkey, recovery_pubkey, recovery_blocks)?;

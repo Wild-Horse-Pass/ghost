@@ -74,6 +74,28 @@ impl TimelockTier {
         }
     }
 
+    /// Get the timelock duration in blocks, network-aware.
+    ///
+    /// Production networks (mainnet/testnet/signet) use the real
+    /// `blocks()` durations defined above. Regtest collapses every
+    /// tier to a sub-50-block window so the recovery demo (which has
+    /// to mine past the timelock) runs in seconds rather than tens
+    /// of minutes.
+    ///
+    /// Callers that go through `from_pubkeys` or `new` should prefer
+    /// this over `blocks()` so the lock script's CSV value matches
+    /// the wallet's mined-blocks expectation on regtest.
+    pub fn blocks_for_network(&self, network: bitcoin::Network) -> u32 {
+        match network {
+            bitcoin::Network::Regtest => match self {
+                TimelockTier::Short => 5,
+                TimelockTier::Standard => 10,
+                TimelockTier::Long => 20,
+            },
+            _ => self.blocks(),
+        }
+    }
+
     /// Get the relative block count for CSV recovery
     ///
     /// This is an alias for `blocks()` that makes the CSV/relative nature explicit.
