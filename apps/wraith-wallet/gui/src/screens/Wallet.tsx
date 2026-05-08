@@ -4,8 +4,6 @@ import {
   lightBalance,
   lightHistory,
   walletList,
-  walletCreate,
-  walletImport,
   walletSelect,
   walletShowMnemonic,
   walletUnlock,
@@ -14,6 +12,7 @@ import {
   type LightHistoryEntry,
   type WalletEntry,
 } from "../lib/tauri";
+import { Onboarding } from "./Onboarding";
 
 interface WalletProps {
   /// Bumped by App when the daemon pushes a `PaymentDetected`
@@ -32,15 +31,19 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  /// Mnemonic to display once after create (or after a successful
-  /// "show backup phrase" action). The user MUST acknowledge before
-  /// the modal goes away — without writing this down, funds are
-  /// unrecoverable on a daemon-state loss.
+  /// Mnemonic to display once after a "show backup phrase" action.
+  /// The freshly-created path goes through the Onboarding wizard
+  /// instead of this modal.
   const [mnemonicReveal, setMnemonicReveal] = useState<{
     name: string;
     mnemonic: string;
-    reason: "freshly_created" | "backup_request";
+    reason: "backup_request";
   } | null>(null);
+  /// Onboarding wizard mode — set on "+ New wallet" or
+  /// "Import from mnemonic" click. null when no wizard is open.
+  const [onboarding, setOnboarding] = useState<"create" | "import" | null>(
+    null,
+  );
 
   const refresh = async () => {
     setErr(null);
@@ -102,55 +105,11 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
     };
   }, [active, paymentTick]);
 
-  const onCreate = async () => {
-    const name = prompt("Wallet name:");
-    if (!name) return;
-    const passphrase = prompt(
-      "Passphrase (used to encrypt the keystore at rest):",
-    );
-    if (!passphrase) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      const result = await walletCreate(name, passphrase);
-      // Show the mnemonic ONCE, with a forcing acknowledgement. The
-      // daemon doesn't keep this in plaintext anywhere — losing it
-      // means losing the wallet. This is the single most important
-      // piece of UX in the app.
-      setMnemonicReveal({
-        name: result.name,
-        mnemonic: result.mnemonic,
-        reason: "freshly_created",
-      });
-      await refresh();
-    } catch (e) {
-      setErr((e as Error).message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onImport = async () => {
-    const name = prompt("Wallet name:");
-    if (!name) return;
-    const mnemonic = prompt(
-      "BIP-39 mnemonic (12 or 24 words, space-separated):",
-    );
-    if (!mnemonic) return;
-    const passphrase = prompt(
-      "Passphrase (used to encrypt the keystore at rest):",
-    );
-    if (!passphrase) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await walletImport(name, mnemonic.trim(), passphrase);
-      await refresh();
-    } catch (e) {
-      setErr((e as Error).message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
+  const onCreate = () => setOnboarding("create");
+  const onImport = () => setOnboarding("import");
+  const onWizardClose = async () => {
+    setOnboarding(null);
+    await refresh();
   };
 
   const onShowMnemonic = async (name: string) => {
@@ -220,6 +179,10 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
 
   return (
     <div className="screen">
+      {onboarding && (
+        <Onboarding mode={onboarding} onClose={onWizardClose} />
+      )}
+
       {err && <div className="card" style={{ borderColor: "var(--fail)" }}>{err}</div>}
 
       {mnemonicReveal && (
@@ -232,9 +195,7 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
           }}
         >
           <h2 style={{ marginTop: 0 }}>
-            {mnemonicReveal.reason === "freshly_created"
-              ? `Backup phrase for "${mnemonicReveal.name}"`
-              : `Backup phrase: ${mnemonicReveal.name}`}
+            {`Backup phrase: ${mnemonicReveal.name}`}
           </h2>
           <p style={{ margin: 0 }}>
             <strong>Write these 12 words down on paper.</strong> Anyone
