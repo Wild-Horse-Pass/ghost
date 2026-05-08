@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { daemonEnv, walletStatus } from "./lib/tauri";
+import {
+  daemonEnv,
+  onPaymentDetected,
+  onWatchError,
+  startWatch,
+  walletStatus,
+  type DetectedPayment,
+} from "./lib/tauri";
 import { Wallet } from "./screens/Wallet";
 import { Receive } from "./screens/Receive";
 import { Send } from "./screens/Send";
@@ -22,6 +29,13 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("wallet");
   const [statusText, setStatusText] = useState("connecting…");
   const [activeWallet, setActiveWallet] = useState<string | null>(null);
+  // Bumped each time the daemon pushes a `PaymentDetected` event.
+  // Screens that care about live updates (e.g. History) treat this
+  // as a useEffect dep and re-fetch immediately, so the user sees
+  // incoming sats land without waiting for the next 5s poll tick.
+  const [paymentTick, setPaymentTick] = useState(0);
+  const [lastDetect, setLastDetect] = useState<DetectedPayment | null>(null);
+  const [watchErr, setWatchErr] = useState<string | null>(null);
 
   // Refresh the header status every 4s. Cheap — both calls are
   // local IPC round-trips.
@@ -50,11 +64,62 @@ export default function App() {
     };
   }, []);
 
+  // Live BIP-352 receive notifications. The Tauri side keeps a
+  // long-lived IPC connection to the daemon and forwards each
+  // `PaymentDetected` push as a `wraith://payment-detected` event.
+  // We pair `startWatch` (idempotent on the Rust side) with two
+  // event subscriptions and clean up both on unmount.
+  useEffect(() => {
+    let alive = true;
+    let unlistenDetect: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    (async () => {
+      try {
+        unlistenDetect = await onPaymentDetected((p) => {
+          if (!alive) return;
+          setLastDetect(p);
+          setPaymentTick((n) => n + 1);
+        });
+        unlistenError = await onWatchError((e) => {
+          if (!alive) return;
+          setWatchErr(e.message);
+        });
+        await startWatch();
+      } catch (e) {
+        if (!alive) return;
+        setWatchErr((e as Error).message ?? String(e));
+      }
+    })();
+    return () => {
+      alive = false;
+      if (unlistenDetect) unlistenDetect();
+      if (unlistenError) unlistenError();
+    };
+  }, []);
+
   return (
     <div className="app">
       <header className="app-header">
         <div className="title">Wraith Wallet</div>
         <div className="spacer" />
+        {lastDetect && (
+          <div
+            className="pill pass"
+            style={{ marginRight: 8 }}
+            title={`txid ${lastDetect.txid.slice(0, 12)}…  vout ${lastDetect.vout}`}
+          >
+            +{lastDetect.amount_sats.toLocaleString()} sats
+          </div>
+        )}
+        {watchErr && (
+          <div
+            className="pill fail"
+            style={{ marginRight: 8 }}
+            title={watchErr}
+          >
+            watch offline
+          </div>
+        )}
         <div className="status">{statusText}</div>
       </header>
 
@@ -79,7 +144,7 @@ export default function App() {
           <Send activeWallet={activeWallet} />
         )}
         {screen === "locks" && <Locks />}
-        {screen === "history" && <History />}
+        {screen === "history" && <History paymentTick={paymentTick} />}
         {screen === "network" && <Network />}
       </main>
     </div>

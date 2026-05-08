@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { lightHistory, type LightHistoryEntry } from "../lib/tauri";
 
-export function History() {
+interface HistoryProps {
+  /// Bumped by App when the daemon pushes a `PaymentDetected`
+  /// event. Used as a dep so a new receive triggers an immediate
+  /// re-fetch instead of waiting for the next 5s poll tick.
+  paymentTick?: number;
+}
+
+export function History({ paymentTick = 0 }: HistoryProps) {
   const [entries, setEntries] = useState<LightHistoryEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
@@ -26,7 +33,7 @@ export function History() {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [paymentTick]);
 
   const fmtTime = (unix: number) => new Date(unix * 1000).toLocaleString();
   const fmtAmount = (sats: number) => {

@@ -9,6 +9,7 @@
 // look is `apps/wraith-wallet/ipc/src/lib.rs`.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 // ----- Response shape helpers --------------------------------------------
 
@@ -254,4 +255,51 @@ export async function locksRecover(
     feeSats: fee_sats,
   });
   return unwrap<LocksRecoveredResult>(resp).payload;
+}
+
+// ----- Live BIP-352 receive notifications --------------------------------
+
+/// Start the daemon push-watch subscription. The Tauri side keeps a
+/// long-lived IPC connection and forwards each `PaymentDetected`
+/// frame to the frontend as a `wraith://payment-detected` event.
+/// Idempotent — the Rust side's atomic guard makes repeat calls a
+/// no-op, so the safest pattern is to call it once on app mount and
+/// once more on any reconnect.
+export async function startWatch(): Promise<void> {
+  await invoke("start_watch");
+}
+
+export interface DetectedPayment {
+  txid: string;
+  block_height: number | null;
+  vout: number;
+  amount_sats: number;
+  k: number;
+  received_at: number;
+}
+
+/// Subscribe to live payment detections. Returns an unlisten fn —
+/// call it from the effect's cleanup. Pair with `startWatch()` once
+/// at app boot.
+export async function onPaymentDetected(
+  cb: (p: DetectedPayment) => void,
+): Promise<UnlistenFn> {
+  return listen<DetectedPayment>("wraith://payment-detected", (event) => {
+    cb(event.payload);
+  });
+}
+
+export interface WatchError {
+  message: string;
+}
+
+/// Subscribe to watch-loop terminal errors (daemon socket closed,
+/// IPC parse failure, etc.). The Tauri side restarts the loop on
+/// `startWatch()` next time the GUI calls it.
+export async function onWatchError(
+  cb: (e: WatchError) => void,
+): Promise<UnlistenFn> {
+  return listen<WatchError>("wraith://watch-error", (event) => {
+    cb(event.payload);
+  });
 }
