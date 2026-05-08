@@ -2426,6 +2426,7 @@ mod unix {
             Request::WraithMixPrepare {
                 coordinator_url,
                 socks5_proxy,
+                coordinator_peers,
                 tier_id,
                 ghost_id,
                 bond_id_placeholder,
@@ -2445,8 +2446,13 @@ mod unix {
                         state.network,
                         proxy,
                     ),
-                    None => Ok(WraithSessionClient::new(
+                    None if coordinator_peers.is_empty() => Ok(WraithSessionClient::new(
                         coordinator_url.clone(),
+                        state.network,
+                    )),
+                    None => Ok(WraithSessionClient::with_peers(
+                        coordinator_url.clone(),
+                        coordinator_peers.clone(),
                         state.network,
                     )),
                 };
@@ -2568,6 +2574,7 @@ mod unix {
             Request::WraithMixOneShot {
                 coordinator_url,
                 socks5_proxy,
+                coordinator_peers,
                 tier_id,
                 ghost_id,
                 bond_id_placeholder,
@@ -2592,7 +2599,14 @@ mod unix {
                         state.network,
                         proxy,
                     ),
-                    None => Ok(WraithSessionClient::new(coordinator_url.clone(), state.network)),
+                    None if coordinator_peers.is_empty() => {
+                        Ok(WraithSessionClient::new(coordinator_url.clone(), state.network))
+                    }
+                    None => Ok(WraithSessionClient::with_peers(
+                        coordinator_url.clone(),
+                        coordinator_peers.clone(),
+                        state.network,
+                    )),
                 };
                 let client = match client_result {
                     Ok(c) => c,

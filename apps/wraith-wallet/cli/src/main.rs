@@ -98,6 +98,13 @@ enum MixCommand {
         /// HTTP URL of the wraith-coordinator endpoint.
         #[arg(long)]
         coordinator: String,
+        /// Optional fallback coordinator URLs. Repeatable. Used in
+        /// order if `--coordinator` is unreachable (connection
+        /// refused, timeout, DNS-unresolvable). HTTP error responses
+        /// from `--coordinator` do NOT trigger failover. See
+        /// DESIGN_LITE §7.
+        #[arg(long = "coordinator-peer")]
+        coordinator_peers: Vec<String>,
         /// Optional SOCKS5 proxy for the /outputs anonymous step
         /// (e.g. `socks5h://127.0.0.1:9050` for Tor).
         #[arg(long)]
@@ -154,6 +161,10 @@ enum MixCommand {
     Run {
         #[arg(long)]
         coordinator: String,
+        /// Optional fallback coordinator URLs. Repeatable. Same
+        /// semantics as `mix prepare --coordinator-peer`.
+        #[arg(long = "coordinator-peer")]
+        coordinator_peers: Vec<String>,
         #[arg(long)]
         socks5_proxy: Option<String>,
         #[arg(long)]
@@ -652,6 +663,7 @@ mod unix {
             Command::Mix { sub } => match sub {
                 MixCommand::Prepare {
                     coordinator,
+                    coordinator_peers,
                     socks5_proxy,
                     tier,
                     ghost_id,
@@ -673,6 +685,7 @@ mod unix {
                     };
                     Request::WraithMixPrepare {
                         coordinator_url: coordinator,
+                        coordinator_peers,
                         socks5_proxy,
                         tier_id: tier,
                         ghost_id,
@@ -694,6 +707,7 @@ mod unix {
                 },
                 MixCommand::Run {
                     coordinator,
+                    coordinator_peers,
                     socks5_proxy,
                     tier,
                     ghost_id,
@@ -717,6 +731,7 @@ mod unix {
                     };
                     Request::WraithMixOneShot {
                         coordinator_url: coordinator,
+                        coordinator_peers,
                         socks5_proxy,
                         tier_id: tier,
                         ghost_id,
@@ -1449,6 +1464,7 @@ mod unix {
         }
         let mix = match call(Request::WraithMixOneShot {
             coordinator_url: coordinator,
+            coordinator_peers: Vec::new(),
             socks5_proxy,
             tier_id: tier,
             ghost_id,

@@ -220,6 +220,13 @@ pub enum Request {
         /// local dev, leaks the participant's IP in production.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         socks5_proxy: Option<String>,
+        /// Optional fallback coordinator URLs. Used in order if
+        /// `coordinator_url` is unreachable (connect refused, timeout,
+        /// DNS-unresolvable). HTTP error responses do NOT trigger
+        /// failover — those mean a coordinator answered. See
+        /// DESIGN_LITE §7 (signer handover via Active/Standby pool).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        coordinator_peers: Vec<String>,
         tier_id: String,
         ghost_id: String,
         bond_id_placeholder: String,
@@ -256,6 +263,10 @@ pub enum Request {
         coordinator_url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         socks5_proxy: Option<String>,
+        /// Optional fallback coordinator URLs. Same semantics as
+        /// `WraithMixPrepare::coordinator_peers`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        coordinator_peers: Vec<String>,
         tier_id: String,
         ghost_id: String,
         bond_id_placeholder: String,

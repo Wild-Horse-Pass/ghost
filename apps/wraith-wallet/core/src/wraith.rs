@@ -208,6 +208,17 @@ where
 /// re-used across rounds.
 pub struct WraithSessionClient {
     base_url: String,
+    /// Optional fallback coordinator URLs. When the primary
+    /// `base_url` returns a connection error (refused, timed out,
+    /// DNS-unresolvable), each peer URL is tried in order before the
+    /// request fails. Mid-flight rounds where the wallet has only
+    /// committed identity (Filling / Locked phases) survive an
+    /// Active dying — the next request lands on a Standby that's
+    /// been mirroring state via gossip. The Signing window still
+    /// requires the v2 re-blind handover (DESIGN_LITE §7) because
+    /// blinded signatures are bound to the original Active's
+    /// signing key.
+    peers: Vec<String>,
     network: Network,
     /// HTTP client used for everything that's NOT /outputs. The
     /// coordinator already knows the participant's identity at these
@@ -234,10 +245,33 @@ impl WraithSessionClient {
             .expect("reqwest build");
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            peers: Vec::new(),
             network,
             outputs_http: http.clone(),
             http,
         }
+    }
+
+    /// Construct with explicit fallback peer URLs. Coordinator pool
+    /// failover for the connection-refused / timeout case: when the
+    /// primary `base_url` is unreachable, requests rotate through
+    /// `peers` (in order) before failing.
+    ///
+    /// Use for any non-test setup against a real coordinator pool.
+    /// Pass `peers` as the `--peers` list configured on the
+    /// coordinator binary so wallet and operator agree on the
+    /// pool's address set.
+    pub fn with_peers(
+        base_url: impl Into<String>,
+        peers: Vec<String>,
+        network: Network,
+    ) -> Self {
+        let mut client = Self::new(base_url, network);
+        client.peers = peers
+            .into_iter()
+            .map(|u| u.trim_end_matches('/').to_string())
+            .collect();
+        client
     }
 
     /// Construct with /outputs routed through `socks5_proxy_url`
@@ -265,6 +299,7 @@ impl WraithSessionClient {
             .build()?;
         Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            peers: Vec::new(),
             network,
             http: direct,
             outputs_http,
@@ -602,41 +637,101 @@ impl WraithSessionClient {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<R, WraithClientError> {
-        let resp = http
-            .post(format!("{}{}", self.base_url, path))
-            .json(body)
-            .send()
-            .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let detail = resp.text().await.unwrap_or_default();
-            return Err(WraithClientError::Coordinator {
-                status: status.as_u16(),
-                detail,
-            });
+        let mut last_err: Option<reqwest::Error> = None;
+        for url in self.urls_in_order() {
+            match http.post(format!("{url}{path}")).json(body).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        // Real HTTP error from a reachable coordinator
+                        // — surface as-is, not a connectivity failure.
+                        let detail = resp.text().await.unwrap_or_default();
+                        return Err(WraithClientError::Coordinator {
+                            status: status.as_u16(),
+                            detail,
+                        });
+                    }
+                    return resp
+                        .json::<R>()
+                        .await
+                        .map_err(|e| WraithClientError::Shape(e.to_string()));
+                }
+                Err(e) if is_connectivity_error(&e) => {
+                    tracing::warn!(
+                        url = %url,
+                        path = %path,
+                        error = %e,
+                        "wraith-coordinator unreachable, rotating to next peer"
+                    );
+                    last_err = Some(e);
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
-        resp.json::<R>()
-            .await
-            .map_err(|e| WraithClientError::Shape(e.to_string()))
+        Err(last_err
+            .map(WraithClientError::from)
+            .unwrap_or_else(|| WraithClientError::Shape("no coordinator URLs configured".into())))
     }
 
     async fn get_json<R: serde::de::DeserializeOwned>(
         &self,
         path: &str,
     ) -> Result<R, WraithClientError> {
-        let resp = self.http.get(format!("{}{}", self.base_url, path)).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let detail = resp.text().await.unwrap_or_default();
-            return Err(WraithClientError::Coordinator {
-                status: status.as_u16(),
-                detail,
-            });
+        let mut last_err: Option<reqwest::Error> = None;
+        for url in self.urls_in_order() {
+            match self.http.get(format!("{url}{path}")).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let detail = resp.text().await.unwrap_or_default();
+                        return Err(WraithClientError::Coordinator {
+                            status: status.as_u16(),
+                            detail,
+                        });
+                    }
+                    return resp
+                        .json::<R>()
+                        .await
+                        .map_err(|e| WraithClientError::Shape(e.to_string()));
+                }
+                Err(e) if is_connectivity_error(&e) => {
+                    tracing::warn!(
+                        url = %url,
+                        path = %path,
+                        error = %e,
+                        "wraith-coordinator unreachable, rotating to next peer"
+                    );
+                    last_err = Some(e);
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
-        resp.json::<R>()
-            .await
-            .map_err(|e| WraithClientError::Shape(e.to_string()))
+        Err(last_err
+            .map(WraithClientError::from)
+            .unwrap_or_else(|| WraithClientError::Shape("no coordinator URLs configured".into())))
     }
+
+    /// `base_url` first, then each peer in configured order. Rotated
+    /// per-request so a single transient connect failure doesn't
+    /// permanently route around the primary.
+    fn urls_in_order(&self) -> Vec<&str> {
+        let mut out = Vec::with_capacity(1 + self.peers.len());
+        out.push(self.base_url.as_str());
+        for p in &self.peers {
+            out.push(p.as_str());
+        }
+        out
+    }
+}
+
+/// Treat connection-level reqwest errors as failover triggers.
+/// 4xx/5xx HTTP responses come back as `Ok(resp)` and are NOT
+/// failover triggers — they mean a coordinator answered, even if it
+/// rejected the request.
+fn is_connectivity_error(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout() || e.is_request()
 }
 
 fn locate_mix_output_index(
