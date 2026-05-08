@@ -13,6 +13,7 @@ import {
   type WalletEntry,
 } from "../lib/tauri";
 import { Onboarding } from "./Onboarding";
+import { PassphraseModal } from "../components/PassphraseModal";
 
 interface WalletProps {
   /// Bumped by App when the daemon pushes a `PaymentDetected`
@@ -44,6 +45,12 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
   const [onboarding, setOnboarding] = useState<"create" | "import" | null>(
     null,
   );
+  /// PassphraseModal state. The wallet name being acted on tells
+  /// us which IPC to call when the user submits their passphrase.
+  const [passModal, setPassModal] = useState<
+    | { kind: "unlock" | "show_mnemonic"; wallet: string; error?: string }
+    | null
+  >(null);
 
   const refresh = async () => {
     setErr(null);
@@ -112,25 +119,8 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
     await refresh();
   };
 
-  const onShowMnemonic = async (name: string) => {
-    const passphrase = prompt(
-      `Passphrase for ${name} (required to decrypt and show the backup phrase):`,
-    );
-    if (!passphrase) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      const r = await walletShowMnemonic(name, passphrase);
-      setMnemonicReveal({
-        name: r.name,
-        mnemonic: r.mnemonic,
-        reason: "backup_request",
-      });
-    } catch (e) {
-      setErr((e as Error).message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
+  const onShowMnemonic = (name: string) => {
+    setPassModal({ kind: "show_mnemonic", wallet: name });
   };
 
   const onSelect = async (name: string) => {
@@ -146,16 +136,35 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
     }
   };
 
-  const onUnlock = async (name: string) => {
-    const passphrase = prompt(`Passphrase for ${name}:`);
-    if (!passphrase) return;
+  const onUnlock = (name: string) => {
+    setPassModal({ kind: "unlock", wallet: name });
+  };
+
+  const onPassSubmit = async (passphrase: string) => {
+    if (!passModal) return;
+    const { kind, wallet } = passModal;
     setBusy(true);
-    setErr(null);
     try {
-      await walletUnlock(name, passphrase);
-      await refresh();
+      if (kind === "unlock") {
+        await walletUnlock(wallet, passphrase);
+        setPassModal(null);
+        await refresh();
+      } else {
+        const r = await walletShowMnemonic(wallet, passphrase);
+        setPassModal(null);
+        setMnemonicReveal({
+          name: r.name,
+          mnemonic: r.mnemonic,
+          reason: "backup_request",
+        });
+      }
     } catch (e) {
-      setErr((e as Error).message ?? String(e));
+      // Keep the modal open with the error inline so the user can
+      // retry without losing the modal context.
+      setPassModal({
+        ...passModal,
+        error: (e as Error).message ?? String(e),
+      });
     } finally {
       setBusy(false);
     }
@@ -181,6 +190,28 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
     <div className="screen">
       {onboarding && (
         <Onboarding mode={onboarding} onClose={onWizardClose} />
+      )}
+
+      {passModal && (
+        <PassphraseModal
+          title={
+            passModal.kind === "unlock"
+              ? `Unlock ${passModal.wallet}`
+              : `Reveal backup phrase for ${passModal.wallet}`
+          }
+          description={
+            passModal.kind === "unlock"
+              ? "Decrypts the keystore so the daemon can sign and derive addresses."
+              : "Decrypts the keystore and displays the BIP-39 backup phrase. Required for off-device backups."
+          }
+          submitLabel={
+            passModal.kind === "unlock" ? "Unlock" : "Reveal"
+          }
+          error={passModal.error}
+          busy={busy}
+          onSubmit={onPassSubmit}
+          onCancel={() => setPassModal(null)}
+        />
       )}
 
       {err && <div className="card" style={{ borderColor: "var(--fail)" }}>{err}</div>}
