@@ -44,8 +44,21 @@ export async function daemonHealth(): Promise<HealthResponse> {
   return unwrap<HealthResponse>(resp).payload;
 }
 
-export async function daemonDoctor(): Promise<unknown> {
-  return await invoke("daemon_doctor");
+export interface DoctorCheck {
+  name: string;
+  /// `"pass"` / `"fail"` / `"skip"`.
+  status: string;
+  detail: string;
+}
+
+export interface DoctorResponse {
+  checks: DoctorCheck[];
+  all_pass: boolean;
+}
+
+export async function daemonDoctor(): Promise<DoctorResponse> {
+  const resp = await invoke("daemon_doctor");
+  return unwrap<DoctorResponse>(resp).payload;
 }
 
 export interface DaemonEnvResponse {
@@ -368,8 +381,21 @@ export async function gspAuth(): Promise<unknown> {
   return await invoke("gsp_auth");
 }
 
-export async function gspSessionStatus(): Promise<unknown> {
-  return await invoke("gsp_session_status");
+export interface GspSessionStatus {
+  have_token: boolean;
+  wallet_name: string | null;
+  wallet_id: string | null;
+  expires_at: number | null;
+  remaining_secs: number | null;
+  /// "disconnected" / "connecting" / "authenticating" / "authenticated" / "backoff"
+  phase: string | null;
+  connect_count: number | null;
+  last_error: string | null;
+}
+
+export async function gspSessionStatus(): Promise<GspSessionStatus> {
+  const resp = await invoke("gsp_session_status");
+  return unwrap<GspSessionStatus>(resp).payload;
 }
 
 // ----- Locks -------------------------------------------------------------
