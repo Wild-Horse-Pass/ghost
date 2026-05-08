@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   locksList,
   locksPrepare,
@@ -9,12 +9,42 @@ import {
   type LocksRecoveredResult,
 } from "../lib/tauri";
 
+interface Tier {
+  id: string;
+  label: string;
+  sats: number;
+}
+
+const TIERS: Tier[] = [
+  { id: "tiny", label: "Tiny", sats: 100_000 },
+  { id: "small", label: "Small", sats: 1_000_000 },
+  { id: "medium", label: "Medium", sats: 10_000_000 },
+  { id: "large", label: "Large", sats: 100_000_000 },
+];
+
+/// Per-row inline form state. Only one form is open at a time —
+/// the table row expands beneath itself when an action button is
+/// clicked. Cleaner than a modal for this density and matches the
+/// inline-form style of the Mix and Receive screens.
+type RowForm =
+  | { kind: "confirm"; lock_id: string }
+  | { kind: "recover"; lock_id: string };
+
 export function Locks() {
   const [locks, setLocks] = useState<LockEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [prep, setPrep] = useState<LocksPreparedResponse | null>(null);
   const [recovery, setRecovery] = useState<LocksRecoveredResult | null>(null);
+
+  // Expandable forms.
+  const [showPrepare, setShowPrepare] = useState(false);
+  const [prepareTier, setPrepareTier] = useState<string>(TIERS[0].id);
+  const [prepareCustom, setPrepareCustom] = useState("");
+  const [openRow, setOpenRow] = useState<RowForm | null>(null);
+  const [confirmTxid, setConfirmTxid] = useState("");
+  const [recoverDest, setRecoverDest] = useState("");
+  const [recoverFee, setRecoverFee] = useState("1000");
 
   const refresh = async () => {
     setErr(null);
@@ -30,15 +60,20 @@ export function Locks() {
     refresh();
   }, []);
 
-  const onPrepare = async () => {
-    const raw = prompt(
-      "Capacity in sats (must match a Ghost Lock denomination — Tiny=100k, Small=1M, Medium=10M, Large=100M):",
-      "100000",
-    );
-    if (!raw) return;
-    const sats = Number(raw);
-    if (!Number.isFinite(sats) || sats <= 0) {
-      setErr("Capacity must be a positive number.");
+  const resolveCapacity = (): number | null => {
+    if (prepareTier === "custom") {
+      const n = Number(prepareCustom);
+      if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return null;
+      return n;
+    }
+    const tier = TIERS.find((t) => t.id === prepareTier);
+    return tier ? tier.sats : null;
+  };
+
+  const onPrepareSubmit = async () => {
+    const sats = resolveCapacity();
+    if (sats == null) {
+      setErr("Capacity must be a positive integer (sats).");
       return;
     }
     setBusy(true);
@@ -46,6 +81,8 @@ export function Locks() {
     try {
       const result = await locksPrepare(sats);
       setPrep(result);
+      setShowPrepare(false);
+      setPrepareCustom("");
       await refresh();
     } catch (e) {
       setErr((e as Error).message ?? String(e));
@@ -54,13 +91,34 @@ export function Locks() {
     }
   };
 
-  const onConfirm = async (lock_id: string) => {
-    const txid = prompt(`Funding txid for lock ${lock_id.slice(0, 12)}…:`);
-    if (!txid) return;
+  const openConfirm = (lock_id: string) => {
+    setOpenRow({ kind: "confirm", lock_id });
+    setConfirmTxid("");
+  };
+
+  const openRecover = (lock_id: string) => {
+    setOpenRow({ kind: "recover", lock_id });
+    setRecoverDest("");
+    setRecoverFee("1000");
+  };
+
+  const closeRow = () => {
+    setOpenRow(null);
+    setConfirmTxid("");
+    setRecoverDest("");
+  };
+
+  const onConfirmSubmit = async (lock_id: string) => {
+    const txid = confirmTxid.trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(txid)) {
+      setErr("Funding txid must be a 64-character hex string.");
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
-      await locksConfirm(lock_id, txid.trim());
+      await locksConfirm(lock_id, txid);
+      closeRow();
       await refresh();
     } catch (e) {
       setErr((e as Error).message ?? String(e));
@@ -69,23 +127,24 @@ export function Locks() {
     }
   };
 
-  const onRecover = async (lock_id: string) => {
-    const dest = prompt(
-      `Unilateral exit ${lock_id.slice(0, 12)}…\n\nL1 destination address (where the recovered sats land):`,
-    );
-    if (!dest) return;
-    const feeStr = prompt("Mining fee (sats, subtracted from recovered amount):", "1000");
-    const fee = Number(feeStr ?? "");
-    if (!Number.isFinite(fee) || fee <= 0) {
-      setErr("Fee must be a positive integer.");
+  const onRecoverSubmit = async (lock_id: string) => {
+    const dest = recoverDest.trim();
+    if (!dest) {
+      setErr("Destination address is required.");
+      return;
+    }
+    const fee = Number(recoverFee);
+    if (!Number.isFinite(fee) || fee <= 0 || !Number.isInteger(fee)) {
+      setErr("Fee must be a positive integer (sats).");
       return;
     }
     setBusy(true);
     setErr(null);
     setRecovery(null);
     try {
-      const result = await locksRecover(lock_id, dest.trim(), fee);
+      const result = await locksRecover(lock_id, dest, fee);
       setRecovery(result);
+      closeRow();
       await refresh();
     } catch (e) {
       setErr((e as Error).message ?? String(e));
@@ -106,10 +165,85 @@ export function Locks() {
       <div className="card">
         <div className="card-header">
           <h2>{locks.length === 0 ? "No locks yet" : "Your locks"}</h2>
-          <button className="primary" onClick={onPrepare} disabled={busy}>
-            + Prepare lock
-          </button>
+          {!showPrepare && (
+            <button
+              className="primary"
+              onClick={() => setShowPrepare(true)}
+              disabled={busy}
+            >
+              + Prepare lock
+            </button>
+          )}
         </div>
+
+        {showPrepare && (
+          <div
+            className="card"
+            style={{
+              margin: "12px 0",
+              borderColor: "var(--accent, var(--border))",
+            }}
+          >
+            <h2 style={{ marginTop: 0 }}>Prepare a new lock</h2>
+            <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+              Pick a tier — the four canonical denominations match
+              the Wraith mix tiers, so the lock's funding output is
+              indistinguishable from any other CoinJoin output of
+              the same size. Custom capacities are accepted but
+              break that anonymity property.
+            </p>
+            <div className="col">
+              <label>Capacity</label>
+              <select
+                value={prepareTier}
+                onChange={(e) => setPrepareTier(e.target.value)}
+                disabled={busy}
+              >
+                {TIERS.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label} — {t.sats.toLocaleString()} sats
+                  </option>
+                ))}
+                <option value="custom">Custom amount…</option>
+              </select>
+            </div>
+            {prepareTier === "custom" && (
+              <div className="col">
+                <label>Custom capacity (sats)</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={prepareCustom}
+                  onChange={(e) => setPrepareCustom(e.target.value)}
+                  disabled={busy}
+                  placeholder="e.g. 500000"
+                  autoFocus
+                />
+              </div>
+            )}
+            <div className="row" style={{ marginTop: 12 }}>
+              <button
+                className="secondary"
+                onClick={() => {
+                  setShowPrepare(false);
+                  setPrepareCustom("");
+                }}
+                disabled={busy}
+                style={{ marginRight: 8 }}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary"
+                onClick={onPrepareSubmit}
+                disabled={busy}
+              >
+                {busy ? "Preparing…" : "Prepare"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {locks.length > 0 && (
           <table className="table">
             <thead>
@@ -122,50 +256,182 @@ export function Locks() {
               </tr>
             </thead>
             <tbody>
-              {locks.map((l) => (
-                <tr key={l.lock_id}>
-                  <td className="mono muted">{l.lock_id.slice(0, 18)}…</td>
-                  <td>{l.capacity_sats.toLocaleString()} sats</td>
-                  <td>
-                    <span
-                      className={`pill ${
-                        l.state === "active"
-                          ? "pass"
-                          : l.state === "pending"
-                            ? "warn"
-                            : "mute"
-                      }`}
-                    >
-                      {l.state}
-                    </span>
-                  </td>
-                  <td className="mono muted">
-                    {l.recovery_height ?? "—"}
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    {l.state === "pending" && (
-                      <button
-                        className="secondary"
-                        onClick={() => onConfirm(l.lock_id)}
-                        disabled={busy}
-                        style={{ marginRight: 6 }}
-                      >
-                        Confirm funding
-                      </button>
+              {locks.map((l) => {
+                const isOpen = openRow?.lock_id === l.lock_id;
+                return (
+                  <Fragment key={l.lock_id}>
+                    <tr>
+                      <td className="mono muted">{l.lock_id.slice(0, 18)}…</td>
+                      <td>{l.capacity_sats.toLocaleString()} sats</td>
+                      <td>
+                        <span
+                          className={`pill ${
+                            l.state === "active"
+                              ? "pass"
+                              : l.state === "pending"
+                                ? "warn"
+                                : "mute"
+                          }`}
+                        >
+                          {l.state}
+                        </span>
+                      </td>
+                      <td className="mono muted">{l.recovery_height ?? "—"}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {l.state === "pending" && (
+                          <button
+                            className="secondary"
+                            onClick={() => openConfirm(l.lock_id)}
+                            disabled={busy}
+                            style={{ marginRight: 6 }}
+                          >
+                            Confirm funding
+                          </button>
+                        )}
+                        {l.state === "active" && (
+                          <button
+                            className="danger"
+                            onClick={() => openRecover(l.lock_id)}
+                            disabled={busy}
+                            title="Unilateral exit — sends a recovery tx straight to bitcoind, no operator cooperation. Only works after the timelock has matured."
+                          >
+                            Recover
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {isOpen && openRow.kind === "confirm" && (
+                      <tr key={`${l.lock_id}-form`}>
+                        <td colSpan={5}>
+                          <div
+                            style={{
+                              padding: 12,
+                              background: "var(--bg-subtle, rgba(0,0,0,0.04))",
+                              borderRadius: 6,
+                            }}
+                          >
+                            <strong>Confirm funding for {l.lock_id.slice(0, 16)}…</strong>
+                            <p
+                              className="muted"
+                              style={{ margin: "4px 0 8px", fontSize: 13 }}
+                            >
+                              Paste the txid of the funding transaction you
+                              broadcast to the lock's funding address. The
+                              daemon verifies it lands at the right output
+                              before promoting the lock to active.
+                            </p>
+                            <div className="row" style={{ alignItems: "stretch" }}>
+                              <input
+                                className="mono"
+                                value={confirmTxid}
+                                onChange={(e) => setConfirmTxid(e.target.value)}
+                                placeholder="64-hex-char txid"
+                                disabled={busy}
+                                style={{ flex: 1 }}
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") onConfirmSubmit(l.lock_id);
+                                }}
+                              />
+                              <button
+                                className="primary"
+                                onClick={() => onConfirmSubmit(l.lock_id)}
+                                disabled={busy}
+                                style={{ marginLeft: 6 }}
+                              >
+                                Submit
+                              </button>
+                              <button
+                                className="secondary"
+                                onClick={closeRow}
+                                disabled={busy}
+                                style={{ marginLeft: 6 }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
                     )}
-                    {l.state === "active" && (
-                      <button
-                        className="danger"
-                        onClick={() => onRecover(l.lock_id)}
-                        disabled={busy}
-                        title="Unilateral exit — sends a recovery tx straight to bitcoind, no operator cooperation. Only works after the timelock has matured."
-                      >
-                        Recover
-                      </button>
+                    {isOpen && openRow.kind === "recover" && (
+                      <tr key={`${l.lock_id}-form`}>
+                        <td colSpan={5}>
+                          <div
+                            style={{
+                              padding: 12,
+                              background: "var(--bg-subtle, rgba(0,0,0,0.04))",
+                              borderRadius: 6,
+                            }}
+                          >
+                            <strong style={{ color: "var(--fail)" }}>
+                              Unilateral exit — {l.lock_id.slice(0, 16)}…
+                            </strong>
+                            <p
+                              className="muted"
+                              style={{ margin: "4px 0 8px", fontSize: 13 }}
+                            >
+                              Builds, signs, and broadcasts a recovery tx
+                              with the wallet's recovery secret. Only works
+                              after the timelock has matured (recovery
+                              height {l.recovery_height ?? "—"}). The
+                              operator is bypassed entirely — this is the
+                              wallet's safety net for an unresponsive Ghost
+                              Pay node.
+                            </p>
+                            <div className="col">
+                              <label>L1 destination address</label>
+                              <input
+                                className="mono"
+                                value={recoverDest}
+                                onChange={(e) => setRecoverDest(e.target.value)}
+                                placeholder="bc1q… / tb1p… / bcrt1…"
+                                disabled={busy}
+                                autoFocus
+                              />
+                            </div>
+                            <div className="col">
+                              <label>Mining fee (sats)</label>
+                              <input
+                                type="number"
+                                min={1}
+                                value={recoverFee}
+                                onChange={(e) => setRecoverFee(e.target.value)}
+                                disabled={busy}
+                              />
+                              <span
+                                className="muted"
+                                style={{ fontSize: 12 }}
+                              >
+                                Subtracted from the recovered amount.
+                                {" "}{(l.capacity_sats - Number(recoverFee || 0)).toLocaleString()}
+                                {" sats will arrive at the destination."}
+                              </span>
+                            </div>
+                            <div className="row" style={{ marginTop: 8 }}>
+                              <button
+                                className="secondary"
+                                onClick={closeRow}
+                                disabled={busy}
+                                style={{ marginRight: 6 }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                className="danger"
+                                onClick={() => onRecoverSubmit(l.lock_id)}
+                                disabled={busy}
+                              >
+                                {busy ? "Broadcasting…" : "Broadcast recovery"}
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                </tr>
-              ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -180,11 +446,17 @@ export function Locks() {
           </p>
           <div className="kv">
             <div className="k">Lock ID</div>
-            <div className="v">{recovery.lock_id}</div>
+            <div className="v mono" style={{ fontSize: 12 }}>
+              {recovery.lock_id}
+            </div>
             <div className="k">Broadcast txid</div>
-            <div className="v">{recovery.broadcast_txid}</div>
+            <div className="v mono" style={{ fontSize: 12 }}>
+              {recovery.broadcast_txid}
+            </div>
             <div className="k">Destination</div>
-            <div className="v">{recovery.destination}</div>
+            <div className="v mono" style={{ fontSize: 12 }}>
+              {recovery.destination}
+            </div>
             <div className="k">Recovered</div>
             <div className="v">{recovery.recovered_sats.toLocaleString()} sats</div>
             <div className="k">Fee</div>
@@ -203,9 +475,13 @@ export function Locks() {
           </p>
           <div className="kv">
             <div className="k">Lock ID</div>
-            <div className="v">{prep.lock_id}</div>
+            <div className="v mono" style={{ fontSize: 12 }}>
+              {prep.lock_id}
+            </div>
             <div className="k">Funding address</div>
-            <div className="v">{prep.funding_address}</div>
+            <div className="v mono" style={{ fontSize: 12 }}>
+              {prep.funding_address}
+            </div>
             <div className="k">Required</div>
             <div className="v">{prep.required_sats.toLocaleString()} sats</div>
           </div>
