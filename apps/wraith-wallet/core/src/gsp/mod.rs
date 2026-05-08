@@ -6,7 +6,10 @@
 //! Reuses message types from `ghost-gsp-proto` so the wire format stays in sync with the server.
 
 pub mod session;
-pub use session::{spawn_session, BalanceSnapshot, SessionHandle, SessionPhase, SessionStatus};
+pub use session::{
+    spawn_session, spawn_session_with_bech32, BalanceSnapshot, SessionHandle, SessionPhase,
+    SessionStatus,
+};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

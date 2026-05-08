@@ -231,16 +231,24 @@ else
     exit 1
 fi
 
-# ---- assertion: alice sees -5000 in her L2 history -------------------------
-# Bob's `light history` is a known follow-up: ghost-pay stores
-# `merchant_wallet_id` as bob's BECH32 ghost-id (the only stable
-# identifier alice has for him at send time), but bob's wallet
-# queries `/api/v1/transactions` with his STATIC wallet_id (the
-# one his GSP session is bound to). The two don't match, so the
-# row isn't found from bob's side. Fix would be: GSP forwards
-# bob's bech32 alongside his static when querying transactions, OR
-# ghost-pay decodes the recipient bech32 → static at INSERT time.
-# Operator-side check above already proves the row exists.
+# ---- assertion: BOTH wallets see the L2 entry via `light history` ----------
+# Bob's wallet now forwards its own bech32 ghost-id with
+# GetTransactions so ghost-pay can match recipient-side rows
+# (`merchant_wallet_id` is stored as bech32). Sender-side
+# matching uses the static_wallet_id GSP forwards from the
+# session.
+step "verifying bob sees +5000 in his L2 history"
+BOB_HIST=$(BOB_WRAITH --json light history --limit 5)
+echo "$BOB_HIST"
+BOB_AMOUNT=$(echo "$BOB_HIST" | jq -r '.LightHistory.transactions[0].amount_sats // .transactions[0].amount_sats')
+BOB_TYPE=$(echo   "$BOB_HIST" | jq -r '.LightHistory.transactions[0].tx_type // .transactions[0].tx_type')
+if [ "$BOB_AMOUNT" = "5000" ] && [ "$BOB_TYPE" = "receive" ]; then
+    echo "✓ bob's wallet sees +5000 receive"
+else
+    echo "✗ bob history mismatch — amount=$BOB_AMOUNT type=$BOB_TYPE"
+    exit 1
+fi
+
 step "verifying alice sees -5000 in her L2 history"
 ALICE_HIST=$(ALICE_WRAITH --json light history --limit 5)
 echo "$ALICE_HIST"

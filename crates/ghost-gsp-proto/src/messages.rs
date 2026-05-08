@@ -79,6 +79,15 @@ pub enum ClientMessage {
         limit: u32,
         /// Offset for pagination
         offset: u32,
+        /// Optional bech32 ghost-id of the requesting wallet, used so
+        /// ghost-pay can match L2 ledger rows where this wallet is the
+        /// recipient (`merchant_wallet_id` is stored as bech32 — the
+        /// only stable identifier the sender has at INSERT time). The
+        /// session-static wallet_id (which the GSP server forwards
+        /// separately) matches sender-side rows. Without this field,
+        /// recipients see only sent payments, never received ones.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wallet_bech32: Option<String>,
     },
 
     // =========================================================================

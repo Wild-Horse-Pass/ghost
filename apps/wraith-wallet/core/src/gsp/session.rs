@@ -466,18 +466,33 @@ pub fn spawn_session(
     scan_keys: Option<GhostKeys>,
     tor_proxy: Option<String>,
 ) -> SessionHandle {
+    spawn_session_with_bech32(ws_urls, jwt_token, scan_keys, None, tor_proxy)
+}
+
+/// Same as [`spawn_session`] but accepts an explicit bech32 ghost-id
+/// string. Required for non-mainnet wallets where
+/// `GhostKeys::ghost_id().to_string()` (which encodes for mainnet)
+/// produces the wrong HRP — the daemon knows the wallet's network
+/// and computes the right `<network>ghost1q...` form before
+/// spawning the session. Forwarded with each `GetTransactions` so
+/// ghost-pay can match recipient-side rows.
+pub fn spawn_session_with_bech32(
+    ws_urls: Vec<String>,
+    jwt_token: String,
+    scan_keys: Option<GhostKeys>,
+    ghost_id_bech32: Option<String>,
+    tor_proxy: Option<String>,
+) -> SessionHandle {
     let status = Arc::new(RwLock::new(SessionStatus::default()));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (cmd_tx, cmd_rx) = mpsc::channel::<SessionCommand>(32);
-    // 256 is roomy: even at >100 detections/sec a slow IPC client has 2.5s
-    // before the broadcast layer drops the oldest. We surface that via
-    // RecvError::Lagged so the client can resync from `LightDetected`.
     let (events_tx, _) = broadcast::channel::<DetectedPayment>(256);
 
     let task = tokio::spawn(run(
         ws_urls,
         jwt_token,
         scan_keys,
+        ghost_id_bech32,
         tor_proxy,
         status.clone(),
         events_tx.clone(),
@@ -582,6 +597,7 @@ async fn run(
     ws_urls: Vec<String>,
     jwt_token: String,
     scan_keys: Option<GhostKeys>,
+    ghost_id_bech32: Option<String>,
     tor_proxy: Option<String>,
     status: Arc<RwLock<SessionStatus>>,
     events_tx: broadcast::Sender<DetectedPayment>,
@@ -694,6 +710,7 @@ async fn run(
             &mut cmd_rx,
             &mut pending,
             scan_keys.as_ref(),
+            ghost_id_bech32.as_deref(),
             &events_tx,
         )
         .await;
@@ -765,6 +782,7 @@ async fn run_main_loop(
     cmd_rx: &mut mpsc::Receiver<SessionCommand>,
     pending: &mut VecDeque<PendingReply>,
     scan_keys: Option<&GhostKeys>,
+    ghost_id_bech32: Option<&str>,
     events_tx: &broadcast::Sender<DetectedPayment>,
 ) -> MainLoopOutcome {
     loop {
@@ -798,7 +816,17 @@ async fn run_main_loop(
                         pending.push_back(PendingReply::Utxos(reply));
                     }
                     SessionCommand::GetTransactions { limit, offset, reply } => {
-                        let msg = ClientMessage::GetTransactions { limit, offset };
+                        // Forward the wallet's own bech32 ghost-id so
+                        // ghost-pay can match L2 ledger rows where THIS
+                        // wallet is the recipient. The daemon supplies
+                        // the network-correct bech32 (mainnet/testnet/
+                        // signet/regtest HRP) at session-spawn time;
+                        // we just forward it.
+                        let msg = ClientMessage::GetTransactions {
+                            limit,
+                            offset,
+                            wallet_bech32: ghost_id_bech32.map(|s| s.to_string()),
+                        };
                         if let Err(e) = send_client(ws, &msg).await {
                             let _ = reply.send(Err(format!("send GetTransactions: {e}")));
                             return MainLoopOutcome::Disconnect(format!(

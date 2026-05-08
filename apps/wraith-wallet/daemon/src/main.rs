@@ -47,7 +47,7 @@ mod unix {
     use wraith_wallet_core::chain::ChainClient;
     use wraith_wallet_core::gsp::GspClient;
     use wraith_wallet_core::gsp::{
-        spawn_session, GspError, SessionHandle, SessionPhase, SessionStatus,
+        spawn_session_with_bech32, GspError, SessionHandle, SessionPhase, SessionStatus,
     };
     use wraith_wallet_core::keystore::{Keystore, KeystoreError};
     use wraith_wallet_core::light;
@@ -681,13 +681,25 @@ mod unix {
                 .and_then(|ks| ks.ghost_keys().ok())
         };
 
+        // Compute the wallet's network-correct bech32 ghost-id once
+        // up front. The session forwards it with each
+        // GetTransactions so ghost-pay can match recipient-side
+        // rows. `GhostKeys::ghost_id().to_string()` would emit the
+        // mainnet HRP — wrong for regtest/signet/testnet.
+        let ghost_id_bech32 = scan_keys.as_ref().and_then(|gk| {
+            gk.ghost_id()
+                .encode_for_network(ghost_network_from_bitcoin(state.network))
+                .ok()
+        });
+
         // 4. Stash the token + spawn a persistent authenticated session task.
         //    Replacing an existing slot drops the old SessionHandle, which aborts
         //    its task before the new one starts.
-        let handle = spawn_session(
+        let handle = spawn_session_with_bech32(
             state.gsp_urls.clone(),
             jwt_for_session,
             scan_keys,
+            ghost_id_bech32,
             state.tor_proxy.clone(),
         );
         *state.session.write().await = Some(StoredSession {

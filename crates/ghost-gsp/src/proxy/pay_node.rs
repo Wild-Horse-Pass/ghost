@@ -797,17 +797,30 @@ impl PayNodeProxy {
         Ok(result.is_owner)
     }
 
-    /// Get transaction history
+    /// Get transaction history.
+    ///
+    /// `ghost_id` is the wallet's static identifier — matches
+    /// `sender_ghost_id` rows where this wallet is the sender.
+    /// `bech32` is the wallet's public bech32 ghost-id — matches
+    /// `merchant_wallet_id` rows where this wallet is the recipient.
+    /// Both are forwarded to ghost-pay; the route ORs them.
     pub async fn get_transactions(
         &self,
         ghost_id: &str,
+        bech32: Option<&str>,
         limit: u32,
         offset: u32,
     ) -> GspResult<(Vec<TransactionInfo>, u32)> {
-        let url = format!(
+        let mut url = format!(
             "{}/api/v1/transactions?ghost_id={}&limit={}&offset={}",
             self.base_url, ghost_id, limit, offset
         );
+        if let Some(b32) = bech32 {
+            // Manual encoding — bech32 ghost-ids are URL-safe (lower
+            // alphanumerics + `1` separator), no escaping needed.
+            url.push_str("&bech32=");
+            url.push_str(b32);
+        }
         debug!(url = %url, "Getting transactions");
 
         // M-15: Add internal auth header

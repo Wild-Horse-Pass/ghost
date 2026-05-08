@@ -7076,7 +7076,16 @@ async fn send_l2_payment(
 /// Query parameters for `GET /api/v1/transactions`.
 #[derive(Debug, Deserialize)]
 struct TransactionsQuery {
+    /// The wallet's *static* identifier (`SHA256(auth_xonly_pubkey)[0..16]`).
+    /// Matches `sender_ghost_id` rows where this wallet was the sender.
     ghost_id: String,
+    /// Optional bech32 ghost-id (`<network>ghost1q...`) — matches
+    /// `merchant_wallet_id` rows where this wallet was the recipient.
+    /// At INSERT time we only have the recipient's public bech32 (it's
+    /// what the sender sent the payment to), so receive-side matches
+    /// must go through this column.
+    #[serde(default)]
+    bech32: Option<String>,
     #[serde(default = "default_tx_limit")]
     limit: u32,
     #[serde(default)]
@@ -7106,13 +7115,20 @@ async fn list_transactions(
 
     let tip_height = state.rpc.get_block_count().await.unwrap_or(0) as i64;
 
-    let gid_recv = q.ghost_id.clone();
+    // Receive-side match goes against the bech32 ghost-id when
+    // supplied, falling back to the static ID for legacy callers
+    // that haven't started forwarding the bech32 yet. (The old code
+    // matched against the static ID on both sides — produced empty
+    // results for recipients because `merchant_wallet_id` is stored
+    // as bech32.)
+    let gid_recv = q.bech32.clone().unwrap_or_else(|| q.ghost_id.clone());
     let gid_send = q.ghost_id.clone();
     let rows: Vec<(String, i64, i64, i64, String, Option<String>)> = state
         .db
         .with_connection(|conn| {
-            // Two arms: receive (merchant_wallet_id matches) and send
-            // (sender_ghost_id matches). UNION ALL preserves both sides
+            // Two arms: receive (merchant_wallet_id matches the
+            // wallet's bech32) and send (sender_ghost_id matches the
+            // wallet's static id). UNION ALL preserves both sides
             // of a self-payment, which is what the wallet wants.
             let sql = "
                 SELECT

@@ -162,7 +162,7 @@ async fn light_history_round_trips_get_transactions() {
                         .send(WsMessage::Text(serde_json::to_string(&auth).unwrap()))
                         .await;
                 }
-                ClientMessage::GetTransactions { limit, offset: _ } => {
+                ClientMessage::GetTransactions { limit, offset: _, wallet_bech32: _ } => {
                     // Build a tiny fake ledger: one send (-5000), one
                     // receive (+5000), both with the new shape.
                     let txs = vec![

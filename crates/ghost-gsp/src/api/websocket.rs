@@ -647,8 +647,19 @@ async fn handle_message(
 
         ClientMessage::GetGhostLocks => handle_get_ghost_locks(state, conn_state).await,
 
-        ClientMessage::GetTransactions { limit, offset } => {
-            handle_get_transactions(state, conn_state, limit, offset).await
+        ClientMessage::GetTransactions {
+            limit,
+            offset,
+            wallet_bech32,
+        } => {
+            handle_get_transactions(
+                state,
+                conn_state,
+                limit,
+                offset,
+                wallet_bech32.as_deref(),
+            )
+            .await
         }
 
         ClientMessage::SubscribeBalance => handle_subscribe(state, conn_state, "balance").await,
@@ -985,14 +996,17 @@ async fn handle_get_transactions(
     conn_state: &ConnectionState,
     limit: u32,
     offset: u32,
+    wallet_bech32: Option<&str>,
 ) -> Result<Option<ServerMessage>, GspError> {
     let wallet_id = conn_state
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
-    // Use the static wallet ID for the ledger lookup — that's the
-    // identifier ghost-pay stored when the rows were INSERTed (from
-    // earlier sessions). The session-rotating ID would never match.
+    // Use the static wallet ID for sender-side matching (ghost-pay
+    // stores `sender_ghost_id` as the static derivation). The
+    // optional bech32 from the wallet matches recipient-side rows
+    // (`merchant_wallet_id` is stored as bech32 because it's the
+    // only stable identifier the sender has at INSERT time).
     let owner_id = conn_state
         .static_wallet_id
         .as_ref()
@@ -1000,7 +1014,7 @@ async fn handle_get_transactions(
 
     let (transactions, total_count) = state
         .pay_node
-        .get_transactions(&owner_id.to_string(), limit, offset)
+        .get_transactions(&owner_id.to_string(), wallet_bech32, limit, offset)
         .await?;
 
     Ok(Some(ServerMessage::Transactions {

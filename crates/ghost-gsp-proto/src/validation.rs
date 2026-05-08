@@ -150,7 +150,7 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             // No parameters to validate
         }
 
-        ClientMessage::GetTransactions { limit, offset: _ } => {
+        ClientMessage::GetTransactions { limit, offset: _, wallet_bech32: _ } => {
             if *limit == 0 {
                 result.add_error("Limit must be greater than 0");
             }
@@ -689,6 +689,7 @@ mod tests {
         let msg = ClientMessage::GetTransactions {
             limit: 100,
             offset: 0,
+            wallet_bech32: None,
         };
         let result = validate_message(&msg);
         assert!(result.valid);
@@ -696,6 +697,7 @@ mod tests {
         let msg2 = ClientMessage::GetTransactions {
             limit: 0,
             offset: 0,
+            wallet_bech32: None,
         };
         let result2 = validate_message(&msg2);
         assert!(!result2.valid);
@@ -703,6 +705,7 @@ mod tests {
         let msg3 = ClientMessage::GetTransactions {
             limit: 2000,
             offset: 0,
+            wallet_bech32: None,
         };
         let result3 = validate_message(&msg3);
         assert!(!result3.valid);
