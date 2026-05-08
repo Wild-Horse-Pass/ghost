@@ -179,9 +179,16 @@ export async function walletGhostId(): Promise<{
 // ----- Light wallet (L2) -------------------------------------------------
 
 export interface LightBalanceResponse {
-  spendable_sats: number;
-  pending_sats: number;
-  total_sats: number;
+  /// On-chain confirmed balance, in sats. `null` when no
+  /// BalanceUpdate has arrived yet (session not authenticated, or
+  /// first update not received).
+  confirmed_sats: number | null;
+  unconfirmed_sats: number | null;
+  /// Sats currently inside an active Ghost Lock and therefore
+  /// unspendable until reconciled.
+  locked_sats: number | null;
+  /// Server time of the latest BalanceUpdate, unix epoch seconds.
+  received_at: number | null;
 }
 
 export async function lightBalance(): Promise<LightBalanceResponse> {
@@ -224,12 +231,22 @@ export async function lightReceive(index = 0): Promise<LightReceiveResponse> {
   return unwrap<LightReceiveResponse>(resp).payload;
 }
 
+export type LightSendMode = "ghostpay" | "wraith" | "confidential";
+
 export async function lightSend(
   recipient: string,
   amount_sats: number,
+  mode: LightSendMode = "ghostpay",
   memo?: string,
+  shroud_max_ms?: number,
 ): Promise<unknown> {
-  return await invoke("light_send", { recipient, amountSats: amount_sats, memo });
+  return await invoke("light_send", {
+    recipient,
+    amountSats: amount_sats,
+    mode,
+    memo,
+    shroudMaxMs: shroud_max_ms,
+  });
 }
 
 export interface LightUtxoEntry {

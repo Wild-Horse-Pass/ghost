@@ -268,9 +268,9 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
                   marginTop: 4,
                 }}
               >
-                {balance == null
+                {balance == null || balance.confirmed_sats == null
                   ? "—"
-                  : balance.spendable_sats.toLocaleString()}{" "}
+                  : balance.confirmed_sats.toLocaleString()}{" "}
                 <span
                   className="muted"
                   style={{ fontSize: 18, fontWeight: 400 }}
@@ -278,14 +278,26 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
                   sats
                 </span>
               </div>
-              {balance != null && balance.pending_sats > 0 && (
-                <div
-                  className="muted"
-                  style={{ fontSize: 13, marginTop: 2 }}
-                >
-                  +{balance.pending_sats.toLocaleString()} pending
-                </div>
-              )}
+              {balance != null &&
+                balance.unconfirmed_sats != null &&
+                balance.unconfirmed_sats > 0 && (
+                  <div
+                    className="muted"
+                    style={{ fontSize: 13, marginTop: 2 }}
+                  >
+                    +{balance.unconfirmed_sats.toLocaleString()} pending
+                  </div>
+                )}
+              {balance != null &&
+                balance.locked_sats != null &&
+                balance.locked_sats > 0 && (
+                  <div
+                    className="muted"
+                    style={{ fontSize: 13, marginTop: 2 }}
+                  >
+                    {balance.locked_sats.toLocaleString()} in active locks
+                  </div>
+                )}
             </div>
           </div>
 
