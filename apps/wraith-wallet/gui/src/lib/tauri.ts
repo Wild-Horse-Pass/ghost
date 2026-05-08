@@ -234,3 +234,24 @@ export async function locksConfirm(
 ): Promise<unknown> {
   return await invoke("locks_confirm", { lockId: lock_id, fundingTxid: funding_txid });
 }
+
+export interface LocksRecoveredResult {
+  lock_id: string;
+  broadcast_txid: string;
+  destination: string;
+  recovered_sats: number;
+  fee_sats: number;
+}
+
+export async function locksRecover(
+  lock_id: string,
+  destination_address: string,
+  fee_sats: number,
+): Promise<LocksRecoveredResult> {
+  const resp = await invoke("locks_recover", {
+    lockId: lock_id,
+    destinationAddress: destination_address,
+    feeSats: fee_sats,
+  });
+  return unwrap<LocksRecoveredResult>(resp).payload;
+}

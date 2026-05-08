@@ -201,6 +201,25 @@ async fn locks_jump(
     to_value(&resp)
 }
 
+/// Unilateral exit. Builds + signs + broadcasts a recovery spend
+/// using the wallet's own recovery secret, after confirming the
+/// timelock has matured. Talks straight to the configured ghostd —
+/// no GSP, no operator cooperation.
+#[tauri::command]
+async fn locks_recover(
+    lock_id: String,
+    destination_address: String,
+    fee_sats: u64,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LocksRecover {
+        lock_id,
+        destination_address,
+        fee_sats,
+    })
+    .await?;
+    to_value(&resp)
+}
+
 #[tauri::command]
 async fn light_send(
     recipient: String,
@@ -447,6 +466,7 @@ pub fn run() {
             locks_prepare,
             locks_confirm,
             locks_jump,
+            locks_recover,
             start_watch,
         ])
         .run(tauri::generate_context!())

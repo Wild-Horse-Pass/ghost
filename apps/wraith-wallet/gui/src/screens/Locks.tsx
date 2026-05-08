@@ -3,8 +3,10 @@ import {
   locksList,
   locksPrepare,
   locksConfirm,
+  locksRecover,
   type LockEntry,
   type LocksPreparedResponse,
+  type LocksRecoveredResult,
 } from "../lib/tauri";
 
 export function Locks() {
@@ -12,6 +14,7 @@ export function Locks() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [prep, setPrep] = useState<LocksPreparedResponse | null>(null);
+  const [recovery, setRecovery] = useState<LocksRecoveredResult | null>(null);
 
   const refresh = async () => {
     setErr(null);
@@ -58,6 +61,31 @@ export function Locks() {
     setErr(null);
     try {
       await locksConfirm(lock_id, txid.trim());
+      await refresh();
+    } catch (e) {
+      setErr((e as Error).message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRecover = async (lock_id: string) => {
+    const dest = prompt(
+      `Unilateral exit ${lock_id.slice(0, 12)}…\n\nL1 destination address (where the recovered sats land):`,
+    );
+    if (!dest) return;
+    const feeStr = prompt("Mining fee (sats, subtracted from recovered amount):", "1000");
+    const fee = Number(feeStr ?? "");
+    if (!Number.isFinite(fee) || fee <= 0) {
+      setErr("Fee must be a positive integer.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setRecovery(null);
+    try {
+      const result = await locksRecover(lock_id, dest.trim(), fee);
+      setRecovery(result);
       await refresh();
     } catch (e) {
       setErr((e as Error).message ?? String(e));
@@ -120,8 +148,19 @@ export function Locks() {
                         className="secondary"
                         onClick={() => onConfirm(l.lock_id)}
                         disabled={busy}
+                        style={{ marginRight: 6 }}
                       >
                         Confirm funding
+                      </button>
+                    )}
+                    {l.state === "active" && (
+                      <button
+                        className="danger"
+                        onClick={() => onRecover(l.lock_id)}
+                        disabled={busy}
+                        title="Unilateral exit — sends a recovery tx straight to bitcoind, no operator cooperation. Only works after the timelock has matured."
+                      >
+                        Recover
                       </button>
                     )}
                   </td>
@@ -131,6 +170,28 @@ export function Locks() {
           </table>
         )}
       </div>
+
+      {recovery && (
+        <div className="card" style={{ borderColor: "var(--pass)" }}>
+          <h2>Unilateral exit broadcast ✓</h2>
+          <p className="muted" style={{ margin: 0 }}>
+            Recovery tx hit bitcoind's mempool. Once it confirms, the
+            funds land at the destination address.
+          </p>
+          <div className="kv">
+            <div className="k">Lock ID</div>
+            <div className="v">{recovery.lock_id}</div>
+            <div className="k">Broadcast txid</div>
+            <div className="v">{recovery.broadcast_txid}</div>
+            <div className="k">Destination</div>
+            <div className="v">{recovery.destination}</div>
+            <div className="k">Recovered</div>
+            <div className="v">{recovery.recovered_sats.toLocaleString()} sats</div>
+            <div className="k">Fee</div>
+            <div className="v">{recovery.fee_sats.toLocaleString()} sats</div>
+          </div>
+        </div>
+      )}
 
       {prep && (
         <div className="card">
