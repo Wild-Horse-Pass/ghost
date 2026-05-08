@@ -990,11 +990,17 @@ async fn handle_get_transactions(
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
+    // Use the static wallet ID for the ledger lookup — that's the
+    // identifier ghost-pay stored when the rows were INSERTed (from
+    // earlier sessions). The session-rotating ID would never match.
+    let owner_id = conn_state
+        .static_wallet_id
+        .as_ref()
+        .unwrap_or(wallet_id);
 
-    // Query pay node for transactions
     let (transactions, total_count) = state
         .pay_node
-        .get_transactions(&wallet_id.to_string(), limit, offset)
+        .get_transactions(&owner_id.to_string(), limit, offset)
         .await?;
 
     Ok(Some(ServerMessage::Transactions {
