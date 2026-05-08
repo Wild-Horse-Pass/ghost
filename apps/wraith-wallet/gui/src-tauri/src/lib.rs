@@ -267,6 +267,23 @@ async fn light_l1_utxos(
     to_value(&resp)
 }
 
+/// Fetch the coordinator's `/api/v1/pool/discover` payload —
+/// network, supported tiers, fee + bond rates. Same
+/// connect-error-rotation invariant as the mix calls: HTTP errors
+/// propagate, only connection-level failures rotate to a peer.
+#[tauri::command]
+async fn wraith_coordinator_discover(
+    coordinator_url: String,
+    coordinator_peers: Option<Vec<String>>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WraithCoordinatorDiscover {
+        coordinator_url,
+        coordinator_peers: coordinator_peers.unwrap_or_default(),
+    })
+    .await?;
+    to_value(&resp)
+}
+
 /// One-shot Wraith Lite mix. Daemon enrols, signs the BIP-341
 /// taproot key-path witness using the active wallet's BIP86
 /// keystore, and drives the round to broadcast.
@@ -528,6 +545,7 @@ pub fn run() {
             light_send,
             light_utxos,
             light_l1_utxos,
+            wraith_coordinator_discover,
             wraith_mix_run,
             wallet_ghost_id,
             wallet_auth_info,

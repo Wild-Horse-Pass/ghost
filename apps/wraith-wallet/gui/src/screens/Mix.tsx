@@ -3,8 +3,10 @@ import {
   lightL1Utxos,
   lightReceive,
   walletGhostId,
+  wraithCoordinatorDiscover,
   wraithMixRun,
   type LightL1UtxoEntry,
+  type WraithDiscoverTier,
   type WraithMixCompleted,
 } from "../lib/tauri";
 
@@ -17,18 +19,37 @@ interface Tier {
   label: string;
   denom_sats: number;
   bond_sats: number;
+  min_participants?: number;
 }
 
-// The hard-coded tiers that match the wraith-coordinator's defaults.
-// In production we'd fetch these from `/api/v1/pool/discover`; the
-// daemon doesn't proxy that yet so the screen lists the canonical
-// four. Expand here if the coordinator config grows.
-const TIERS: Tier[] = [
+/// Fallback tiers when the coordinator is offline or unreachable.
+/// Matches the canonical Wraith Lite v1 set (DESIGN_LITE.md §11).
+/// When discover succeeds, the screen replaces this with the live
+/// list — the coordinator may add tiers in future without a wallet
+/// rebuild.
+const FALLBACK_TIERS: Tier[] = [
   { id: "100k_sats", label: "Tiny", denom_sats: 100_000, bond_sats: 500 },
   { id: "1m_sats", label: "Small", denom_sats: 1_000_000, bond_sats: 5_000 },
   { id: "10m_sats", label: "Medium", denom_sats: 10_000_000, bond_sats: 50_000 },
   { id: "100m_sats", label: "Large", denom_sats: 100_000_000, bond_sats: 500_000 },
 ];
+
+function tierLabelFor(denom_sats: number): string {
+  if (denom_sats >= 100_000_000) return "Large";
+  if (denom_sats >= 10_000_000) return "Medium";
+  if (denom_sats >= 1_000_000) return "Small";
+  return "Tiny";
+}
+
+function tiersFromDiscover(rows: WraithDiscoverTier[]): Tier[] {
+  return rows.map((t) => ({
+    id: t.id,
+    label: tierLabelFor(t.denomination_sats),
+    denom_sats: t.denomination_sats,
+    bond_sats: t.bond_sats,
+    min_participants: t.min_participants,
+  }));
+}
 
 const DEFAULT_COORDINATOR = "http://127.0.0.1:9100";
 
@@ -36,7 +57,14 @@ export function Mix({ activeWallet }: MixProps) {
   const [ghostId, setGhostId] = useState<string | null>(null);
   const [coordinator, setCoordinator] = useState(DEFAULT_COORDINATOR);
   const [coordinatorPeersText, setCoordinatorPeersText] = useState("");
-  const [tierId, setTierId] = useState(TIERS[0].id);
+  const [tiers, setTiers] = useState<Tier[]>(FALLBACK_TIERS);
+  const [tierId, setTierId] = useState(FALLBACK_TIERS[0].id);
+  const [discoverInfo, setDiscoverInfo] = useState<{
+    answered_by: string;
+    network: string;
+    pool_id: string;
+  } | null>(null);
+  const [discoverErr, setDiscoverErr] = useState<string | null>(null);
 
   const [utxoTxid, setUtxoTxid] = useState("");
   const [utxoVout, setUtxoVout] = useState("");
@@ -56,9 +84,53 @@ export function Mix({ activeWallet }: MixProps) {
   const [scanMax, setScanMax] = useState(32);
 
   const tier = useMemo(
-    () => TIERS.find((t) => t.id === tierId) ?? TIERS[0],
-    [tierId],
+    () => tiers.find((t) => t.id === tierId) ?? tiers[0],
+    [tiers, tierId],
   );
+
+  // Discover the coordinator's tier set + identity. Re-runs when
+  // the user changes the coordinator URL or peer list (debounced
+  // by the controlled-input pattern: every keystroke triggers a
+  // fetch, but reqwest's 5s connect-timeout bounds the
+  // misconfiguration cost). On success, replace the tier dropdown
+  // with the live list. On failure, keep the fallback tiers and
+  // surface the error so the user knows discovery didn't succeed.
+  useEffect(() => {
+    let alive = true;
+    const peers = coordinatorPeersText
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    (async () => {
+      try {
+        const r = await wraithCoordinatorDiscover(coordinator.trim(), peers);
+        if (!alive) return;
+        const next = tiersFromDiscover(r.tiers);
+        if (next.length > 0) {
+          setTiers(next);
+          // Keep current selection if still present, otherwise pick
+          // the smallest tier (matching the previous default).
+          if (!next.some((t) => t.id === tierId)) {
+            setTierId(next[0].id);
+          }
+        }
+        setDiscoverInfo({
+          answered_by: r.answered_by,
+          network: r.network,
+          pool_id: r.pool_id,
+        });
+        setDiscoverErr(null);
+      } catch (e) {
+        if (!alive) return;
+        setDiscoverInfo(null);
+        setDiscoverErr((e as Error).message ?? String(e));
+        setTiers(FALLBACK_TIERS);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [coordinator, coordinatorPeersText]);
 
   // On mount: pull ghost_id + auto-derive a fresh mix-output and
   // change address from the wallet's BIP86 keys. Indices 90 / 91
@@ -237,7 +309,23 @@ export function Mix({ activeWallet }: MixProps) {
       )}
 
       <div className="card">
-        <h2>Coordinator</h2>
+        <div className="card-header">
+          <h2>Coordinator</h2>
+          {discoverInfo ? (
+            <span
+              className="pill pass"
+              title={`pool ${discoverInfo.pool_id}, network ${discoverInfo.network}, answered by ${discoverInfo.answered_by}`}
+            >
+              connected · {discoverInfo.network}
+            </span>
+          ) : discoverErr ? (
+            <span className="pill fail" title={discoverErr}>
+              unreachable — using fallback tiers
+            </span>
+          ) : (
+            <span className="pill mute">checking…</span>
+          )}
+        </div>
         <div className="col">
           <label>Coordinator URL</label>
           <input
@@ -271,10 +359,14 @@ export function Mix({ activeWallet }: MixProps) {
             onChange={(e) => setTierId(e.target.value)}
             disabled={busy}
           >
-            {TIERS.map((t) => (
+            {tiers.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.label} — {t.denom_sats.toLocaleString()} sats (bond{" "}
-                {t.bond_sats.toLocaleString()})
+                {t.bond_sats.toLocaleString()}
+                {t.min_participants
+                  ? `, min ${t.min_participants} participants`
+                  : ""}
+                )
               </option>
             ))}
           </select>

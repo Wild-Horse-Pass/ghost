@@ -63,7 +63,8 @@ mod unix {
         ReleaseManifest, Request, Response, SignerInfoIpc, WalletAuthInfoResponse,
         WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
         WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
-        WraithMixCompletedResponse, WraithMixPreparedResponse, LocksRecoveredResponse,
+        WraithDiscoverResponse, WraithDiscoverTier, WraithMixCompletedResponse,
+        WraithMixPreparedResponse, LocksRecoveredResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -2658,6 +2659,123 @@ mod unix {
                     }),
                     Err(e) => Response::Error(ErrorResponse {
                         message: format!("wraith submit: {e}"),
+                    }),
+                }
+            }
+            Request::WraithCoordinatorDiscover {
+                coordinator_url,
+                coordinator_peers,
+            } => {
+                use std::time::Duration;
+                #[derive(serde::Deserialize)]
+                struct WireDiscoverTier {
+                    id: String,
+                    denomination_sats: u64,
+                    min_participants: u32,
+                    max_participants: u32,
+                    bond_sats: u64,
+                    service_fee_sats: u64,
+                }
+                #[derive(serde::Deserialize)]
+                struct WireDiscover {
+                    network: String,
+                    pool_id: String,
+                    service_fee_bps: u32,
+                    bond_bps: u32,
+                    fill_window_secs: u64,
+                    tiers: Vec<WireDiscoverTier>,
+                }
+                // Connect-error rotation matches the
+                // post_json_via/get_json invariant in WraithSessionClient:
+                // 4xx/5xx HTTP responses propagate as-is, only
+                // connection-level failures rotate to a peer.
+                let http = match reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(5))
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Envelope::new(
+                            id,
+                            Response::Error(ErrorResponse {
+                                message: format!("http client: {e}"),
+                            }),
+                        );
+                    }
+                };
+                let mut urls = Vec::with_capacity(1 + coordinator_peers.len());
+                urls.push(coordinator_url.trim_end_matches('/').to_string());
+                for p in &coordinator_peers {
+                    urls.push(p.trim_end_matches('/').to_string());
+                }
+                let mut last_err: Option<String> = None;
+                let mut response: Option<(String, WireDiscover)> = None;
+                for url in &urls {
+                    let endpoint = format!("{url}/api/v1/pool/discover");
+                    match http.get(&endpoint).send().await {
+                        Ok(resp) => {
+                            let status = resp.status();
+                            if !status.is_success() {
+                                let body = resp.text().await.unwrap_or_default();
+                                last_err =
+                                    Some(format!("{url}: HTTP {status}: {body}"));
+                                break; // HTTP errors propagate, no rotation
+                            }
+                            match resp.json::<WireDiscover>().await {
+                                Ok(parsed) => {
+                                    response = Some((url.clone(), parsed));
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_err =
+                                        Some(format!("{url}: malformed: {e}"));
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) if e.is_connect() || e.is_timeout() || e.is_request() => {
+                            tracing::warn!(
+                                url = %url,
+                                error = %e,
+                                "wraith-coordinator discover unreachable, rotating to next peer"
+                            );
+                            last_err = Some(format!("{url}: {e}"));
+                            continue;
+                        }
+                        Err(e) => {
+                            last_err = Some(format!("{url}: {e}"));
+                            break;
+                        }
+                    }
+                }
+                match response {
+                    Some((answered_by, parsed)) => {
+                        Response::WraithCoordinatorDiscover(WraithDiscoverResponse {
+                            answered_by,
+                            network: parsed.network,
+                            pool_id: parsed.pool_id,
+                            service_fee_bps: parsed.service_fee_bps,
+                            bond_bps: parsed.bond_bps,
+                            fill_window_secs: parsed.fill_window_secs,
+                            tiers: parsed
+                                .tiers
+                                .into_iter()
+                                .map(|t| WraithDiscoverTier {
+                                    id: t.id,
+                                    denomination_sats: t.denomination_sats,
+                                    min_participants: t.min_participants,
+                                    max_participants: t.max_participants,
+                                    bond_sats: t.bond_sats,
+                                    service_fee_sats: t.service_fee_sats,
+                                })
+                                .collect(),
+                        })
+                    }
+                    None => Response::Error(ErrorResponse {
+                        message: last_err.unwrap_or_else(|| {
+                            "no coordinator URLs configured".to_string()
+                        }),
                     }),
                 }
             }

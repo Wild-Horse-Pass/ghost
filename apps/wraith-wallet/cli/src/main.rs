@@ -142,6 +142,19 @@ enum MixCommand {
         #[arg(long)]
         mix_output_address: String,
     },
+    /// Fetch the coordinator's `/api/v1/pool/discover` payload —
+    /// network, supported tiers, fee + bond rates. Useful for
+    /// debugging "is this coordinator alive and serving the tiers
+    /// I expect" before running a real mix.
+    Discover {
+        /// HTTP URL of the wraith-coordinator endpoint.
+        #[arg(long)]
+        coordinator: String,
+        /// Optional fallback coordinator URLs. Repeatable. Same
+        /// connect-error rotation as `mix prepare --coordinator-peer`.
+        #[arg(long = "coordinator-peer")]
+        coordinator_peers: Vec<String>,
+    },
     /// Step 2: submit the signed witness for a previously-prepared
     /// mix session and drive the round to broadcast. Prints
     /// { broadcast_txid, mixed_output_tx_index } on success.
@@ -719,6 +732,13 @@ mod unix {
                         mix_output_address,
                     }
                 }
+                MixCommand::Discover {
+                    coordinator,
+                    coordinator_peers,
+                } => Request::WraithCoordinatorDiscover {
+                    coordinator_url: coordinator,
+                    coordinator_peers,
+                },
                 MixCommand::Submit {
                     session_id,
                     witness_hex,
@@ -1230,6 +1250,30 @@ mod unix {
                 println!("broadcast_txid:        {}", c.broadcast_txid);
                 println!("session_id:            {}", c.session_id);
                 println!("mixed_output_tx_index: {}", c.mixed_output_tx_index);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Response::WraithCoordinatorDiscover(d)) => {
+                println!("answered_by:      {}", d.answered_by);
+                println!("network:          {}", d.network);
+                println!("pool_id:          {}", d.pool_id);
+                println!("service_fee_bps:  {}", d.service_fee_bps);
+                println!("bond_bps:         {}", d.bond_bps);
+                println!("fill_window_secs: {}", d.fill_window_secs);
+                if d.tiers.is_empty() {
+                    println!("tiers:            (none)");
+                } else {
+                    println!("tiers:");
+                    for t in &d.tiers {
+                        println!(
+                            "  {:>10}  denom={:>12} sats  bond={:>9} sats  min={}  max={}",
+                            t.id,
+                            t.denomination_sats,
+                            t.bond_sats,
+                            t.min_participants,
+                            t.max_participants,
+                        );
+                    }
+                }
                 std::process::ExitCode::SUCCESS
             }
             Ok(Response::Error(e)) => {

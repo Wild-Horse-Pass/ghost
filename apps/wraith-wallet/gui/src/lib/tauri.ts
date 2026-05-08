@@ -244,6 +244,42 @@ export async function lightL1Utxos(
 
 // ----- Wraith Lite (CoinJoin mix) ----------------------------------------
 
+export interface WraithDiscoverTier {
+  id: string;
+  denomination_sats: number;
+  min_participants: number;
+  max_participants: number;
+  bond_sats: number;
+  service_fee_sats: number;
+}
+
+export interface WraithDiscoverResult {
+  /// Coordinator URL that actually answered (may differ from the
+  /// requested `coordinator_url` if the call rotated through
+  /// `coordinator_peers`).
+  answered_by: string;
+  network: string;
+  pool_id: string;
+  service_fee_bps: number;
+  bond_bps: number;
+  fill_window_secs: number;
+  tiers: WraithDiscoverTier[];
+}
+
+/// Fetch a coordinator's `/api/v1/pool/discover` payload. Same
+/// failover semantics as the mix calls — connect errors rotate to
+/// the next peer; HTTP errors propagate.
+export async function wraithCoordinatorDiscover(
+  coordinator_url: string,
+  coordinator_peers?: string[],
+): Promise<WraithDiscoverResult> {
+  const resp = await invoke("wraith_coordinator_discover", {
+    coordinatorUrl: coordinator_url,
+    coordinatorPeers: coordinator_peers ?? [],
+  });
+  return unwrap<WraithDiscoverResult>(resp).payload;
+}
+
 export interface WraithMixCompleted {
   session_id: string;
   broadcast_txid: string;

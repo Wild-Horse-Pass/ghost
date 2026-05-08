@@ -285,6 +285,15 @@ pub enum Request {
     /// The wallet must own the input UTXO at a BIP86 derivation
     /// index ≤ `bip86_scan_max`; if `bip86_scan_max` is `None` the
     /// daemon scans 0..1024 by default.
+    /// Fetch the coordinator's `/api/v1/pool/discover` payload —
+    /// network, supported tiers, fee/bond rates. Mirrors the
+    /// `Request::WraithMix*` shape (including `coordinator_peers`)
+    /// so the discovery call participates in the same failover.
+    WraithCoordinatorDiscover {
+        coordinator_url: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        coordinator_peers: Vec<String>,
+    },
     WraithMixOneShot {
         coordinator_url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -384,6 +393,7 @@ pub enum Response {
     /// Reply to [`Request::WraithMixPrepare`]. Carries the assembled
     /// unsigned bitcoin transaction + the metadata the caller needs
     /// to compute its own input witness.
+    WraithCoordinatorDiscover(WraithDiscoverResponse),
     WraithMixPrepared(WraithMixPreparedResponse),
     /// Reply to [`Request::WraithMixSubmit`]. Carries the broadcast
     /// txid and the index of the wallet's mixed output.
@@ -395,6 +405,31 @@ pub enum Response {
 pub struct HealthResponse {
     pub daemon_version: String,
     pub uptime_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WraithDiscoverTier {
+    pub id: String,
+    pub denomination_sats: u64,
+    pub min_participants: u32,
+    pub max_participants: u32,
+    pub bond_sats: u64,
+    pub service_fee_sats: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WraithDiscoverResponse {
+    /// Coordinator URL that actually answered (may differ from the
+    /// requested `coordinator_url` if the call rotated through
+    /// `coordinator_peers`). UI shows this so users know which
+    /// active they hit.
+    pub answered_by: String,
+    pub network: String,
+    pub pool_id: String,
+    pub service_fee_bps: u32,
+    pub bond_bps: u32,
+    pub fill_window_secs: u64,
+    pub tiers: Vec<WraithDiscoverTier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

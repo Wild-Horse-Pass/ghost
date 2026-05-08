@@ -118,8 +118,24 @@ start_wraithd() {
   echo $! > "$LOG_DIR/wraithd.pid"
 }
 
+start_wraith_coordinator() {
+  stop_one wraith-coordinator
+  echo "starting wraith-coordinator → $LOG_DIR/wraith-coordinator.log"
+  # Mock bond + broadcaster: refused on mainnet by the binary, fine
+  # on signet/regtest. The coordinator binds 127.0.0.1:9100, which
+  # matches the Mix screen's DEFAULT_COORDINATOR. Without this in
+  # the stack the GUI Mix flow returns connection refused.
+  "$ROOT/target/debug/wraith-coordinator" \
+      --listen 127.0.0.1:9100 \
+      --network signet \
+      --mock-bond-ledger \
+      --mock-broadcaster \
+      > "$LOG_DIR/wraith-coordinator.log" 2>&1 &
+  echo $! > "$LOG_DIR/wraith-coordinator.pid"
+}
+
 status() {
-  for svc in ghost-pay ghost-gsp wraithd; do
+  for svc in ghost-pay ghost-gsp wraith-coordinator wraithd; do
     pidfile="$LOG_DIR/$svc.pid"
     if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
       echo "  ok    $svc (pid $(cat "$pidfile"))"
@@ -141,6 +157,8 @@ case "$action" in
     sleep 2
     start_ghost_gsp
     sleep 2
+    start_wraith_coordinator
+    sleep 1
     start_wraithd
     sleep 1
     echo
@@ -151,6 +169,7 @@ case "$action" in
     ;;
   down)
     stop_one wraithd
+    stop_one wraith-coordinator
     stop_one ghost-gsp
     stop_one ghost-pay
     echo "stack down"
