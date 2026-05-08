@@ -62,6 +62,11 @@ const MERCHANT_INDEX_BASE = 5000;
 
 const SAT = 100_000_000;
 
+type UriFormat = "bip21" | "ghost";
+
+/// BIP-21 URI — the universal Bitcoin wallet format. Amount in BTC.
+/// Ghost-aware wallets also pick up `ghost=<id>` and route via the
+/// BIP-352 silent-payment path, but no Ghost knowledge is required.
 function bip21Uri(
   address: string,
   amount_sats: number,
@@ -75,6 +80,31 @@ function bip21Uri(
   return `bitcoin:${address}?${params.toString()}`;
 }
 
+/// Ghost native URI — what the mobile TAP wallet emits and scans.
+/// Format defined in apps/ghost-tap/core/src/payment/qr.rs:
+///   ghost:<address>?amount=<sats>&memo=<text>&label=<text>
+/// Amount is in raw sats (NOT BTC). Use this format when the
+/// payer is on the mobile TAP app, since its parser only accepts
+/// the `ghost:` scheme today.
+function ghostUri(address: string, amount_sats: number, memo: string): string {
+  const params = new URLSearchParams();
+  params.set("amount", String(amount_sats));
+  if (memo) params.set("memo", memo);
+  return `ghost:${address}?${params.toString()}`;
+}
+
+function buildUri(
+  format: UriFormat,
+  address: string,
+  amount_sats: number,
+  memo: string,
+  ghost_id: string,
+): string {
+  return format === "ghost"
+    ? ghostUri(address, amount_sats, memo)
+    : bip21Uri(address, amount_sats, memo, ghost_id);
+}
+
 export function Merchant({ activeWallet, paymentTick = 0 }: MerchantProps) {
   const [ghostId, setGhostId] = useState<string | null>(null);
   const [networkLabel, setNetworkLabel] = useState<string | null>(null);
@@ -85,6 +115,11 @@ export function Merchant({ activeWallet, paymentTick = 0 }: MerchantProps) {
   const [paid, setPaid] = useState<PaidReceipt | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /// Active URI format for the open invoice's QR. BIP-21 is the
+  /// universal wallet format; `ghost:` is what mobile TAP scans.
+  /// Toggle on the open-invoice card swaps the QR live — the
+  /// underlying address is the same, only the encoding changes.
+  const [uriFormat, setUriFormat] = useState<UriFormat>("bip21");
 
   // Day's takings — held in component state. Resets if the user
   // navigates away and back; localStorage persistence is a v2.
@@ -332,7 +367,13 @@ export function Merchant({ activeWallet, paymentTick = 0 }: MerchantProps) {
 
   // Open invoice view — QR + amount, waiting for payment.
   if (open) {
-    const uri = bip21Uri(open.address, open.amount_sats, open.memo, open.ghost_id);
+    const uri = buildUri(
+      uriFormat,
+      open.address,
+      open.amount_sats,
+      open.memo,
+      open.ghost_id,
+    );
     return (
       <div className="screen">
         {err && (
@@ -365,6 +406,31 @@ export function Merchant({ activeWallet, paymentTick = 0 }: MerchantProps) {
               {open.memo}
             </div>
           )}
+          <div
+            className="row"
+            style={{
+              justifyContent: "center",
+              marginBottom: 12,
+              gap: 4,
+            }}
+          >
+            <button
+              className={uriFormat === "bip21" ? "primary" : "secondary"}
+              onClick={() => setUriFormat("bip21")}
+              style={{ fontSize: 12, padding: "4px 10px" }}
+              title="BIP-21 — universal Bitcoin wallet format. Ghost-aware wallets pick up the BIP-352 silent-payment path via the ghost= extension."
+            >
+              Any wallet
+            </button>
+            <button
+              className={uriFormat === "ghost" ? "primary" : "secondary"}
+              onClick={() => setUriFormat("ghost")}
+              style={{ fontSize: 12, padding: "4px 10px" }}
+              title="ghost: — Ghost-native URI. Use when the customer is paying from the mobile TAP wallet."
+            >
+              Ghost (TAP)
+            </button>
+          </div>
           <div
             style={{
               display: "inline-block",
