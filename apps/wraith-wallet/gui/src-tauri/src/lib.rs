@@ -239,6 +239,58 @@ async fn light_send(
     to_value(&resp)
 }
 
+#[tauri::command]
+async fn light_utxos(
+    min_confirmations: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::LightUtxos {
+        min_confirmations: min_confirmations.unwrap_or(0),
+    })
+    .await?;
+    to_value(&resp)
+}
+
+/// One-shot Wraith Lite mix. Daemon enrols, signs the BIP-341
+/// taproot key-path witness using the active wallet's BIP86
+/// keystore, and drives the round to broadcast.
+#[tauri::command]
+async fn wraith_mix_run(
+    coordinator_url: String,
+    coordinator_peers: Vec<String>,
+    socks5_proxy: Option<String>,
+    tier_id: String,
+    ghost_id: String,
+    bond_id_placeholder: Option<String>,
+    utxo_txid: String,
+    utxo_vout: u32,
+    utxo_value_sats: u64,
+    utxo_scriptpubkey_hex: String,
+    change_address: Option<String>,
+    mix_output_address: String,
+    bip86_index: Option<u32>,
+    bip86_scan_max: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WraithMixOneShot {
+        coordinator_url,
+        coordinator_peers,
+        socks5_proxy,
+        tier_id,
+        ghost_id,
+        bond_id_placeholder: bond_id_placeholder
+            .unwrap_or_else(|| "placeholder".to_string()),
+        utxo_txid,
+        utxo_vout,
+        utxo_value_sats,
+        utxo_scriptpubkey_hex,
+        change_address,
+        mix_output_address,
+        bip86_index,
+        bip86_scan_max,
+    })
+    .await?;
+    to_value(&resp)
+}
+
 fn to_value(resp: &Response) -> Result<serde_json::Value, String> {
     serde_json::to_value(resp).map_err(|e| e.to_string())
 }
@@ -457,6 +509,8 @@ pub fn run() {
             light_receive,
             light_history,
             light_send,
+            light_utxos,
+            wraith_mix_run,
             wallet_ghost_id,
             wallet_auth_info,
             gsp_register_scan_key,

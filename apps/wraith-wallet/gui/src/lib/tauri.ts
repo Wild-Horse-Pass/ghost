@@ -185,6 +185,77 @@ export async function lightSend(
   return await invoke("light_send", { recipient, amountSats: amount_sats, memo });
 }
 
+export interface LightUtxoEntry {
+  txid: string;
+  vout: number;
+  amount_sats: number;
+  confirmations: number;
+  script_type: string;
+  spendable: boolean;
+}
+
+export interface LightUtxosResponse {
+  utxos: LightUtxoEntry[];
+  total_sats: number;
+}
+
+export async function lightUtxos(
+  min_confirmations = 0,
+): Promise<LightUtxosResponse> {
+  const resp = await invoke("light_utxos", { minConfirmations: min_confirmations });
+  return unwrap<LightUtxosResponse>(resp).payload;
+}
+
+// ----- Wraith Lite (CoinJoin mix) ----------------------------------------
+
+export interface WraithMixCompleted {
+  session_id: string;
+  broadcast_txid: string;
+  mixed_output_tx_index: number;
+}
+
+export interface WraithMixRunArgs {
+  coordinator_url: string;
+  coordinator_peers?: string[];
+  socks5_proxy?: string;
+  tier_id: string;
+  ghost_id: string;
+  bond_id_placeholder?: string;
+  utxo_txid: string;
+  utxo_vout: number;
+  utxo_value_sats: number;
+  utxo_scriptpubkey_hex: string;
+  change_address?: string;
+  mix_output_address: string;
+  bip86_index?: number;
+  bip86_scan_max?: number;
+}
+
+/// One-shot Wraith Lite CoinJoin. Daemon enrols, signs the
+/// taproot key-path witness using the active wallet's BIP86
+/// keystore, and drives the round to broadcast.
+export async function wraithMixRun(
+  args: WraithMixRunArgs,
+): Promise<WraithMixCompleted> {
+  const resp = await invoke("wraith_mix_run", {
+    coordinatorUrl: args.coordinator_url,
+    coordinatorPeers: args.coordinator_peers ?? [],
+    socks5Proxy: args.socks5_proxy,
+    tierId: args.tier_id,
+    ghostId: args.ghost_id,
+    bondIdPlaceholder: args.bond_id_placeholder,
+    utxoTxid: args.utxo_txid,
+    utxoVout: args.utxo_vout,
+    utxoValueSats: args.utxo_value_sats,
+    utxoScriptpubkeyHex: args.utxo_scriptpubkey_hex,
+    changeAddress: args.change_address,
+    mixOutputAddress: args.mix_output_address,
+    bip86Index: args.bip86_index,
+    bip86ScanMax: args.bip86_scan_max,
+  });
+  return unwrap<WraithMixCompleted>(resp).payload;
+}
+
 // ----- GSP ---------------------------------------------------------------
 
 export async function gspAuth(): Promise<unknown> {

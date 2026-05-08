@@ -10,16 +10,25 @@ import {
 import { Wallet } from "./screens/Wallet";
 import { Receive } from "./screens/Receive";
 import { Send } from "./screens/Send";
+import { Mix } from "./screens/Mix";
 import { Locks } from "./screens/Locks";
 import { History } from "./screens/History";
 import { Network } from "./screens/Network";
 
-type Screen = "wallet" | "receive" | "send" | "locks" | "history" | "network";
+type Screen =
+  | "wallet"
+  | "receive"
+  | "send"
+  | "mix"
+  | "locks"
+  | "history"
+  | "network";
 
 const NAV: Array<{ id: Screen; label: string }> = [
   { id: "wallet", label: "Wallet" },
   { id: "receive", label: "Receive" },
   { id: "send", label: "Send" },
+  { id: "mix", label: "Mix" },
   { id: "locks", label: "Locks" },
   { id: "history", label: "History" },
   { id: "network", label: "Network" },
@@ -143,6 +152,7 @@ export default function App() {
         {screen === "send" && (
           <Send activeWallet={activeWallet} />
         )}
+        {screen === "mix" && <Mix activeWallet={activeWallet} />}
         {screen === "locks" && <Locks />}
         {screen === "history" && <History paymentTick={paymentTick} />}
         {screen === "network" && <Network />}
