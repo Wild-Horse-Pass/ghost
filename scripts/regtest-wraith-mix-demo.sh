@@ -194,12 +194,19 @@ done
 # wallet doesn't need to pre-arrange L2 bonds (demo simplification —
 # safe on regtest, refused on mainnet by the binary).
 step "starting wraith-coordinator (real broadcast, auto-escrow bonds)"
+# --fill-window-secs 30 collapses the 5-minute Filling window so the
+# session locks ~30s after creation instead of waiting LITE_FILL_WINDOW_SECS
+# (300s). 30s is the smallest value that's still robustly larger than
+# the wallet's IPC + HTTP overhead per /find_or_create call across 5
+# parallel-staggered mix runs (worst case ~5s with system jitter).
+# Mainnet refuses this override — see the binary's CLI gate.
 "$BIN/wraith-coordinator" \
     --listen 127.0.0.1:9100 \
     --network regtest \
     --fee-address "$FEE_ADDR" \
     --mock-bond-ledger \
     --mock-bond-ledger-auto-escrow \
+    --fill-window-secs 30 \
     --ghostd-url "$GHOSTD_RPC_URL" \
     --ghostd-user demo \
     --ghostd-pass demo \
@@ -244,13 +251,23 @@ for i in $(seq 0 $((N-1))); do
     UTXO_SPKS[$i]=$(echo "$entry" | jq -r '.scriptpubkey_hex')
 done
 
-# ---- run 5 parallel mix calls ----------------------------------------------
+# ---- run 5 staggered-parallel mix calls ------------------------------------
 # Each `wraith mix run` blocks until the round broadcasts (or
-# fails). They all share the same coordinator session — the first
-# call creates it, the next 4 enroll into it. Once 5 are enrolled
-# the coordinator advances Filling → Locked → Signing →
-# Broadcasting and returns to all 5 callers concurrently.
-step "running $N parallel mixes"
+# fails). The 5 calls all share one coordinator session — the
+# first call creates it via /find_or_create, the next 4 join.
+#
+# A 250ms stagger between launches works around a coordinator
+# race: 5 truly-concurrent /find_or_create calls can split across
+# two new sessions because the "find existing OR create" decision
+# isn't atomic — neither session reaches the 5-quorum and both
+# time out as Failed. The stagger gives the first call's session
+# enough time to be visible before the next call decides whether
+# to create or join. Total overhead: ~1.25s.
+#
+# TODO: fix the coordinator's find_or_create to serialise the
+# decision atomically — see coordinator.log split-session evidence
+# from the first regtest run.
+step "running $N staggered-parallel mixes"
 declare -a MIX_PIDS
 for i in $(seq 0 $((N-1))); do
     (
@@ -268,6 +285,7 @@ for i in $(seq 0 $((N-1))); do
             > "$DATADIR/mix-$i.out" 2>&1
     ) &
     MIX_PIDS[$i]=$!
+    sleep 0.25
 done
 echo "waiting for $N mix runs to complete..."
 for i in $(seq 0 $((N-1))); do
