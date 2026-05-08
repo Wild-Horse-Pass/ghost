@@ -495,9 +495,14 @@ impl WraithSessionClient {
             )
             .await?;
 
-        // 8. Fetch the assembled tx.
+        // 8. Fetch the assembled tx. /round-tx returns 404 until ALL
+        //    participants have posted /outputs — only the last
+        //    submitter triggers assembly. Earlier submitters arrive
+        //    here while the coordinator still has incomplete output
+        //    data, so poll with backoff. Bounded so a stuck round
+        //    doesn't hang the caller forever.
         let rt: RoundTxResponse = self
-            .get_json(&format!("/api/v1/session/{session_id}/round-tx"))
+            .wait_for_round_tx(session_id.as_str())
             .await?;
         let tx: Transaction = deserialize_hex(&rt.unsigned_tx_hex)
             .map_err(|e| WraithClientError::Consensus(e.to_string()))?;
@@ -611,6 +616,56 @@ impl WraithSessionClient {
             if std::time::Instant::now() >= deadline {
                 return Err(WraithClientError::Shape(
                     "timed out waiting for session to reach Complete".into(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Poll `GET /:id/round-tx` until it returns 200 (round
+    /// assembled) or 410 (session failed). Anything else times
+    /// out. Used by `prepare_mix` after /outputs because /round-tx
+    /// returns 404 `round_not_assembled` for every submitter
+    /// except the very last one — assembly only fires when the
+    /// final /outputs lands. We can't predict ordering, so every
+    /// submitter polls.
+    ///
+    /// 60s timeout: generous enough to absorb the slowest peer's
+    /// /outputs round-trip, tight enough that a genuinely stuck
+    /// round surfaces as an error instead of hanging the caller.
+    async fn wait_for_round_tx(
+        &self,
+        session_id: &str,
+    ) -> Result<RoundTxResponse, WraithClientError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            match self
+                .get_json::<RoundTxResponse>(&format!(
+                    "/api/v1/session/{session_id}/round-tx"
+                ))
+                .await
+            {
+                Ok(rt) => return Ok(rt),
+                // 404 with `round_not_assembled` body is the
+                // expected "not yet" — keep polling. Other 4xx /
+                // 5xx errors are real failures we surface
+                // immediately. The body text check is best-effort:
+                // current coordinator emits the literal token, but
+                // future versions may not — fall through to retry
+                // on any 404.
+                Err(WraithClientError::Coordinator { status: 404, .. }) => {}
+                Err(WraithClientError::Coordinator { status: 410, detail }) => {
+                    return Err(WraithClientError::Coordinator {
+                        status: 410,
+                        detail,
+                    });
+                }
+                Err(e) => return Err(e),
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(WraithClientError::Shape(
+                    "timed out waiting for /round-tx (round never assembled)"
+                        .into(),
                 ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
