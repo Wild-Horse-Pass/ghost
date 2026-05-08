@@ -54,6 +54,11 @@ export interface DaemonEnvResponse {
   gsp_urls: string[];
   socket_path: string;
   wallets_dir: string;
+  /// Kiosk mode flag. When true, the GUI hides the nav and locks
+  /// the user to the Merchant screen — wallet management is
+  /// disabled at the daemon. Frontends should treat absence as
+  /// "not in kiosk mode" for compatibility with older daemons.
+  kiosk_mode?: boolean;
 }
 
 export async function daemonEnv(): Promise<DaemonEnvResponse> {

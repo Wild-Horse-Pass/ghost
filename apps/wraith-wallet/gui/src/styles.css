@@ -60,6 +60,13 @@ a {
   width: 100%;
 }
 
+/* Kiosk mode: collapse the sidebar column so the main pane spans
+   full width. Pairs with App.tsx's conditional render of the
+   sidebar — the column would otherwise leave 220px of empty space. */
+.app.kiosk {
+  grid-template-columns: 1fr;
+}
+
 .app-header {
   grid-column: 1 / -1;
   display: flex;

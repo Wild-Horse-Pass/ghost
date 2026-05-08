@@ -82,6 +82,13 @@ mod unix {
     /// supplies — this is purely for diagnostic / dev-stack
     /// purposes.
     const WRAITH_COORDINATOR_ENV: &str = "WRAITHD_WRAITH_COORDINATOR";
+    /// Kiosk mode flag (`1`/`true`). When set, the daemon refuses
+    /// wallet-management operations (create, import, select, lock).
+    /// The operator selects and unlocks one wallet before enabling
+    /// kiosk mode; the daemon then locks that decision in until it
+    /// restarts. Used for retail/POS deployments where untrusted
+    /// staff at the till should only be able to take payments.
+    const KIOSK_MODE_ENV: &str = "WRAITHD_KIOSK_MODE";
     const GSP_ENV: &str = "WRAITHD_GSP";
     const WALLETS_DIR_ENV: &str = "WRAITHD_WALLETS_DIR";
     const NETWORK_ENV: &str = "WRAITHD_NETWORK";
@@ -170,6 +177,11 @@ mod unix {
         /// when unset, in which case Doctor skips the coordinator
         /// check.
         wraith_coordinator_url: Option<String>,
+        /// Kiosk mode lock. When true, wallet-management operations
+        /// (create, import, select, lock) are refused. The operator
+        /// must select + unlock the active wallet before enabling
+        /// kiosk mode. Set via `WRAITHD_KIOSK_MODE` at boot.
+        kiosk_mode: bool,
         wallets_dir: PathBuf,
         wallets: RwLock<HashMap<String, Keystore>>,
         active: RwLock<Option<String>>,
@@ -460,6 +472,14 @@ mod unix {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let kiosk_mode = std::env::var(KIOSK_MODE_ENV)
+            .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        if kiosk_mode {
+            tracing::info!(
+                "kiosk mode enabled — wallet-management operations will be refused"
+            );
+        }
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             chain: Arc::new(chain),
@@ -468,6 +488,7 @@ mod unix {
             gsp_urls,
             tor_proxy: tor_proxy.clone(),
             wraith_coordinator_url,
+            kiosk_mode,
             wallets_dir,
             wallets: RwLock::new(HashMap::new()),
             active: RwLock::new(None),
@@ -1187,6 +1208,24 @@ mod unix {
 
     /// Snapshot the active wallet's name + keystore for read-only use.
     /// Returns Err with a user-friendly message if no wallet is active.
+    /// Reject the request if kiosk mode is active. Used by the
+    /// wallet-management handlers (create/import/select/lock) to
+    /// keep retail-floor staff from changing the active wallet.
+    /// Read paths and Merchant-screen paths (Receive, light_l1_utxos,
+    /// payment-detected) stay open.
+    fn refuse_in_kiosk_mode(state: &DaemonState, op: &str) -> Option<Response> {
+        if state.kiosk_mode {
+            Some(Response::Error(ErrorResponse {
+                message: format!(
+                    "{op} is disabled in kiosk mode — restart wraithd without \
+                     WRAITHD_KIOSK_MODE to make wallet changes"
+                ),
+            }))
+        } else {
+            None
+        }
+    }
+
     async fn with_active_wallet<F, R>(state: &DaemonState, f: F) -> Result<R, String>
     where
         F: FnOnce(&str, &Keystore) -> Result<R, String>,
@@ -1608,6 +1647,7 @@ mod unix {
                     idle_lock_secs: state.idle_lock_secs,
                     shroud_max_ms: state.shroud_max_ms,
                     update_manifest_url: state.update_manifest_url.clone(),
+                    kiosk_mode: state.kiosk_mode,
                 })
             }
             Request::CheckForUpdate { manifest_url } => {
@@ -2121,6 +2161,9 @@ mod unix {
                 }
             }
             Request::WalletCreate { name, passphrase } => {
+                if let Some(refused) = refuse_in_kiosk_mode(state, "wallet create") {
+                    return Envelope::new(id, refused);
+                }
                 if let Err(e) = validate_wallet_name(&name) {
                     Response::Error(ErrorResponse { message: e })
                 } else {
@@ -2161,6 +2204,9 @@ mod unix {
                 mnemonic,
                 passphrase,
             } => {
+                if let Some(refused) = refuse_in_kiosk_mode(state, "wallet import") {
+                    return Envelope::new(id, refused);
+                }
                 if let Err(e) = validate_wallet_name(&name) {
                     Response::Error(ErrorResponse { message: e })
                 } else if state.network == bitcoin::Network::Bitcoin
@@ -2247,6 +2293,9 @@ mod unix {
                 }
             }
             Request::WalletLock { name } => {
+                if let Some(refused) = refuse_in_kiosk_mode(state, "wallet lock") {
+                    return Envelope::new(id, refused);
+                }
                 let target = match name {
                     Some(n) => n,
                     None => match state.active.read().await.clone() {
@@ -2316,6 +2365,9 @@ mod unix {
                 Response::WalletList(WalletListResponse { wallets })
             }
             Request::WalletSelect { name } => {
+                if let Some(refused) = refuse_in_kiosk_mode(state, "wallet select") {
+                    return Envelope::new(id, refused);
+                }
                 if let Err(e) = validate_wallet_name(&name) {
                     Response::Error(ErrorResponse { message: e })
                 } else if !state.wallets.read().await.contains_key(&name) {

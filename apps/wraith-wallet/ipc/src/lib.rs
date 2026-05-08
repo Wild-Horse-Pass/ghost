@@ -724,6 +724,14 @@ pub struct DaemonEnvResponse {
     /// handler fetches by default. `None` when no auto-update channel is
     /// configured — the handler will still accept a per-call override.
     pub update_manifest_url: Option<String>,
+    /// Kiosk mode active. When true, wallet-management ops
+    /// (create/import/select/lock) are refused by the daemon. The
+    /// GUI uses this to hide the wallet management UI and lock the
+    /// app to the Merchant screen. Defaults false for older
+    /// daemons — frontends should treat absence as "not in kiosk
+    /// mode".
+    #[serde(default)]
+    pub kiosk_mode: bool,
 }
 
 /// Result of `LightSend` (PreparePayment + sign + SubmitSignedPayment).
@@ -987,6 +995,7 @@ mod tests {
                 idle_lock_secs: 900,
                 shroud_max_ms: 5000,
                 update_manifest_url: None,
+                kiosk_mode: false,
             }),
             Response::WalletList(WalletListResponse {
                 wallets: vec![WalletListEntry {

@@ -11,6 +11,7 @@ import { Wallet } from "./screens/Wallet";
 import { Receive } from "./screens/Receive";
 import { Send } from "./screens/Send";
 import { Mix } from "./screens/Mix";
+import { Merchant } from "./screens/Merchant";
 import { Locks } from "./screens/Locks";
 import { History } from "./screens/History";
 import { Network } from "./screens/Network";
@@ -20,6 +21,7 @@ type Screen =
   | "receive"
   | "send"
   | "mix"
+  | "merchant"
   | "locks"
   | "history"
   | "network";
@@ -29,6 +31,7 @@ const NAV: Array<{ id: Screen; label: string }> = [
   { id: "receive", label: "Receive" },
   { id: "send", label: "Send" },
   { id: "mix", label: "Mix" },
+  { id: "merchant", label: "Merchant" },
   { id: "locks", label: "Locks" },
   { id: "history", label: "History" },
   { id: "network", label: "Network" },
@@ -45,6 +48,12 @@ export default function App() {
   const [paymentTick, setPaymentTick] = useState(0);
   const [lastDetect, setLastDetect] = useState<DetectedPayment | null>(null);
   const [watchErr, setWatchErr] = useState<string | null>(null);
+  // Kiosk mode locks the GUI to the Merchant screen and hides
+  // wallet-management nav. Set by the daemon via WRAITHD_KIOSK_MODE
+  // and surfaced through DaemonEnv. The daemon also refuses
+  // wallet-management ops when this is set, so the lock is
+  // enforced server-side too.
+  const [kioskMode, setKioskMode] = useState(false);
 
   // Refresh the header status every 4s. Cheap — both calls are
   // local IPC round-trips.
@@ -56,6 +65,15 @@ export default function App() {
         const w = await walletStatus();
         if (!alive) return;
         setActiveWallet(w.active);
+        if (env.kiosk_mode && !kioskMode) {
+          // Daemon entered kiosk mode (or we just learned about it
+          // on first env fetch). Snap to Merchant — the only screen
+          // that's meant to be reachable in kiosk mode.
+          setKioskMode(true);
+          setScreen("merchant");
+        } else if (!env.kiosk_mode && kioskMode) {
+          setKioskMode(false);
+        }
         const wpart = w.active
           ? `${w.active}${w.unlocked ? "" : " (locked)"}`
           : "no wallet";
@@ -107,10 +125,19 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app">
+    <div className={kioskMode ? "app kiosk" : "app"}>
       <header className="app-header">
         <div className="title">Wraith Wallet</div>
         <div className="spacer" />
+        {kioskMode && (
+          <div
+            className="pill mute"
+            style={{ marginRight: 8 }}
+            title="Kiosk mode active — wallet management disabled. Restart wraithd without WRAITHD_KIOSK_MODE to exit."
+          >
+            kiosk mode
+          </div>
+        )}
         {lastDetect && (
           <div
             className="pill pass"
@@ -132,19 +159,21 @@ export default function App() {
         <div className="status">{statusText}</div>
       </header>
 
-      <aside className="app-sidebar">
-        <nav>
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              className={screen === item.id ? "active" : ""}
-              onClick={() => setScreen(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-      </aside>
+      {!kioskMode && (
+        <aside className="app-sidebar">
+          <nav>
+            {NAV.map((item) => (
+              <button
+                key={item.id}
+                className={screen === item.id ? "active" : ""}
+                onClick={() => setScreen(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </aside>
+      )}
 
       <main className="app-main">
         {screen === "wallet" && <Wallet paymentTick={paymentTick} />}
@@ -153,6 +182,12 @@ export default function App() {
           <Send activeWallet={activeWallet} />
         )}
         {screen === "mix" && <Mix activeWallet={activeWallet} />}
+        {screen === "merchant" && (
+          <Merchant
+            activeWallet={activeWallet}
+            paymentTick={paymentTick}
+          />
+        )}
         {screen === "locks" && <Locks />}
         {screen === "history" && <History paymentTick={paymentTick} />}
         {screen === "network" && <Network />}
