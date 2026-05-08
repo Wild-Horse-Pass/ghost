@@ -127,6 +127,31 @@ pub struct MixOutcome {
     pub mixed_output_tx_index: usize,
 }
 
+/// One tier in `/api/v1/pool/discover`. Mirrors the coordinator's
+/// `TierDescriptor` shape.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DiscoverTier {
+    pub id: String,
+    pub denomination_sats: u64,
+    pub min_participants: u32,
+    pub max_participants: u32,
+    pub bond_sats: u64,
+    pub service_fee_sats: u64,
+}
+
+/// The full `/api/v1/pool/discover` payload. Returned by
+/// [`WraithSessionClient::discover`] alongside the URL that
+/// actually answered.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DiscoverPayload {
+    pub network: String,
+    pub pool_id: String,
+    pub service_fee_bps: u32,
+    pub bond_bps: u32,
+    pub fill_window_secs: u64,
+    pub tiers: Vec<DiscoverTier>,
+}
+
 /// The intermediate result of `prepare_mix`. Carries the assembled
 /// (unsigned) tx and all the metadata the caller needs to produce a
 /// `bitcoin::Witness` for its own input. Pass this to
@@ -621,6 +646,52 @@ impl WraithSessionClient {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+    }
+
+    /// Fetch the coordinator's `/api/v1/pool/discover` payload —
+    /// network, supported tiers, fee + bond rates. Same connect-error
+    /// rotation as the mix calls: HTTP errors propagate unchanged
+    /// (a coordinator answered, even if it errored), only
+    /// connection-level failures rotate to the next peer.
+    ///
+    /// Returns the URL that actually answered alongside the parsed
+    /// payload, so the caller can show users which active served the
+    /// response after a failover.
+    pub async fn discover(&self) -> Result<(String, DiscoverPayload), WraithClientError> {
+        let mut last_err: Option<reqwest::Error> = None;
+        for url in self.urls_in_order() {
+            let endpoint = format!("{url}/api/v1/pool/discover");
+            match self.http.get(&endpoint).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let detail = resp.text().await.unwrap_or_default();
+                        return Err(WraithClientError::Coordinator {
+                            status: status.as_u16(),
+                            detail,
+                        });
+                    }
+                    let parsed = resp
+                        .json::<DiscoverPayload>()
+                        .await
+                        .map_err(|e| WraithClientError::Shape(e.to_string()))?;
+                    return Ok((url.to_string(), parsed));
+                }
+                Err(e) if is_connectivity_error(&e) => {
+                    tracing::warn!(
+                        url = %url,
+                        error = %e,
+                        "wraith-coordinator discover unreachable, rotating to next peer"
+                    );
+                    last_err = Some(e);
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(last_err
+            .map(WraithClientError::from)
+            .unwrap_or_else(|| WraithClientError::Shape("no coordinator URLs configured".into())))
     }
 
     async fn post_json<R: serde::de::DeserializeOwned>(

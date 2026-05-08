@@ -154,3 +154,150 @@ async fn does_not_rotate_on_http_error() {
         "peer must NOT be hit when primary returns an HTTP error"
     );
 }
+
+// ---------------------------------------------------------------------------
+// discover() — same connect-error rotation as the mix calls
+// ---------------------------------------------------------------------------
+
+async fn spawn_discover_stub(
+    response_body: serde_json::Value,
+) -> (std::net::SocketAddr, Arc<AtomicU32>) {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = counter.clone();
+    let app = Router::new().route(
+        "/api/v1/pool/discover",
+        axum::routing::get(move || {
+            let counter = counter_clone.clone();
+            let body = response_body.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Json(body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    (addr, counter)
+}
+
+fn canonical_discover_body() -> serde_json::Value {
+    json!({
+        "network": "regtest",
+        "pool_id": "wraith-pool-regtest",
+        "service_fee_bps": 25,
+        "bond_bps": 50,
+        "fill_window_secs": 300,
+        "tiers": [
+            {
+                "id": "100k_sats",
+                "denomination_sats": 100000,
+                "min_participants": 5,
+                "max_participants": 20,
+                "bond_sats": 500,
+                "service_fee_sats": 250
+            }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn discover_rotates_to_peer_when_primary_unreachable() {
+    let (addr, counter) = spawn_discover_stub(canonical_discover_body()).await;
+    let live_url = format!("http://{addr}");
+    let dead_url = "http://127.0.0.1:1".to_string();
+
+    let client = WraithSessionClient::with_peers(
+        dead_url,
+        vec![live_url.clone()],
+        Network::Signet,
+    );
+
+    let (answered_by, parsed) = client
+        .discover()
+        .await
+        .expect("discover must rotate to live peer");
+
+    assert_eq!(
+        answered_by, live_url,
+        "answered_by must report the URL that actually served the response"
+    );
+    assert_eq!(parsed.network, "regtest");
+    assert_eq!(parsed.tiers.len(), 1);
+    assert_eq!(parsed.tiers[0].id, "100k_sats");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "live peer must have been hit exactly once"
+    );
+}
+
+#[tokio::test]
+async fn discover_does_not_rotate_on_http_error() {
+    // Primary answers but with 500 — must NOT trigger failover.
+    // Same invariant as the mix-prepare path: a coordinator answered,
+    // routing past it would mask real bugs.
+    let primary_app = Router::new().route(
+        "/api/v1/pool/discover",
+        axum::routing::get(|| async {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom")
+        }),
+    );
+    let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let primary_addr = primary_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(primary_listener, primary_app).await.unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let (peer_addr, peer_counter) = spawn_discover_stub(canonical_discover_body()).await;
+
+    let client = WraithSessionClient::with_peers(
+        format!("http://{primary_addr}"),
+        vec![format!("http://{peer_addr}")],
+        Network::Signet,
+    );
+
+    let result = client.discover().await;
+    assert!(
+        matches!(result, Err(WraithClientError::Coordinator { status: 500, .. })),
+        "expected 500 from primary, got {result:?}"
+    );
+    assert_eq!(
+        peer_counter.load(Ordering::SeqCst),
+        0,
+        "peer must NOT be hit on HTTP error from primary"
+    );
+}
+
+#[tokio::test]
+async fn discover_returns_primary_url_on_success() {
+    // Both endpoints are live; the primary must answer first.
+    let (primary_addr, primary_counter) =
+        spawn_discover_stub(canonical_discover_body()).await;
+    let (peer_addr, peer_counter) =
+        spawn_discover_stub(canonical_discover_body()).await;
+
+    let primary_url = format!("http://{primary_addr}");
+    let client = WraithSessionClient::with_peers(
+        primary_url.clone(),
+        vec![format!("http://{peer_addr}")],
+        Network::Signet,
+    );
+
+    let (answered_by, _parsed) = client
+        .discover()
+        .await
+        .expect("discover must succeed against live primary");
+
+    assert_eq!(answered_by, primary_url);
+    assert_eq!(primary_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        peer_counter.load(Ordering::SeqCst),
+        0,
+        "peer must not be touched when primary is healthy"
+    );
+}
