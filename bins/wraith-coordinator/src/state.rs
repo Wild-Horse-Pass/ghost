@@ -107,6 +107,13 @@ pub struct CoordinatorState {
     pub gossip_peer_secret: Option<String>,
     /// Unix-seconds the binary started. `/health` reports uptime.
     pub started_at: u64,
+    /// Override for the per-session fill window in seconds. Defaults
+    /// to `LITE_FILL_WINDOW_SECS` (300s) — the production-tuned value
+    /// from DESIGN_LITE §11. Operators may shorten this (e.g.
+    /// regtest demos use `2s`) to skip the wait between
+    /// `min_participants` and `max_participants`. Refused on mainnet
+    /// without operator consent — see the binary's CLI gate.
+    pub fill_window_secs: u64,
 }
 
 impl CoordinatorState {
@@ -154,6 +161,7 @@ impl CoordinatorState {
             signers: Mutex::new(HashMap::new()),
             gossip_peer_secret: None,
             started_at,
+            fill_window_secs: wraith_protocol::LITE_FILL_WINDOW_SECS,
         }
     }
 

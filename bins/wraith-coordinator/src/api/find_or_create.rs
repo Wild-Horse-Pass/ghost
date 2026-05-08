@@ -123,6 +123,7 @@ pub async fn post(
             &state.sessions,
             state.clock.as_ref(),
             state.id_gen.as_ref(),
+            state.fill_window_secs,
         );
         let pre_count = descriptor.slots_filled;
         let now = state.now();

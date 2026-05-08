@@ -108,6 +108,16 @@ struct Cli {
     )]
     mock_bond_ledger_auto_escrow: bool,
 
+    /// Override the per-session fill window in seconds. Defaults to
+    /// `LITE_FILL_WINDOW_SECS` (300s), the production-tuned value
+    /// from DESIGN_LITE §11. Regtest demos drop this to ~2s so the
+    /// session locks immediately after `min_participants` is
+    /// reached instead of waiting the full 5-minute window.
+    /// Refused on mainnet — production never wants a sub-300s
+    /// window because it shrinks the anonymity set per round.
+    #[arg(long, env = "WRAITH_COORDINATOR_FILL_WINDOW_SECS")]
+    fill_window_secs: Option<u64>,
+
     /// Production ghost-pay BondLedger HTTP endpoint, e.g.
     /// `http://127.0.0.1:8800/`. Calls the `/api/v1/wraith/bond/*`
     /// endpoint set defined in `bond_ledger_http.rs`. Auth via the
@@ -273,6 +283,21 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Mainnet refuses a sub-default fill window — production
+    // anonymity sets need the full 300s window for participants to
+    // discover and join. Regtest / signet operators may shorten it
+    // for demos and tests.
+    if matches!(network, bitcoin::Network::Bitcoin)
+        && cli.fill_window_secs.is_some()
+    {
+        anyhow::bail!(
+            "MAINNET REFUSAL: --fill-window-secs is dev-only — \
+             production must use the LITE_FILL_WINDOW_SECS default \
+             so each round has the full 5-minute window for \
+             participants to discover and join."
+        );
+    }
+
     let mut state = CoordinatorState::with_components(
         network,
         Arc::new(wraith_protocol::SystemClock),
@@ -282,6 +307,10 @@ async fn main() -> Result<()> {
         broadcaster,
     );
     state.gossip_peer_secret = cli.peer_secret.clone();
+    if let Some(secs) = cli.fill_window_secs {
+        state.fill_window_secs = secs;
+        warn!(secs, "fill-window override active — non-default tier behaviour");
+    }
 
     // Active/Standby state replication. When the operator supplies
     // peers, every session mutation publishes to all of them; the
