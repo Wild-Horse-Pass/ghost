@@ -62,6 +62,89 @@ const MERCHANT_INDEX_BASE = 5000;
 
 const SAT = 100_000_000;
 
+/// localStorage key for persisted takings, scoped per wallet.
+function takingsKey(wallet: string | null): string {
+  return `wraith.merchant.takings:${wallet ?? "_none_"}`;
+}
+
+/// Start of the current local-day window (midnight local time) in
+/// epoch ms. Receipts older than this are filtered out of the
+/// loaded "today's takings" view.
+function startOfLocalDay(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function loadTakings(wallet: string | null): PaidReceipt[] {
+  if (!wallet) return [];
+  try {
+    const raw = localStorage.getItem(takingsKey(wallet));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as PaidReceipt[];
+    if (!Array.isArray(parsed)) return [];
+    const dayStart = startOfLocalDay();
+    return parsed.filter((r) => r && typeof r.paid_at === "number" && r.paid_at >= dayStart);
+  } catch {
+    // Corrupt JSON / quota error / etc. — start fresh, don't break
+    // the merchant flow over a storage quirk.
+    return [];
+  }
+}
+
+function saveTakings(wallet: string | null, takings: PaidReceipt[]): void {
+  if (!wallet) return;
+  try {
+    localStorage.setItem(takingsKey(wallet), JSON.stringify(takings));
+  } catch {
+    /* quota or sandbox restrictions — silently drop */
+  }
+}
+
+/// Build a CSV blob from the receipts. Header row + one row per
+/// receipt with the same columns as the on-screen takings table
+/// plus the txid (so an accountant can match each row to the
+/// underlying tx). Memos are quoted and inner quotes doubled per
+/// RFC 4180.
+function takingsToCsv(takings: PaidReceipt[]): string {
+  const header = "paid_at_iso,amount_sats,method,memo,txid,invoice_id";
+  const csvEscape = (s: string): string => {
+    // Wrap any field containing comma / quote / newline in quotes,
+    // and double internal quotes per RFC 4180.
+    if (/[",\n\r]/.test(s)) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+  const rows = takings.map((r) =>
+    [
+      new Date(r.paid_at).toISOString(),
+      String(r.amount_sats),
+      r.method,
+      csvEscape(r.memo),
+      r.txid,
+      String(r.invoice_id),
+    ].join(","),
+  );
+  return [header, ...rows].join("\n");
+}
+
+/// Trigger a browser download of the supplied text content. Uses
+/// a Blob URL + synthetic anchor click; revokes the URL on a
+/// short timer so the GC can reclaim the blob. Works in the
+/// Tauri webview without needing the dialog plugin.
+function downloadText(filename: string, content: string): void {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 type UriFormat = "bip21" | "ghost";
 
 /// BIP-21 URI — the universal Bitcoin wallet format. Amount in BTC.
@@ -121,9 +204,28 @@ export function Merchant({ activeWallet, paymentTick = 0 }: MerchantProps) {
   /// underlying address is the same, only the encoding changes.
   const [uriFormat, setUriFormat] = useState<UriFormat>("bip21");
 
-  // Day's takings — held in component state. Resets if the user
-  // navigates away and back; localStorage persistence is a v2.
-  const [takings, setTakings] = useState<PaidReceipt[]>([]);
+  // Day's takings — persisted to localStorage so it survives
+  // navigation, page reloads, and short daemon restarts. Keyed by
+  // wallet name so different wallets keep separate ledgers.
+  // Auto-rolls at midnight local time: receipts older than the
+  // current local-day window get filtered out so "today's takings"
+  // stays meaningful.
+  const [takings, setTakings] = useState<PaidReceipt[]>(() =>
+    loadTakings(activeWallet),
+  );
+
+  // Persist on every change. Keep this lightweight — receipts
+  // table is bounded by the merchant's daily volume, so a few
+  // hundred rows of JSON in localStorage is fine.
+  useEffect(() => {
+    saveTakings(activeWallet, takings);
+  }, [activeWallet, takings]);
+
+  // Reload when the active wallet changes (kiosk mode pins one
+  // wallet, but in regular use users may switch).
+  useEffect(() => {
+    setTakings(loadTakings(activeWallet));
+  }, [activeWallet]);
 
   // Latest open invoice, accessed from inside the detection
   // listener without re-binding the listener every render.
@@ -360,7 +462,7 @@ export function Merchant({ activeWallet, paymentTick = 0 }: MerchantProps) {
           </button>
         </div>
 
-        {takings.length > 0 && <TakingsCard takings={takings} />}
+        {takings.length > 0 && <TakingsCard takings={takings} onClear={() => setTakings([])} />}
       </div>
     );
   }
@@ -484,7 +586,7 @@ export function Merchant({ activeWallet, paymentTick = 0 }: MerchantProps) {
           </div>
         </div>
 
-        {takings.length > 0 && <TakingsCard takings={takings} />}
+        {takings.length > 0 && <TakingsCard takings={takings} onClear={() => setTakings([])} />}
       </div>
     );
   }
@@ -540,22 +642,62 @@ export function Merchant({ activeWallet, paymentTick = 0 }: MerchantProps) {
         </div>
       </div>
 
-      {takings.length > 0 && <TakingsCard takings={takings} />}
+      {takings.length > 0 && <TakingsCard takings={takings} onClear={() => setTakings([])} />}
     </div>
   );
 }
 
-function TakingsCard({ takings }: { takings: PaidReceipt[] }) {
+function TakingsCard({
+  takings,
+  onClear,
+}: {
+  takings: PaidReceipt[];
+  onClear: () => void;
+}) {
   const total = takings.reduce((acc, r) => acc + r.amount_sats, 0);
+  const onExport = () => {
+    const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    downloadText(`takings-${stamp}.csv`, takingsToCsv(takings));
+  };
+  const onClearClick = () => {
+    if (
+      window.confirm(
+        `Clear all ${takings.length} sale(s) from today's takings? ` +
+          `This only clears the on-screen ledger — the underlying ` +
+          `payments are still on chain. Export to CSV first if you ` +
+          `need a record.`,
+      )
+    ) {
+      onClear();
+    }
+  };
   return (
     <div className="card">
       <div className="card-header">
         <h2>Today's takings</h2>
-        <div className="muted">
-          {takings.length} sale{takings.length === 1 ? "" : "s"} ·{" "}
-          <strong style={{ color: "var(--fg)" }}>
-            {total.toLocaleString()} sats
-          </strong>
+        <div className="row" style={{ alignItems: "center", gap: 8 }}>
+          <span className="muted">
+            {takings.length} sale{takings.length === 1 ? "" : "s"} ·{" "}
+            <strong style={{ color: "var(--fg)" }}>
+              {total.toLocaleString()} sats
+            </strong>
+          </span>
+          <button
+            className="secondary"
+            onClick={onExport}
+            disabled={takings.length === 0}
+            title="Download today's sales as a CSV file"
+          >
+            Export CSV
+          </button>
+          <button
+            className="secondary"
+            onClick={onClearClick}
+            disabled={takings.length === 0}
+            title="Clear the on-screen ledger (does not touch the chain)"
+          >
+            Clear
+          </button>
         </div>
       </div>
       <table className="table">
