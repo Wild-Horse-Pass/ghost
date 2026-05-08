@@ -150,6 +150,10 @@ struct CreateLockRequest {
     /// Wallet-side derivation index that produced `recovery_pubkey`.
     /// Operator records but does not use for keys.
     recovery_index: u32,
+    /// Authenticated wallet's static identifier — the GSP server
+    /// forwards this so multi-tenant ghost-pay can record the lock
+    /// under the requesting wallet's ID rather than the operator's.
+    owner_ghost_id: String,
 }
 
 /// Jump request
@@ -1014,6 +1018,7 @@ impl PayNodeProxy {
             timelock_tier: timelock_tier.map(|s| s.to_string()),
             recovery_pubkey: recovery_pubkey.to_string(),
             recovery_index,
+            owner_ghost_id: ghost_id.to_string(),
         };
 
         // M-15: Add internal auth header

@@ -2074,6 +2074,15 @@ struct CreateLockRequest {
     /// can look up which secret to sign with.
     #[serde(default)]
     recovery_index: Option<u32>,
+    /// Stable wallet identifier supplied by the GSP server (the
+    /// authenticated wallet's static_wallet_id). Used as the row's
+    /// `owner_ghost_id` so multi-tenant deployments don't bucket
+    /// every wallet's locks under the operator's identity. Optional
+    /// for backwards compatibility — when absent the route falls
+    /// back to `state.ghost_id` (operator's), which is the legacy
+    /// broken behaviour.
+    #[serde(default)]
+    owner_ghost_id: Option<String>,
 }
 
 /// Create a new ghost lock
@@ -2111,12 +2120,27 @@ async fn create_lock(
         _ => TimelockTier::Standard,
     };
 
-    // Get the ghost_id for database (needed for key index lookup)
-    let owner_ghost_id = state
-        .ghost_id
-        .read()
-        .clone()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Owner ID resolution. Prefer the wallet identifier the GSP
+    // server forwarded in the request — that's the authenticated
+    // wallet's stable ID, the only way multi-tenant ledgers work
+    // correctly. Fall back to the operator's own ghost_id when the
+    // request omits it (legacy callers); future commits will
+    // tighten this to a hard refusal once every caller has migrated.
+    let owner_ghost_id = match req.owner_ghost_id.as_deref() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            warn!(
+                "create_lock: no owner_ghost_id supplied — falling back to operator's \
+                 identity. Multi-tenant deployments need the GSP server to forward \
+                 the authenticated wallet's static_wallet_id."
+            );
+            state
+                .ghost_id
+                .read()
+                .clone()
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+        }
+    };
 
     // Get next lock key index from DB (stable across restarts)
     let lock_index = state

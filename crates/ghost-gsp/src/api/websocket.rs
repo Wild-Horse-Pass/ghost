@@ -1379,6 +1379,14 @@ async fn handle_send_l2_payment(
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
+    // Use the *static* wallet ID for the per-wallet ledger lookup.
+    // Session-rotating IDs change per-session, so balance/lock
+    // queries against them never find the records that were
+    // recorded under the static derivation.
+    let owner_id = conn_state
+        .static_wallet_id
+        .as_ref()
+        .unwrap_or(wallet_id);
 
     // QUANTUM SAFETY: Reject P2TR recipient addresses (same rule
     // as PreparePayment — applies to anything that could end up
@@ -1414,7 +1422,7 @@ async fn handle_send_l2_payment(
 
     match state
         .pay_node
-        .send_l2_payment(&wallet_id.to_string(), recipient, amount_sats, memo)
+        .send_l2_payment(&owner_id.to_string(), recipient, amount_sats, memo)
         .await
     {
         Ok(result) => Ok(Some(ServerMessage::PaymentSent {
@@ -1642,9 +1650,17 @@ async fn handle_prepare_ghost_lock(
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
+    // Locks must be recorded under the *static* wallet ID so that
+    // subsequent sessions (which get fresh rotating IDs) can still
+    // query ownership. The static ID is stable across reauths.
+    let owner_id = conn_state
+        .static_wallet_id
+        .as_ref()
+        .unwrap_or(wallet_id);
 
     info!(
         wallet_id = %wallet_id,
+        owner_id = %owner_id,
         capacity_sats = capacity_sats,
         recovery_index = recovery_index,
         "Preparing ghost lock with user-supplied recovery_pubkey"
@@ -1656,7 +1672,7 @@ async fn handle_prepare_ghost_lock(
     match state
         .pay_node
         .create_lock(
-            &wallet_id.to_string(),
+            &owner_id.to_string(),
             capacity_sats,
             None,
             recovery_pubkey,
