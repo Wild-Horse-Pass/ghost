@@ -345,10 +345,11 @@ mod tests {
         assert_eq!(decoded.output.len(), 1);
         // CSV requires version >= 2.
         assert_eq!(decoded.version, Version::TWO);
-        // nSequence must be RECOVERY_NSEQUENCE (0xFFFFFFFE).
+        // nSequence must equal recovery_blocks so BIP-68/112 fires
+        // (bit 31 cleared, value matches the script's pushed CSV).
         assert_eq!(
             decoded.input[0].sequence,
-            Sequence::from_consensus(RECOVERY_NSEQUENCE)
+            Sequence::from_consensus(inputs.recovery_blocks)
         );
         // Witness stack: [sig, empty, witness_script]
         let w = &decoded.input[0].witness;
