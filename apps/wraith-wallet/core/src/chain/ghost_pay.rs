@@ -234,6 +234,11 @@ struct StatusBody {
     version: String,
     has_keys: bool,
     lock_count: u64,
+    /// Active GSP sessions on the operator. Older ghost-pay
+    /// versions and the current regtest build don't emit this
+    /// field; fall back to 0 so the doctor check still parses.
+    /// Only used in the human-readable summary, never load-bearing.
+    #[serde(default)]
     active_sessions: u64,
     network: String,
 }
