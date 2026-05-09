@@ -615,6 +615,56 @@ impl LiteSessionRegistry {
         descriptor
     }
 
+    /// Atomic "find an open session for `(tier, session_type)`, or
+    /// create one if none exists" under a single mutex. This is the
+    /// concurrency-safe entry point used by [`find_or_create_session`]
+    /// — two simultaneous calls can never both observe "no open
+    /// session" and both create one.
+    ///
+    /// Without this, `find_or_create_session` had a TOCTOU between
+    /// `open_sessions_at` (lock 1) and `insert_new` (lock 2): under
+    /// 5 simultaneous /find_or_create calls the registry split
+    /// participants across two new sessions and neither reached
+    /// quorum. Caller still passes a fully-built session for the
+    /// "create" branch — the lock-released gossip publish is the
+    /// same as `insert_new`.
+    pub fn find_or_create_open(
+        &self,
+        tier: LiteTier,
+        session_type: SessionType,
+        now: u64,
+        new_session: LiteSession,
+    ) -> SessionDescriptor {
+        // Single critical section for both the find and the
+        // possible insert. No other registry operation can race
+        // with us between those two steps.
+        let (descriptor, created) = {
+            let mut guard = self.sessions.lock().expect("registry mutex");
+            // Find first.
+            if let Some(existing) = guard.values().find(|s| {
+                s.tier == tier
+                    && s.session_type == session_type
+                    && s.is_open_for_new_participants(now)
+            }) {
+                return SessionDescriptor::from_session(existing);
+            }
+            // None open — insert the prebuilt session.
+            assert!(
+                !guard.contains_key(&new_session.session_id),
+                "session_id collision (csprng broken or dev test using duplicate id): {}",
+                new_session.session_id
+            );
+            let descriptor = SessionDescriptor::from_session(&new_session);
+            let session_clone = new_session.clone();
+            guard.insert(new_session.session_id.clone(), new_session);
+            (descriptor, Some(session_clone))
+        };
+        if let Some(s) = created {
+            self.gossip(SessionGossipEvent::SessionCreated { session: s });
+        }
+        descriptor
+    }
+
     /// Add a participant to an existing session. Validates state +
     /// uniqueness, transitions to `Locked` if the round is now full.
     /// Returns the updated descriptor. Publishes `ParticipantAdded` to
@@ -854,14 +904,13 @@ pub fn find_or_create_session(
     fill_window_secs: u64,
 ) -> SessionDescriptor {
     let now = clock.unix_secs();
-    // Prefer existing open sessions — that's how the wallet gets fast
-    // fill (joining a session already half-filled by other users).
-    let open = registry.open_sessions_at(tier, session_type, now);
-    if let Some(s) = open.into_iter().next() {
-        return SessionDescriptor::from_session(&s);
-    }
-    // None open — create a new session.
-    let session = LiteSession {
+    // Build the prospective new session up front — id_gen produces
+    // a fresh session_id that we'll only end up using if we find no
+    // open session inside the registry's atomic critical section.
+    // The wasted id from concurrent callers losing the race is
+    // cheap (random 256-bit value, no on-disk artifact) and lets us
+    // do the find-and-create under one lock with no double-acquire.
+    let prospective = LiteSession {
         session_id: id_gen.next_id(),
         tier,
         session_type,
@@ -871,7 +920,7 @@ pub fn find_or_create_session(
         },
         participants: Vec::new(),
     };
-    registry.insert_new(session)
+    registry.find_or_create_open(tier, session_type, now, prospective)
 }
 
 #[cfg(test)]
@@ -933,6 +982,55 @@ mod tests {
         // Only one session in the registry — the second call didn't
         // accidentally create a duplicate.
         assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn find_or_create_atomic_under_concurrent_calls() {
+        // 50 simultaneous find_or_create calls on the same registry
+        // must converge on a single session, not split into parallel
+        // ones. This is the regression test for the "5 wallets land
+        // in 2 sessions" race that surfaced in the regtest mix demo.
+        // Without the lock-held find_or_create_open primitive, half
+        // of these would observe an empty registry and each insert a
+        // new session.
+        use std::sync::Arc;
+        use std::thread;
+        let (reg, clock, gen) = fixtures();
+        let reg = Arc::new(reg);
+        let clock = Arc::new(clock);
+        let gen = Arc::new(gen);
+        let n = 50;
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            let r = reg.clone();
+            let c = clock.clone();
+            let g = gen.clone();
+            handles.push(thread::spawn(move || {
+                find_or_create_session(
+                    LiteTier::Denom100kSats,
+                    SessionType::Mix,
+                    &r,
+                    &*c,
+                    &*g,
+                    LITE_FILL_WINDOW_SECS,
+                )
+                .session_id
+            }));
+        }
+        let ids: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().cloned().collect();
+        assert_eq!(
+            unique.len(),
+            1,
+            "all {n} concurrent callers must converge on one session, got {:?}",
+            unique
+        );
+        assert_eq!(
+            reg.len(),
+            1,
+            "only one session created — registry has {}",
+            reg.len()
+        );
     }
 
     #[test]
