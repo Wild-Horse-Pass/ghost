@@ -418,7 +418,8 @@ impl WraithSessionClient {
         self.wait_for_locked(&session_id).await?;
 
         // 3. Commit UTXO. The 5th /inputs auto-advances the round to
-        //    Signing on the coordinator side.
+        //    Signing on the coordinator side. Earlier submitters
+        //    leave the session in Locked until the 5th lands.
         let _inputs: serde_json::Value = self
             .post_json(
                 &format!("/api/v1/session/{session_id}/inputs"),
@@ -434,6 +435,12 @@ impl WraithSessionClient {
                 }),
             )
             .await?;
+
+        // 3b. Wait for Locked → Signing. /nonce 409s in Locked state;
+        //     only the 5th /inputs flips us to Signing, so the first
+        //     four submitters need to wait for the last one to land
+        //     before continuing.
+        self.wait_for_signing(&session_id).await?;
 
         // 4. /nonce — get the coordinator's per-round signing pubkey
         //    + a fresh blind-sig nonce.
@@ -616,6 +623,36 @@ impl WraithSessionClient {
             if std::time::Instant::now() >= deadline {
                 return Err(WraithClientError::Shape(
                     "timed out waiting for session to reach Complete".into(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Poll `GET /:id` until the session is in Signing. Used
+    /// between /inputs and /nonce: the 5th /inputs auto-advances
+    /// Locked → Signing on the coordinator, so the first four
+    /// submitters must wait for the last one to land before
+    /// /nonce will accept their request.
+    async fn wait_for_signing(&self, session_id: &str) -> Result<(), WraithClientError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let status: SessionStatusResponse = self
+                .get_json(&format!("/api/v1/session/{session_id}"))
+                .await?;
+            match status.session.state.as_str() {
+                "signing" => return Ok(()),
+                "failed" => {
+                    return Err(WraithClientError::Coordinator {
+                        status: 410,
+                        detail: "session failed before reaching Signing".into(),
+                    });
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(WraithClientError::Shape(
+                    "timed out waiting for session to reach Signing".into(),
                 ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
