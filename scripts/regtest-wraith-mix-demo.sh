@@ -251,23 +251,14 @@ for i in $(seq 0 $((N-1))); do
     UTXO_SPKS[$i]=$(echo "$entry" | jq -r '.scriptpubkey_hex')
 done
 
-# ---- run 5 staggered-parallel mix calls ------------------------------------
+# ---- run 5 fully-parallel mix calls ----------------------------------------
 # Each `wraith mix run` blocks until the round broadcasts (or
-# fails). The 5 calls all share one coordinator session — the
-# first call creates it via /find_or_create, the next 4 join.
-#
-# A 250ms stagger between launches works around a coordinator
-# race: 5 truly-concurrent /find_or_create calls can split across
-# two new sessions because the "find existing OR create" decision
-# isn't atomic — neither session reaches the 5-quorum and both
-# time out as Failed. The stagger gives the first call's session
-# enough time to be visible before the next call decides whether
-# to create or join. Total overhead: ~1.25s.
-#
-# TODO: fix the coordinator's find_or_create to serialise the
-# decision atomically — see coordinator.log split-session evidence
-# from the first regtest run.
-step "running $N staggered-parallel mixes"
+# fails). All 5 calls hit /find_or_create concurrently and
+# converge on a single coordinator session — the registry's
+# find_or_create_open primitive holds the lock across the
+# find-and-create so simultaneous calls can't split into
+# separate sessions.
+step "running $N parallel mixes"
 declare -a MIX_PIDS
 for i in $(seq 0 $((N-1))); do
     (
@@ -285,7 +276,6 @@ for i in $(seq 0 $((N-1))); do
             > "$DATADIR/mix-$i.out" 2>&1
     ) &
     MIX_PIDS[$i]=$!
-    sleep 0.25
 done
 echo "waiting for $N mix runs to complete..."
 for i in $(seq 0 $((N-1))); do
