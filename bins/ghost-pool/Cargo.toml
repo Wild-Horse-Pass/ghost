@@ -97,7 +97,7 @@ common_messages_sv2 = "6.0.2"
 async-channel = "2.3"
 
 # SV2 Application Helpers (for NoiseTcpStream)
-stratum-apps = { path = "../../sv2-apps/stratum-apps", features = ["network", "core"] }
+stratum-apps = { path = "../../crates/stratum-apps", features = ["network", "core"] }
 
 # Key utilities
 bs58 = { version = "0.4.0", features = ["check"] }
