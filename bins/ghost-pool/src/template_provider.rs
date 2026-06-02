@@ -358,10 +358,14 @@ impl TemplateDistributionServer {
                         }
                     };
 
-                    // Perform Noise handshake
+                    // Perform Noise handshake. The 10s per-read timeout matches
+                    // stratum-apps' NOISE_HANDSHAKE_TIMEOUT default (used by
+                    // accept_noise_connection), so a stalled peer handshake can't
+                    // hang the TDP responder.
                     let noise_stream = match NoiseTcpStream::<Message>::new(
                         socket,
                         HandshakeRole::Responder(responder),
+                        Duration::from_secs(10),
                     )
                     .await
                     {
