@@ -77,7 +77,14 @@ impl Sv1Server {
                 });
 
             let Some(channel_id) = channel_id else {
-                error!("Channel id is none for downstream_id: {}", downstream_id);
+                // Unreachable in normal operation: vardiff entries are now inserted only at
+                // channel-open (see the OpenExtendedMiningChannelSuccess handler in sv1_server),
+                // so every vardiff entry has a channel_id. Kept as a defensive guard and demoted
+                // from error! to debug! so a transient race can never spam the logs.
+                debug!(
+                    "vardiff: skipping downstream {} with no channel_id (channel not yet open)",
+                    downstream_id
+                );
                 continue;
             };
             let new_hashrate_opt = vardiff.super_safe_lock(|state| {

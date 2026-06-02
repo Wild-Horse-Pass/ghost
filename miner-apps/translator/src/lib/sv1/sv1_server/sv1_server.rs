@@ -6,8 +6,8 @@ use crate::{
     sv1::{
         downstream::{downstream::Downstream, SubmitShareWithChannelId},
         sv1_server::{
-            channel::Sv1ServerChannelState, is_mining_authorize, is_mining_subscribe,
-            KEEPALIVE_JOB_ID_DELIMITER,
+            channel::Sv1ServerChannelState, is_mining_authorize, is_mining_configure,
+            is_mining_subscribe, KEEPALIVE_JOB_ID_DELIMITER,
         },
     },
     utils::AGGREGATED_CHANNEL_ID,
@@ -291,8 +291,23 @@ impl Sv1Server {
                     result = listener.accept() => {
                         match result {
                             Ok((stream, addr)) => {
-                                // Load balancer: proxy to a less-loaded peer if configured
+                                // Load balancer: capacity controls + utilisation routing.
                                 if let Some(ref lb) = self.load_balancer {
+                                    // Step 1: capacity gate. If we're already over the
+                                    // reject threshold, close the socket. The bitaxe
+                                    // firmware auto-reconnects via DNS → another VM
+                                    // picks them up. No mid-session disruption to
+                                    // existing miners.
+                                    if lb.should_reject_for_capacity().await {
+                                        warn!(
+                                            "Rejecting connection from {}: local capacity at/above reject threshold",
+                                            addr
+                                        );
+                                        lb.record_capacity_rejection();
+                                        drop(stream);
+                                        continue;
+                                    }
+                                    // Step 2: utilisation-based routing for new arrivals.
                                     let local_count = self.downstreams.len();
                                     if let Some(target) = lb.should_proxy(local_count, addr.ip()).await {
                                         info!("Proxying new connection from {} to {}", addr, target);
@@ -319,15 +334,17 @@ impl Sv1Server {
                                     sv1_server_receiver,
                                     first_target,
                                     Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
-                                    connection_token,
+                                    connection_token.clone(),
                                 );
-                                // vardiff initialization (only if enabled)
                                 self.downstreams.insert(downstream_id, downstream.clone());
-                                // Insert vardiff state for this downstream only if vardiff is enabled
-                                if self.config.downstream_difficulty_config.enable_vardiff {
-                                    let vardiff = VardiffState::new().expect("Failed to create vardiffstate");
-                                    self.vardiff.insert(downstream_id, Arc::new(Mutex::new(vardiff)));
-                                }
+                                // NB: vardiff state is intentionally NOT inserted here. The channel
+                                // is opened lazily after the first message, so a freshly accepted
+                                // connection has `channel_id == None`. Inserting vardiff now makes
+                                // the 60s vardiff loop iterate channel-less connections every tick —
+                                // port scanners that complete the TCP handshake but never subscribe
+                                // sit here for their whole lifetime — which logged a spurious error
+                                // per tick. Vardiff is now registered at channel-open instead; see
+                                // the `OpenExtendedMiningChannelSuccess` handler.
                                 info!("Downstream {} registered successfully (channel will be opened after first message)", downstream_id);
 
 
@@ -343,6 +360,37 @@ impl Sv1Server {
                                     status_sender,
                                     task_manager.clone(),
                                 );
+
+                                // Zombie-connection reaper. A connection that completes the TCP
+                                // handshake but never opens a channel — internet port scanners and
+                                // half-open probes hitting the public stratum port — would otherwise
+                                // linger in the downstreams/sender maps holding a socket for its
+                                // whole lifetime. Give it a generous grace period to open a channel
+                                // (real miners subscribe+authorize within seconds); if it still has
+                                // no channel_id after that, close the socket and clean up the maps.
+                                // handle_downstream_disconnect is idempotent, so it is safe even if
+                                // the connection's own error path also fires.
+                                const CHANNELLESS_REAP_TIMEOUT: Duration = Duration::from_secs(120);
+                                let reaper = self.clone();
+                                let reaper_token = connection_token.clone();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(CHANNELLESS_REAP_TIMEOUT).await;
+                                    let still_channelless = match reaper.downstreams.get(&downstream_id) {
+                                        Some(d) => d
+                                            .downstream_data
+                                            .super_safe_lock(|data| data.channel_id.is_none()),
+                                        None => return, // already disconnected and cleaned up
+                                    };
+                                    if still_channelless {
+                                        warn!(
+                                            "Reaping downstream {} — no channel opened within {}s (likely a scanner/probe)",
+                                            downstream_id,
+                                            CHANNELLESS_REAP_TIMEOUT.as_secs()
+                                        );
+                                        reaper_token.cancel();
+                                        reaper.handle_downstream_disconnect(downstream_id).await;
+                                    }
+                                });
                             }
                             Err(e) => {
                                 warn!("Failed to accept new connection: {:?}", e);
@@ -428,13 +476,21 @@ impl Sv1Server {
             //   - `mining.authorize`: process immediately so `data.user_identity` /
             //     `data.authorized_worker_name` are populated, then trigger
             //     `handle_open_channel_request`.
+            //   - `mining.configure`: process immediately. BIP310 version-rolling negotiation
+            //     is stateless — the miner sends configure first to learn the version mask,
+            //     then sends subscribe/authorize. If we queue configure waiting for the
+            //     channel to open, some Bitaxe firmware (BM1370 v2.12.0 observed) waits for
+            //     the configure response before sending subscribe at all, which deadlocks:
+            //     no channel can open until authorize, no authorize until subscribe, no
+            //     subscribe until configure responds.
             //   - Anything else: queue until the channel is open (existing behaviour).
             //
             // Aggregated mode is unaffected — every downstream still piggybacks on the single
             // shared upstream channel that the channel_manager already opened, so this branch
             // simply falls through for `mining.submit` etc. once the channel exists.
-            let process_immediately =
-                is_mining_subscribe(&downstream_message) || is_mining_authorize(&downstream_message);
+            let process_immediately = is_mining_subscribe(&downstream_message)
+                || is_mining_authorize(&downstream_message)
+                || is_mining_configure(&downstream_message);
             if !process_immediately {
                 debug!(
                     "Down: Queuing Sv1 message until channel is established (downstream {})",
@@ -724,6 +780,18 @@ impl Sv1Server {
                         .map_err(TproxyError::shutdown)?;
                     self.channel_id_to_downstream_id
                         .super_safe_lock(|map| map.insert(m.channel_id, downstream_id));
+
+                    // Register vardiff state now that the channel is open (channel_id was set
+                    // above). Doing it here rather than at connection-accept guarantees the vardiff
+                    // loop only ever iterates downstreams that have a channel, making `channel_id`
+                    // a true invariant in `difficulty_manager`. Guarded so a re-opened channel
+                    // keeps its existing vardiff state instead of resetting it.
+                    if self.config.downstream_difficulty_config.enable_vardiff
+                        && !self.vardiff.contains_key(&downstream_id)
+                    {
+                        let vardiff = VardiffState::new().expect("Failed to create vardiffstate");
+                        self.vardiff.insert(downstream_id, Arc::new(Mutex::new(vardiff)));
+                    }
 
                     // Public-pool defer-open: if subscribe was responded to with a placeholder
                     // extranonce (because the channel had not been opened yet — we deferred it
