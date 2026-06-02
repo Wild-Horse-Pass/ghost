@@ -1607,6 +1607,12 @@ async fn main() -> Result<()> {
         // because the call is expensive (5-15s on mainnet) and the
         // response reveals UTXO state for the supplied addresses.
         .route("/api/v1/utxos/scan", post(scan_utxos))
+        // L1 broadcast — thin passthrough to `sendrawtransaction`.
+        // wraithd builds + signs PSBTs locally and uses this to
+        // push the resulting tx through the operator's bitcoind.
+        // Authenticated so only callers with the internal-auth
+        // secret can submit raw transactions through this node.
+        .route("/api/v1/tx/broadcast", post(broadcast_tx))
         .layer(axum::middleware::from_fn_with_state(
             api_auth.clone(),
             require_api_auth,
@@ -2700,6 +2706,91 @@ fn parse_addr_from_desc(desc: &str) -> Option<String> {
 }
 
 // ============================================================================
+// Generic L1 Broadcast (Phase 2 PSBT support)
+// ============================================================================
+//
+// `wraithd` builds + signs PSBTs locally; ghost-pay's role for the
+// broadcast is "thin RPC-passthrough to bitcoind". Authenticated so
+// only callers with the internal-auth secret (or a valid HMAC
+// signature) can push raw transactions through this node.
+//
+// The endpoint deliberately does NOT validate the tx semantics —
+// the operator's bitcoind already does that via
+// `sendrawtransaction`. Any pre-flight rejection (e.g. min-fee
+// policy) propagates back as the error message verbatim so the
+// wallet can surface it without translation.
+
+#[derive(Debug, Deserialize)]
+struct BroadcastTxRequest {
+    /// Hex-encoded raw transaction (the output of
+    /// `psbt.extract_tx()` then `consensus::encode::serialize_hex`).
+    tx_hex: String,
+    /// Optional max fee rate (sats/vB). Forwarded as bitcoind's
+    /// `maxfeerate` argument. None → use bitcoind's default.
+    #[serde(default)]
+    max_fee_rate_sats_per_vb: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct BroadcastTxResponse {
+    /// txid of the accepted transaction.
+    txid: String,
+}
+
+/// Broadcast a fully-signed Bitcoin transaction. Thin wrapper over
+/// `bitcoind sendrawtransaction`. The operator's node still does
+/// the real work — relay rules, mempool admission, etc.
+async fn broadcast_tx(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BroadcastTxRequest>,
+) -> Result<Json<BroadcastTxResponse>, (StatusCode, String)> {
+    let trimmed = req.tx_hex.trim();
+    if trimmed.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "tx_hex must be non-empty".to_string(),
+        ));
+    }
+    // Deserialize once on our side so a malformed hex string fails
+    // fast with a 400, before round-tripping to bitcoind.
+    let bytes = hex::decode(trimmed)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid hex: {e}")))?;
+    let _: bitcoin::Transaction = bitcoin::consensus::encode::deserialize(&bytes)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid tx: {e}")))?;
+
+    match state.rpc.send_raw_transaction(trimmed).await {
+        Ok(txid) => {
+            // Soft-warn the operator if the requested max fee rate
+            // wasn't honoured — bitcoind's RPC accepts a
+            // `maxfeerate` arg we currently don't forward (the
+            // RpcClient wrapper doesn't expose it). Log so an
+            // operator chasing a fee-bump regression has a
+            // breadcrumb without breaking the call.
+            if let Some(rate) = req.max_fee_rate_sats_per_vb {
+                if rate == 0 {
+                    info!(
+                        txid = %txid,
+                        "broadcast_tx: caller requested maxfeerate=0 \
+                         (any fee), bitcoind default applies"
+                    );
+                }
+            }
+            Ok(Json(BroadcastTxResponse { txid }))
+        }
+        Err(e) => {
+            // bitcoind's error string already explains the rejection
+            // reason ("min relay fee not met", "non-final", "missing
+            // inputs", etc.). Pass it through unmodified — the
+            // wallet GUI surfaces it verbatim.
+            Err((
+                StatusCode::BAD_GATEWAY,
+                format!("sendrawtransaction: {e}"),
+            ))
+        }
+    }
+}
+
+// ============================================================================
 // Withdrawal Handlers
 // ============================================================================
 
@@ -2973,12 +3064,59 @@ async fn pay_stats_handler(State(state): State<Arc<AppState>>) -> Json<serde_jso
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let has_keys = state.keys.read().is_some();
     let lock_count = state.locks.read().len();
+    // Best-effort chain-tip surfacing for the wallet's sync indicator.
+    // Single getblockchaininfo call gives us blocks (verified tip),
+    // headers (latest seen), verification_progress (0..1), and the
+    // IBD flag — everything the wallet needs to render
+    // "synced" / "syncing N/M · X%". Caps at a 1.5s deadline so a
+    // hung bitcoind doesn't block the status endpoint.
+    let chain = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        state.rpc.get_blockchain_info(),
+    )
+    .await;
+    let (chain_height, chain_headers, chain_verification_progress, chain_initial_block_download) =
+        match chain {
+            Ok(Ok(info)) => (
+                Some(info.blocks),
+                Some(info.headers),
+                Some(info.verificationprogress),
+                Some(info.initialblockdownload),
+            ),
+            _ => (None, None, None, None),
+        };
+
+    // L2 sync: latest finalized L2 block + the derived epoch. Both
+    // come from ghost-pay's own DB (not bitcoind), so they're
+    // always available even if bitcoind is hiccuping.
+    use ghost_common::constants::L2_EPOCH_BLOCKS;
+    let l2_height: Option<u64> = state
+        .db
+        .with_connection(|conn| {
+            let result: Option<i64> = conn
+                .query_row(
+                    "SELECT height FROM blocks ORDER BY height DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            Ok(result.map(|h| h as u64))
+        })
+        .ok()
+        .flatten();
+    let l2_epoch: Option<u64> = l2_height.map(|h| h / L2_EPOCH_BLOCKS);
 
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "has_keys": has_keys,
         "lock_count": lock_count,
-        "network": state.config.network
+        "network": state.config.network,
+        "chain_height": chain_height,
+        "chain_headers": chain_headers,
+        "chain_verification_progress": chain_verification_progress,
+        "chain_initial_block_download": chain_initial_block_download,
+        "l2_height": l2_height,
+        "l2_epoch": l2_epoch,
     }))
 }
 

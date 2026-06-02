@@ -135,6 +135,12 @@ async fn daemon_env() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn chain_status() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::ChainStatus).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
 async fn wallet_ghost_id() -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::WalletGhostId).await?;
     to_value(&resp)
@@ -327,6 +333,155 @@ async fn wraith_mix_run(
 
 fn to_value(resp: &Response) -> Result<serde_json::Value, String> {
     serde_json::to_value(resp).map_err(|e| e.to_string())
+}
+
+/// Decode a PSBT (base64 or hex auto-detected) and return a
+/// per-input/per-output summary. The flag
+/// `is_signable_by_active_wallet` is filled in against the
+/// currently-loaded wallet, so the GUI can render "you can sign
+/// these N inputs" without touching keystore plumbing in TS.
+#[tauri::command]
+async fn psbt_inspect(psbt: String) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::PsbtInspect { psbt }).await?;
+    to_value(&resp)
+}
+
+/// Sign every input the active wallet can sign. Returns the
+/// updated PSBT in the same encoding as the input (base64 → base64,
+/// hex → hex), plus the indices that were actually touched.
+#[tauri::command]
+async fn psbt_sign(
+    psbt: String,
+    bip86_scan_max: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::PsbtSign {
+        psbt,
+        bip86_scan_max,
+    })
+    .await?;
+    to_value(&resp)
+}
+
+/// Build an unsigned PSBT spending the active wallet's L1 UTXOs to
+/// `recipient_address`. Daemon-side scan + selection — the GUI
+/// doesn't see UTXOs directly unless it passes `selected_outpoints`
+/// (coin control). Returns the unsigned PSBT (base64) plus a
+/// fee/change breakdown.
+#[tauri::command]
+async fn psbt_create(
+    recipient_address: String,
+    amount_sats: u64,
+    fee_rate_sats_per_vb: Option<u64>,
+    change_index: Option<u32>,
+    bip86_scan_max: Option<u32>,
+    selected_outpoints: Option<Vec<wraith_wallet_ipc::OutpointRef>>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::PsbtCreate {
+        recipient_address,
+        amount_sats,
+        fee_rate_sats_per_vb: fee_rate_sats_per_vb.unwrap_or(5),
+        change_index,
+        bip86_scan_max: bip86_scan_max.unwrap_or(32),
+        selected_outpoints: selected_outpoints.unwrap_or_default(),
+    })
+    .await?;
+    to_value(&resp)
+}
+
+/// Extract a fully-signed PSBT (or accept raw tx hex directly) and
+/// broadcast it via ghost-pay → bitcoind. Returns the txid.
+#[tauri::command]
+async fn psbt_broadcast(
+    psbt_or_tx_hex: String,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::PsbtBroadcast { psbt_or_tx_hex }).await?;
+    to_value(&resp)
+}
+
+/// BIP-125 fee-bump on an existing PSBT. Returns a new unsigned
+/// PSBT (sigs stripped because output values changed) ready to feed
+/// back into psbt_sign + psbt_broadcast.
+#[tauri::command]
+async fn psbt_bump_fee(
+    psbt: String,
+    new_fee_rate_sats_per_vb: u64,
+    bip86_scan_max: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::PsbtBumpFee {
+        psbt,
+        new_fee_rate_sats_per_vb,
+        bip86_scan_max: bip86_scan_max.unwrap_or(32),
+    })
+    .await?;
+    to_value(&resp)
+}
+
+/// Export the active wallet's xpub at `path`, formatted for use in
+/// a multisig descriptor (wsh, tr, etc.) by an external coordinator.
+/// Public-only — no private material crosses this boundary.
+#[tauri::command]
+async fn wallet_export_xpub(
+    path: String,
+    mainnet: bool,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::WalletExportXpub { path, mainnet }).await?;
+    to_value(&resp)
+}
+
+/// Inspect a multisig descriptor — parse + derive first N addresses.
+/// No persistence.
+#[tauri::command]
+async fn multisig_descriptor_inspect(
+    descriptor: String,
+    address_count: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::MultisigDescriptorInspect {
+        descriptor,
+        address_count: address_count.unwrap_or(10),
+    })
+    .await?;
+    to_value(&resp)
+}
+
+/// Save a multisig descriptor under `name` for the active wallet.
+#[tauri::command]
+async fn multisig_descriptor_save(
+    name: String,
+    descriptor: String,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::MultisigDescriptorSave { name, descriptor }).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn multisig_descriptor_list() -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::MultisigDescriptorList).await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn multisig_descriptor_addresses(
+    name: String,
+    start_index: Option<u32>,
+    count: Option<u32>,
+    internal: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::MultisigDescriptorAddresses {
+        name,
+        start_index: start_index.unwrap_or(0),
+        count: count.unwrap_or(10),
+        internal: internal.unwrap_or(false),
+    })
+    .await?;
+    to_value(&resp)
+}
+
+#[tauri::command]
+async fn multisig_descriptor_delete(
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let resp = call_daemon(Request::MultisigDescriptorDelete { name }).await?;
+    to_value(&resp)
 }
 
 /// Start the daemon watch subscription if it isn't already running.
@@ -531,6 +686,7 @@ pub fn run() {
             daemon_health,
             daemon_doctor,
             daemon_env,
+            chain_status,
             wallet_list,
             wallet_status,
             wallet_unlock,
@@ -557,6 +713,17 @@ pub fn run() {
             locks_confirm,
             locks_jump,
             locks_recover,
+            psbt_inspect,
+            psbt_sign,
+            psbt_create,
+            psbt_broadcast,
+            psbt_bump_fee,
+            wallet_export_xpub,
+            multisig_descriptor_inspect,
+            multisig_descriptor_save,
+            multisig_descriptor_list,
+            multisig_descriptor_addresses,
+            multisig_descriptor_delete,
             start_watch,
         ])
         .run(tauri::generate_context!())

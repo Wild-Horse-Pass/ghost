@@ -9301,6 +9301,7 @@ name = "wraith-wallet-daemon"
 version = "1.8.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bitcoin",
  "ghost-gsp-proto",
  "ghost-keys",

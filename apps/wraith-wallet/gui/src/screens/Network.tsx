@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
 import {
+  chainStatus,
   daemonHealth,
   daemonEnv,
   daemonDoctor,
   gspAuth,
   gspSessionStatus,
+  type ChainStatusResponse,
   type DaemonEnvResponse,
   type DoctorResponse,
   type GspSessionStatus,
   type HealthResponse,
 } from "../lib/tauri";
+import { SyncIndicator } from "../components/SyncIndicator";
 
 export function Network() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -18,6 +21,7 @@ export function Network() {
   const [doctorTs, setDoctorTs] = useState<number | null>(null);
   const [doctorErr, setDoctorErr] = useState<string | null>(null);
   const [session, setSession] = useState<GspSessionStatus | null>(null);
+  const [chain, setChain] = useState<ChainStatusResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -27,6 +31,11 @@ export function Network() {
       setHealth(await daemonHealth());
       setEnv(await daemonEnv());
       setSession(await gspSessionStatus());
+      try {
+        setChain(await chainStatus());
+      } catch {
+        /* chain probe is best-effort */
+      }
     } catch (e) {
       setErr((e as Error).message ?? String(e));
     }
@@ -99,15 +108,16 @@ export function Network() {
 
   return (
     <div className="screen">
-      <div
-        style={{
-          display: "flex",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-        }}
-      >
-        <h1 style={{ marginRight: 12 }}>Network</h1>
-        <span className={`pill ${overallStatus.className}`}>
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">diagnostics</span>
+          <h1>Network</h1>
+          <p className="lead">
+            Connectivity health to the daemon, ghost-pay, ghost-gsp,
+            wraith-coordinator. Auto-runs on mount; refresh on demand.
+          </p>
+        </div>
+        <span className={`pill ${overallStatus.className} live`}>
           {overallStatus.label}
         </span>
       </div>
@@ -117,9 +127,19 @@ export function Network() {
         </div>
       )}
 
-      {/* Doctor goes first — it's the headline "is everything OK"
-          view. Per-row table beats the JSON dump for at-a-glance
-          parsing. */}
+      <div className="card">
+        <h2>Chain sync</h2>
+        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+          L1 = the operator's bitcoind. L2 = ghost-pay's finalized
+          checkpoints. Sync indicator updates every 8s; ETA is
+          estimated from blocks-per-second on the trailing 90s
+          window.
+        </p>
+        <SyncIndicator chain={chain} />
+      </div>
+
+      {/* Doctor — headline "is everything OK" view. Per-row table
+          beats the JSON dump for at-a-glance parsing. */}
       <div className="card">
         <div className="card-header">
           <h2>Health checks</h2>

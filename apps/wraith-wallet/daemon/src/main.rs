@@ -60,9 +60,11 @@ mod unix {
         LightL1UtxoEntry, LightL1UtxosResponse, LightReceiveResponse, LightSentResponse,
         LightUtxoEntry, LightUtxosResponse, LockEntry,
         LocksConfirmedResponse, LocksJumpedResponse, LocksListResponse, LocksPreparedResponse,
+        PsbtBroadcastResponse, PsbtBumpFeeResponse, PsbtInputSummary, PsbtInspectResponse,
+        PsbtOutputSummary, PsbtSignResponse,
         ReleaseManifest, Request, Response, SignerInfoIpc, WalletAuthInfoResponse,
         WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
-        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
+        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse, WalletXpubResponse,
         WraithDiscoverResponse, WraithDiscoverTier, WraithMixCompletedResponse,
         WraithMixPreparedResponse, LocksRecoveredResponse,
     };
@@ -282,6 +284,36 @@ mod unix {
 
     fn keystore_path(wallets_dir: &Path, name: &str) -> PathBuf {
         wallets_dir.join(name).join("keystore.bin")
+    }
+
+    /// Per-wallet directory for saved multisig descriptors. Each
+    /// descriptor lives in its own file (`<name>.desc`) so adding /
+    /// removing one doesn't risk corrupting the others.
+    fn descriptors_dir(wallets_dir: &Path, wallet_name: &str) -> PathBuf {
+        wallets_dir.join(wallet_name).join("descriptors")
+    }
+
+    fn descriptor_path(wallets_dir: &Path, wallet_name: &str, desc_name: &str) -> PathBuf {
+        descriptors_dir(wallets_dir, wallet_name).join(format!("{desc_name}.desc"))
+    }
+
+    /// Same allow-list as `validate_wallet_name`. Re-used so a
+    /// descriptor-name traversal can't be smuggled past
+    /// `descriptor_path`.
+    fn validate_descriptor_name(name: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("descriptor name must not be empty".into());
+        }
+        if name.len() > 64 {
+            return Err("descriptor name too long (max 64 chars)".into());
+        }
+        let allowed = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+        if !name.chars().all(allowed) {
+            return Err(
+                "descriptor name must be ascii alphanumeric, '-', or '_' only".into(),
+            );
+        }
+        Ok(())
     }
 
     /// Per-wallet on-disk index of prepared Ghost Locks. Each entry
@@ -1226,6 +1258,472 @@ mod unix {
         }
     }
 
+    /// Build an unsigned PSBT spending the active wallet's L1
+    /// UTXOs. Returns `Err` with a human-readable message; the
+    /// dispatch arm wraps that into a `Response::Error`. Pulled
+    /// out of the dispatch closure so error-paths can use `?` and
+    /// the lock holds stay scoped.
+    async fn psbt_create_handler(
+        state: &DaemonState,
+        recipient_address: &str,
+        amount_sats: u64,
+        fee_rate_sats_per_vb: u64,
+        change_index: Option<u32>,
+        bip86_scan_max: u32,
+        selected_outpoints: &[wraith_wallet_ipc::OutpointRef],
+    ) -> Result<wraith_wallet_ipc::PsbtCreateResponse, String> {
+        use wraith_wallet_core::psbt as psbt_mod;
+        let network = state.network;
+        let scan_max = bip86_scan_max.max(1);
+
+        // 1. Derive the wallet's BIP86 receive addresses 0..scan_max
+        //    (used both for the UTXO scan and for picking the change
+        //    address). We hold the keystore lock just long enough to
+        //    derive — no async work happens inside the guard.
+        let active_name = state
+            .active
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "no active wallet".to_string())?;
+        let change_idx = change_index.unwrap_or(scan_max + 1);
+        let (addr_strings, change_addr) = {
+            let wallets = state.wallets.read().await;
+            let ks = wallets
+                .get(&active_name)
+                .ok_or_else(|| format!("active wallet '{active_name}' is not unlocked"))?;
+            let mut addrs = Vec::with_capacity(scan_max as usize + 1);
+            for i in 0..=scan_max {
+                let a = wraith_wallet_core::light::receive_address(ks, i, network)
+                    .map_err(|e| format!("derive idx {i}: {e}"))?;
+                addrs.push(a.to_string());
+            }
+            let change = wraith_wallet_core::light::receive_address(ks, change_idx, network)
+                .map_err(|e| format!("derive change idx {change_idx}: {e}"))?;
+            (addrs, change)
+        };
+
+        // 2. Ask ghost-pay for the UTXO set at those addresses.
+        //    Confirmations gate at 1 — same default as
+        //    light_l1_utxos.
+        let scan = state
+            .chain
+            .scan_utxos(&addr_strings, 1)
+            .await
+            .map_err(|e| format!("scan_utxos: {e}"))?;
+        if scan.utxos.is_empty() {
+            return Err(format!(
+                "no spendable UTXOs at receive indices 0..{scan_max} on this wallet"
+            ));
+        }
+
+        // 3. Map ScannedL1Utxo → AvailableUtxo for the builder.
+        //    If the caller passed `selected_outpoints` (coin
+        //    control), filter to that set; error if any selected
+        //    outpoint isn't in the scan results — that means the
+        //    GUI's UTXO list is stale or referencing a UTXO we
+        //    don't own, both of which are fail-loud cases rather
+        //    than fail-silent.
+        let mut available: Vec<psbt_mod::AvailableUtxo> = Vec::new();
+        let coin_control = !selected_outpoints.is_empty();
+        let wanted: std::collections::HashSet<(String, u32)> = if coin_control {
+            selected_outpoints
+                .iter()
+                .map(|o| (o.txid.clone(), o.vout))
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let mut matched: std::collections::HashSet<(String, u32)> =
+            std::collections::HashSet::new();
+        for u in &scan.utxos {
+            if coin_control && !wanted.contains(&(u.txid.clone(), u.vout)) {
+                continue;
+            }
+            let txid: bitcoin::Txid = u
+                .txid
+                .parse()
+                .map_err(|e| format!("scan returned bad txid: {e}"))?;
+            let spk_bytes = hex::decode(u.scriptpubkey_hex.trim())
+                .map_err(|e| format!("scan returned bad spk hex: {e}"))?;
+            available.push(psbt_mod::AvailableUtxo {
+                txid,
+                vout: u.vout,
+                value_sats: u.amount_sats,
+                script_pubkey: bitcoin::ScriptBuf::from_bytes(spk_bytes),
+            });
+            if coin_control {
+                matched.insert((u.txid.clone(), u.vout));
+            }
+        }
+        if coin_control {
+            let missing: Vec<String> = wanted
+                .iter()
+                .filter(|p| !matched.contains(*p))
+                .map(|(t, v)| format!("{t}:{v}"))
+                .collect();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "selected outpoints not in this wallet's scanned UTXO set: {} \
+                     — refresh the UTXO list and retry",
+                    missing.join(", ")
+                ));
+            }
+            if available.is_empty() {
+                return Err("coin-control selection resolved to zero UTXOs".into());
+            }
+        }
+
+        // 4. Build the unsigned PSBT.
+        let (psbt, meta) = psbt_mod::create_psbt(
+            &available,
+            recipient_address,
+            amount_sats,
+            &change_addr,
+            network,
+            fee_rate_sats_per_vb,
+        )
+        .map_err(|e| format!("create_psbt: {e}"))?;
+
+        let encoded = psbt_mod::encode_psbt(&psbt, psbt_mod::PsbtEncoding::Base64);
+        Ok(wraith_wallet_ipc::PsbtCreateResponse {
+            psbt: encoded,
+            input_count: meta.selected_input_count as u32,
+            total_input_sats: meta.total_input_sats,
+            recipient_sats: meta.recipient_sats,
+            change_sats: meta.change_sats,
+            fee_sats: meta.fee_sats,
+            change_bip86_index: if meta.change_sats > 0 {
+                Some(change_idx)
+            } else {
+                None
+            },
+        })
+    }
+
+    /// Extract a finalized tx from a PSBT (or accept raw tx hex
+    /// directly) and broadcast it via ghost-pay. Returns the
+    /// txid bitcoind accepted.
+    async fn psbt_broadcast_handler(
+        state: &DaemonState,
+        psbt_or_tx_hex: &str,
+    ) -> Result<String, String> {
+        use wraith_wallet_core::psbt as psbt_mod;
+        let trimmed = psbt_or_tx_hex.trim();
+        // PSBT magic in hex is 70736274ff; in base64 it's `cHNidP`.
+        // Anything else, treat as raw consensus-encoded tx hex.
+        let is_psbt = trimmed.to_lowercase().starts_with("70736274ff")
+            || trimmed.starts_with("cHNidP");
+        let tx_hex = if is_psbt {
+            let (parsed, _) =
+                psbt_mod::decode_psbt(trimmed).map_err(|e| format!("decode_psbt: {e}"))?;
+            if !psbt_mod::is_complete(&parsed) {
+                return Err(
+                    "PSBT is not complete — every input must be finalized before broadcast"
+                        .into(),
+                );
+            }
+            let tx = parsed
+                .extract_tx()
+                .map_err(|e| format!("extract_tx: {e}"))?;
+            bitcoin::consensus::encode::serialize_hex(&tx)
+        } else {
+            let bytes = hex::decode(trimmed).map_err(|e| format!("hex: {e}"))?;
+            let _: bitcoin::Transaction = bitcoin::consensus::encode::deserialize(&bytes)
+                .map_err(|e| format!("invalid raw tx: {e}"))?;
+            trimmed.to_string()
+        };
+        state
+            .chain
+            .broadcast_tx(&tx_hex)
+            .await
+            .map_err(|e| format!("broadcast: {e}"))
+    }
+
+    /// Inspect a multisig descriptor. Pure function: parse, derive
+    /// the requested receive addresses, mark which cosigner is the
+    /// active wallet (if any). No persistence — `MultisigDescriptorSave`
+    /// is the explicit commit step.
+    async fn multisig_inspect_handler(
+        state: &DaemonState,
+        descriptor: &str,
+        address_count: u32,
+    ) -> Result<wraith_wallet_ipc::MultisigDescriptorInspected, String> {
+        use wraith_wallet_core::descriptor as desc;
+        let parsed = desc::parse(descriptor).map_err(|e| format!("descriptor: {e}"))?;
+        // Resolve our fingerprint (if a wallet is active) so the
+        // GUI can label which row is us.
+        let our_fp: Option<[u8; 4]> = match state.active.read().await.clone() {
+            Some(name) => {
+                let wallets = state.wallets.read().await;
+                match wallets.get(&name) {
+                    Some(ks) => Some(
+                        ks.master_fingerprint_bytes()
+                            .map_err(|e| format!("fingerprint: {e}"))?,
+                    ),
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        let cosigners: Vec<wraith_wallet_ipc::MultisigCosignerSummary> = parsed
+            .keys
+            .iter()
+            .map(|k| wraith_wallet_ipc::MultisigCosignerSummary {
+                fingerprint_hex: hex::encode(k.fingerprint),
+                origin_path: k.origin_path.clone(),
+                xpub: k.xpub.to_string(),
+                is_us: our_fp == Some(k.fingerprint),
+            })
+            .collect();
+        let contains_us = cosigners.iter().any(|c| c.is_us);
+        let count = address_count.min(64) as u32; // hard cap so a typo can't DoS the daemon
+        let mut addresses = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            match parsed.derive_address(i, false, state.network) {
+                Ok(a) => addresses.push(a.to_string()),
+                Err(e) => {
+                    // Fixed-child descriptor → only index 0 valid;
+                    // bail with what we have rather than blocking
+                    // the whole inspect.
+                    if matches!(e, desc::DescriptorError::IndexOutOfRange { .. }) {
+                        break;
+                    }
+                    return Err(format!("derive {i}: {e}"));
+                }
+            }
+        }
+        let kind = match parsed.kind {
+            desc::DescriptorKind::WshSortedMulti => "wsh-sortedmulti",
+        };
+        Ok(wraith_wallet_ipc::MultisigDescriptorInspected {
+            kind: kind.to_string(),
+            k: parsed.k as u32,
+            n: parsed.n() as u32,
+            cosigners,
+            contains_us,
+            addresses,
+            checksum: parsed.checksum,
+        })
+    }
+
+    /// Persist a multisig descriptor for the active wallet. Refuses
+    /// if our fingerprint isn't in the descriptor — we only model
+    /// "we are a cosigner" today, not "watch-only".
+    async fn multisig_save_handler(
+        state: &DaemonState,
+        name: &str,
+        descriptor: &str,
+    ) -> Result<wraith_wallet_ipc::MultisigDescriptorSaved, String> {
+        use wraith_wallet_core::descriptor as desc;
+        validate_descriptor_name(name)?;
+        let parsed = desc::parse(descriptor).map_err(|e| format!("descriptor: {e}"))?;
+        let active = state
+            .active
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "no active wallet".to_string())?;
+        let our_fp = {
+            let wallets = state.wallets.read().await;
+            let ks = wallets
+                .get(&active)
+                .ok_or_else(|| format!("active wallet '{active}' is not unlocked"))?;
+            ks.master_fingerprint_bytes()
+                .map_err(|e| format!("fingerprint: {e}"))?
+        };
+        if !parsed.contains_fingerprint(&our_fp) {
+            return Err(format!(
+                "active wallet's fingerprint {} is not in this descriptor — refusing to save \
+                 (watch-only multisig is not supported in this build)",
+                hex::encode(our_fp)
+            ));
+        }
+        let dir = descriptors_dir(&state.wallets_dir, &active);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir descriptors: {e}"))?;
+        // Refuse to overwrite an existing descriptor — saving over
+        // a name silently is the kind of footgun we don't want.
+        let path = descriptor_path(&state.wallets_dir, &active, name);
+        if path.exists() {
+            return Err(format!(
+                "descriptor '{name}' already exists for wallet '{active}' — pick a different name or delete the old one"
+            ));
+        }
+        std::fs::write(&path, descriptor.trim().as_bytes())
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+        // 0600 like the keystore — descriptors carry every cosigner's
+        // xpub, which is sensitive metadata even though it's "public".
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path)
+                .map_err(|e| format!("stat: {e}"))?
+                .permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(&path, perms);
+        }
+        Ok(wraith_wallet_ipc::MultisigDescriptorSaved {
+            name: name.to_string(),
+            path: path.display().to_string(),
+        })
+    }
+
+    /// List saved descriptors for the active wallet. Returns a
+    /// summary per file; full contents fetched separately if the
+    /// GUI needs them.
+    async fn multisig_list_handler(
+        state: &DaemonState,
+    ) -> Result<wraith_wallet_ipc::MultisigDescriptorListResponse, String> {
+        use wraith_wallet_core::descriptor as desc;
+        let active = state
+            .active
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "no active wallet".to_string())?;
+        let dir = descriptors_dir(&state.wallets_dir, &active);
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = match path.file_stem().and_then(|s| s.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                if path.extension().and_then(|s| s.to_str()) != Some("desc") {
+                    continue;
+                }
+                let body = match std::fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let parsed = match desc::parse(&body) {
+                    Ok(p) => p,
+                    // Skip un-parseable files rather than failing
+                    // the whole list — they'll be visible on disk
+                    // for the user to clean up.
+                    Err(_) => continue,
+                };
+                let kind = match parsed.kind {
+                    desc::DescriptorKind::WshSortedMulti => "wsh-sortedmulti",
+                };
+                out.push(wraith_wallet_ipc::MultisigDescriptorListEntry {
+                    name,
+                    kind: kind.to_string(),
+                    k: parsed.k as u32,
+                    n: parsed.n() as u32,
+                    cosigner_fingerprints: parsed
+                        .keys
+                        .iter()
+                        .map(|k| hex::encode(k.fingerprint))
+                        .collect(),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(wraith_wallet_ipc::MultisigDescriptorListResponse { descriptors: out })
+    }
+
+    /// Derive `count` addresses starting at `start_index` for a
+    /// saved descriptor.
+    async fn multisig_addresses_handler(
+        state: &DaemonState,
+        name: &str,
+        start_index: u32,
+        count: u32,
+        internal: bool,
+    ) -> Result<wraith_wallet_ipc::MultisigDescriptorAddressesResponse, String> {
+        use wraith_wallet_core::descriptor as desc;
+        validate_descriptor_name(name)?;
+        let active = state
+            .active
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "no active wallet".to_string())?;
+        let path = descriptor_path(&state.wallets_dir, &active, name);
+        let body = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read descriptor '{name}': {e}"))?;
+        let parsed = desc::parse(&body).map_err(|e| format!("descriptor: {e}"))?;
+        let count = count.min(64);
+        let mut addresses = Vec::with_capacity(count as usize);
+        for offset in 0..count {
+            let idx = start_index + offset;
+            match parsed.derive_address(idx, internal, state.network) {
+                Ok(a) => addresses.push(wraith_wallet_ipc::MultisigDescriptorAddressEntry {
+                    index: idx,
+                    address: a.to_string(),
+                }),
+                Err(e) => {
+                    if matches!(e, desc::DescriptorError::IndexOutOfRange { .. }) {
+                        break;
+                    }
+                    return Err(format!("derive {idx}: {e}"));
+                }
+            }
+        }
+        Ok(wraith_wallet_ipc::MultisigDescriptorAddressesResponse {
+            name: name.to_string(),
+            internal,
+            addresses,
+        })
+    }
+
+    /// Idempotent delete — no error if the descriptor doesn't
+    /// exist. Returns whether a file was actually removed.
+    async fn multisig_delete_handler(state: &DaemonState, name: &str) -> Result<bool, String> {
+        validate_descriptor_name(name)?;
+        let active = state
+            .active
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "no active wallet".to_string())?;
+        let path = descriptor_path(&state.wallets_dir, &active, name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(format!("remove {}: {e}", path.display())),
+        }
+    }
+
+    /// BIP-125 fee-bump on a PSBT. Resolves the active wallet,
+    /// runs `psbt::bump_fee` (which reduces the wallet-owned change
+    /// output to absorb the higher fee), and returns the new
+    /// unsigned PSBT plus the old/new fee + change breakdown.
+    async fn psbt_bump_fee_handler(
+        state: &DaemonState,
+        psbt: &str,
+        new_fee_rate_sats_per_vb: u64,
+        bip86_scan_max: u32,
+    ) -> Result<PsbtBumpFeeResponse, String> {
+        use wraith_wallet_core::psbt as psbt_mod;
+        let (parsed, _encoding) =
+            psbt_mod::decode_psbt(psbt).map_err(|e| format!("decode_psbt: {e}"))?;
+        let network = state.network;
+        let scan_max = bip86_scan_max.max(1);
+        with_active_wallet(state, move |_, ks| {
+            let mut p = parsed;
+            let (bumped, meta) =
+                psbt_mod::bump_fee(&p, ks, network, scan_max, new_fee_rate_sats_per_vb)
+                    .map_err(|e| format!("bump_fee: {e}"))?;
+            // Re-bind to satisfy the closure's move semantics — we
+            // discard the old PSBT now that the bumped one is
+            // built.
+            let _ = std::mem::replace(&mut p, bumped.clone());
+            let encoded = psbt_mod::encode_psbt(&bumped, psbt_mod::PsbtEncoding::Base64);
+            Ok(PsbtBumpFeeResponse {
+                psbt: encoded,
+                old_fee_sats: meta.old_fee_sats,
+                new_fee_sats: meta.new_fee_sats,
+                old_change_sats: meta.old_change_sats,
+                new_change_sats: meta.new_change_sats,
+                input_count: meta.input_count as u32,
+            })
+        })
+        .await
+    }
+
     async fn with_active_wallet<F, R>(state: &DaemonState, f: F) -> Result<R, String>
     where
         F: FnOnce(&str, &Keystore) -> Result<R, String>,
@@ -1412,6 +1910,12 @@ mod unix {
                     has_keys: s.has_keys,
                     lock_count: s.lock_count,
                     active_sessions: s.active_sessions,
+                    chain_height: s.chain_height,
+                    chain_headers: s.chain_headers,
+                    chain_verification_progress: s.chain_verification_progress,
+                    chain_initial_block_download: s.chain_initial_block_download,
+                    l2_height: s.l2_height,
+                    l2_epoch: s.l2_epoch,
                 }),
                 Err(e) => Response::Error(ErrorResponse {
                     message: format!("chain: {e}"),
@@ -2458,6 +2962,64 @@ mod unix {
                     Err(message) => Response::Error(ErrorResponse { message }),
                 }
             }
+            Request::WalletExportXpub { path, mainnet } => {
+                let label = if mainnet { "mainnet" } else { "testnet" }.to_string();
+                match with_active_wallet(state, move |_, ks| {
+                    ks.export_xpub(&path, mainnet)
+                        .map_err(|e| format!("export_xpub: {e}"))
+                })
+                .await
+                {
+                    Ok(exp) => Response::WalletXpub(WalletXpubResponse {
+                        xpub: exp.xpub,
+                        master_fingerprint_hex: exp.master_fingerprint_hex,
+                        path: exp.path,
+                        descriptor_key_fragment: exp.descriptor_key_fragment,
+                        network_label: label,
+                    }),
+                    Err(message) => Response::Error(ErrorResponse { message }),
+                }
+            }
+            Request::MultisigDescriptorInspect {
+                descriptor,
+                address_count,
+            } => match multisig_inspect_handler(state, &descriptor, address_count).await {
+                Ok(r) => Response::MultisigDescriptorInspected(r),
+                Err(e) => Response::Error(ErrorResponse { message: e }),
+            },
+            Request::MultisigDescriptorSave { name, descriptor } => {
+                match multisig_save_handler(state, &name, &descriptor).await {
+                    Ok(r) => Response::MultisigDescriptorSaved(r),
+                    Err(e) => Response::Error(ErrorResponse { message: e }),
+                }
+            }
+            Request::MultisigDescriptorList => match multisig_list_handler(state).await {
+                Ok(r) => Response::MultisigDescriptorList(r),
+                Err(e) => Response::Error(ErrorResponse { message: e }),
+            },
+            Request::MultisigDescriptorAddresses {
+                name,
+                start_index,
+                count,
+                internal,
+            } => match multisig_addresses_handler(
+                state,
+                &name,
+                start_index,
+                count,
+                internal,
+            )
+            .await
+            {
+                Ok(r) => Response::MultisigDescriptorAddresses(r),
+                Err(e) => Response::Error(ErrorResponse { message: e }),
+            },
+            Request::MultisigDescriptorDelete { name } => {
+                match multisig_delete_handler(state, &name).await {
+                    Ok(removed) => Response::MultisigDescriptorDeleted { removed },
+                    Err(e) => Response::Error(ErrorResponse { message: e }),
+                }
+            }
             Request::WalletGhostId => {
                 let net = state.network;
                 let label = format!("{:?}", net).to_lowercase();
@@ -2957,6 +3519,218 @@ mod unix {
                     Err(e) => Response::Error(ErrorResponse {
                         message: format!("wraith submit: {e}"),
                     }),
+                }
+            }
+            Request::PsbtInspect { psbt } => {
+                use wraith_wallet_core::psbt as psbt_mod;
+                match psbt_mod::decode_psbt(&psbt) {
+                    Err(e) => Response::Error(ErrorResponse {
+                        message: format!("psbt decode: {e}"),
+                    }),
+                    Ok((parsed, _encoding)) => {
+                        let inspect = psbt_mod::inspect(&parsed);
+                        let network = state.network;
+                        // Resolve the active wallet (if any) to
+                        // answer the per-input "is this signable
+                        // by me?" question. Inspector still works
+                        // without an active wallet — those flags
+                        // just come back false.
+                        let active = state.active.read().await.clone();
+                        let scan_max = psbt_mod::DEFAULT_SCAN_INDEX_MAX;
+                        let (input_signable, output_owned) = if let Some(name) = active {
+                            let wallets = state.wallets.read().await;
+                            if let Some(ks) = wallets.get(&name) {
+                                let inputs_flags: Vec<bool> = inspect
+                                    .inputs
+                                    .iter()
+                                    .map(|iv| match &iv.script_pubkey {
+                                        Some(spk) if spk.is_p2tr() => psbt_mod::find_bip86_index_for_script(
+                                            ks, network, spk, scan_max,
+                                        )
+                                        .unwrap_or(None)
+                                        .is_some(),
+                                        _ => false,
+                                    })
+                                    .collect();
+                                let outputs_flags: Vec<bool> = inspect
+                                    .outputs
+                                    .iter()
+                                    .map(|ov| {
+                                        if !ov.script_pubkey.is_p2tr() {
+                                            return false;
+                                        }
+                                        psbt_mod::find_bip86_index_for_script(
+                                            ks,
+                                            network,
+                                            &ov.script_pubkey,
+                                            scan_max,
+                                        )
+                                        .unwrap_or(None)
+                                        .is_some()
+                                    })
+                                    .collect();
+                                (inputs_flags, outputs_flags)
+                            } else {
+                                (
+                                    vec![false; inspect.inputs.len()],
+                                    vec![false; inspect.outputs.len()],
+                                )
+                            }
+                        } else {
+                            (
+                                vec![false; inspect.inputs.len()],
+                                vec![false; inspect.outputs.len()],
+                            )
+                        };
+
+                        let inputs: Vec<PsbtInputSummary> = inspect
+                            .inputs
+                            .iter()
+                            .enumerate()
+                            .map(|(i, iv)| PsbtInputSummary {
+                                previous_txid: iv.previous_txid.to_string(),
+                                previous_vout: iv.previous_vout,
+                                value_sats: iv.value_sats,
+                                script_pubkey_hex: iv
+                                    .script_pubkey
+                                    .as_ref()
+                                    .map(|s| hex::encode(s.as_bytes())),
+                                address: iv
+                                    .script_pubkey
+                                    .as_ref()
+                                    .and_then(|s| psbt_mod::script_to_address(s, network)),
+                                is_finalized: iv.is_finalized,
+                                partial_signatures: iv.partial_signatures,
+                                is_signable_by_active_wallet: input_signable[i]
+                                    && !iv.is_finalized,
+                            })
+                            .collect();
+                        let outputs: Vec<PsbtOutputSummary> = inspect
+                            .outputs
+                            .iter()
+                            .enumerate()
+                            .map(|(i, ov)| PsbtOutputSummary {
+                                value_sats: ov.value_sats,
+                                script_pubkey_hex: hex::encode(ov.script_pubkey.as_bytes()),
+                                address: psbt_mod::script_to_address(&ov.script_pubkey, network),
+                                is_owned_by_active_wallet: output_owned[i],
+                            })
+                            .collect();
+
+                        let total_in_sats: Option<u64> = if inputs.iter().all(|i| i.value_sats.is_some()) {
+                            Some(inputs.iter().map(|i| i.value_sats.unwrap_or(0)).sum())
+                        } else {
+                            None
+                        };
+                        let total_out_sats: u64 =
+                            outputs.iter().map(|o| o.value_sats).sum();
+                        let fee_sats = total_in_sats.and_then(|t| t.checked_sub(total_out_sats));
+                        let is_complete = psbt_mod::is_complete(&parsed);
+                        let has_signable_inputs =
+                            inputs.iter().any(|i| i.is_signable_by_active_wallet);
+
+                        let network_label = match state.network {
+                            bitcoin::Network::Bitcoin => "mainnet",
+                            bitcoin::Network::Signet => "signet",
+                            bitcoin::Network::Testnet => "testnet",
+                            bitcoin::Network::Regtest => "regtest",
+                            _ => "unknown",
+                        };
+
+                        Response::PsbtInspected(PsbtInspectResponse {
+                            network: network_label.to_string(),
+                            unsigned_tx_hex: bitcoin::consensus::encode::serialize_hex(
+                                &parsed.unsigned_tx,
+                            ),
+                            txid: inspect.txid.to_string(),
+                            inputs,
+                            outputs,
+                            total_in_sats,
+                            total_out_sats,
+                            fee_sats,
+                            is_complete,
+                            has_signable_inputs,
+                        })
+                    }
+                }
+            }
+            Request::PsbtCreate {
+                recipient_address,
+                amount_sats,
+                fee_rate_sats_per_vb,
+                change_index,
+                bip86_scan_max,
+                selected_outpoints,
+            } => match psbt_create_handler(
+                state,
+                &recipient_address,
+                amount_sats,
+                fee_rate_sats_per_vb,
+                change_index,
+                bip86_scan_max,
+                &selected_outpoints,
+            )
+            .await
+            {
+                Ok(r) => Response::PsbtCreated(r),
+                Err(e) => Response::Error(ErrorResponse { message: e }),
+            },
+            Request::PsbtBroadcast { psbt_or_tx_hex } => {
+                match psbt_broadcast_handler(state, &psbt_or_tx_hex).await {
+                    Ok(txid) => Response::PsbtBroadcast(PsbtBroadcastResponse { txid }),
+                    Err(e) => Response::Error(ErrorResponse { message: e }),
+                }
+            }
+            Request::PsbtBumpFee {
+                psbt,
+                new_fee_rate_sats_per_vb,
+                bip86_scan_max,
+            } => {
+                match psbt_bump_fee_handler(
+                    state,
+                    &psbt,
+                    new_fee_rate_sats_per_vb,
+                    bip86_scan_max,
+                )
+                .await
+                {
+                    Ok(r) => Response::PsbtBumped(r),
+                    Err(e) => Response::Error(ErrorResponse { message: e }),
+                }
+            }
+            Request::PsbtSign {
+                psbt,
+                bip86_scan_max,
+            } => {
+                use wraith_wallet_core::psbt as psbt_mod;
+                let scan_max = bip86_scan_max.unwrap_or(psbt_mod::DEFAULT_SCAN_INDEX_MAX);
+                match psbt_mod::decode_psbt(&psbt) {
+                    Err(e) => Response::Error(ErrorResponse {
+                        message: format!("psbt decode: {e}"),
+                    }),
+                    Ok((mut parsed, encoding)) => {
+                        let network = state.network;
+                        let result = with_active_wallet(state, move |_, ks| {
+                            psbt_mod::sign_owned_inputs(&mut parsed, ks, network, scan_max)
+                                .map(|signed| (signed, parsed))
+                                .map_err(|e| format!("psbt sign: {e}"))
+                        })
+                        .await;
+                        match result {
+                            Err(e) => Response::Error(ErrorResponse { message: e }),
+                            Ok((signed, signed_psbt)) => {
+                                let input_count = signed_psbt.unsigned_tx.input.len() as u32;
+                                let is_complete = psbt_mod::is_complete(&signed_psbt);
+                                let encoded = psbt_mod::encode_psbt(&signed_psbt, encoding);
+                                Response::PsbtSigned(PsbtSignResponse {
+                                    psbt: encoded,
+                                    signed_inputs: signed,
+                                    input_count,
+                                    is_complete,
+                                })
+                            }
+                        }
+                    }
                 }
             }
         };

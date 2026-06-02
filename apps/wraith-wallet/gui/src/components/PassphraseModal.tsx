@@ -70,41 +70,26 @@ export function PassphraseModal({
 
   return (
     <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 100,
-      }}
+      className="modal-overlay"
       onClick={(e) => {
-        // Click outside the inner card cancels — matches the
-        // affordance of a modal.
         if (e.target === e.currentTarget && !busy) onCancel();
       }}
     >
-      <div
-        className="card"
-        style={{ width: "min(440px, 90vw)", padding: 24 }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 style={{ marginTop: 0 }}>{title}</h2>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="card-header">
+          <h2 style={{ margin: 0 }}>{title}</h2>
+        </div>
         {description && (
           <p className="muted" style={{ margin: 0, fontSize: 13 }}>
             {description}
           </p>
         )}
         {error && (
-          <div
-            className="pill fail"
-            style={{ alignSelf: "flex-start", marginTop: 8 }}
-          >
+          <div className="pill fail" style={{ alignSelf: "flex-start" }}>
             {error}
           </div>
         )}
-        <div className="col" style={{ marginTop: 12 }}>
+        <div className="col">
           <label>Passphrase</label>
           <input
             ref={inputRef}
@@ -117,17 +102,12 @@ export function PassphraseModal({
             }}
           />
         </div>
-        <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
-          <button
-            className="secondary"
-            onClick={onCancel}
-            disabled={busy}
-            style={{ marginRight: 8 }}
-          >
+        <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+          <button className="btn-secondary" onClick={onCancel} disabled={busy}>
             Cancel
           </button>
           <button
-            className="primary"
+            className="btn-primary"
             onClick={submit}
             disabled={busy || !value}
           >

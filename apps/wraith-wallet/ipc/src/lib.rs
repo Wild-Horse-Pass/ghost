@@ -204,6 +204,52 @@ pub enum Request {
     WalletAuthInfo,
     /// Show the active wallet's BIP-352 Ghost ID (silent payment receive identity).
     WalletGhostId,
+    /// Export the active wallet's extended public key at `path`,
+    /// formatted for use as a BIP-380 descriptor key fragment.
+    /// `mainnet=true` emits xpub, `mainnet=false` emits tpub.
+    /// Used by cosigners assembling a multisig descriptor in
+    /// Sparrow / Specter / Bitcoin Core. The wallet's private key
+    /// stays on the daemon — only the public extended key leaves.
+    WalletExportXpub {
+        path: String,
+        #[serde(default)]
+        mainnet: bool,
+    },
+    /// Parse a multisig descriptor and return its structure +
+    /// first `address_count` derived receive addresses. No
+    /// persistence — pure inspection. Lets the GUI validate a
+    /// pasted descriptor before saving.
+    MultisigDescriptorInspect {
+        descriptor: String,
+        #[serde(default = "default_address_count")]
+        address_count: u32,
+    },
+    /// Persist a multisig descriptor under `name` for the active
+    /// wallet. Errors if `name` already exists. The wallet's
+    /// fingerprint must be present in the descriptor — otherwise
+    /// the daemon refuses (would be a watch-only role we don't
+    /// model yet).
+    MultisigDescriptorSave {
+        name: String,
+        descriptor: String,
+    },
+    /// List multisig descriptors saved for the active wallet.
+    MultisigDescriptorList,
+    /// Return derived receive addresses for a saved descriptor,
+    /// `count` of them starting at `start_index`. `internal=true`
+    /// returns change-chain addresses instead.
+    MultisigDescriptorAddresses {
+        name: String,
+        #[serde(default)]
+        start_index: u32,
+        #[serde(default = "default_address_count")]
+        count: u32,
+        #[serde(default)]
+        internal: bool,
+    },
+    /// Delete a saved multisig descriptor for the active wallet.
+    /// Idempotent — succeeds with `removed=false` if absent.
+    MultisigDescriptorDelete { name: String },
     /// Re-display a wallet's BIP39 mnemonic. Always re-prompts the passphrase.
     WalletShowMnemonic {
         name: String,
@@ -323,6 +369,100 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bip86_scan_max: Option<u32>,
     },
+    /// Decode a PSBT and return a per-input / per-output summary.
+    /// Pure function — does not touch any wallet state, so unlike
+    /// `PsbtSign` it works without an active wallet. Accepts either
+    /// base64 or hex; the daemon sniffs the encoding.
+    PsbtInspect { psbt: String },
+    /// Sign every input of a PSBT that the active wallet's keystore
+    /// can sign. Inputs the keystore doesn't own are left untouched
+    /// — multi-cosigner flows just chain `PsbtSign` across each
+    /// participant's daemon. Returns the updated PSBT (same encoding
+    /// as the input — base64 in, base64 out).
+    ///
+    /// `bip86_scan_max` bounds the derivation search per input
+    /// (default 1024 — same as the Wraith mix scan).
+    PsbtSign {
+        psbt: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bip86_scan_max: Option<u32>,
+    },
+    /// Build an unsigned PSBT spending the active wallet's L1 UTXOs
+    /// to `recipient_address`. Daemon scans 0..`bip86_scan_max`
+    /// receive addresses against ghost-pay's `scantxoutset`, then
+    /// runs greedy coin selection to cover `amount_sats + fee`.
+    /// Change goes back to the next-derived BIP86 receive index
+    /// (`change_index` if specified; otherwise `bip86_scan_max + 1`
+    /// — i.e. just past the gap-limit so it's a fresh address).
+    /// Returns the unsigned PSBT (base64) ready to feed into
+    /// `PsbtSign` or export to a hardware wallet.
+    PsbtCreate {
+        recipient_address: String,
+        amount_sats: u64,
+        /// Fee rate in sats/vB. Default 5.
+        #[serde(default = "default_fee_rate")]
+        fee_rate_sats_per_vb: u64,
+        /// BIP86 index to use for change. None → next index past the scan.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change_index: Option<u32>,
+        /// Highest BIP86 index to scan when looking for spendable
+        /// UTXOs. Default 32 — matches `default_l1_scan_max_index`.
+        #[serde(default = "default_l1_scan_max_index")]
+        bip86_scan_max: u32,
+        /// Coin-control: if non-empty, only these outpoints are
+        /// considered for selection. Daemon errors if any outpoint
+        /// isn't in the wallet's scanned UTXO set (catches
+        /// stale GUI state). Empty / absent → fall back to greedy
+        /// over all spendable UTXOs.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        selected_outpoints: Vec<OutpointRef>,
+    },
+    /// Broadcast a finalized PSBT (or finalized raw tx hex) via
+    /// ghost-pay → bitcoind's `sendrawtransaction`. The daemon
+    /// extracts the tx from the PSBT before forwarding, so the
+    /// caller doesn't have to know how to finalize. If the input
+    /// is already raw tx hex (no PSBT magic), it's broadcast as-is.
+    PsbtBroadcast { psbt_or_tx_hex: String },
+    /// BIP-125 fee-bump on an existing PSBT. Reduces the wallet's
+    /// change output to absorb the higher fee, returns a fresh
+    /// unsigned PSBT (signatures stripped — the sighash changes
+    /// when output values change). Caller signs + broadcasts the
+    /// result via the normal `PsbtSign` + `PsbtBroadcast` flow.
+    /// `new_fee_rate_sats_per_vb` must strictly exceed the
+    /// original rate or the call is a no-op (and rejected).
+    PsbtBumpFee {
+        psbt: String,
+        new_fee_rate_sats_per_vb: u64,
+        /// Highest BIP86 index to scan when locating the wallet's
+        /// change output. Default 32 — matches the create-side
+        /// default.
+        #[serde(default = "default_l1_scan_max_index")]
+        bip86_scan_max: u32,
+    },
+}
+
+/// Default fee rate (sats/vB) used by PsbtCreate when the caller
+/// doesn't specify one. 5 is a generous regtest/signet default; on
+/// mainnet the GUI prompts the user for a fee rate before
+/// reaching this code path.
+pub(crate) fn default_fee_rate() -> u64 {
+    5
+}
+
+/// Default number of multisig receive addresses to derive for
+/// inspection / display. 10 fits a typical "show me a few" panel
+/// without making the daemon do excessive secp work per call.
+pub(crate) fn default_address_count() -> u32 {
+    10
+}
+
+/// Wire shape for a coin-control outpoint reference. Stays a thin
+/// `{txid, vout}` so it round-trips through every PSBT toolchain
+/// without translation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutpointRef {
+    pub txid: String,
+    pub vout: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,6 +518,12 @@ pub enum Response {
     WalletDerive(WalletDeriveResponse),
     WalletAuthInfo(WalletAuthInfoResponse),
     WalletGhostId(WalletGhostIdResponse),
+    WalletXpub(WalletXpubResponse),
+    MultisigDescriptorInspected(MultisigDescriptorInspected),
+    MultisigDescriptorSaved(MultisigDescriptorSaved),
+    MultisigDescriptorList(MultisigDescriptorListResponse),
+    MultisigDescriptorAddresses(MultisigDescriptorAddressesResponse),
+    MultisigDescriptorDeleted { removed: bool },
     WalletShowMnemonic(WalletShowMnemonicResponse),
     WalletExported {
         name: String,
@@ -398,6 +544,11 @@ pub enum Response {
     /// Reply to [`Request::WraithMixSubmit`]. Carries the broadcast
     /// txid and the index of the wallet's mixed output.
     WraithMixCompleted(WraithMixCompletedResponse),
+    PsbtInspected(PsbtInspectResponse),
+    PsbtSigned(PsbtSignResponse),
+    PsbtCreated(PsbtCreateResponse),
+    PsbtBroadcast(PsbtBroadcastResponse),
+    PsbtBumped(PsbtBumpFeeResponse),
     Error(ErrorResponse),
 }
 
@@ -451,6 +602,145 @@ pub struct WraithMixCompletedResponse {
     pub mixed_output_tx_index: u32,
 }
 
+/// Per-input row returned by `PsbtInspect`.
+///
+/// Field choices mirror Bitcoin Core's `decodepsbt` so existing
+/// tooling stays a 1:1 mental map. Optional fields are `None` for
+/// inputs the daemon couldn't fully decode (e.g. a witness UTXO
+/// that's missing). Importantly, `is_signable_by_active_wallet` is
+/// computed against the currently-loaded wallet's keystore: it
+/// answers the user's question "will my Sign button do anything to
+/// this input?" without making them parse derivation paths.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsbtInputSummary {
+    pub previous_txid: String,
+    pub previous_vout: u32,
+    /// Amount of the input we're consuming, if a witness UTXO or
+    /// non-witness UTXO is attached. None when neither is set, which
+    /// breaks signability (we'd be signing a sighash with no value
+    /// commitment) — surface the row as un-signable.
+    pub value_sats: Option<u64>,
+    pub script_pubkey_hex: Option<String>,
+    pub address: Option<String>,
+    /// `true` if this input already carries a final scriptWitness
+    /// or final scriptSig. Saves the GUI from re-rendering "ready
+    /// to sign" pills on inputs that are already done.
+    pub is_finalized: bool,
+    /// Number of partial signatures attached. With multisig you
+    /// expect this to grow toward the script's `k` threshold across
+    /// rounds.
+    pub partial_signatures: u32,
+    /// True if the active wallet's keystore can produce a signature
+    /// for this input. Computed by deriving up to
+    /// `bip86_scan_max` BIP86 indices and checking the witness
+    /// scriptPubKey against the result. Inactive when no wallet is
+    /// loaded — surfaces the input as un-signable in that case.
+    pub is_signable_by_active_wallet: bool,
+}
+
+/// Per-output row returned by `PsbtInspect`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsbtOutputSummary {
+    pub value_sats: u64,
+    pub script_pubkey_hex: String,
+    pub address: Option<String>,
+    /// True if this output goes back to the active wallet (BIP86
+    /// receive at any scanned index). Lets the GUI label change vs
+    /// recipient outputs visually.
+    pub is_owned_by_active_wallet: bool,
+}
+
+/// Reply to [`Request::PsbtInspect`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsbtInspectResponse {
+    /// Network the daemon is running on. Inspector echos this so
+    /// the GUI can warn loudly if the user tries to sign a mainnet
+    /// PSBT in a regtest wallet (or vice versa).
+    pub network: String,
+    /// Hex of the unsigned tx contained in the PSBT.
+    pub unsigned_tx_hex: String,
+    /// txid of the unsigned tx — the malleability-free form, since
+    /// signature data lives outside the txid pre-image for taproot.
+    pub txid: String,
+    pub inputs: Vec<PsbtInputSummary>,
+    pub outputs: Vec<PsbtOutputSummary>,
+    /// Total input value, when every input has a `value_sats`. None
+    /// when at least one input is missing prevout info — the fee in
+    /// that case is undeterminable from the PSBT alone.
+    pub total_in_sats: Option<u64>,
+    pub total_out_sats: u64,
+    pub fee_sats: Option<u64>,
+    /// True if every input is finalized — the PSBT is one
+    /// `psbt_extract` away from a broadcast-ready transaction.
+    pub is_complete: bool,
+    /// Convenience flag — at least one input was signable but is
+    /// not yet finalized, i.e. `PsbtSign` would do work.
+    pub has_signable_inputs: bool,
+}
+
+/// Reply to [`Request::PsbtCreate`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsbtCreateResponse {
+    /// The unsigned PSBT, base64-encoded.
+    pub psbt: String,
+    /// Number of inputs the builder selected (greedy by descending
+    /// value).
+    pub input_count: u32,
+    /// Sum of input values in sats.
+    pub total_input_sats: u64,
+    /// Recipient amount echoed back, for cross-check.
+    pub recipient_sats: u64,
+    /// Change going back to the wallet (0 means change was
+    /// absorbed into the fee — residual was below dust).
+    pub change_sats: u64,
+    /// Mining fee in sats. Computed from `fee_rate_sats_per_vb` ×
+    /// estimated vbytes; may exceed the requested rate × bytes
+    /// when residual was rolled into the fee.
+    pub fee_sats: u64,
+    /// BIP86 derivation index used for change (None when no
+    /// change output was needed).
+    pub change_bip86_index: Option<u32>,
+}
+
+/// Reply to [`Request::PsbtBroadcast`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsbtBroadcastResponse {
+    /// txid that bitcoind accepted.
+    pub txid: String,
+}
+
+/// Reply to [`Request::PsbtBumpFee`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsbtBumpFeeResponse {
+    /// The bumped PSBT, base64-encoded. Unsigned — caller resigns
+    /// (sighash changed when output values changed) before
+    /// broadcasting.
+    pub psbt: String,
+    pub old_fee_sats: u64,
+    pub new_fee_sats: u64,
+    pub old_change_sats: u64,
+    pub new_change_sats: u64,
+    pub input_count: u32,
+}
+
+/// Reply to [`Request::PsbtSign`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsbtSignResponse {
+    /// PSBT after our signatures were added. Same encoding as the
+    /// request input (base64 in → base64 out, hex in → hex out).
+    pub psbt: String,
+    /// Indices of inputs we successfully signed (zero-based against
+    /// the unsigned tx's input list).
+    pub signed_inputs: Vec<u32>,
+    /// Total inputs in the PSBT — useful for the GUI to show
+    /// "signed N of M" status.
+    pub input_count: u32,
+    /// Whether every input is now finalized (i.e. `psbt_extract`
+    /// would succeed). Mirrors `PsbtInspectResponse::is_complete`
+    /// after the sign step.
+    pub is_complete: bool,
+}
+
 /// One row in the `Doctor` summary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorCheck {
@@ -475,6 +765,25 @@ pub struct ChainStatusResponse {
     pub has_keys: bool,
     pub lock_count: u64,
     pub active_sessions: u64,
+    /// Latest verified-block height from the operator's bitcoind.
+    #[serde(default)]
+    pub chain_height: Option<u64>,
+    /// Highest header bitcoind has seen. Equals chain_height when
+    /// synced, exceeds it during IBD.
+    #[serde(default)]
+    pub chain_headers: Option<u64>,
+    /// Bitcoin Core's verification progress (0..1). 1.0 ≈ synced.
+    #[serde(default)]
+    pub chain_verification_progress: Option<f64>,
+    /// Bitcoin Core's IBD flag.
+    #[serde(default)]
+    pub chain_initial_block_download: Option<bool>,
+    /// L2 chain tip — latest finalized ghost-pay block height.
+    #[serde(default)]
+    pub l2_height: Option<u64>,
+    /// Current L2 epoch.
+    #[serde(default)]
+    pub l2_epoch: Option<u64>,
 }
 
 /// GSP WebSocket connectivity probe result.
@@ -851,6 +1160,99 @@ pub struct WalletGhostIdResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletShowMnemonicResponse {
     pub mnemonic: String,
+}
+
+/// One cosigner row inside a parsed descriptor — what
+/// `MultisigDescriptorInspect` surfaces per key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultisigCosignerSummary {
+    pub fingerprint_hex: String,
+    pub origin_path: String,
+    pub xpub: String,
+    /// True when this cosigner is the active wallet (fingerprint
+    /// match). The GUI uses this to highlight "this is you" in the
+    /// cosigner list.
+    pub is_us: bool,
+}
+
+/// Reply to [`Request::MultisigDescriptorInspect`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultisigDescriptorInspected {
+    /// `"wsh-sortedmulti"` for v1. Future variants get distinct
+    /// strings — `"tr-multi-a"`, etc. — without breaking older
+    /// clients that match on this field.
+    pub kind: String,
+    pub k: u32,
+    pub n: u32,
+    pub cosigners: Vec<MultisigCosignerSummary>,
+    /// True if any cosigner row's `is_us` is true. Without this,
+    /// the descriptor can't be saved (we don't model watch-only
+    /// roles yet).
+    pub contains_us: bool,
+    /// First N receive addresses (external chain). Length is
+    /// capped by the request's `address_count`.
+    pub addresses: Vec<String>,
+    /// BIP-380 checksum stripped from the input, if any.
+    pub checksum: Option<String>,
+}
+
+/// Reply to [`Request::MultisigDescriptorSave`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultisigDescriptorSaved {
+    pub name: String,
+    pub path: String,
+}
+
+/// One entry in [`Request::MultisigDescriptorList`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultisigDescriptorListEntry {
+    pub name: String,
+    pub kind: String,
+    pub k: u32,
+    pub n: u32,
+    /// Master fingerprints of all cosigners, for at-a-glance
+    /// identification.
+    pub cosigner_fingerprints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultisigDescriptorListResponse {
+    pub descriptors: Vec<MultisigDescriptorListEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultisigDescriptorAddressEntry {
+    pub index: u32,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultisigDescriptorAddressesResponse {
+    pub name: String,
+    pub internal: bool,
+    pub addresses: Vec<MultisigDescriptorAddressEntry>,
+}
+
+/// Reply to [`Request::WalletExportXpub`].
+///
+/// Public-only data — no private material. Field shape mirrors what
+/// every multisig coordinator UI asks for when adding a cosigner:
+/// the xpub (paste it into a key slot), the master fingerprint
+/// (cross-check against the cosigner's hardware-wallet display),
+/// the path (so the descriptor can be re-derived deterministically),
+/// and a pre-assembled `[fp/path]xpub.../<0;1>/*` fragment that
+/// drops directly into a `wsh(sortedmulti(...))` or
+/// `tr(multi_a(...))` wrapper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletXpubResponse {
+    pub xpub: String,
+    pub master_fingerprint_hex: String,
+    pub path: String,
+    pub descriptor_key_fragment: String,
+    /// `"mainnet"` (xpub) or `"testnet"` (tpub) so the GUI can
+    /// surface a network warning when the user picked a path that
+    /// doesn't match the daemon's network.
+    pub network_label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

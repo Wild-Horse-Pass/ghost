@@ -1,12 +1,23 @@
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { lightReceive, walletGhostId } from "../lib/tauri";
+import {
+  lightReceive,
+  onPaymentDetected,
+  startWatch,
+  walletGhostId,
+  type DetectedPayment,
+} from "../lib/tauri";
+
+interface ReceiveProps {
+  /// Bumped by App on every PaymentDetected push so we can light up
+  /// the "received" badge without subscribing twice.
+  paymentTick?: number;
+}
 
 /// Build a BIP-21 URI for the L1 receive address. Same shape the
-/// Merchant screen emits, minus the amount param (Receive is a
-/// "send anything" address — the sender picks the amount). The
-/// `ghost=` extension carries the bech32 ghost-id so Ghost-aware
-/// wallets can route via BIP-352 silent payments instead.
+/// Merchant screen emits, minus the amount param. The `ghost=`
+/// extension carries the bech32 ghost-id so Ghost-aware wallets
+/// route via BIP-352 silent payments.
 function bip21ReceiveUri(address: string, ghost_id: string | null): string {
   if (!ghost_id) return `bitcoin:${address}`;
   const params = new URLSearchParams();
@@ -14,12 +25,15 @@ function bip21ReceiveUri(address: string, ghost_id: string | null): string {
   return `bitcoin:${address}?${params.toString()}`;
 }
 
-export function Receive() {
+export function Receive({ paymentTick: _ }: ReceiveProps = {}) {
   const [ghostId, setGhostId] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState<"ghost" | "address" | null>(null);
+  const [latestDetect, setLatestDetect] = useState<DetectedPayment | null>(
+    null,
+  );
 
   const refresh = async () => {
     setErr(null);
@@ -37,61 +51,95 @@ export function Receive() {
     refresh();
   }, [index]);
 
+  // Local listener for the BIP-352 detection push so we can flash
+  // a "received" pill on this screen specifically.
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        unlisten = await onPaymentDetected((p) => {
+          if (alive) setLatestDetect(p);
+        });
+        await startWatch();
+      } catch {
+        /* the App-level listener still reports header errors */
+      }
+    })();
+    return () => {
+      alive = false;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const copy = async (text: string, tag: "ghost" | "address") => {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(tag);
       setTimeout(() => setCopied(null), 1500);
     } catch {
-      /* clipboard unavailable in some webview sandboxes */
+      /* clipboard unavailable */
     }
   };
 
   return (
     <div className="screen">
-      <h1>Receive</h1>
-      {err && (
-        <div className="card" style={{ borderColor: "var(--fail)" }}>
-          {err}
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">incoming</span>
+          <h1>Receive</h1>
+          <p className="lead">
+            Share a Ghost ID for instant L2 payments, or a fresh
+            BIP86 address for L1 deposits. The wallet listens
+            continuously — incoming sats land in History
+            automatically.
+          </p>
+        </div>
+        <span className="pill pass live" title="BIP-352 listener active">
+          listening
+        </span>
+      </div>
+
+      {err && <div className="card error-card">{err}</div>}
+
+      {latestDetect && (
+        <div
+          className="card"
+          style={{ borderColor: "var(--pass)", borderLeftWidth: 3 }}
+        >
+          <div className="row" style={{ alignItems: "center", gap: 12 }}>
+            <div style={{ fontSize: 24, color: "var(--pass)" }}>✓</div>
+            <div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 18 }}>
+                +{latestDetect.amount_sats.toLocaleString()}{" "}
+                <span className="muted" style={{ fontSize: 13 }}>sats</span>
+              </div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                received · txid {latestDetect.txid.slice(0, 16)}…
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       <div className="card">
-        <h2>Ghost ID (for L2 payments)</h2>
+        <h2>Ghost ID — instant L2 payments</h2>
         <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-          Share this with senders. They use it to send you L2 instant
-          payments — no on-chain transaction, no liquidity setup.
-          Receivers using a Ghost-aware wallet pick this up via the
-          BIP-352 silent-payment scanner; senders can also paste it
-          into the Send screen of any wallet that speaks the Ghost
-          protocol.
+          Share this with senders. Ghost-aware wallets route via
+          BIP-352 silent payments — instant, no on-chain transaction,
+          no liquidity setup.
         </p>
         {ghostId && (
-          <div
-            style={{
-              display: "flex",
-              gap: 16,
-              alignItems: "flex-start",
-              marginTop: 8,
-            }}
-          >
-            <div
-              style={{
-                padding: 12,
-                background: "white",
-                borderRadius: 6,
-                flexShrink: 0,
-              }}
-            >
+          <div className="receive-pair">
+            <div className="qr-card">
               <QRCodeSVG value={ghostId} size={140} level="M" />
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="row" style={{ alignItems: "stretch" }}>
+            <div className="receive-pair-text">
+              <div className="row" style={{ alignItems: "stretch", gap: 6 }}>
                 <input readOnly value={ghostId} className="mono" />
                 <button
-                  className="secondary"
+                  className="btn-secondary btn-sm"
                   onClick={() => copy(ghostId, "ghost")}
-                  style={{ marginLeft: 6 }}
                 >
                   {copied === "ghost" ? "copied" : "Copy"}
                 </button>
@@ -103,9 +151,20 @@ export function Receive() {
 
       <div className="card">
         <div className="card-header">
-          <h2>Bitcoin receive address (for L1 deposits)</h2>
-          <div className="row">
-            <label style={{ margin: 0 }}>Index</label>
+          <h2>Bitcoin address — L1 deposits</h2>
+          <div className="row" style={{ gap: 6, alignItems: "center" }}>
+            <label
+              style={{
+                margin: 0,
+                textTransform: "none",
+                letterSpacing: 0,
+                fontFamily: "var(--font-sans)",
+                fontSize: 13,
+                color: "var(--dim)",
+              }}
+            >
+              Index
+            </label>
             <input
               type="number"
               min={0}
@@ -116,51 +175,35 @@ export function Receive() {
           </div>
         </div>
         <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-          A fresh receive address derived at the supplied index. Any
-          wallet can send to it directly — Ghost-aware wallets pick
-          up the embedded ghost-id and route via BIP-352 silent
-          payments instead. The QR encodes a BIP-21 URI with both
-          forms so one scan works everywhere.
+          Fresh BIP86 taproot address. Any Bitcoin wallet can pay it
+          directly. Ghost-aware wallets pick up the embedded ghost-id
+          from the QR and route via silent payments instead — one QR
+          works everywhere.
         </p>
         {address && (
-          <div
-            style={{
-              display: "flex",
-              gap: 16,
-              alignItems: "flex-start",
-              marginTop: 8,
-            }}
-          >
-            <div
-              style={{
-                padding: 12,
-                background: "white",
-                borderRadius: 6,
-                flexShrink: 0,
-              }}
-            >
+          <div className="receive-pair">
+            <div className="qr-card">
               <QRCodeSVG
                 value={bip21ReceiveUri(address, ghostId)}
                 size={140}
                 level="M"
               />
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="row" style={{ alignItems: "stretch" }}>
+            <div className="receive-pair-text">
+              <div className="row" style={{ alignItems: "stretch", gap: 6 }}>
                 <input readOnly value={address} className="mono" />
                 <button
-                  className="secondary"
+                  className="btn-secondary btn-sm"
                   onClick={() => copy(address, "address")}
-                  style={{ marginLeft: 6 }}
                 >
                   {copied === "address" ? "copied" : "Copy"}
                 </button>
               </div>
               <span
                 className="muted"
-                style={{ fontSize: 12, marginTop: 4, display: "block" }}
+                style={{ fontSize: 11, marginTop: 4, display: "block", fontFamily: "var(--font-mono)" }}
               >
-                BIP86 path: m/86'/531'/0'/0/{index}
+                m/86'/531'/0'/0/{index}
               </span>
             </div>
           </div>

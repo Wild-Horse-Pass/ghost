@@ -123,6 +123,10 @@ impl ChainClient for GhostPayClient {
         // `GhostPayClient` and want full type info.
         GhostPayClient::scan_utxos(self, addresses, min_confirmations).await
     }
+
+    async fn broadcast_tx(&self, tx_hex: &str) -> Result<String, ChainError> {
+        GhostPayClient::broadcast_tx(self, tx_hex).await
+    }
 }
 
 /// One UTXO row from `POST /api/v1/utxos/scan`. Mirrors ghost-pay's
@@ -172,6 +176,66 @@ impl GhostPayClient {
             }
         }
         Err(last_err.unwrap_or_else(|| ChainError::Transport("no endpoints configured".into())))
+    }
+
+    /// Broadcast a fully-signed Bitcoin transaction via ghost-pay's
+    /// `POST /api/v1/tx/broadcast`. Authenticated; fails with
+    /// `Backend(...)` 401 unless `with_internal_secret(...)` was set.
+    /// On success, returns the txid that bitcoind accepted.
+    pub async fn broadcast_tx(&self, tx_hex: &str) -> Result<String, ChainError> {
+        let mut last_err: Option<ChainError> = None;
+        for base in &self.base_urls {
+            match self.try_broadcast_tx(base, tx_hex).await {
+                Ok(txid) => return Ok(txid),
+                Err(e) => {
+                    tracing::debug!(
+                        url = %base,
+                        error = %e,
+                        "ghost-pay broadcast_tx failed, trying next"
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ChainError::Transport("no endpoints configured".into())))
+    }
+
+    async fn try_broadcast_tx(
+        &self,
+        base_url: &str,
+        tx_hex: &str,
+    ) -> Result<String, ChainError> {
+        let url = self.endpoint(base_url, "/api/v1/tx/broadcast");
+        let mut req = self.http.post(&url).json(&serde_json::json!({
+            "tx_hex": tx_hex,
+        }));
+        if let Some(secret) = &self.internal_secret {
+            req = req.header("X-Internal-Auth", secret);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ChainError::Transport(e.to_string()))?;
+        let status = resp.status();
+        if !status.is_success() {
+            // ghost-pay forwards bitcoind's error string verbatim,
+            // so the caller can show the operator's node's actual
+            // rejection reason ("min relay fee not met", etc.).
+            let detail = resp.text().await.unwrap_or_default();
+            return Err(ChainError::Backend(format!(
+                "ghost-pay broadcast returned {}: {}",
+                status, detail
+            )));
+        }
+        #[derive(Deserialize)]
+        struct BroadcastResp {
+            txid: String,
+        }
+        let body: BroadcastResp = resp
+            .json()
+            .await
+            .map_err(|e| ChainError::Malformed(e.to_string()))?;
+        Ok(body.txid)
     }
 
     async fn try_scan_utxos(
@@ -225,6 +289,12 @@ impl GhostPayClient {
             has_keys: body.has_keys,
             lock_count: body.lock_count,
             active_sessions: body.active_sessions,
+            chain_height: body.chain_height,
+            chain_headers: body.chain_headers,
+            chain_verification_progress: body.chain_verification_progress,
+            chain_initial_block_download: body.chain_initial_block_download,
+            l2_height: body.l2_height,
+            l2_epoch: body.l2_epoch,
         })
     }
 }
@@ -234,13 +304,21 @@ struct StatusBody {
     version: String,
     has_keys: bool,
     lock_count: u64,
-    /// Active GSP sessions on the operator. Older ghost-pay
-    /// versions and the current regtest build don't emit this
-    /// field; fall back to 0 so the doctor check still parses.
-    /// Only used in the human-readable summary, never load-bearing.
     #[serde(default)]
     active_sessions: u64,
     network: String,
+    #[serde(default)]
+    chain_height: Option<u64>,
+    #[serde(default)]
+    chain_headers: Option<u64>,
+    #[serde(default)]
+    chain_verification_progress: Option<f64>,
+    #[serde(default)]
+    chain_initial_block_download: Option<bool>,
+    #[serde(default)]
+    l2_height: Option<u64>,
+    #[serde(default)]
+    l2_epoch: Option<u64>,
 }
 
 #[cfg(test)]

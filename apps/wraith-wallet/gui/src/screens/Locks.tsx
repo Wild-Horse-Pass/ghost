@@ -155,12 +155,19 @@ export function Locks() {
 
   return (
     <div className="screen">
-      <h1>Ghost Locks</h1>
-      {err && (
-        <div className="card" style={{ borderColor: "var(--fail)" }}>
-          {err}
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">custody primitive</span>
+          <h1>Ghost Locks</h1>
+          <p className="lead">
+            Time-locked taproot outputs that mix you in with every
+            other CoinJoin output of the same denomination. Recover
+            unilaterally without operator cooperation if the
+            timelock has matured.
+          </p>
         </div>
-      )}
+      </div>
+      {err && <div className="card error-card">{err}</div>}
 
       <div className="card">
         <div className="card-header">

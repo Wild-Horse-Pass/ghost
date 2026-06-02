@@ -6,11 +6,13 @@
 pub mod auth;
 pub mod ghostd;
 pub mod chain;
+pub mod descriptor;
 pub mod gsp;
 pub mod keystore;
 pub mod light;
 pub mod lock_recovery;
 pub mod mainnet_guard;
+pub mod psbt;
 pub mod signer;
 pub mod wraith;
 pub mod wraith_signer;

@@ -281,13 +281,20 @@ export function Mix({ activeWallet }: MixProps) {
 
   return (
     <div className="screen">
-      <h1>Wraith CoinJoin</h1>
-
-      {err && (
-        <div className="card" style={{ borderColor: "var(--fail)" }}>
-          {err}
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">privacy · l1 coinjoin</span>
+          <h1>Wraith mix</h1>
+          <p className="lead">
+            One round, five denom-sized outputs, no input→output
+            linkage. The coordinator can't link your input UTXO to
+            your mix-output address — chain analysts see a generic
+            CoinJoin.
+          </p>
         </div>
-      )}
+      </div>
+
+      {err && <div className="card error-card">{err}</div>}
 
       {result && (
         <div className="card" style={{ borderColor: "var(--pass)" }}>
@@ -354,22 +361,27 @@ export function Mix({ activeWallet }: MixProps) {
         </div>
         <div className="col">
           <label>Tier</label>
-          <select
-            value={tierId}
-            onChange={(e) => setTierId(e.target.value)}
-            disabled={busy}
-          >
+          <div className="tier-grid">
             {tiers.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.label} — {t.denom_sats.toLocaleString()} sats (bond{" "}
-                {t.bond_sats.toLocaleString()}
-                {t.min_participants
-                  ? `, min ${t.min_participants} participants`
-                  : ""}
-                )
-              </option>
+              <button
+                key={t.id}
+                type="button"
+                className={`tier-card${tierId === t.id ? " active" : ""}`}
+                onClick={() => !busy && setTierId(t.id)}
+                disabled={busy}
+              >
+                <div className="tier-label">{t.label}</div>
+                <div className="tier-denom">
+                  {t.denom_sats.toLocaleString()}{" "}
+                  <span className="muted">sats</span>
+                </div>
+                <div className="tier-meta">
+                  bond {t.bond_sats.toLocaleString()}
+                  {t.min_participants ? ` · min ${t.min_participants}` : ""}
+                </div>
+              </button>
             ))}
-          </select>
+          </div>
         </div>
       </div>
 
@@ -465,11 +477,123 @@ export function Mix({ activeWallet }: MixProps) {
         )}
       </div>
 
+      {/* Selected UTXO summary — shows once Use is clicked or
+          fields are populated. Value-aware: highlights if the UTXO
+          covers denom + bond, warns otherwise. */}
+      {(utxoTxid || utxoValue) && (
+        <div
+          className="card"
+          style={{ borderColor: "var(--accent)", borderLeftWidth: 3 }}
+        >
+          <div className="card-header">
+            <h2>Selected UTXO</h2>
+            <button
+              className="btn-secondary btn-sm"
+              onClick={() => {
+                setUtxoTxid("");
+                setUtxoVout("");
+                setUtxoValue("");
+                setUtxoScript("");
+                setBip86Index("");
+              }}
+              disabled={busy}
+            >
+              Clear
+            </button>
+          </div>
+          <div className="kv">
+            <div className="k">Outpoint</div>
+            <div className="v mono" style={{ wordBreak: "break-all" }}>
+              {utxoTxid || "—"}
+              {utxoVout && (
+                <span className="muted">:{utxoVout}</span>
+              )}
+            </div>
+            <div className="k">Value</div>
+            <div className="v">
+              {utxoValue
+                ? `${Number(utxoValue).toLocaleString()} sats`
+                : "—"}
+              {Number(utxoValue) > 0 &&
+                Number(utxoValue) < tier.denom_sats + tier.bond_sats && (
+                  <span
+                    className="pill warn"
+                    style={{ marginLeft: 8 }}
+                    title={`needs ≥ ${(tier.denom_sats + tier.bond_sats).toLocaleString()} for ${tier.label}`}
+                  >
+                    too small for {tier.label}
+                  </span>
+                )}
+            </div>
+            {bip86Index && (
+              <>
+                <div className="k">BIP86 index</div>
+                <div className="v mono">{bip86Index}</div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Output addresses summary — auto-derived; the user almost
+          never wants to edit these. Tucked into a compact card with
+          a Rotate button. */}
       <div className="card">
-        <h2>Input UTXO</h2>
-        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-          The L1 UTXO to mix. Pick from the list above, or enter
-          manually. Value must be at least denom + bond + dust.
+        <div className="card-header">
+          <h2>Receive these into your wallet</h2>
+          <button
+            className="btn-secondary btn-sm"
+            onClick={onRotateAddresses}
+            disabled={busy}
+            title="Re-derive at fresh BIP86 indices"
+          >
+            Rotate
+          </button>
+        </div>
+        <div className="kv">
+          <div className="k">Mix output</div>
+          <div className="v mono" style={{ fontSize: 12, wordBreak: "break-all" }}>
+            {mixOutAddr || "—"}
+          </div>
+          <div className="k">Change</div>
+          <div className="v mono" style={{ fontSize: 12, wordBreak: "break-all" }}>
+            {changeAddr || "—"}
+          </div>
+        </div>
+      </div>
+
+      {/* Run button — primary CTA, full-width feel. */}
+      <div className="row" style={{ justifyContent: "flex-end" }}>
+        <button
+          className="btn-primary"
+          onClick={onRun}
+          disabled={busy}
+          style={{ padding: "12px 28px", fontSize: 15 }}
+        >
+          {busy ? "Running mix…" : "Run mix →"}
+        </button>
+      </div>
+
+      {/* Advanced / manual entry — disclosure for power users who
+          need to override the UTXO scan or paste a UTXO from
+          another wallet. Hidden by default. */}
+      <details className="card" style={{ paddingTop: 14 }}>
+        <summary
+          style={{
+            cursor: "pointer",
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+            textTransform: "uppercase",
+            letterSpacing: "0.14em",
+            color: "var(--dim)",
+          }}
+        >
+          Advanced — manual UTXO entry
+        </summary>
+        <p className="muted" style={{ margin: "12px 0", fontSize: 13 }}>
+          Override the scanner for cross-wallet UTXOs or surgical
+          control. Value must cover denom + bond + dust for the
+          chosen tier.
         </p>
         <div className="row">
           <div className="col" style={{ flex: 3 }}>
@@ -505,7 +629,7 @@ export function Mix({ activeWallet }: MixProps) {
             />
           </div>
           <div className="col" style={{ flex: 1 }}>
-            <label>BIP86 index (optional)</label>
+            <label>BIP86 index</label>
             <input
               type="number"
               min={0}
@@ -526,29 +650,8 @@ export function Mix({ activeWallet }: MixProps) {
             placeholder="P2TR scriptPubKey of the input"
           />
         </div>
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <h2>Output addresses</h2>
-          <button
-            className="secondary"
-            onClick={onRotateAddresses}
-            disabled={busy}
-            title="Re-derive a fresh mix-output and change address from the wallet's BIP86 keys"
-          >
-            Rotate
-          </button>
-        </div>
-        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-          Auto-derived from this wallet's BIP86 keystore. The
-          mix-output address receives the denom-sized output
-          unlinked from your input. Change goes back to the wallet
-          (if the input value exceeds denom + fees by more than
-          dust).
-        </p>
         <div className="col">
-          <label>Mix output address</label>
+          <label>Mix output address (override)</label>
           <input
             className="mono"
             value={mixOutAddr}
@@ -557,7 +660,7 @@ export function Mix({ activeWallet }: MixProps) {
           />
         </div>
         <div className="col">
-          <label>Change address (optional)</label>
+          <label>Change address (override)</label>
           <input
             className="mono"
             value={changeAddr}
@@ -565,13 +668,7 @@ export function Mix({ activeWallet }: MixProps) {
             disabled={busy}
           />
         </div>
-      </div>
-
-      <div className="row">
-        <button className="primary" onClick={onRun} disabled={busy}>
-          {busy ? "Running mix…" : "Run mix"}
-        </button>
-      </div>
+      </details>
     </div>
   );
 }

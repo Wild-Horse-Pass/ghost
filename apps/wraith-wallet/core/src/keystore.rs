@@ -194,6 +194,103 @@ impl Keystore {
         ghost_keys::GhostKeys::from_bytes(&scan_bytes, &spend_bytes)
             .map_err(|e| KeystoreError::Bip32(format!("ghost_keys: {e}")))
     }
+
+    /// Master fingerprint — the first 4 bytes of HASH160(master pubkey),
+    /// rendered as 8 lowercase hex chars. Used as the leading
+    /// element of BIP-380 descriptor key origins:
+    /// `[<fingerprint>/<path>]xpub.../<children>` so a coordinator
+    /// can prove which seed produced which xpub when assembling
+    /// the multisig descriptor.
+    pub fn master_fingerprint_hex(&self) -> Result<String, KeystoreError> {
+        Ok(hex::encode(self.master_fingerprint_bytes()?))
+    }
+
+    /// Master fingerprint as the canonical 4 bytes — what BIP-32
+    /// keys it. Same value as the leading element of every
+    /// `bip32_derivation` entry a PSBT carries, so we can match
+    /// against PSBT-supplied hints without parsing hex.
+    pub fn master_fingerprint_bytes(&self) -> Result<[u8; 4], KeystoreError> {
+        let master = self.master_xprv()?;
+        let fp = master.public_key().fingerprint();
+        let slice: &[u8] = fp.as_ref();
+        let mut out = [0u8; 4];
+        out.copy_from_slice(&slice[..4]);
+        Ok(out)
+    }
+
+    /// Export the extended public key (xpub/tpub) at `path`,
+    /// formatted for use as a BIP-380 descriptor key fragment.
+    /// `path` is a BIP-32 derivation string with hardened markers
+    /// (e.g. `"m/86'/0'/0'"` for a Bitcoin-mainnet taproot account
+    /// suitable for `tr(multi_a(...))` multisig).
+    ///
+    /// `mainnet` selects the network prefix:
+    ///   - `true`  → xpub (mainnet)
+    ///   - `false` → tpub (testnet/signet/regtest)
+    ///
+    /// Returns the bare xpub string and a ready-to-paste descriptor
+    /// fragment of the form
+    /// `[<fingerprint>/<path-without-leading-m/>]xpub.../<0;1>/*`.
+    /// The `<0;1>/*` suffix is the standard external/internal /
+    /// address-index template understood by Sparrow / Bitcoin Core
+    /// / miniscript. A coordinator drops this fragment into a
+    /// wrapper like `wsh(sortedmulti(2, A, B, C))` or
+    /// `tr(multi_a(2, A, B, C))` to assemble the multisig.
+    pub fn export_xpub(
+        &self,
+        path: &str,
+        mainnet: bool,
+    ) -> Result<XpubExport, KeystoreError> {
+        let xprv = self.derive_xprv(path)?;
+        let xpub = xprv.public_key();
+        let prefix = if mainnet {
+            bip32::Prefix::XPUB
+        } else {
+            bip32::Prefix::TPUB
+        };
+        let xpub_str = xpub.to_string(prefix);
+        let fp = self.master_fingerprint_hex()?;
+        // Strip the leading "m/" or "m" so the path slots into a
+        // `[fp/...]` fragment cleanly. Empty path (just "m") means
+        // the master xpub itself; emit `[fp]` for that case.
+        let trimmed = path.trim();
+        let path_for_fragment = trimmed
+            .strip_prefix("m/")
+            .or_else(|| trimmed.strip_prefix("M/"))
+            .unwrap_or(if trimmed == "m" || trimmed == "M" {
+                ""
+            } else {
+                trimmed
+            });
+        let origin = if path_for_fragment.is_empty() {
+            format!("[{fp}]")
+        } else {
+            format!("[{fp}/{path_for_fragment}]")
+        };
+        let fragment = format!("{origin}{xpub_str}/<0;1>/*");
+        Ok(XpubExport {
+            xpub: xpub_str.to_string(),
+            master_fingerprint_hex: fp,
+            path: path.to_string(),
+            descriptor_key_fragment: fragment,
+        })
+    }
+}
+
+/// Result of `Keystore::export_xpub`.
+///
+/// Field choices match what every multisig coordinator UI asks for:
+/// the xpub itself for visual confirmation, the master fingerprint
+/// for cross-reference against a hardware wallet's "show
+/// fingerprint" screen, the derivation path so the coordinator can
+/// re-build the same descriptor, and the pre-assembled descriptor
+/// key fragment so power users can skip the manual concatenation.
+#[derive(Debug, Clone)]
+pub struct XpubExport {
+    pub xpub: String,
+    pub master_fingerprint_hex: String,
+    pub path: String,
+    pub descriptor_key_fragment: String,
 }
 
 struct KdfKey([u8; KEY_LEN]);
@@ -218,6 +315,60 @@ fn derive_key(passphrase: &SecretString, salt: &[u8]) -> Result<KdfKey, Keystore
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn export_xpub_known_seed_emits_canonical_descriptor_fragment() {
+        // The "abandon×11 about" mnemonic is the BIP-39 zero seed —
+        // every Bitcoin-tooling test vector uses it, so the xpub at
+        // m/86'/0'/0' is a published constant. Asserting the exact
+        // string locks in our derivation and serialisation matching
+        // Sparrow / Bitcoin Core's output.
+        let ks = Keystore::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        let exp = ks.export_xpub("m/86'/0'/0'", true).unwrap();
+        // BIP-86 test vectors:
+        //   master xprv fingerprint = 73c5da0a
+        //   m/86'/0'/0' xpub        = xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ
+        assert_eq!(exp.master_fingerprint_hex, "73c5da0a");
+        assert_eq!(
+            exp.xpub,
+            "xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ"
+        );
+        assert_eq!(
+            exp.descriptor_key_fragment,
+            "[73c5da0a/86'/0'/0']xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ/<0;1>/*"
+        );
+    }
+
+    #[test]
+    fn export_xpub_testnet_uses_tpub_prefix() {
+        let ks = Keystore::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        let exp = ks.export_xpub("m/48'/1'/0'/2'", false).unwrap();
+        assert!(
+            exp.xpub.starts_with("tpub"),
+            "expected tpub prefix; got {}",
+            exp.xpub
+        );
+        assert!(exp.descriptor_key_fragment.contains("tpub"));
+        assert!(exp.descriptor_key_fragment.starts_with("[73c5da0a/48'/1'/0'/2']"));
+    }
+
+    #[test]
+    fn export_xpub_master_path_emits_bare_origin() {
+        let ks = Keystore::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        let exp = ks.export_xpub("m", true).unwrap();
+        // Path "m" → just the master xpub — origin should be the
+        // bare fingerprint with no path.
+        assert!(exp.descriptor_key_fragment.starts_with("[73c5da0a]xpub"));
+    }
 
     #[test]
     fn create_save_load_roundtrip() {

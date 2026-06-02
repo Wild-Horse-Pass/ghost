@@ -14,6 +14,7 @@ import {
 } from "../lib/tauri";
 import { Onboarding } from "./Onboarding";
 import { PassphraseModal } from "../components/PassphraseModal";
+import { Logo } from "../components/Logo";
 
 interface WalletProps {
   /// Bumped by App when the daemon pushes a `PaymentDetected`
@@ -402,24 +403,55 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
         </div>
       )}
 
-      <div className="card">
-        <div className="card-header">
-          <h2>{wallets.length === 0 ? "No wallets yet" : "Wallets"}</h2>
-          <div className="row">
+      {wallets.length === 0 ? (
+        <div className="welcome-hero">
+          <Logo size={48} className="welcome-ghost" />
+          <span className="eyebrow">welcome to wraith</span>
+          <h1 className="welcome-title">
+            Your private Bitcoin wallet on{" "}
+            <span style={{ color: "var(--accent)" }}>Bitcoin Ghost</span>.
+          </h1>
+          <p className="welcome-lead">
+            Self-custodial. Open source. Ossifying. Create a new
+            wallet to receive your first sats, or restore an existing
+            one from its 12-word backup phrase.
+          </p>
+          <div className="row" style={{ gap: 8, marginTop: 12 }}>
             <button
-              className="secondary"
+              className="btn-primary"
+              onClick={onCreate}
+              disabled={busy}
+              style={{ padding: "12px 24px", fontSize: 15 }}
+            >
+              + Create new wallet
+            </button>
+            <button
+              className="btn-secondary"
               onClick={onImport}
               disabled={busy}
-              style={{ marginRight: 6 }}
+              style={{ padding: "12px 24px", fontSize: 15 }}
+            >
+              I have a backup phrase
+            </button>
+          </div>
+        </div>
+      ) : (
+      <div className="card">
+        <div className="card-header">
+          <h2>Wallets</h2>
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              className="btn-secondary"
+              onClick={onImport}
+              disabled={busy}
             >
               Import from mnemonic
             </button>
-            <button className="primary" onClick={onCreate} disabled={busy}>
+            <button className="btn-primary" onClick={onCreate} disabled={busy}>
               + New wallet
             </button>
           </div>
         </div>
-        {wallets.length > 0 && (
           <table className="table">
             <thead>
               <tr>
@@ -449,7 +481,7 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
                   <td style={{ textAlign: "right" }}>
                     {!w.is_active && (
                       <button
-                        className="secondary"
+                        className="btn-secondary btn-sm"
                         onClick={() => onSelect(w.name)}
                         disabled={busy}
                         style={{ marginRight: 6 }}
@@ -459,7 +491,7 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
                     )}
                     {!w.is_unlocked && (
                       <button
-                        className="secondary"
+                        className="btn-secondary btn-sm"
                         onClick={() => onUnlock(w.name)}
                         disabled={busy}
                         style={{ marginRight: 6 }}
@@ -468,7 +500,7 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
                       </button>
                     )}
                     <button
-                      className="secondary"
+                      className="btn-secondary btn-sm"
                       onClick={() => onShowMnemonic(w.name)}
                       disabled={busy}
                       title="Decrypt and display the BIP-39 backup phrase"
@@ -480,8 +512,8 @@ export function Wallet({ paymentTick = 0 }: WalletProps) {
               ))}
             </tbody>
           </table>
-        )}
       </div>
+      )}
     </div>
   );
 }

@@ -16,6 +16,7 @@ wraith-wallet-ipc = { workspace = true }
 ghost-gsp-proto = { workspace = true }
 ghost-keys = { workspace = true }
 bitcoin = { workspace = true }
+base64 = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

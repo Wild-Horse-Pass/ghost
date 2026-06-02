@@ -86,12 +86,17 @@ export function History({ paymentTick = 0 }: HistoryProps) {
 
   return (
     <div className="screen">
-      <h1>History</h1>
-      {err && (
-        <div className="card" style={{ borderColor: "var(--fail)" }}>
-          {err}
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">ledger</span>
+          <h1>History</h1>
+          <p className="lead">
+            All sent and received L2 transactions. Filter by direction,
+            search by memo or txid, click a txid to copy.
+          </p>
         </div>
-      )}
+      </div>
+      {err && <div className="card error-card">{err}</div>}
       <div className="card">
         <div className="card-header">
           <h2>
