@@ -336,13 +336,15 @@ impl Sv1Server {
                                     Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
                                     connection_token,
                                 );
-                                // vardiff initialization (only if enabled)
                                 self.downstreams.insert(downstream_id, downstream.clone());
-                                // Insert vardiff state for this downstream only if vardiff is enabled
-                                if self.config.downstream_difficulty_config.enable_vardiff {
-                                    let vardiff = VardiffState::new().expect("Failed to create vardiffstate");
-                                    self.vardiff.insert(downstream_id, Arc::new(Mutex::new(vardiff)));
-                                }
+                                // NB: vardiff state is intentionally NOT inserted here. The channel
+                                // is opened lazily after the first message, so a freshly accepted
+                                // connection has `channel_id == None`. Inserting vardiff now makes
+                                // the 60s vardiff loop iterate channel-less connections every tick —
+                                // port scanners that complete the TCP handshake but never subscribe
+                                // sit here for their whole lifetime — which logged a spurious error
+                                // per tick. Vardiff is now registered at channel-open instead; see
+                                // the `OpenExtendedMiningChannelSuccess` handler.
                                 info!("Downstream {} registered successfully (channel will be opened after first message)", downstream_id);
 
 
@@ -747,6 +749,18 @@ impl Sv1Server {
                         .map_err(TproxyError::shutdown)?;
                     self.channel_id_to_downstream_id
                         .super_safe_lock(|map| map.insert(m.channel_id, downstream_id));
+
+                    // Register vardiff state now that the channel is open (channel_id was set
+                    // above). Doing it here rather than at connection-accept guarantees the vardiff
+                    // loop only ever iterates downstreams that have a channel, making `channel_id`
+                    // a true invariant in `difficulty_manager`. Guarded so a re-opened channel
+                    // keeps its existing vardiff state instead of resetting it.
+                    if self.config.downstream_difficulty_config.enable_vardiff
+                        && !self.vardiff.contains_key(&downstream_id)
+                    {
+                        let vardiff = VardiffState::new().expect("Failed to create vardiffstate");
+                        self.vardiff.insert(downstream_id, Arc::new(Mutex::new(vardiff)));
+                    }
 
                     // Public-pool defer-open: if subscribe was responded to with a placeholder
                     // extranonce (because the channel had not been opened yet — we deferred it
