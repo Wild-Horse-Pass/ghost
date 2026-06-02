@@ -334,7 +334,7 @@ impl Sv1Server {
                                     sv1_server_receiver,
                                     first_target,
                                     Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
-                                    connection_token,
+                                    connection_token.clone(),
                                 );
                                 self.downstreams.insert(downstream_id, downstream.clone());
                                 // NB: vardiff state is intentionally NOT inserted here. The channel
@@ -360,6 +360,37 @@ impl Sv1Server {
                                     status_sender,
                                     task_manager.clone(),
                                 );
+
+                                // Zombie-connection reaper. A connection that completes the TCP
+                                // handshake but never opens a channel — internet port scanners and
+                                // half-open probes hitting the public stratum port — would otherwise
+                                // linger in the downstreams/sender maps holding a socket for its
+                                // whole lifetime. Give it a generous grace period to open a channel
+                                // (real miners subscribe+authorize within seconds); if it still has
+                                // no channel_id after that, close the socket and clean up the maps.
+                                // handle_downstream_disconnect is idempotent, so it is safe even if
+                                // the connection's own error path also fires.
+                                const CHANNELLESS_REAP_TIMEOUT: Duration = Duration::from_secs(120);
+                                let reaper = self.clone();
+                                let reaper_token = connection_token.clone();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(CHANNELLESS_REAP_TIMEOUT).await;
+                                    let still_channelless = match reaper.downstreams.get(&downstream_id) {
+                                        Some(d) => d
+                                            .downstream_data
+                                            .super_safe_lock(|data| data.channel_id.is_none()),
+                                        None => return, // already disconnected and cleaned up
+                                    };
+                                    if still_channelless {
+                                        warn!(
+                                            "Reaping downstream {} — no channel opened within {}s (likely a scanner/probe)",
+                                            downstream_id,
+                                            CHANNELLESS_REAP_TIMEOUT.as_secs()
+                                        );
+                                        reaper_token.cancel();
+                                        reaper.handle_downstream_disconnect(downstream_id).await;
+                                    }
+                                });
                             }
                             Err(e) => {
                                 warn!("Failed to accept new connection: {:?}", e);
