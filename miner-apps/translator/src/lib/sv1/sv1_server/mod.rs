@@ -29,6 +29,18 @@ pub(super) fn is_mining_subscribe(msg: &Message) -> bool {
     }
 }
 
+/// Check if Sv1 message is mining.configure (BIP310 version-rolling negotiation).
+/// Stateless handshake message that needs an immediate response — must NOT be
+/// queued behind channel-open or the miner deadlocks waiting for the configure
+/// reply before sending subscribe/authorize.
+pub(super) fn is_mining_configure(msg: &Message) -> bool {
+    if let json_rpc::Message::StandardRequest(r) = &msg {
+        r.method == "mining.configure"
+    } else {
+        false
+    }
+}
+
 /// Extracts the worker-identifier portion of an SV1 `mining.authorize` username for use as the
 /// per-downstream identity that flows into the Worker-Specific Hashrate Tracking TLV.
 ///

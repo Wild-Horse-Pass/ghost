@@ -6,8 +6,8 @@ use crate::{
     sv1::{
         downstream::{downstream::Downstream, SubmitShareWithChannelId},
         sv1_server::{
-            channel::Sv1ServerChannelState, is_mining_authorize, is_mining_subscribe,
-            KEEPALIVE_JOB_ID_DELIMITER,
+            channel::Sv1ServerChannelState, is_mining_authorize, is_mining_configure,
+            is_mining_subscribe, KEEPALIVE_JOB_ID_DELIMITER,
         },
     },
     utils::AGGREGATED_CHANNEL_ID,
@@ -291,8 +291,23 @@ impl Sv1Server {
                     result = listener.accept() => {
                         match result {
                             Ok((stream, addr)) => {
-                                // Load balancer: proxy to a less-loaded peer if configured
+                                // Load balancer: capacity controls + utilisation routing.
                                 if let Some(ref lb) = self.load_balancer {
+                                    // Step 1: capacity gate. If we're already over the
+                                    // reject threshold, close the socket. The bitaxe
+                                    // firmware auto-reconnects via DNS → another VM
+                                    // picks them up. No mid-session disruption to
+                                    // existing miners.
+                                    if lb.should_reject_for_capacity().await {
+                                        warn!(
+                                            "Rejecting connection from {}: local capacity at/above reject threshold",
+                                            addr
+                                        );
+                                        lb.record_capacity_rejection();
+                                        drop(stream);
+                                        continue;
+                                    }
+                                    // Step 2: utilisation-based routing for new arrivals.
                                     let local_count = self.downstreams.len();
                                     if let Some(target) = lb.should_proxy(local_count, addr.ip()).await {
                                         info!("Proxying new connection from {} to {}", addr, target);
@@ -428,13 +443,21 @@ impl Sv1Server {
             //   - `mining.authorize`: process immediately so `data.user_identity` /
             //     `data.authorized_worker_name` are populated, then trigger
             //     `handle_open_channel_request`.
+            //   - `mining.configure`: process immediately. BIP310 version-rolling negotiation
+            //     is stateless — the miner sends configure first to learn the version mask,
+            //     then sends subscribe/authorize. If we queue configure waiting for the
+            //     channel to open, some Bitaxe firmware (BM1370 v2.12.0 observed) waits for
+            //     the configure response before sending subscribe at all, which deadlocks:
+            //     no channel can open until authorize, no authorize until subscribe, no
+            //     subscribe until configure responds.
             //   - Anything else: queue until the channel is open (existing behaviour).
             //
             // Aggregated mode is unaffected — every downstream still piggybacks on the single
             // shared upstream channel that the channel_manager already opened, so this branch
             // simply falls through for `mining.submit` etc. once the channel exists.
-            let process_immediately =
-                is_mining_subscribe(&downstream_message) || is_mining_authorize(&downstream_message);
+            let process_immediately = is_mining_subscribe(&downstream_message)
+                || is_mining_authorize(&downstream_message)
+                || is_mining_configure(&downstream_message);
             if !process_immediately {
                 debug!(
                     "Down: Queuing Sv1 message until channel is established (downstream {})",
