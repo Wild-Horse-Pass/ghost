@@ -1,0 +1,89 @@
+name: "Docker / Binary Release Problem Report"
+description: "Report an issue with the Docker setup or prebuilt binaries."
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!  
+        Please fill out the sections below so we can understand and reproduce the problem.
+
+  - type: input
+    id: version
+    attributes:
+      label: What version are you running?
+      description: |
+        Include the version of the project, Docker tag, or binary release you're using.
+      placeholder: "e.g. v1.3.0, docker tag: latest, binary: commit abc123"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment info
+      description: |
+        Tell us where you’re running this:
+        - OS + version  
+        - Docker info(`docker info`)
+        - CPU architecture  
+      placeholder: |
+        macOS 14.3 (ARM)
+        Docker 27.x
+        CPU: M2 Pro
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: "Walk us through what you did, step-by-step."
+      placeholder: |
+        1. Clone repo
+        2. Run `docker compose up`
+        3. Observe error on startup
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: "Describe what you expected to happen."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior / error output
+      description: "Include logs, crash output, stack traces."
+      render: shell
+      placeholder: "Paste the full error log here."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reproducibility
+    attributes:
+      label: Is this reproducible?
+      options:
+        - Always
+        - Sometimes
+        - Rarely
+        - Only once
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Upfront checks
+      options:
+        - label: I have searched existing issues
+          required: true
+        - label: I verified this is not a configuration error on my side
+        - label: I have included all relevant logs and configuration snippets
+
