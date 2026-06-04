@@ -24,6 +24,10 @@ COPY crates/wraith-protocol ./crates/wraith-protocol
 COPY crates/ghost-reconciliation ./crates/ghost-reconciliation
 COPY crates/ghost-gsp-proto ./crates/ghost-gsp-proto
 COPY crates/ghost-gsp ./crates/ghost-gsp
+# SV2 protocol crates ghost-pool's TDP provider depends on
+# (formerly the sv2-apps submodule, now amalgamated into the workspace).
+COPY crates/stratum-apps ./crates/stratum-apps
+COPY crates/bitcoin-core-sv2 ./crates/bitcoin-core-sv2
 
 # Copy node binaries ONLY (no wallet binaries)
 COPY bins/ghost-pool ./bins/ghost-pool
@@ -31,7 +35,6 @@ COPY bins/ghost-pay ./bins/ghost-pay
 COPY bins/ghost-coordinator ./bins/ghost-coordinator
 COPY bins/ghost-gsp ./bins/ghost-gsp
 COPY bins/ghost-cli ./bins/ghost-cli
-COPY bins/translator ./bins/translator
 
 # NOTE: We explicitly DO NOT copy:
 # - bins/ghost-light-wallet-cli (wallet - users run this locally)
@@ -43,8 +46,7 @@ RUN cargo build --release \
     -p ghost-pay \
     -p ghost-coordinator \
     -p ghost-gsp-bin \
-    -p ghost-cli \
-    -p translator
+    -p ghost-cli
 
 # Runtime image
 FROM debian:bookworm-slim
@@ -60,7 +62,6 @@ COPY --from=builder /build/target/release/ghost-pay /usr/local/bin/
 COPY --from=builder /build/target/release/ghost-coordinator /usr/local/bin/
 COPY --from=builder /build/target/release/ghost-gsp /usr/local/bin/
 COPY --from=builder /build/target/release/ghost-cli /usr/local/bin/
-COPY --from=builder /build/target/release/translator /usr/local/bin/
 
 # Create non-root user
 RUN useradd -r -s /bin/false ghost
