@@ -28,8 +28,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -42,11 +40,17 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev
+          sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev
 
-      # Build release binaries
+      # Install system dependencies (macOS) — capnproto for the SV2 stratum-core dep
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install capnp
+
+      # Build release binaries. Exclude the Tauri desktop GUIs (wraith-wallet-gui,
+      # ghost-tap-desktop) — they need webkit and are not shipped as release binaries.
       - name: Build
-        run: cargo build --release --workspace --target ${{ matrix.target }}
+        run: cargo build --release --workspace --exclude wraith-wallet-gui --exclude ghost-tap-desktop --target ${{ matrix.target }}
 
       # Package binaries
       - name: Package
