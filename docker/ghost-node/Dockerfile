@@ -4,9 +4,14 @@
 #|  Does NOT contain: Any wallet code, key management, or signing capabilities                                         |
 #|======================================================================================================================|
 
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 WORKDIR /build
+
+# Build deps: capnproto for the SV2 stratum-core dependency that stratum-apps
+# (and thus ghost-pool's TDP provider) pulls in.
+RUN apt-get update && apt-get install -y capnproto libcapnp-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy only what's needed for node components
 COPY Cargo.toml Cargo.lock ./
