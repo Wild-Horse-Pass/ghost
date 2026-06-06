@@ -158,7 +158,7 @@ struct Args {
     identity_key: Option<std::path::PathBuf>,
 
     /// MPC parameters directory (for loading Groth16 verification keys)
-    /// Defaults to <data-dir>/../mpc_params/ (sibling of data dir)
+    /// Defaults to `<data-dir>/../mpc_params/` (sibling of data dir)
     #[arg(long, env = "GHOST_MPC_PARAMS_DIR")]
     mpc_params_dir: Option<std::path::PathBuf>,
 

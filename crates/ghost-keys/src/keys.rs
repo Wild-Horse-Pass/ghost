@@ -360,7 +360,7 @@ impl GhostKeys {
     /// 1. **Do NOT clone the inner bytes** - Cloning defeats zeroization. The copy won't be zeroized.
     /// 2. **Use briefly, drop quickly** - Minimize the lifetime of these secrets in memory.
     /// 3. **Do NOT convert to String/Vec** - String/Vec may reallocate, leaving copies behind.
-    /// 4. **Prefer `with_secrets()` callback API** - Use [`with_secrets()`] when possible for
+    /// 4. **Prefer `with_secrets()` callback API** - Use `with_secrets()` when possible for
     ///    guaranteed cleanup even on panics.
     ///
     /// # Example - Correct Usage
@@ -581,7 +581,7 @@ pub struct GhostKeysPublicExport {
 /// as_bytes_mut(). The Zeroize trait for String safely overwrites the
 /// string's bytes using compiler barriers to prevent optimization.
 ///
-/// CRYPT-2 FIX: Uses Zeroizing<String> wrapper to ensure hex strings are
+/// CRYPT-2 FIX: Uses `Zeroizing<String>` wrapper to ensure hex strings are
 /// automatically zeroized even if copied during construction. This prevents
 /// secret key material from lingering in memory after intermediate operations.
 pub struct GhostKeysExport {

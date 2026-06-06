@@ -1,3 +1,4 @@
+#![allow(rustdoc::all)] // imported SV2 crate: relax strict rustdoc policy (SRI upstream doc style)
 use crate::{
     mining_device::Secp256k1PublicKey as MiningDeviceSecp256k1PublicKey, sniffer::*,
     sv1_minerd::MinerdProcess, template_provider::*,

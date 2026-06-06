@@ -1,3 +1,4 @@
+#![allow(rustdoc::all)] // imported SV2 crate: relax strict rustdoc policy (SRI upstream doc style)
 //! # Stratum Apps - SV2 Application Utilities
 //!
 //! This crate consolidates the essential utilities needed for building Stratum V2 applications.

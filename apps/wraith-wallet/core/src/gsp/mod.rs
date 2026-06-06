@@ -62,7 +62,7 @@ impl GspClient {
         Self::with_urls_and_proxy(ws_urls, None).expect("default reqwest client always builds")
     }
 
-    /// Same as [`with_urls`] but routes REST traffic (register, session) through
+    /// Same as `with_urls` but routes REST traffic (register, session) through
     /// the given SOCKS5 proxy (e.g. `socks5h://127.0.0.1:9050` for Tor).
     ///
     /// **Note:** the persistent WebSocket session does **not** currently honour

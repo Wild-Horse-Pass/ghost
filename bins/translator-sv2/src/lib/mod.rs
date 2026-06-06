@@ -1,3 +1,4 @@
+#![allow(rustdoc::all)] // imported SV2 crate: relax strict rustdoc policy (SRI upstream doc style)
 //! ## Translator Sv2
 //!
 //! Provides the core logic and main struct (`TranslatorSv2`) for running a

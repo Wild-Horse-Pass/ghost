@@ -30,10 +30,10 @@
 //! This module uses multiple RwLocks. To prevent deadlocks, always acquire
 //! locks in this order:
 //!
-//! 1. `approved_payout` (RwLock<Option<[u8; 32]>>) - Shortest hold time
-//! 2. `current_work` (RwLock<Option<WorkState>>)
-//! 3. `work_states` (RwLock<HashMap<...>>)
-//! 4. `payout_proposals` (RwLock<HashMap<...>>) - Longest hold time
+//! 1. `approved_payout` (`RwLock<Option<[u8; 32]>>`) - Shortest hold time
+//! 2. `current_work` (`RwLock<Option<WorkState>>`)
+//! 3. `work_states` (`RwLock<HashMap<...>>`)
+//! 4. `payout_proposals` (`RwLock<HashMap<...>>`) - Longest hold time
 //!
 //! Never acquire a lock that comes earlier in this list while holding
 //! a lock that comes later.
@@ -2304,7 +2304,7 @@ impl TemplateProcessor {
     /// filtered set.
     ///
     /// Returns hex-encoded witness commitment script:
-    ///   OP_RETURN OP_PUSHBYTES_36 <aa21a9ed> <32-byte commitment>
+    ///   `OP_RETURN OP_PUSHBYTES_36 <aa21a9ed> <32-byte commitment>`
     fn compute_witness_commitment(&self, transactions: &[TemplateTransaction]) -> String {
         use sha2::{Digest, Sha256};
 

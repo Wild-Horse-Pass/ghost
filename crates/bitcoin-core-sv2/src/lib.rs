@@ -1,3 +1,4 @@
+#![allow(rustdoc::all)] // imported SV2 crate: relax strict rustdoc policy (SRI upstream doc style)
 //! # Bitcoin Core Sv2 Library
 //!
 //! A Rust library that leverages [Bitcoin Core](https://bitcoin.org/en/bitcoin-core/) IPC to interact with the Stratum V2:

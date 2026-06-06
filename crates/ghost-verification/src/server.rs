@@ -642,7 +642,7 @@ pub struct ShareNotification {
     pub timestamp: u64,
     /// Whether this share found a block (triggers payout proposal)
     pub is_block: bool,
-    /// Payout address extracted from user_identity (format: <address>.<worker>)
+    /// Payout address extracted from user_identity (format: `<address>.<worker>`)
     pub payout_address: Option<String>,
 }
 
@@ -1266,7 +1266,7 @@ impl VerificationState {
     /// Record a batch of shares (called from HTTP endpoint for native SRI webhook)
     ///
     /// Converts ShareData to ShareNotification format and records each share.
-    /// Extracts payout address from user_identity (format: <address>.<worker>).
+    /// Extracts payout address from user_identity (format: `<address>.<worker>`).
     /// When is_block == true, triggers block found callback for payout proposal.
     pub fn record_share_batch(&self, batch: ShareBatch) -> GhostResult<usize> {
         if self.record_share_fn.is_none() {

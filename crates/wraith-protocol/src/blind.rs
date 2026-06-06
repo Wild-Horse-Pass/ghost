@@ -42,8 +42,8 @@
 //!
 //! # References
 //!
-//! - Schnorr blind signatures: https://eprint.iacr.org/2019/877
-//! - Interactive demo: https://blindsigs.utxo.club/
+//! - Schnorr blind signatures: <https://eprint.iacr.org/2019/877>
+//! - Interactive demo: <https://blindsigs.utxo.club/>
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};

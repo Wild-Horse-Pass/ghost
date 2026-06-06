@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,7 +36,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y capnproto libcapnp-dev
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
       # L-01: Removed needless_borrows_for_generic_args and useless_vec allows
       - run: cargo clippy --all-targets --all-features -- -W clippy::all -A clippy::derivable_impls -A clippy::clone_on_copy -A clippy::match_like_matches_macro -A clippy::manual_flatten -A clippy::redundant_slicing -A clippy::skip_while_next
 
@@ -103,7 +104,7 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y capnproto libcapnp-dev
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Check documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -133,7 +134,7 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y capnproto libcapnp-dev
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
       - run: cargo check --workspace
 
   # Coverage (optional, runs on main only)
@@ -150,7 +151,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: sudo apt-get update && sudo apt-get install -y capnproto libcapnp-dev
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Generate coverage
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
       - name: Upload coverage to Codecov

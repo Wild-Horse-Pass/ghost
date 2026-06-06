@@ -201,7 +201,7 @@ pub fn build_p2wsh_script_pubkey(witness_script: &ScriptBuf) -> ScriptBuf {
 ///
 /// Returns (witness_script, script_pubkey) where:
 /// - witness_script: The full script needed to spend (must be stored by client)
-/// - script_pubkey: The P2WSH output script (OP_0 <hash>)
+/// - script_pubkey: The P2WSH output script (OP_0 `<hash>`)
 ///
 /// # Arguments
 /// * `lock_pubkey` - The lock public key (33-byte compressed)

@@ -994,7 +994,7 @@ impl MeshNetwork {
     }
 
     /// Set the hardware-derived miner capacity advertised in health pings.
-    /// Should be called once at startup after [`capacity::measure`]; can be
+    /// Should be called once at startup after `capacity::measure`; can be
     /// re-called if the operator throttle (`network.max_miners`) changes.
     pub fn set_max_capacity(&self, value: u32) {
         self.max_capacity.store(value, Ordering::Relaxed);

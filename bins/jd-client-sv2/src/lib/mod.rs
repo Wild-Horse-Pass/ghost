@@ -1,3 +1,4 @@
+#![allow(rustdoc::all)] // imported SV2 crate: relax strict rustdoc policy (SRI upstream doc style)
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},

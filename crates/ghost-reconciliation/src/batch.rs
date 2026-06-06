@@ -340,7 +340,7 @@ const MERKLE_DOMAIN: &[u8] = b"GhostSettlementMerkle";
 /// Compute merkle root from leaf hashes
 ///
 /// This implementation is collision-resistant by:
-/// 1. Including leaf count in the final hash (prevents [A,B,C] == [A,B,C,C])
+/// 1. Including leaf count in the final hash (prevents `[A,B,C]` == `[A,B,C,C]`)
 /// 2. Using domain separation (prevents cross-protocol attacks)
 /// 3. Carrying forward odd elements instead of duplicating (prevents internal collisions)
 pub fn compute_merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
@@ -458,7 +458,7 @@ const MAX_MERKLE_PROOF_LENGTH: usize = 64;
 /// Verify a merkle proof
 ///
 /// The proof must be verified against the original leaf count to prevent
-/// collision attacks where [A,B,C] could be confused with [A,B,C,C].
+/// collision attacks where `[A,B,C]` could be confused with `[A,B,C,C]`.
 pub fn verify_merkle_proof(
     leaf: &[u8; 32],
     proof: &[[u8; 32]],

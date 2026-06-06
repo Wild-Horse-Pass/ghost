@@ -184,7 +184,7 @@ const MAX_ESCALATION_MULTIPLIER: u32 = 32;
 
 /// Shared ban manager for cross-handler enforcement
 ///
-/// Thread-safe via RwLock - can be shared across multiple handlers using Arc<BanManager>
+/// Thread-safe via RwLock - can be shared across multiple handlers using `Arc<BanManager>`
 pub struct BanManager {
     /// Map of banned nodes to their ban entries
     banned_nodes: RwLock<HashMap<NodeId, BanEntry>>,

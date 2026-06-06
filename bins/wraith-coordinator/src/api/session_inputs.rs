@@ -8,7 +8,7 @@
 //!
 //! ## What this commit (B/4a) covers
 //!
-//! - Pluggable [`BondLedger`] verification — the bond is checked against
+//! - Pluggable `BondLedger` verification — the bond is checked against
 //!   `(ghost_id, session_id, expected_sats = tier.bond_sats)`. Without a
 //!   ledger configured, the endpoint returns 503 — see
 //!   `CoordinatorState::bond_ledger`.

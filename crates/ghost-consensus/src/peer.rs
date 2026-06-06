@@ -254,7 +254,7 @@ impl PeerManager {
     /// Returns count of unique IP addresses, which represents actual peer nodes.
     /// This avoids double-counting when temp and real node_ids exist for same peer.
     ///
-    /// L-3 FIX: Properly handles IPv6 addresses like [::1]:8080 by extracting
+    /// L-3 FIX: Properly handles IPv6 addresses like `[::1]:8080` by extracting
     /// the host portion between brackets, not just splitting on colon.
     pub fn unique_peer_count(&self) -> usize {
         let peers = self.peers.read();

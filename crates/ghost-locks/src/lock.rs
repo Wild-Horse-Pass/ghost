@@ -58,7 +58,7 @@ pub struct GhostLock {
     witness_script: ScriptBuf,
     /// SHA256 hash of witness script (for P2WSH address)
     script_hash: WScriptHash,
-    /// The P2WSH scriptPubKey (OP_0 <hash>)
+    /// The P2WSH scriptPubKey (OP_0 `<hash>`)
     script_pubkey: ScriptBuf,
     /// Unique lock ID
     lock_id: [u8; 32],

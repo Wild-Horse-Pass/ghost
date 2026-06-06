@@ -1,3 +1,4 @@
+#![allow(rustdoc::all)] // imported SV2 crate: relax strict rustdoc policy (SRI upstream doc style)
 //! Job Declaration Server (JDS) for the Stratum V2 protocol.
 //!
 //! This crate implements a server that validates custom mining jobs declared by downstream

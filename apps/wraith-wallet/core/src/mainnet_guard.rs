@@ -48,7 +48,7 @@ const KNOWN_WEAK_MNEMONICS: &[&str] = &[
     "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
 ];
 
-/// Returns `true` if `mnemonic` matches any entry in [`KNOWN_WEAK_MNEMONICS`]
+/// Returns `true` if `mnemonic` matches any entry in `KNOWN_WEAK_MNEMONICS`
 /// after whitespace normalisation. The intended use is:
 ///
 /// ```ignore

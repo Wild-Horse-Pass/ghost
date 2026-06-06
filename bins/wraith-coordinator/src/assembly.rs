@@ -11,7 +11,7 @@
 //!
 //! The pairing of inputs to outputs is arbitrary — the builder shuffles
 //! both into final tx order via ChaCha20Rng seeded by session_id +
-//! caller entropy. So assigning input[i] ↔ output[i] in arrival order
+//! caller entropy. So assigning `input[i]` ↔ `output[i]` in arrival order
 //! is equivalent to any other assignment from the on-chain output
 //! ordering perspective. The coordinator does not learn which input's
 //! ghost_id corresponds to which output address (the privacy is
