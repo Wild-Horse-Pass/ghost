@@ -1314,6 +1314,27 @@ mod unix {
                 eprintln!("wraith: unexpected streaming variant on a one-shot request");
                 std::process::ExitCode::FAILURE
             }
+            // PSBT and multisig-descriptor commands (WIP): bespoke human-readable
+            // output is not wired up yet, so emit the structured response as JSON —
+            // the data is fully usable (`--json` produces the same). Replace with
+            // per-command formatting when the PSBT/multisig CLI UX is finalised.
+            Ok(resp @ (Response::WalletXpub(_)
+                | Response::MultisigDescriptorInspected(_)
+                | Response::MultisigDescriptorSaved(_)
+                | Response::MultisigDescriptorList(_)
+                | Response::MultisigDescriptorAddresses(_)
+                | Response::MultisigDescriptorDeleted { .. }
+                | Response::PsbtCreated(_)
+                | Response::PsbtSigned(_)
+                | Response::PsbtBroadcast(_)
+                | Response::PsbtBumped(_)
+                | Response::PsbtInspected(_))) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&resp).unwrap_or_else(|_| format!("{resp:?}"))
+                );
+                std::process::ExitCode::SUCCESS
+            }
             Err(e) => {
                 eprintln!("wraith: {e}");
                 std::process::ExitCode::FAILURE
