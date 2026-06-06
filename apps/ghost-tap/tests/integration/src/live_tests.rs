@@ -94,8 +94,8 @@ async fn test_shield_and_scan() {
     // Shield funds
     let req = ShieldRequest {
         amount_sats: shield_amount,
-        blinding_hex: to_hex(blinding),
-        owner_pubkey: to_hex(spending_key),
+        blinding_hex: to_hex(&blinding),
+        owner_pubkey: to_hex(&spending_key),
     };
 
     let response = reqwest::Client::new()
