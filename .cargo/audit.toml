@@ -7,10 +7,12 @@
 #   2. An unsound advisory confined to the gtk3 desktop-GUI stack, which never
 #      reaches the shipped node binaries.
 #
-# NOT ignored (the audit intentionally still fails on these — they are real and
-# must be fixed, not silenced):
-#   RUSTSEC-2025-0143  capnp          — shipped SV2 binaries; fix by bumping the pinned stratum-core rev
-#   RUSTSEC-2026-0049/0098/0099/0104  rustls-webpki — test-only (corepc-node), but still real vulns; fix by bumping corepc-node
+# NOT ignored (the audit intentionally still fails on this — real and must be
+# fixed, not silenced):
+#   RUSTSEC-2025-0143  capnp — shipped SV2 binaries (via pinned stratum-core's
+#                      bitcoin-capnp-types); fix by bumping the stratum-core rev.
+# (rand RUSTSEC-2026-0097 and the rustls-webpki advisories have been fixed in the
+#  lockfile; capnp is the only remaining audit finding.)
 
 [advisories]
 ignore = [
