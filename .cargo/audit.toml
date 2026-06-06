@@ -1,0 +1,48 @@
+# cargo-audit policy for bitcoin-ghost.
+#
+# Default posture: vulnerabilities AND unsound advisories FAIL the audit.
+# The IDs below are explicitly reviewed exceptions, each with a justification.
+# Only two classes are allowed here:
+#   1. Unmaintained transitive crates with no available fix (informational).
+#   2. An unsound advisory confined to the gtk3 desktop-GUI stack, which never
+#      reaches the shipped node binaries.
+#
+# NOT ignored (the audit intentionally still fails on these — they are real and
+# must be fixed, not silenced):
+#   RUSTSEC-2025-0143  capnp          — shipped SV2 binaries; fix by bumping the pinned stratum-core rev
+#   RUSTSEC-2026-0049/0098/0099/0104  rustls-webpki — test-only (corepc-node), but still real vulns; fix by bumping corepc-node
+#   RUSTSEC-2026-0097  rand (unsound) — affects the shipped crypto path (rand 0.8.5 in ghost-common); needs review/fix
+
+[advisories]
+ignore = [
+    # --- Unmaintained: gtk3 / webkit desktop-GUI stack (Tauri on Linux). ---
+    # Upstream gtk-rs abandoned gtk3 for gtk4; webkit2gtk/Tauri still require
+    # gtk3, so there is no maintained replacement. GUI crates only — not in any
+    # shipped node binary (ghost-pool / translator_sv2 / pool_sv2 / ghost-pay / …).
+    "RUSTSEC-2024-0413",  # atk
+    "RUSTSEC-2024-0416",  # atk-sys
+    "RUSTSEC-2024-0412",  # gdk
+    "RUSTSEC-2024-0418",  # gdk-sys
+    "RUSTSEC-2024-0411",  # gdkwayland-sys
+    "RUSTSEC-2024-0417",  # gdkx11
+    "RUSTSEC-2024-0414",  # gdkx11-sys
+    "RUSTSEC-2024-0415",  # gtk
+    "RUSTSEC-2024-0420",  # gtk-sys
+    "RUSTSEC-2024-0419",  # gtk3-macros
+    "RUSTSEC-2024-0429",  # glib (unsound) — gtk3 stack, GUI-only, upstream-abandoned
+    # --- Unmaintained: pulled by GUI/web (urlpattern, selectors) — GUI-only. ---
+    "RUSTSEC-2025-0081",  # unic-char-property  (via urlpattern)
+    "RUSTSEC-2025-0075",  # unic-char-range
+    "RUSTSEC-2025-0080",  # unic-common
+    "RUSTSEC-2025-0100",  # unic-ucd-ident
+    "RUSTSEC-2025-0098",  # unic-ucd-version
+    "RUSTSEC-2025-0057",  # fxhash (via selectors)
+    # --- Unmaintained: ubiquitous transitive utils / FFI / ZK / bench. ---
+    # No maintained drop-in; pulled by uniffi (mobile FFI), bellperson (ZK),
+    # criterion (benches), and widely across the ecosystem.
+    "RUSTSEC-2024-0436",  # paste            (uniffi)
+    "RUSTSEC-2025-0141",  # bincode          (bellperson/uniffi)
+    "RUSTSEC-2024-0384",  # instant          (fastrand 1.9 transitive)
+    "RUSTSEC-2024-0370",  # proc-macro-error (gtk3/glib macros)
+    "RUSTSEC-2025-0052",  # async-std        (criterion benches)
+]
