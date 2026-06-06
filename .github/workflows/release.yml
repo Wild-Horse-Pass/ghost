@@ -47,10 +47,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install capnp
 
-      # Build release binaries. Exclude the Tauri desktop GUIs (wraith-wallet-gui,
-      # ghost-tap-desktop) — they need webkit and are not shipped as release binaries.
+      # Build only the binaries this release ships (node + SV2). Building the
+      # whole workspace would pull in the desktop wallet/mobile apps (Tauri GUIs
+      # need webkit, and the wallet daemon may be mid-development) which are not
+      # release artifacts here.
       - name: Build
-        run: cargo build --release --workspace --exclude wraith-wallet-gui --exclude ghost-tap-desktop --target ${{ matrix.target }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p ghost-pool -p ghost-cli -p ghost-pay -p ghost-gsp-bin \
+            -p translator_sv2 -p pool_sv2 -p jd_client_sv2 -p jd_server_sv2
 
       # Package binaries
       - name: Package
