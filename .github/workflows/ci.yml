@@ -10,6 +10,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # The Tauri desktop crates (wraith-wallet-gui, ghost-tap-desktop) need a built
+  # JS frontend (`dist/`) before `tauri::generate_context!` will compile, which is
+  # a separate Node pipeline from the Rust workspace. They are excluded from the
+  # pure-Rust jobs below and built on their own; everything else gets full coverage.
+  WORKSPACE_EXCLUDES: --workspace --exclude wraith-wallet-gui --exclude ghost-tap-desktop
+  # System packages the Rust workspace needs: Cap'n Proto (bitcoin-core-sv2 build
+  # script) and SQLite (ghost-storage / ghost-pay).
+  LINUX_DEPS: libsqlite3-dev capnproto libcapnp-dev
 
 jobs:
   # Format check
@@ -17,7 +25,6 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      # Don't checkout submodules for fmt - sv2-apps has nightly-only rustfmt.toml
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -30,15 +37,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
       # L-01: Removed needless_borrows_for_generic_args and useless_vec allows
-      - run: cargo clippy --all-targets --all-features -- -W clippy::all -A clippy::derivable_impls -A clippy::clone_on_copy -A clippy::match_like_matches_macro -A clippy::manual_flatten -A clippy::redundant_slicing -A clippy::skip_while_next
+      - run: cargo clippy $WORKSPACE_EXCLUDES --all-targets --all-features -- -W clippy::all -A clippy::derivable_impls -A clippy::clone_on_copy -A clippy::match_like_matches_macro -A clippy::manual_flatten -A clippy::redundant_slicing -A clippy::skip_while_next
 
   # Build and test
   test:
@@ -50,32 +55,27 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       # Install system dependencies (Linux)
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libsqlite3-dev \
-            capnproto \
-            libcapnp-dev \
-            libwebkit2gtk-4.1-dev \
-            libsoup-3.0-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
+        run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+
+      # Install system dependencies (macOS). Cap'n Proto for bitcoin-core-sv2's
+      # build script; SQLite ships with macOS.
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install capnp
 
       # Build
       - name: Build
-        run: cargo build --workspace --all-targets
+        run: cargo build $WORKSPACE_EXCLUDES --all-targets
 
       # Run unit tests
       - name: Run unit tests
-        run: cargo test --workspace --lib --bins
+        run: cargo test $WORKSPACE_EXCLUDES --lib --bins
 
       # Run integration tests
       - name: Run integration tests
@@ -100,15 +100,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
       - name: Check documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --no-deps $WORKSPACE_EXCLUDES --all-features
 
   # Security audit
   audit:
@@ -117,8 +115,6 @@ jobs:
     # H-07: Security audit failures should block CI
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Install cargo-audit
         run: cargo install cargo-audit
       - name: Run security audit
@@ -130,12 +126,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
-      - run: cargo check --workspace
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+      - run: cargo check $WORKSPACE_EXCLUDES
 
   # Coverage (optional, runs on main only)
   coverage:
@@ -144,16 +138,14 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
       - name: Generate coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov $WORKSPACE_EXCLUDES --lcov --output-path lcov.info
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
