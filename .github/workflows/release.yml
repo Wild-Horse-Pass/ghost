@@ -64,7 +64,7 @@ jobs:
           mkdir -p dist
 
           # Copy binaries (check actual names from target directory)
-          for bin in ghost-pool ghost-cli ghost-pay ghost-gsp translator_sv2 pool_sv2 jd_client_sv2 jd_server_sv2 ghost-light-wallet ghost-light-wallet-tui; do
+          for bin in ghost-pool ghost-cli ghost-pay ghost-gsp translator_sv2 pool_sv2 jd_client_sv2 ghost-light-wallet ghost-light-wallet-tui; do
             if [ -f "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" ]; then
               cp "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" dist/
             fi
@@ -106,8 +106,13 @@ jobs:
       - name: Generate SHA256 checksums
         shell: bash
         run: |
+          # List basenames (not the nested download-artifact dirs) so the manifest
+          # matches the flat published asset names — `sha256sum -c SHA256SUMS.txt`
+          # then works wherever the assets are downloaded alongside it.
           cd artifacts
-          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec sha256sum {} \; | sort > ../SHA256SUMS.txt
+          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) | while read -r f; do
+            printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
+          done | sort > ../SHA256SUMS.txt
           cat ../SHA256SUMS.txt
 
       # PGP-sign the checksum manifest so releases are verifiable against the
