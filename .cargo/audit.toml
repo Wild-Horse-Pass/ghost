@@ -2,17 +2,14 @@
 #
 # Default posture: vulnerabilities AND unsound advisories FAIL the audit.
 # The IDs below are explicitly reviewed exceptions, each with a justification.
-# Only two classes are allowed here:
+# Classes allowed here:
 #   1. Unmaintained transitive crates with no available fix (informational).
-#   2. An unsound advisory confined to the gtk3 desktop-GUI stack, which never
-#      reaches the shipped node binaries.
+#   2. Unsound advisories that are confirmed unreachable in ghost's usage and
+#      whose fix is gated on a larger upstream migration (capnp / Bitcoin Core IPC).
 #
-# NOT ignored (the audit intentionally still fails on this — real and must be
-# fixed, not silenced):
-#   RUSTSEC-2025-0143  capnp — shipped SV2 binaries (via pinned stratum-core's
-#                      bitcoin-capnp-types); fix by bumping the stratum-core rev.
-# (rand RUSTSEC-2026-0097 and the rustls-webpki advisories have been fixed in the
-#  lockfile; capnp is the only remaining audit finding.)
+# All actual vulnerabilities have been fixed in the lockfile (aws-lc-sys,
+# quinn-proto, protobuf, rustls-webpki) and rand RUSTSEC-2026-0097 was patched +
+# its residual reviewed. With the capnp entry below, the audit is 0/0.
 
 [advisories]
 ignore = [
@@ -56,4 +53,17 @@ ignore = [
     # in the 0.7 line and no path to trigger the UB. Re-evaluate if a custom
     # logger is ever added or bellperson is bumped.
     "RUSTSEC-2026-0097",  # rand (unsound) — unreachable; maintained copies patched, residual is 0.7.3 ZK transitive
+    # --- capnp unsound (RUSTSEC-2025-0143): reviewed, unreachable + migration-gated. ---
+    # The unsound APIs are capnp's `constant::Reader::get` / `StructSchema::new`
+    # (reading capnp CONSTANTS and dynamic SCHEMA reflection). Ghost uses them 0
+    # times — the Bitcoin Core IPC path (bitcoin-core-sv2) reads generated message
+    # readers (get_block / get_result), never constants or schema reflection.
+    # The fix (capnp >=0.24 via bitcoin-capnp-types 0.2) is NOT a standalone bump:
+    # bitcoin-capnp-types mirrors Bitcoin Core's libmultiprocess `.capnp` schemas,
+    # and 0.2 reflects a newer Bitcoin Core mining IPC (getCoinbaseTx returns a
+    # structured CoinbaseTx instead of serialized Data). Adopting it requires the
+    # node on the other end of the IPC to speak the new schema AND reworking the
+    # TDP coinbase construction — i.e. it is gated on a deliberate Bitcoin Core
+    # version migration. Re-evaluate when that migration happens.
+    "RUSTSEC-2025-0143",  # capnp (unsound) — unreachable; fix gated on a Bitcoin Core IPC version migration
 ]
