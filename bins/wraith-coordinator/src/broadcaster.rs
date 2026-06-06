@@ -227,16 +227,13 @@ impl Broadcaster for GhostdBroadcaster {
         // bitcoind output — treat as Unreachable so the round can
         // potentially be retried by an operator after diagnosis.
         let result = parsed.result.ok_or_else(|| {
-            BroadcastError::Unreachable(format!(
-                "RPC {} returned neither result nor error",
-                status
-            ))
+            BroadcastError::Unreachable(format!("RPC {} returned neither result nor error", status))
         })?;
 
         // Result is a JSON string of the txid (64-char hex).
-        let txid_hex = result.as_str().ok_or_else(|| {
-            BroadcastError::Unreachable("RPC result is not a string".into())
-        })?;
+        let txid_hex = result
+            .as_str()
+            .ok_or_else(|| BroadcastError::Unreachable("RPC result is not a string".into()))?;
         use std::str::FromStr;
         bitcoin::Txid::from_str(txid_hex).map_err(|e| {
             BroadcastError::Unreachable(format!("RPC returned malformed txid {txid_hex}: {e}"))
@@ -266,12 +263,8 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             let body = read_request(&stream);
-            let parsed: serde_json::Value =
-                serde_json::from_str(&body).expect("body parse");
-            assert_eq!(
-                parsed["method"], expected_method,
-                "wrong RPC method"
-            );
+            let parsed: serde_json::Value = serde_json::from_str(&body).expect("body parse");
+            assert_eq!(parsed["method"], expected_method, "wrong RPC method");
             // Reply.
             let body_str = reply_body.to_string();
             let resp = format!(
@@ -326,8 +319,7 @@ mod tests {
 
     #[test]
     fn bitcoind_broadcaster_returns_txid_on_success() {
-        let returned_txid =
-            "0000000000000000000000000000000000000000000000000000000000000001";
+        let returned_txid = "0000000000000000000000000000000000000000000000000000000000000001";
         let (url, server) = one_shot_rpc(
             "sendrawtransaction",
             200,

@@ -150,7 +150,11 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             // No parameters to validate
         }
 
-        ClientMessage::GetTransactions { limit, offset: _, wallet_bech32: _ } => {
+        ClientMessage::GetTransactions {
+            limit,
+            offset: _,
+            wallet_bech32: _,
+        } => {
             if *limit == 0 {
                 result.add_error("Limit must be greater than 0");
             }
@@ -290,7 +294,8 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             } else {
                 match hex::decode(recovery_pubkey) {
                     Ok(bytes) if bytes.len() == 33 && (bytes[0] == 0x02 || bytes[0] == 0x03) => {}
-                    Ok(_) => result.add_error("recovery_pubkey must be SEC1-compressed (0x02/0x03 prefix)"),
+                    Ok(_) => result
+                        .add_error("recovery_pubkey must be SEC1-compressed (0x02/0x03 prefix)"),
                     Err(_) => result.add_error("Invalid recovery_pubkey hex encoding"),
                 }
             }

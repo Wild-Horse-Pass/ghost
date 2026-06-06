@@ -48,7 +48,13 @@ pub async fn get(
     match state.sessions.get(&session_id) {
         Some(session) => {
             let descriptor = SessionDescriptor::from_session(&session);
-            (StatusCode::OK, Json(ResponseBody { session: descriptor })).into_response()
+            (
+                StatusCode::OK,
+                Json(ResponseBody {
+                    session: descriptor,
+                }),
+            )
+                .into_response()
         }
         None => (
             StatusCode::NOT_FOUND,

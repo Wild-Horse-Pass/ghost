@@ -48,22 +48,31 @@ async fn restore_01_restore_all_configs() {
     // original values — the backup may have been lost due to SSH timeouts in a
     // prior run, leaving the config in a modified state.
     let original_values: &[(&str, &[(&str, &str, &str)])] = &[
-        ("VM2", &[
-            ("storage", "archive_mode", "true"),
-            ("storage", "prune_height", "0"),
-            ("reaper", "enabled", "true"),
-            ("reaper", "mode", "strict"),
-            ("policy", "profile", "bitcoin_pure"),
-        ]),
-        ("VM3", &[
-            ("reaper", "enabled", "false"),
-            ("reaper", "mode", "monitor"),
-            ("policy", "profile", "permissive"),
-        ]),
-        ("VM4", &[
-            ("storage", "archive_mode", "true"),
-            ("policy", "profile", "permissive"),
-        ]),
+        (
+            "VM2",
+            &[
+                ("storage", "archive_mode", "true"),
+                ("storage", "prune_height", "0"),
+                ("reaper", "enabled", "true"),
+                ("reaper", "mode", "strict"),
+                ("policy", "profile", "bitcoin_pure"),
+            ],
+        ),
+        (
+            "VM3",
+            &[
+                ("reaper", "enabled", "false"),
+                ("reaper", "mode", "monitor"),
+                ("policy", "profile", "permissive"),
+            ],
+        ),
+        (
+            "VM4",
+            &[
+                ("storage", "archive_mode", "true"),
+                ("policy", "profile", "permissive"),
+            ],
+        ),
     ];
 
     for (name, fields) in original_values {
@@ -71,18 +80,17 @@ async fn restore_01_restore_all_configs() {
 
         let has_backup = SshController::has_config_backup(node).unwrap_or(false);
         if has_backup {
-            SshController::restore_config(node).expect(&format!(
-                "failed to restore config on {}",
-                name
-            ));
+            SshController::restore_config(node)
+                .expect(&format!("failed to restore config on {}", name));
             println!("  {} config restored from backup", name);
         } else {
-            println!("  {} no backup found — force-patching original values", name);
+            println!(
+                "  {} no backup found — force-patching original values",
+                name
+            );
             for (section, key, value) in *fields {
-                SshController::patch_config_field(node, section, key, value).expect(&format!(
-                    "failed to patch {}.{} on {}",
-                    section, key, name
-                ));
+                SshController::patch_config_field(node, section, key, value)
+                    .expect(&format!("failed to patch {}.{} on {}", section, key, name));
             }
             println!("  {} config force-patched to original values", name);
         }
@@ -110,10 +118,8 @@ async fn restore_02_restart_services() {
     // Restart VM2, VM3, VM4 to pick up restored configs
     for name in ["VM2", "VM3", "VM4"] {
         let node = config.node_by_name(name).unwrap();
-        SshController::restart_service(node, config.service_name).expect(&format!(
-            "failed to restart {} service",
-            name
-        ));
+        SshController::restart_service(node, config.service_name)
+            .expect(&format!("failed to restart {} service", name));
         println!("  {} restarted", name);
     }
 
@@ -148,8 +154,7 @@ async fn restore_03_full_mesh() {
         assert!(
             rejoined,
             "{} did not reach 3 peers after config restore (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
 
@@ -221,13 +226,9 @@ async fn restore_04_original_configs_verified() {
 
     // Zero panics across the entire session
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "30 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "30 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Config test session: {} had {} panics",

@@ -1167,9 +1167,7 @@ async fn handle_message(
                                 recipient,
                                 amount_sats,
                             }),
-                            None => Err(
-                                "server reported success but no payment_id".into(),
-                            ),
+                            None => Err("server reported success but no payment_id".into()),
                         }
                     } else {
                         Err(error.unwrap_or_else(|| "PaymentSent failed".into()))
@@ -1229,11 +1227,9 @@ async fn handle_message(
                                 recovery_blocks: rblocks,
                                 creation_height: height,
                             }),
-                            _ => Err(
-                                "server reported success but missing lock-script fields \
+                            _ => Err("server reported success but missing lock-script fields \
                                  — refusing to consider lock prepared"
-                                    .into(),
-                            ),
+                                .into()),
                         }
                     } else {
                         Err(error.unwrap_or_else(|| "LockPrepared failed".into()))

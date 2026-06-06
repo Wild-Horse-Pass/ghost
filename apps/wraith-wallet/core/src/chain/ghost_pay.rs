@@ -167,7 +167,10 @@ impl GhostPayClient {
     ) -> Result<ScanUtxosResponse, ChainError> {
         let mut last_err: Option<ChainError> = None;
         for base in &self.base_urls {
-            match self.try_scan_utxos(base, addresses, min_confirmations).await {
+            match self
+                .try_scan_utxos(base, addresses, min_confirmations)
+                .await
+            {
                 Ok(r) => return Ok(r),
                 Err(e) => {
                     tracing::debug!(url = %base, error = %e, "ghost-pay scan_utxos failed, trying next");
@@ -200,11 +203,7 @@ impl GhostPayClient {
         Err(last_err.unwrap_or_else(|| ChainError::Transport("no endpoints configured".into())))
     }
 
-    async fn try_broadcast_tx(
-        &self,
-        base_url: &str,
-        tx_hex: &str,
-    ) -> Result<String, ChainError> {
+    async fn try_broadcast_tx(&self, base_url: &str, tx_hex: &str) -> Result<String, ChainError> {
         let url = self.endpoint(base_url, "/api/v1/tx/broadcast");
         let mut req = self.http.post(&url).json(&serde_json::json!({
             "tx_hex": tx_hex,

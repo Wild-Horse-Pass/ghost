@@ -99,19 +99,19 @@ pub mod errors;
 pub mod field_utils;
 pub mod note_prover;
 pub mod note_verifier;
-pub mod unshield_prover;
-pub mod unshield_verifier;
 pub mod prover;
 pub mod state_tree;
 pub mod types;
+pub mod unshield_prover;
+pub mod unshield_verifier;
 pub mod verifier;
 
 // Re-export main types
 pub use errors::{ZkError, ZkResult};
 pub use prover::BlockProver;
 pub use types::{
-    BlockProof, BlockWitness, BlockWitnessV2, MerkleProof, PaymentTransitionWitness, PaymentWitness,
-    ProvingParams, StateSnapshot, VerificationKey,
+    BlockProof, BlockWitness, BlockWitnessV2, MerkleProof, PaymentTransitionWitness,
+    PaymentWitness, ProvingParams, StateSnapshot, VerificationKey,
 };
 pub use verifier::BlockVerifier;
 
@@ -133,20 +133,22 @@ pub use consolidation_prover::{
 pub use consolidation_verifier::GhostConsolidateVerifier;
 
 // Re-export unshield types (L2 -> L1 full withdrawal proofs)
-pub use unshield_prover::{GhostUnshieldProver, UnshieldProof, UnshieldPublicInputs, UnshieldWitness};
+pub use unshield_prover::{
+    GhostUnshieldProver, UnshieldProof, UnshieldPublicInputs, UnshieldWitness,
+};
 pub use unshield_verifier::GhostUnshieldVerifier;
 
 // Re-export circuit types for advanced usage
 pub use circuit::{
-    compute_note_id_with_epoch_native, compute_note_root_native,
-    compute_nullifier_with_epoch_native, BlockCircuit, BlockCircuitBuilder,
-    GhostUnshieldCircuit, MerkleCircuit, NoteConsolidateCircuit,
-    GhostNoteSpendCircuit, PaymentCircuit, PaymentStateTransitionCircuit,
-    StateTransitionOutputs, MAX_CONSOLIDATION_INPUTS, NOTE_TREE_DEPTH, UNSHIELD_TREE_DEPTH,
-};
-pub use circuit::{
     bytes_to_field, compute_nullifier_native, field_to_bytes, pedersen_commit_native,
     COMMITMENT_DOMAIN_SEPARATOR, NULLIFIER_DOMAIN_SEPARATOR,
+};
+pub use circuit::{
+    compute_note_id_with_epoch_native, compute_note_root_native,
+    compute_nullifier_with_epoch_native, BlockCircuit, BlockCircuitBuilder, GhostNoteSpendCircuit,
+    GhostUnshieldCircuit, MerkleCircuit, NoteConsolidateCircuit, PaymentCircuit,
+    PaymentStateTransitionCircuit, StateTransitionOutputs, MAX_CONSOLIDATION_INPUTS,
+    NOTE_TREE_DEPTH, UNSHIELD_TREE_DEPTH,
 };
 
 // ============================================================================

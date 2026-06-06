@@ -19,7 +19,10 @@ fn ghost_pay_client(state: &AppState) -> AppResult<GhostPayClient> {
         timeout_ms: 30_000,
         api_secret: state.ghost_pay_secret.lock().clone(),
     };
-    Ok(GhostPayClient::with_client(config, state.http_client.clone()))
+    Ok(GhostPayClient::with_client(
+        config,
+        state.http_client.clone(),
+    ))
 }
 
 // =============================================================================
@@ -39,10 +42,7 @@ pub async fn list_locks(state: State<'_, AppState>) -> AppResult<serde_json::Val
 
 /// Get details for a specific lock.
 #[tauri::command]
-pub async fn get_lock(
-    state: State<'_, AppState>,
-    lock_id: String,
-) -> AppResult<serde_json::Value> {
+pub async fn get_lock(state: State<'_, AppState>, lock_id: String) -> AppResult<serde_json::Value> {
     let client = ghost_pay_client(&state)?;
     let lock = client
         .get_lock(&lock_id)
@@ -173,10 +173,7 @@ pub async fn list_withdrawals(state: State<'_, AppState>) -> AppResult<serde_jso
 
 /// Get details for a specific withdrawal.
 #[tauri::command]
-pub async fn get_withdrawal(
-    state: State<'_, AppState>,
-    id: u64,
-) -> AppResult<serde_json::Value> {
+pub async fn get_withdrawal(state: State<'_, AppState>, id: u64) -> AppResult<serde_json::Value> {
     let client = ghost_pay_client(&state)?;
     let withdrawal = client
         .get_withdrawal(id)

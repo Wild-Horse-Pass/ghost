@@ -479,9 +479,9 @@ impl ApiClient {
             }
             match resp.text().await {
                 Ok(v) => AttemptResult::Ok(v),
-                Err(e) => {
-                    AttemptResult::Fatal(anyhow::Error::from(e).context("Failed to read API response"))
-                }
+                Err(e) => AttemptResult::Fatal(
+                    anyhow::Error::from(e).context("Failed to read API response"),
+                ),
             }
         })
         .await

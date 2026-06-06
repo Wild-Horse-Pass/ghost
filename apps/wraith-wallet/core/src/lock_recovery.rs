@@ -60,7 +60,9 @@ pub enum LockRecoveryError {
     GhostLocks(#[from] ghost_locks::GhostLockError),
     #[error("destination address is not valid for network {network:?}: {detail}")]
     BadDestinationAddress { network: Network, detail: String },
-    #[error("insufficient input value: prev {prev_sats} sats, fee {fee_sats} sats — need fee < prev")]
+    #[error(
+        "insufficient input value: prev {prev_sats} sats, fee {fee_sats} sats — need fee < prev"
+    )]
     InsufficientInput { prev_sats: u64, fee_sats: u64 },
     #[error("timelock not yet matured: current {current}, required {required}")]
     TimelockNotMatured { current: u32, required: u32 },
@@ -158,13 +160,12 @@ pub fn build_recovery_spend(
 
     // 3. Parse destination + assemble outputs. Fee is implicit
     //    (in - out = fee).
-    let dest_unchecked =
-        Address::from_str(inputs.destination_address.trim()).map_err(|e| {
-            LockRecoveryError::BadDestinationAddress {
-                network: inputs.network,
-                detail: format!("parse: {e}"),
-            }
-        })?;
+    let dest_unchecked = Address::from_str(inputs.destination_address.trim()).map_err(|e| {
+        LockRecoveryError::BadDestinationAddress {
+            network: inputs.network,
+            detail: format!("parse: {e}"),
+        }
+    })?;
     let dest = dest_unchecked
         .require_network(inputs.network)
         .map_err(|e| LockRecoveryError::BadDestinationAddress {
@@ -247,11 +248,7 @@ pub fn build_recovery_spend(
     // 8. Serialise.
     let raw_hex = bitcoin::consensus::encode::serialize_hex(&tx);
     let txid = tx.compute_txid().to_string();
-    Ok(BuiltRecoveryTx {
-        raw_hex,
-        tx,
-        txid,
-    })
+    Ok(BuiltRecoveryTx { raw_hex, tx, txid })
 }
 
 #[cfg(test)]

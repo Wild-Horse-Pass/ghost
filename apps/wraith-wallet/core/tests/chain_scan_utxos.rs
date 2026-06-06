@@ -14,8 +14,8 @@
 //! `scripts/regtest-l1-scan-demo.sh`. Together they form the test
 //! pyramid for the new endpoint.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use axum::{
     extract::State,

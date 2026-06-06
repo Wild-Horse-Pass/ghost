@@ -53,12 +53,10 @@ async fn asymmetric_01_one_way_block_setup() {
     println!("\n=== Asymmetric Partition: One-Way Block Setup (VM2 → VM3) ===");
 
     // Set up chain on VM2 only — we only block outgoing from VM2 to VM3
-    SshController::setup_partition_chain(vm2)
-        .expect("failed to setup chain on VM2");
+    SshController::setup_partition_chain(vm2).expect("failed to setup chain on VM2");
 
     // Block VM2 → VM3 outgoing only (VM3 can still send to VM2)
-    SshController::block_peer_outgoing(vm2, vm3.ip)
-        .expect("failed to block VM2 → VM3 outgoing");
+    SshController::block_peer_outgoing(vm2, vm3.ip).expect("failed to block VM2 → VM3 outgoing");
 
     // Wait for partition to take effect
     println!("  Waiting 30s for peer detection timeout...");
@@ -165,8 +163,7 @@ async fn asymmetric_04_heal_one_way() {
         assert!(
             rejoined,
             "{} did not regain 3 peers after heal (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
 
@@ -191,13 +188,9 @@ async fn asymmetric_04_heal_one_way() {
 
     // Zero panics
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "15 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "15 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post one-way heal: {} had {} panics",
@@ -223,14 +216,17 @@ async fn asymmetric_05_ring_partition_setup() {
 
     // Set up chains on all nodes
     for node in &config.nodes {
-        SshController::setup_partition_chain(node).expect(&format!(
-            "failed to setup chain on {}",
-            node.name
-        ));
+        SshController::setup_partition_chain(node)
+            .expect(&format!("failed to setup chain on {}", node.name));
     }
 
     // Create ring: each node can't send to its clockwise neighbor
-    let ring = [("VM1", "VM2"), ("VM2", "VM3"), ("VM3", "VM4"), ("VM4", "VM1")];
+    let ring = [
+        ("VM1", "VM2"),
+        ("VM2", "VM3"),
+        ("VM3", "VM4"),
+        ("VM4", "VM1"),
+    ];
     for (from_name, to_name) in &ring {
         let from_node = config.node_by_name(from_name).unwrap();
         let to_node = config.node_by_name(to_name).unwrap();
@@ -255,7 +251,10 @@ async fn asymmetric_05_ring_partition_setup() {
         total_hits > 0,
         "No iptables hits across any node — ring partition not effective"
     );
-    println!("  Ring partition established ({} total iptables hits)", total_hits);
+    println!(
+        "  Ring partition established ({} total iptables hits)",
+        total_hits
+    );
 }
 
 #[tokio::test]
@@ -327,8 +326,7 @@ async fn asymmetric_08_heal_ring() {
         assert!(
             rejoined,
             "{} did not regain 3 peers after ring heal (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
 
@@ -353,13 +351,9 @@ async fn asymmetric_08_heal_ring() {
 
     // Zero panics
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "15 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "15 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post ring heal: {} had {} panics",

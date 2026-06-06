@@ -21,9 +21,7 @@ use crate::config::TlsConfig;
 /// `1.3.101.112` (RFC 8410) wrapped in the AlgorithmIdentifier SEQUENCE. We
 /// scan certificate DER for this byte pattern; whatever immediately follows is
 /// the 33-byte BIT STRING wrapping the 32-byte public key.
-const ED25519_OID_DER: [u8; 9] = [
-    0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21,
-];
+const ED25519_OID_DER: [u8; 9] = [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21];
 
 /// Extract the 32-byte Ed25519 public key from an X.509 certificate's DER
 /// encoding. Returns `None` if the cert isn't Ed25519 or is malformed.
@@ -143,17 +141,16 @@ fn load_pem_files(
 > {
     use rustls::pki_types::pem::PemObject;
 
-    let certs: Vec<CertificateDer<'static>> =
-        CertificateDer::pem_file_iter(cert_path)
-            .map_err(|e| {
-                format!(
-                    "Failed to read TLS certificate from {}: {}",
-                    cert_path.display(),
-                    e
-                )
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to parse PEM certificates: {}", e))?;
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert_path)
+        .map_err(|e| {
+            format!(
+                "Failed to read TLS certificate from {}: {}",
+                cert_path.display(),
+                e
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to parse PEM certificates: {}", e))?;
 
     if certs.is_empty() {
         return Err("No certificates found in PEM file".into());
@@ -250,9 +247,7 @@ fn derive_cert_from_ed25519(
     let cert_der = CertificateDer::from(cert.der().to_vec());
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8_der));
 
-    tracing::info!(
-        "TLS: Derived identity-bound Ed25519 certificate (cert pubkey = node_id)"
-    );
+    tracing::info!("TLS: Derived identity-bound Ed25519 certificate (cert pubkey = node_id)");
 
     Ok((vec![cert_der], key_der))
 }
@@ -354,10 +349,9 @@ fn verify_ed25519_handshake(
             rustls::PeerIncompatible::NoSignatureSchemesInCommon,
         ));
     }
-    let pubkey_bytes = extract_ed25519_pubkey(cert.as_ref())
-        .ok_or(rustls::Error::InvalidCertificate(
-            rustls::CertificateError::BadEncoding,
-        ))?;
+    let pubkey_bytes = extract_ed25519_pubkey(cert.as_ref()).ok_or(
+        rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding),
+    )?;
     let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
         .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
     let sig_bytes: &[u8] = dss.signature();

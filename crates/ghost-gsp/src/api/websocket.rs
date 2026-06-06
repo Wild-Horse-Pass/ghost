@@ -178,9 +178,7 @@ fn verify_websocket_proof(
     let static_wallet_id = conn_state
         .static_wallet_id
         .as_ref()
-        .ok_or_else(|| {
-            "session predates static-wallet-id binding; re-authenticate".to_string()
-        })?;
+        .ok_or_else(|| "session predates static-wallet-id binding; re-authenticate".to_string())?;
     state
         .registry
         .verify_proof_for_wallet(proof, static_wallet_id)
@@ -652,14 +650,8 @@ async fn handle_message(
             offset,
             wallet_bech32,
         } => {
-            handle_get_transactions(
-                state,
-                conn_state,
-                limit,
-                offset,
-                wallet_bech32.as_deref(),
-            )
-            .await
+            handle_get_transactions(state, conn_state, limit, offset, wallet_bech32.as_deref())
+                .await
         }
 
         ClientMessage::SubscribeBalance => handle_subscribe(state, conn_state, "balance").await,
@@ -721,8 +713,15 @@ async fn handle_message(
             proof,
             memo,
         } => {
-            handle_send_l2_payment(state, conn_state, &recipient, amount_sats, &proof, memo.as_deref())
-                .await
+            handle_send_l2_payment(
+                state,
+                conn_state,
+                &recipient,
+                amount_sats,
+                &proof,
+                memo.as_deref(),
+            )
+            .await
         }
 
         ClientMessage::GetPaymentStatus { payment_id, proof } => {
@@ -1007,10 +1006,7 @@ async fn handle_get_transactions(
     // optional bech32 from the wallet matches recipient-side rows
     // (`merchant_wallet_id` is stored as bech32 because it's the
     // only stable identifier the sender has at INSERT time).
-    let owner_id = conn_state
-        .static_wallet_id
-        .as_ref()
-        .unwrap_or(wallet_id);
+    let owner_id = conn_state.static_wallet_id.as_ref().unwrap_or(wallet_id);
 
     let (transactions, total_count) = state
         .pay_node
@@ -1403,10 +1399,7 @@ async fn handle_send_l2_payment(
     // Session-rotating IDs change per-session, so balance/lock
     // queries against them never find the records that were
     // recorded under the static derivation.
-    let owner_id = conn_state
-        .static_wallet_id
-        .as_ref()
-        .unwrap_or(wallet_id);
+    let owner_id = conn_state.static_wallet_id.as_ref().unwrap_or(wallet_id);
 
     // QUANTUM SAFETY: Reject P2TR recipient addresses (same rule
     // as PreparePayment — applies to anything that could end up
@@ -1673,10 +1666,7 @@ async fn handle_prepare_ghost_lock(
     // Locks must be recorded under the *static* wallet ID so that
     // subsequent sessions (which get fresh rotating IDs) can still
     // query ownership. The static ID is stable across reauths.
-    let owner_id = conn_state
-        .static_wallet_id
-        .as_ref()
-        .unwrap_or(wallet_id);
+    let owner_id = conn_state.static_wallet_id.as_ref().unwrap_or(wallet_id);
 
     info!(
         wallet_id = %wallet_id,
@@ -2825,10 +2815,7 @@ async fn handle_get_recent_l2_transactions(
                         epoch: t.get("epoch")?.as_u64().unwrap_or(0),
                         nullifier: t.get("nullifier")?.as_str()?.to_string(),
                         change_commitment: t.get("change_commitment")?.as_str()?.to_string(),
-                        recipient_commitment: t
-                            .get("recipient_commitment")?
-                            .as_str()?
-                            .to_string(),
+                        recipient_commitment: t.get("recipient_commitment")?.as_str()?.to_string(),
                         encrypted_change: t
                             .get("encrypted_change")
                             .and_then(|v| v.as_str())

@@ -52,7 +52,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 use wraith_coordinator::bond_ledger_http::GhostPayBondLedger;
-use wraith_coordinator::broadcaster::{GhostdBroadcaster, Broadcaster, StubBroadcaster};
+use wraith_coordinator::broadcaster::{Broadcaster, GhostdBroadcaster, StubBroadcaster};
 use wraith_coordinator::{build_router, CoordinatorState};
 use wraith_protocol::{BondLedger, MockBondLedger};
 
@@ -69,7 +69,11 @@ struct Cli {
     /// Listen address. Defaults to `WRAITH_COORDINATOR_LISTEN` env var if
     /// set, falling back to `127.0.0.1:9100`. Production deployments bind
     /// to a public address and front it with a TLS-terminating proxy.
-    #[arg(long, env = "WRAITH_COORDINATOR_LISTEN", default_value = "127.0.0.1:9100")]
+    #[arg(
+        long,
+        env = "WRAITH_COORDINATOR_LISTEN",
+        default_value = "127.0.0.1:9100"
+    )]
     listen: SocketAddr,
 
     /// Bitcoin network (`mainnet` / `signet` / `testnet` / `regtest`).
@@ -182,8 +186,8 @@ struct Cli {
 async fn main() -> Result<()> {
     init_logging();
     let cli = Cli::parse();
-    let network = parse_network(&cli.network)
-        .with_context(|| format!("invalid network: {}", cli.network))?;
+    let network =
+        parse_network(&cli.network).with_context(|| format!("invalid network: {}", cli.network))?;
 
     // Mainnet refuses any mock backend. Both mocks compromise the
     // security model in different ways — refusing at boot beats
@@ -204,9 +208,7 @@ async fn main() -> Result<()> {
     }
 
     if cli.mock_bond_ledger && cli.bond_ledger_url.is_some() {
-        anyhow::bail!(
-            "--mock-bond-ledger and --bond-ledger-url are mutually exclusive; pick one."
-        );
+        anyhow::bail!("--mock-bond-ledger and --bond-ledger-url are mutually exclusive; pick one.");
     }
     let bond_ledger: Option<Arc<dyn BondLedger>> = if cli.mock_bond_ledger {
         if cli.mock_bond_ledger_auto_escrow {
@@ -220,9 +222,10 @@ async fn main() -> Result<()> {
             Some(Arc::new(MockBondLedger::new()))
         }
     } else if let Some(url) = cli.bond_ledger_url.as_deref() {
-        let token = cli.bond_ledger_token.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("--bond-ledger-url requires --bond-ledger-token")
-        })?;
+        let token = cli
+            .bond_ledger_token
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("--bond-ledger-url requires --bond-ledger-token"))?;
         let ledger = GhostPayBondLedger::new(url, token)
             .map_err(|e| anyhow::anyhow!("ghost-pay bond ledger: {e}"))?;
         info!(endpoint = %url, "using GhostPayBondLedger");
@@ -235,9 +238,7 @@ async fn main() -> Result<()> {
     // returns 503 broadcaster_not_configured on the round-completing
     // submission (same as before phase D landed).
     if cli.mock_broadcaster && cli.ghostd_url.is_some() {
-        anyhow::bail!(
-            "--mock-broadcaster and --ghostd-url are mutually exclusive; pick one."
-        );
+        anyhow::bail!("--mock-broadcaster and --ghostd-url are mutually exclusive; pick one.");
     }
     let broadcaster: Option<Arc<dyn Broadcaster>> = if cli.mock_broadcaster {
         warn!("using StubBroadcaster — round transactions are NOT actually broadcast");
@@ -287,9 +288,7 @@ async fn main() -> Result<()> {
     // anonymity sets need the full 300s window for participants to
     // discover and join. Regtest / signet operators may shorten it
     // for demos and tests.
-    if matches!(network, bitcoin::Network::Bitcoin)
-        && cli.fill_window_secs.is_some()
-    {
+    if matches!(network, bitcoin::Network::Bitcoin) && cli.fill_window_secs.is_some() {
         anyhow::bail!(
             "MAINNET REFUSAL: --fill-window-secs is dev-only — \
              production must use the LITE_FILL_WINDOW_SECS default \
@@ -309,7 +308,10 @@ async fn main() -> Result<()> {
     state.gossip_peer_secret = cli.peer_secret.clone();
     if let Some(secs) = cli.fill_window_secs {
         state.fill_window_secs = secs;
-        warn!(secs, "fill-window override active — non-default tier behaviour");
+        warn!(
+            secs,
+            "fill-window override active — non-default tier behaviour"
+        );
     }
 
     // Active/Standby state replication. When the operator supplies

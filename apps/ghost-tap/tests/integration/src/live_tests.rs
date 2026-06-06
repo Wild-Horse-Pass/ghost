@@ -66,7 +66,10 @@ async fn test_tree_sync() {
     let body: serde_json::Value = response.json().await.expect("Failed to parse tree state");
 
     // Verify essential fields exist
-    assert!(body.get("root").is_some(), "Tree state missing 'root' field");
+    assert!(
+        body.get("root").is_some(),
+        "Tree state missing 'root' field"
+    );
     assert!(
         body.get("note_count").is_some(),
         "Tree state missing 'note_count' field"
@@ -108,7 +111,10 @@ async fn test_shield_and_scan() {
         panic!("Shield request failed ({}): {}", status, body);
     }
 
-    let result: serde_json::Value = response.json().await.expect("Failed to parse shield response");
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .expect("Failed to parse shield response");
     assert!(
         result.get("commitment").is_some(),
         "Shield response missing 'commitment'"

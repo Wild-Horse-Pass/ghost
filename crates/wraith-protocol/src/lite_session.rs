@@ -927,7 +927,11 @@ pub fn find_or_create_session(
 mod tests {
     use super::*;
 
-    fn fixtures() -> (LiteSessionRegistry, MockClock, DeterministicSessionIdGenerator) {
+    fn fixtures() -> (
+        LiteSessionRegistry,
+        MockClock,
+        DeterministicSessionIdGenerator,
+    ) {
         (
             LiteSessionRegistry::new(),
             MockClock::new(1_000_000),
@@ -944,8 +948,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_eq!(d.session_id, "test-session-0000");
         assert_eq!(d.tier_id, "100k_sats");
@@ -966,8 +969,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         let d2 = find_or_create_session(
             LiteTier::Denom100kSats,
@@ -975,8 +977,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_eq!(d1.session_id, d2.session_id);
         // Only one session in the registry — the second call didn't
@@ -1042,8 +1043,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         let d_big = find_or_create_session(
             LiteTier::Denom1mSats,
@@ -1051,8 +1051,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_ne!(d_small.session_id, d_big.session_id);
         assert_eq!(d_small.tier_id, "100k_sats");
@@ -1072,8 +1071,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         let jump = find_or_create_session(
             LiteTier::Denom100kSats,
@@ -1081,8 +1079,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_ne!(mix.session_id, jump.session_id);
         assert_eq!(reg.len(), 2);
@@ -1097,8 +1094,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // Fill it to the max (20 for 100k tier).
         for i in 0..20 {
@@ -1116,8 +1112,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_ne!(d.session_id, d2.session_id);
         assert_eq!(reg.len(), 2);
@@ -1132,8 +1127,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // Advance past the fill window (300s).
         clock.advance(LITE_FILL_WINDOW_SECS + 1);
@@ -1143,8 +1137,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_ne!(d1.session_id, d2.session_id);
         // Old session is still in registry but no longer "open."
@@ -1160,17 +1153,11 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_eq!(d.slots_filled, 0);
         let d2 = reg
-            .add_participant(
-                &d.session_id,
-                "alice",
-                BondId::new("bond-alice"),
-                1_000_000,
-            )
+            .add_participant(&d.session_id, "alice", BondId::new("bond-alice"), 1_000_000)
             .unwrap();
         assert_eq!(d2.slots_filled, 1);
     }
@@ -1184,8 +1171,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         reg.add_participant(
             &d.session_id,
@@ -1217,8 +1203,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         for i in 0..20 {
             reg.add_participant(
@@ -1230,12 +1215,7 @@ mod tests {
             .unwrap();
         }
         let err = reg
-            .add_participant(
-                &d.session_id,
-                "late",
-                BondId::new("bond-late"),
-                1_000_000,
-            )
+            .add_participant(&d.session_id, "late", BondId::new("bond-late"), 1_000_000)
             .expect_err("locked round should reject new participants");
         match err {
             LiteSessionError::NotAcceptingParticipants(_, why) => {
@@ -1254,8 +1234,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         clock.advance(LITE_FILL_WINDOW_SECS + 1);
         let err = reg
@@ -1283,8 +1262,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // 5 participants is exactly min — enough for quorum.
         for i in 0..5 {
@@ -1312,8 +1290,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // 4 < min participants of 5.
         for i in 0..4 {
@@ -1345,8 +1322,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         clock.advance(LITE_FILL_WINDOW_SECS + 1);
         let first = reg.tick(clock.unix_secs());
@@ -1367,8 +1343,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // Fill to max → Locked.
         for i in 0..20 {
@@ -1398,8 +1373,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // Cannot go Filling → Broadcasting.
         let err = reg
@@ -1422,8 +1396,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         let r = reg.fail_session(&d.session_id, "test-abort").unwrap();
         assert_eq!(r.state, "failed");
@@ -1443,8 +1416,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         let s = serde_json::to_string(&d).unwrap();
         let back: SessionDescriptor = serde_json::from_str(&s).unwrap();
@@ -1513,8 +1485,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_eq!(sink.len(), 1);
         match &sink.events()[0] {
@@ -1536,8 +1507,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         active
             .add_participant(&d.session_id, "alice", BondId::new("bond-a"), 1_000_000)
@@ -1567,8 +1537,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         for i in 0..LiteTier::Denom100kSats.max_participants() {
             active
@@ -1601,8 +1570,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         for i in 0..LiteTier::Denom100kSats.min_participants() {
             active
@@ -1620,8 +1588,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         sink.events(); // checkpoint baseline
         let baseline = sink.len();
@@ -1650,8 +1617,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // Fill to max so we're Locked.
         for i in 0..LiteTier::Denom100kSats.max_participants() {
@@ -1689,20 +1655,17 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         let baseline = sink.len();
         active.fail_session(&d.session_id, "test-abort").unwrap();
         let new_events = &sink.events()[baseline..];
         assert_eq!(new_events.len(), 1);
         match &new_events[0] {
-            SessionGossipEvent::StateChanged { new_state, .. } => {
-                match new_state {
-                    LiteSessionState::Failed { reason } => assert_eq!(reason, "test-abort"),
-                    other => panic!("expected Failed, got {other:?}"),
-                }
-            }
+            SessionGossipEvent::StateChanged { new_state, .. } => match new_state {
+                LiteSessionState::Failed { reason } => assert_eq!(reason, "test-abort"),
+                other => panic!("expected Failed, got {other:?}"),
+            },
             other => panic!("expected StateChanged, got {other:?}"),
         }
     }
@@ -1716,8 +1679,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // Apply the captured event.
         for ev in sink.events() {
@@ -1740,8 +1702,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         active
             .add_participant(&d.session_id, "alice", BondId::new("bond-a"), 1_000_000)
@@ -1805,8 +1766,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         for i in 0..5 {
             active
@@ -1830,8 +1790,7 @@ mod tests {
             &active,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         for i in 0..3 {
             active
@@ -1843,7 +1802,9 @@ mod tests {
                 )
                 .unwrap();
         }
-        active.fail_session(&d_b.session_id, "operator-abort").unwrap();
+        active
+            .fail_session(&d_b.session_id, "operator-abort")
+            .unwrap();
 
         // Failover: Standby applies every captured event in order.
         // Realistic gossip ordering — the events were emitted in the
@@ -1880,8 +1841,7 @@ mod tests {
             &registry,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // No way to inspect the null sink (by design), but no panic = pass.
         assert_eq!(registry.len(), 1);
@@ -1937,8 +1897,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         let other_tier = find_or_create_session(
             LiteTier::Denom1mSats,
@@ -1946,8 +1905,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         // Fill the second one to max so it locks.
         for i in 0..LiteTier::Denom1mSats.max_participants() {
@@ -1967,8 +1925,7 @@ mod tests {
             &reg,
             &clock,
             &gen,
-
-        LITE_FILL_WINDOW_SECS,
+            LITE_FILL_WINDOW_SECS,
         );
         assert_ne!(new_1m.session_id, other_tier.session_id);
         // Registry now has 3 sessions.

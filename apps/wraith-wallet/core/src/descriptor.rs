@@ -119,7 +119,10 @@ impl ParsedDescriptor {
         let mut child_pubkeys: Vec<PublicKey> = Vec::with_capacity(self.keys.len());
         for k in &self.keys {
             let (chain_child, leaf_child) = match k.children {
-                Children::Multipath { external, internal: int_ } => {
+                Children::Multipath {
+                    external,
+                    internal: int_,
+                } => {
                     if internal {
                         (int_, index)
                     } else {
@@ -129,8 +132,7 @@ impl ParsedDescriptor {
                 Children::Single(c) => {
                     if internal {
                         return Err(DescriptorError::Unsupported(
-                            "descriptor has no internal branch (single-child); receive-only"
-                                .into(),
+                            "descriptor has no internal branch (single-child); receive-only".into(),
                         ));
                     }
                     (c, index)
@@ -138,8 +140,7 @@ impl ParsedDescriptor {
                 Children::Fixed(c) => {
                     if internal {
                         return Err(DescriptorError::Unsupported(
-                            "descriptor has no internal branch (fixed-child); receive-only"
-                                .into(),
+                            "descriptor has no internal branch (fixed-child); receive-only".into(),
                         ));
                     }
                     if index != 0 {
@@ -184,8 +185,15 @@ impl ParsedDescriptor {
         let mut child_pubkeys: Vec<PublicKey> = Vec::with_capacity(self.keys.len());
         for k in &self.keys {
             let (chain_child, leaf_child) = match k.children {
-                Children::Multipath { external, internal: int_ } => {
-                    if internal { (int_, index) } else { (external, index) }
+                Children::Multipath {
+                    external,
+                    internal: int_,
+                } => {
+                    if internal {
+                        (int_, index)
+                    } else {
+                        (external, index)
+                    }
                 }
                 Children::Single(c) => {
                     if internal {
@@ -336,8 +344,8 @@ fn parse_fragment(s: &str) -> Result<CosignerKey, DescriptorError> {
             "fingerprint must be 8 hex chars; got {fp_hex:?}"
         )));
     }
-    let fp_bytes = hex::decode(fp_hex)
-        .map_err(|e| DescriptorError::Parse(format!("fingerprint hex: {e}")))?;
+    let fp_bytes =
+        hex::decode(fp_hex).map_err(|e| DescriptorError::Parse(format!("fingerprint hex: {e}")))?;
     let mut fingerprint = [0u8; 4];
     fingerprint.copy_from_slice(&fp_bytes);
 
@@ -500,7 +508,10 @@ mod tests {
         let s = "wsh(sortedmulti(0,\
             [73c5da0a/48'/1'/0'/2']tpubDFH9dgzveyD8zTbPUFuLrGmCydNvxehyNdUXKJAQN8x4aZ4j6UZqGfnqFrD4NqyaTVGKbvEW54tsvPTK2UoSbCC1PJY8iCNiwTL3RWZEheQ/<0;1>/*\
             ))";
-        assert!(matches!(parse(s), Err(DescriptorError::BadThreshold { .. })));
+        assert!(matches!(
+            parse(s),
+            Err(DescriptorError::BadThreshold { .. })
+        ));
     }
 
     #[test]
@@ -555,7 +566,7 @@ mod tests {
         // Should start with OP_2 (k=2) and end with OP_2 OP_CHECKMULTISIG.
         let bytes = script.as_bytes();
         assert_eq!(bytes[0], 0x52, "OP_2 at start (k=2)"); // OP_PUSHNUM_2
-        // Last two bytes: OP_PUSHNUM_2 OP_CHECKMULTISIG (n=2)
+                                                           // Last two bytes: OP_PUSHNUM_2 OP_CHECKMULTISIG (n=2)
         assert_eq!(bytes[bytes.len() - 2], 0x52);
         assert_eq!(bytes[bytes.len() - 1], 0xae);
     }

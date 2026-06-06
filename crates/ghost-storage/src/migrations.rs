@@ -1804,10 +1804,8 @@ fn migrate_v33(conn: &Connection) -> GhostResult<()> {
 fn migrate_v34(conn: &Connection) -> GhostResult<()> {
     debug!("Running migration v34: Add key_index to ghost_locks");
 
-    conn.execute_batch(
-        "ALTER TABLE ghost_locks ADD COLUMN key_index INTEGER;",
-    )
-    .map_err(|e| GhostError::Migration(e.to_string()))?;
+    conn.execute_batch("ALTER TABLE ghost_locks ADD COLUMN key_index INTEGER;")
+        .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     // Backfill existing locks with their current computed index
     // This uses the same logic as get_lock_index_for_owner: count of locks created before each lock
@@ -1841,17 +1839,13 @@ fn migrate_v34(conn: &Connection) -> GhostResult<()> {
 fn migrate_v35(conn: &Connection) -> GhostResult<()> {
     debug!("Running migration v35: Add paid_in_proposal_hash to shares");
 
-    conn.execute_batch(
-        "ALTER TABLE shares ADD COLUMN paid_in_proposal_hash BLOB;",
-    )
-    .map_err(|e| GhostError::Migration(e.to_string()))?;
+    conn.execute_batch("ALTER TABLE shares ADD COLUMN paid_in_proposal_hash BLOB;")
+        .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     // Stamp every existing share as already-paid with an all-zero sentinel.
     // Fresh start: the ledger is empty on first boot after this migration.
-    conn.execute_batch(
-        "UPDATE shares SET paid_in_proposal_hash = zeroblob(32);",
-    )
-    .map_err(|e| GhostError::Migration(e.to_string()))?;
+    conn.execute_batch("UPDATE shares SET paid_in_proposal_hash = zeroblob(32);")
+        .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     // Partial index keeps the unpaid-ledger query O(log N_unpaid), not
     // O(log N_all_shares). Without this, every payout lookup would scan
@@ -2164,11 +2158,9 @@ mod tests {
         .unwrap();
 
         let count: u32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM burned_elder_numbers",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM burned_elder_numbers", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(count, 1);
 

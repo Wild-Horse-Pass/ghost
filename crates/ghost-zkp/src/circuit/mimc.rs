@@ -189,7 +189,10 @@ mod tests {
 
     #[test]
     fn test_mimc_rounds_count() {
-        assert_eq!(MIMC_ROUNDS, 82, "MiMC should use 82 rounds for 128-bit security");
+        assert_eq!(
+            MIMC_ROUNDS, 82,
+            "MiMC should use 82 rounds for 128-bit security"
+        );
     }
 
     #[test]

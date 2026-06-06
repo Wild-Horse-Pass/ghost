@@ -24,10 +24,7 @@ fn test_086_default_config_has_sensible_values() {
     // Network defaults
     assert_eq!(config.network.sv2_port, 34255);
     assert_eq!(config.network.sv1_port, 3333);
-    assert!(matches!(
-        config.network.mining_mode,
-        MiningMode::PublicPool
-    ));
+    assert!(matches!(config.network.mining_mode, MiningMode::PublicPool));
     assert!(config.network.signing_key.is_none());
 
     // Bitcoin defaults

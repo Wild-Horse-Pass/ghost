@@ -3,9 +3,7 @@
 //! Provides `apply_*` functions that modify `NodeConfig` based on wizard field values.
 //! Used by both the TUI wizard dispatch and the headless `ghost-setup` CLI.
 
-use crate::config::{
-    GhostPayConfig, HazeMode, NodeConfig, PolicyProfile,
-};
+use crate::config::{GhostPayConfig, HazeMode, NodeConfig, PolicyProfile};
 use crate::identity::NodeIdentity;
 use crate::types::TreasuryAddress;
 use std::collections::HashMap;
@@ -56,8 +54,8 @@ fn load_and_modify(
 ) -> Result<String, String> {
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Load config {}: {e}", config_path.display()))?;
-    let mut config: NodeConfig = toml::from_str(&content)
-        .map_err(|e| format!("Parse config: {e}"))?;
+    let mut config: NodeConfig =
+        toml::from_str(&content).map_err(|e| format!("Parse config: {e}"))?;
     modify(&mut config);
     config
         .save_atomic(config_path)
@@ -90,14 +88,8 @@ pub fn apply_initial_setup(
         .get("archive_mode")
         .map(|v| v.as_bool())
         .unwrap_or(true);
-    let ghost_pay_enabled = fields
-        .get("ghost_pay")
-        .map(|v| v.as_bool())
-        .unwrap_or(true);
-    let reaper_enabled = fields
-        .get("reaper")
-        .map(|v| v.as_bool())
-        .unwrap_or(true);
+    let ghost_pay_enabled = fields.get("ghost_pay").map(|v| v.as_bool()).unwrap_or(true);
+    let reaper_enabled = fields.get("reaper").map(|v| v.as_bool()).unwrap_or(true);
     let mempool_idx = fields
         .get("mempool_profile")
         .map(|v| v.as_selected())

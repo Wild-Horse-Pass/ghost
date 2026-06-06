@@ -147,7 +147,10 @@ impl GhostKeys {
     ///
     /// Returns an error if scan_secret == spend_secret to preserve the security
     /// separation required by Silent Payments (BIP-352).
-    pub fn from_secrets(scan_secret: SecretKey, spend_secret: SecretKey) -> Result<Self, GhostKeyError> {
+    pub fn from_secrets(
+        scan_secret: SecretKey,
+        spend_secret: SecretKey,
+    ) -> Result<Self, GhostKeyError> {
         // L-8: Verify scan key != spend key for Silent Payment security
         if scan_secret.secret_bytes() == spend_secret.secret_bytes() {
             return Err(GhostKeyError::InvalidSecretKey(

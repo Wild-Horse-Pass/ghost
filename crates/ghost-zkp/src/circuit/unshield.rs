@@ -154,7 +154,11 @@ impl<F: PrimeField> Circuit<F> for GhostUnshieldCircuit<F> {
         }
 
         // Range proof on note_value (prevent field wrap-around on input note)
-        enforce_range(cs.namespace(|| "range_note_value"), &note_value, BALANCE_BITS)?;
+        enforce_range(
+            cs.namespace(|| "range_note_value"),
+            &note_value,
+            BALANCE_BITS,
+        )?;
 
         // ====================================================================
         // 3. Compute spent note commitment: C = MiMC(MiMC(value, blinding), COMT_DOMAIN)

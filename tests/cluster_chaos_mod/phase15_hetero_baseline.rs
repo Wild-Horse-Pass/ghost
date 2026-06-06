@@ -110,14 +110,15 @@ async fn hetero_04_vm1_config_verified() {
     println!("  Expected: archive=true, reaper=strict, policy=bitcoin_pure");
 
     // Check config values via SSH
-    let archive = SshController::read_config_field(vm1, "storage", "archive_mode")
-        .unwrap_or_default();
-    let reaper = SshController::read_config_field(vm1, "reaper", "enabled")
-        .unwrap_or_default();
-    let policy = SshController::read_config_field(vm1, "policy", "profile")
-        .unwrap_or_default();
+    let archive =
+        SshController::read_config_field(vm1, "storage", "archive_mode").unwrap_or_default();
+    let reaper = SshController::read_config_field(vm1, "reaper", "enabled").unwrap_or_default();
+    let policy = SshController::read_config_field(vm1, "policy", "profile").unwrap_or_default();
 
-    println!("  VM1: archive={}, reaper={}, policy={}", archive, reaper, policy);
+    println!(
+        "  VM1: archive={}, reaper={}, policy={}",
+        archive, reaper, policy
+    );
     assert_eq!(archive, "true", "VM1 should be archive mode");
     assert_eq!(reaper, "true", "VM1 reaper should be enabled");
     assert_eq!(policy, "bitcoin_pure", "VM1 policy should be bitcoin_pure");
@@ -130,7 +131,10 @@ async fn hetero_04_vm1_config_verified() {
     let (haze_status, haze_json) = client.probe_endpoint(vm1.ip, "/api/v1/haze/status").await;
     if haze_status == 200 {
         if let Some(json) = haze_json {
-            let mode = json.get("mode").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let mode = json
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             println!("  VM1 haze status: mode={}", mode);
         }
     }
@@ -148,16 +152,17 @@ async fn hetero_05_vm2_config_verified() {
     println!("\n=== Heterogeneous Baseline: VM2 Config Verification ===");
     println!("  Expected: archive=false, prune=1000, reaper=disabled, policy=permissive");
 
-    let archive = SshController::read_config_field(vm2, "storage", "archive_mode")
-        .unwrap_or_default();
-    let prune = SshController::read_config_field(vm2, "storage", "prune_height")
-        .unwrap_or_default();
-    let reaper = SshController::read_config_field(vm2, "reaper", "enabled")
-        .unwrap_or_default();
-    let policy = SshController::read_config_field(vm2, "policy", "profile")
-        .unwrap_or_default();
+    let archive =
+        SshController::read_config_field(vm2, "storage", "archive_mode").unwrap_or_default();
+    let prune =
+        SshController::read_config_field(vm2, "storage", "prune_height").unwrap_or_default();
+    let reaper = SshController::read_config_field(vm2, "reaper", "enabled").unwrap_or_default();
+    let policy = SshController::read_config_field(vm2, "policy", "profile").unwrap_or_default();
 
-    println!("  VM2: archive={}, prune={}, reaper={}, policy={}", archive, prune, reaper, policy);
+    println!(
+        "  VM2: archive={}, prune={}, reaper={}, policy={}",
+        archive, prune, reaper, policy
+    );
     assert_eq!(archive, "false", "VM2 should be non-archive");
     assert_eq!(prune, "1000", "VM2 should have prune_height=1000");
     assert_eq!(reaper, "false", "VM2 reaper should be disabled");
@@ -180,14 +185,11 @@ async fn hetero_06_vm3_config_verified() {
     println!("\n=== Heterogeneous Baseline: VM3 Config Verification ===");
     println!("  Expected: archive=true, reaper=strict, policy=full_open");
 
-    let archive = SshController::read_config_field(vm3, "storage", "archive_mode")
-        .unwrap_or_default();
-    let reaper = SshController::read_config_field(vm3, "reaper", "enabled")
-        .unwrap_or_default();
-    let reaper_mode = SshController::read_config_field(vm3, "reaper", "mode")
-        .unwrap_or_default();
-    let policy = SshController::read_config_field(vm3, "policy", "profile")
-        .unwrap_or_default();
+    let archive =
+        SshController::read_config_field(vm3, "storage", "archive_mode").unwrap_or_default();
+    let reaper = SshController::read_config_field(vm3, "reaper", "enabled").unwrap_or_default();
+    let reaper_mode = SshController::read_config_field(vm3, "reaper", "mode").unwrap_or_default();
+    let policy = SshController::read_config_field(vm3, "policy", "profile").unwrap_or_default();
 
     println!(
         "  VM3: archive={}, reaper={}/{}, policy={}",
@@ -224,14 +226,15 @@ async fn hetero_07_vm4_config_verified() {
     println!("\n=== Heterogeneous Baseline: VM4 Config Verification ===");
     println!("  Expected: archive=false, reaper=disabled, policy=bitcoin_pure");
 
-    let archive = SshController::read_config_field(vm4, "storage", "archive_mode")
-        .unwrap_or_default();
-    let reaper = SshController::read_config_field(vm4, "reaper", "enabled")
-        .unwrap_or_default();
-    let policy = SshController::read_config_field(vm4, "policy", "profile")
-        .unwrap_or_default();
+    let archive =
+        SshController::read_config_field(vm4, "storage", "archive_mode").unwrap_or_default();
+    let reaper = SshController::read_config_field(vm4, "reaper", "enabled").unwrap_or_default();
+    let policy = SshController::read_config_field(vm4, "policy", "profile").unwrap_or_default();
 
-    println!("  VM4: archive={}, reaper={}, policy={}", archive, reaper, policy);
+    println!(
+        "  VM4: archive={}, reaper={}, policy={}",
+        archive, reaper, policy
+    );
     assert_eq!(archive, "false", "VM4 should be non-archive");
     assert_eq!(reaper, "false", "VM4 reaper should be disabled");
     assert_eq!(policy, "bitcoin_pure", "VM4 policy should be bitcoin_pure");

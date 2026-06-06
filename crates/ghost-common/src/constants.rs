@@ -464,10 +464,22 @@ mod tests {
 
     #[test]
     fn test_settlement_class_parse() {
-        assert_eq!(SettlementClass::parse("express"), Some(SettlementClass::Express));
-        assert_eq!(SettlementClass::parse("standard"), Some(SettlementClass::Standard));
-        assert_eq!(SettlementClass::parse("economy"), Some(SettlementClass::Economy));
-        assert_eq!(SettlementClass::parse("Express"), Some(SettlementClass::Express));
+        assert_eq!(
+            SettlementClass::parse("express"),
+            Some(SettlementClass::Express)
+        );
+        assert_eq!(
+            SettlementClass::parse("standard"),
+            Some(SettlementClass::Standard)
+        );
+        assert_eq!(
+            SettlementClass::parse("economy"),
+            Some(SettlementClass::Economy)
+        );
+        assert_eq!(
+            SettlementClass::parse("Express"),
+            Some(SettlementClass::Express)
+        );
         assert_eq!(SettlementClass::parse("invalid"), None);
     }
 

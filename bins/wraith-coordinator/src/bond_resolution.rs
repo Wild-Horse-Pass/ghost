@@ -125,10 +125,7 @@ pub struct NoSignSweepSummary {
 /// Pure side-effects on the supplied state — no HTTP response, no
 /// channel notifications. Caller (background tick OR /witness
 /// handler) decides what to do with the summary.
-pub fn execute_no_sign_sweep(
-    state: &CoordinatorState,
-    session_id: &str,
-) -> NoSignSweepSummary {
+pub fn execute_no_sign_sweep(state: &CoordinatorState, session_id: &str) -> NoSignSweepSummary {
     let inputs = state
         .inputs_store
         .lock()
@@ -191,12 +188,14 @@ pub fn execute_no_sign_sweep(
     } else {
         "witness:no_sign_deadline"
     };
-    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
-        session_id: session_id.to_string(),
-        new_state: LiteSessionState::Failed {
-            reason: reason.into(),
-        },
-    });
+    let _ = state
+        .sessions
+        .apply_event(SessionGossipEvent::StateChanged {
+            session_id: session_id.to_string(),
+            new_state: LiteSessionState::Failed {
+                reason: reason.into(),
+            },
+        });
 
     // Drop the deadline entry so a subsequent tick doesn't re-sweep.
     state

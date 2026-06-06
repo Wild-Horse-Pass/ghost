@@ -246,9 +246,7 @@ async fn light_send(
 }
 
 #[tauri::command]
-async fn light_utxos(
-    min_confirmations: Option<u32>,
-) -> Result<serde_json::Value, String> {
+async fn light_utxos(min_confirmations: Option<u32>) -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::LightUtxos {
         min_confirmations: min_confirmations.unwrap_or(0),
     })
@@ -316,8 +314,7 @@ async fn wraith_mix_run(
         socks5_proxy,
         tier_id,
         ghost_id,
-        bond_id_placeholder: bond_id_placeholder
-            .unwrap_or_else(|| "placeholder".to_string()),
+        bond_id_placeholder: bond_id_placeholder.unwrap_or_else(|| "placeholder".to_string()),
         utxo_txid,
         utxo_vout,
         utxo_value_sats,
@@ -350,10 +347,7 @@ async fn psbt_inspect(psbt: String) -> Result<serde_json::Value, String> {
 /// updated PSBT in the same encoding as the input (base64 → base64,
 /// hex → hex), plus the indices that were actually touched.
 #[tauri::command]
-async fn psbt_sign(
-    psbt: String,
-    bip86_scan_max: Option<u32>,
-) -> Result<serde_json::Value, String> {
+async fn psbt_sign(psbt: String, bip86_scan_max: Option<u32>) -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::PsbtSign {
         psbt,
         bip86_scan_max,
@@ -391,9 +385,7 @@ async fn psbt_create(
 /// Extract a fully-signed PSBT (or accept raw tx hex directly) and
 /// broadcast it via ghost-pay → bitcoind. Returns the txid.
 #[tauri::command]
-async fn psbt_broadcast(
-    psbt_or_tx_hex: String,
-) -> Result<serde_json::Value, String> {
+async fn psbt_broadcast(psbt_or_tx_hex: String) -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::PsbtBroadcast { psbt_or_tx_hex }).await?;
     to_value(&resp)
 }
@@ -420,10 +412,7 @@ async fn psbt_bump_fee(
 /// a multisig descriptor (wsh, tr, etc.) by an external coordinator.
 /// Public-only — no private material crosses this boundary.
 #[tauri::command]
-async fn wallet_export_xpub(
-    path: String,
-    mainnet: bool,
-) -> Result<serde_json::Value, String> {
+async fn wallet_export_xpub(path: String, mainnet: bool) -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::WalletExportXpub { path, mainnet }).await?;
     to_value(&resp)
 }
@@ -477,9 +466,7 @@ async fn multisig_descriptor_addresses(
 }
 
 #[tauri::command]
-async fn multisig_descriptor_delete(
-    name: String,
-) -> Result<serde_json::Value, String> {
+async fn multisig_descriptor_delete(name: String) -> Result<serde_json::Value, String> {
     let resp = call_daemon(Request::MultisigDescriptorDelete { name }).await?;
     to_value(&resp)
 }

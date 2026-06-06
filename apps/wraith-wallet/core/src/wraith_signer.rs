@@ -229,8 +229,8 @@ pub fn sign_taproot_key_path_at_index(
 mod tests {
     use super::*;
     use bitcoin::secp256k1::Secp256k1;
-    use bitcoin::{Address, ScriptBuf, Sequence, TxIn, TxOut, Witness as TxWitness};
     use bitcoin::OutPoint;
+    use bitcoin::{Address, ScriptBuf, Sequence, TxIn, TxOut, Witness as TxWitness};
 
     fn ks() -> Keystore {
         Keystore::from_mnemonic(
@@ -319,7 +319,9 @@ mod tests {
         // Round-trip check: a fresh Schnorr verify against the tweaked
         // pubkey + the sighash we signed must succeed.
         use bitcoin::key::TapTweak;
-        use bitcoin::secp256k1::{schnorr::Signature as SchnorrSig, Keypair, Message, XOnlyPublicKey};
+        use bitcoin::secp256k1::{
+            schnorr::Signature as SchnorrSig, Keypair, Message, XOnlyPublicKey,
+        };
 
         let keystore = ks();
         let addr_idx0 = crate::light::receive_address(&keystore, 0, Network::Signet).unwrap();
@@ -328,12 +330,7 @@ mod tests {
         let witness =
             sign_taproot_key_path_at_index(&keystore, Network::Signet, &tx, 0, &prevouts, 0)
                 .expect("sign ok");
-        let sig_bytes: [u8; 64] = witness
-            .iter()
-            .next()
-            .unwrap()
-            .try_into()
-            .expect("64 bytes");
+        let sig_bytes: [u8; 64] = witness.iter().next().unwrap().try_into().expect("64 bytes");
         let sig = SchnorrSig::from_slice(&sig_bytes).unwrap();
 
         // Recompute the sighash + tweaked pubkey and verify.
@@ -365,6 +362,11 @@ mod tests {
         let xonly: XOnlyPublicKey = tweaked.to_keypair().x_only_public_key().0;
 
         secp.verify_schnorr(&sig, &msg, &xonly).expect("verify ok");
-        let _ = Address::p2tr(&secp, untweaked.x_only_public_key().0, None, Network::Signet);
+        let _ = Address::p2tr(
+            &secp,
+            untweaked.x_only_public_key().0,
+            None,
+            Network::Signet,
+        );
     }
 }

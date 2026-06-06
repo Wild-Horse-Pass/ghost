@@ -90,9 +90,7 @@ async fn handle_ws(mut socket: WebSocket) {
 async fn spawn_mock() -> std::net::SocketAddr {
     let app = Router::new().route(
         "/ws/v1",
-        get(|ws: WebSocketUpgrade| async move {
-            ws.on_upgrade(handle_ws).into_response()
-        }),
+        get(|ws: WebSocketUpgrade| async move { ws.on_upgrade(handle_ws).into_response() }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -108,12 +106,7 @@ async fn prepare_ghost_lock_round_trips_lock_prepared() {
     let addr = spawn_mock().await;
     let ws_url = format!("ws://{addr}/ws/v1");
 
-    let session = spawn_session(
-        vec![ws_url],
-        "mock-jwt-token".to_string(),
-        None,
-        None,
-    );
+    let session = spawn_session(vec![ws_url], "mock-jwt-token".to_string(), None, None);
 
     let result = tokio::time::timeout(
         Duration::from_secs(3),
@@ -196,9 +189,7 @@ async fn prepare_ghost_lock_propagates_server_error() {
 
     let app = Router::new().route(
         "/ws/v1",
-        get(|ws: WebSocketUpgrade| async move {
-            ws.on_upgrade(handle_ws_failure).into_response()
-        }),
+        get(|ws: WebSocketUpgrade| async move { ws.on_upgrade(handle_ws_failure).into_response() }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -208,12 +199,7 @@ async fn prepare_ghost_lock_propagates_server_error() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     let ws_url = format!("ws://{addr}/ws/v1");
 
-    let session = spawn_session(
-        vec![ws_url],
-        "mock-jwt-token".to_string(),
-        None,
-        None,
-    );
+    let session = spawn_session(vec![ws_url], "mock-jwt-token".to_string(), None, None);
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(3),

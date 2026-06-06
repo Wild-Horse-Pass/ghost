@@ -16,11 +16,7 @@ impl TransactionExporter {
     }
 
     /// Filter entries by the half-open time range `[from, to)`.
-    fn filter_range(
-        entries: &[HistoryEntry],
-        from: u64,
-        to: u64,
-    ) -> Vec<&HistoryEntry> {
+    fn filter_range(entries: &[HistoryEntry], from: u64, to: u64) -> Vec<&HistoryEntry> {
         entries
             .iter()
             .filter(|e| e.timestamp >= from && e.timestamp < to)
@@ -74,11 +70,7 @@ impl TransactionExporter {
                 Some(f) => format_ghost_amount(f),
                 None => String::new(),
             };
-            let memo_str = entry
-                .memo
-                .as_deref()
-                .map(csv_escape)
-                .unwrap_or_default();
+            let memo_str = entry.memo.as_deref().map(csv_escape).unwrap_or_default();
 
             csv.push_str(&format!(
                 "{},{},{},{},{},{},{},{}\n",
@@ -119,10 +111,7 @@ impl TransactionExporter {
             .filter(|e| e.direction == TxDirection::Outgoing)
             .map(|e| e.amount)
             .sum();
-        let total_fees: u64 = filtered
-            .iter()
-            .filter_map(|e| e.fee)
-            .sum();
+        let total_fees: u64 = filtered.iter().filter_map(|e| e.fee).sum();
         let tx_count = filtered.len();
 
         // Build table rows
@@ -326,8 +315,7 @@ mod tests {
     #[test]
     fn test_html_report() {
         let entries = sample_entries();
-        let html =
-            TransactionExporter::to_html_report(&entries, 0, 3000, "Ghost Cafe");
+        let html = TransactionExporter::to_html_report(&entries, 0, 3000, "Ghost Cafe");
 
         assert!(html.contains("Ghost Cafe"));
         assert!(html.contains("tx_aaa"));
@@ -337,5 +325,4 @@ mod tests {
         assert!(html.contains("0.50000000 GHOST")); // total sent
         assert!(html.contains("<!DOCTYPE html>"));
     }
-
 }

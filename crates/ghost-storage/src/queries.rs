@@ -853,10 +853,7 @@ impl Database {
     /// memory — same trade-off as [`Self::get_top_unpaid_addresses`].
     /// The input set is bounded by `LEDGER_CAP` (1000) so the cost is
     /// always trivially small.
-    pub fn miner_ids_for_addresses(
-        &self,
-        addresses: &[String],
-    ) -> GhostResult<Vec<String>> {
+    pub fn miner_ids_for_addresses(&self, addresses: &[String]) -> GhostResult<Vec<String>> {
         if addresses.is_empty() {
             return Ok(Vec::new());
         }
@@ -1041,8 +1038,7 @@ impl Database {
                     .prepare(&sql)
                     .map_err(|e| GhostError::Database(e.to_string()))?;
 
-                let mut bind: Vec<Box<dyn rusqlite::ToSql>> =
-                    Vec::with_capacity(batch.len() + 2);
+                let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(batch.len() + 2);
                 bind.push(Box::new(proposal_hash.to_vec()));
                 bind.push(Box::new(cutoff_ts));
                 for id in batch {
@@ -1778,10 +1774,7 @@ impl Database {
     }
 
     /// P-4: Decrypt payout_address in an optional NodeRecord
-    fn decrypt_node_record(
-        &self,
-        node: Option<NodeRecord>,
-    ) -> GhostResult<Option<NodeRecord>> {
+    fn decrypt_node_record(&self, node: Option<NodeRecord>) -> GhostResult<Option<NodeRecord>> {
         match node {
             Some(mut n) => {
                 if let Some(ref addr) = n.payout_address {
@@ -2087,7 +2080,12 @@ impl Database {
     // =========================================================================
 
     /// Record a burned elder position after successful revocation vote
-    pub fn burn_elder_position(&self, position: u32, node_id: &str, reason: &str) -> GhostResult<()> {
+    pub fn burn_elder_position(
+        &self,
+        position: u32,
+        node_id: &str,
+        reason: &str,
+    ) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
             conn.execute(
@@ -2517,16 +2515,17 @@ impl Database {
     ///
     /// P-4: Decrypts the address if encryption is configured.
     pub fn get_node_payout_address(&self, node_id: &str) -> GhostResult<Option<String>> {
-        let stored: Option<String> = self.with_connection(|conn| {
-            conn.query_row(
-                "SELECT payout_address FROM nodes WHERE node_id = ?1",
-                [node_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| GhostError::Database(e.to_string()))
-        })?
-        .flatten();
+        let stored: Option<String> = self
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT payout_address FROM nodes WHERE node_id = ?1",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))
+            })?
+            .flatten();
         // P-4: Decrypt the address if present
         match stored {
             Some(addr) if !addr.is_empty() => Ok(Some(self.decrypt_address(&addr)?)),
@@ -4567,7 +4566,9 @@ fn withdrawal_from_row(row: &rusqlite::Row) -> rusqlite::Result<WithdrawalReques
         status: parse_withdrawal_status_strict(&status_str, "withdrawal_from_row")?,
         batch_id: row.get(7)?,
         l1_txid: row.get(8)?,
-        settlement_class: row.get::<_, String>(9).unwrap_or_else(|_| "standard".to_string()),
+        settlement_class: row
+            .get::<_, String>(9)
+            .unwrap_or_else(|_| "standard".to_string()),
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
     })
@@ -7075,9 +7076,8 @@ impl Database {
                 ) = row.map_err(|e| GhostError::Database(e.to_string()))?;
 
                 let to_32 = |v: Vec<u8>, name: &str| -> GhostResult<[u8; 32]> {
-                    v.try_into().map_err(|_| {
-                        GhostError::Database(format!("Invalid {} size in DB", name))
-                    })
+                    v.try_into()
+                        .map_err(|_| GhostError::Database(format!("Invalid {} size in DB", name)))
                 };
 
                 transfers.push(ConfidentialTransferRecord {
@@ -7485,9 +7485,7 @@ impl Database {
                 let (nullifier_vec, epoch, spent_at) =
                     row.map_err(|e| GhostError::Database(e.to_string()))?;
                 let nullifier: [u8; 32] = nullifier_vec.try_into().map_err(|_| {
-                    GhostError::Database(
-                        "Invalid nullifier size in pending_nullifiers".to_string(),
-                    )
+                    GhostError::Database("Invalid nullifier size in pending_nullifiers".to_string())
                 })?;
                 result.push((nullifier, epoch, spent_at));
             }
@@ -7500,11 +7498,9 @@ impl Database {
     pub fn confirm_pending_nullifiers(&self) -> GhostResult<u64> {
         self.with_connection(|conn| {
             let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM pending_nullifiers",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM pending_nullifiers", [], |row| {
+                    row.get(0)
+                })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             if count == 0 {
@@ -7592,8 +7588,7 @@ impl Database {
             return Ok(());
         }
         self.with_connection(|conn| {
-            let placeholders: Vec<String> =
-                note_indices.iter().map(|_| "?".to_string()).collect();
+            let placeholders: Vec<String> = note_indices.iter().map(|_| "?".to_string()).collect();
             let sql = format!(
                 "DELETE FROM pending_l2_shields WHERE note_index IN ({})",
                 placeholders.join(",")
@@ -7602,8 +7597,11 @@ impl Database {
                 .iter()
                 .map(|idx| Box::new(*idx as i64) as Box<dyn rusqlite::types::ToSql>)
                 .collect();
-            conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))
-                .map_err(|e| GhostError::Database(e.to_string()))?;
+            conn.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
         })
     }
@@ -7667,8 +7665,7 @@ impl Database {
             return Ok(());
         }
         self.with_connection(|conn| {
-            let placeholders: Vec<String> =
-                nullifiers.iter().map(|_| "?".to_string()).collect();
+            let placeholders: Vec<String> = nullifiers.iter().map(|_| "?".to_string()).collect();
             let sql = format!(
                 "DELETE FROM confirmed_pool_staging WHERE nullifier IN ({})",
                 placeholders.join(",")
@@ -7677,8 +7674,11 @@ impl Database {
                 .iter()
                 .map(|n| Box::new(n.to_vec()) as Box<dyn rusqlite::types::ToSql>)
                 .collect();
-            conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))
-                .map_err(|e| GhostError::Database(e.to_string()))?;
+            conn.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
         })
     }
@@ -10138,14 +10138,18 @@ mod tests {
             .expect("Insert should succeed");
 
         // Neither registered yet
-        let registered = db.list_registered_glyphs(0, 10).expect("Query should succeed");
+        let registered = db
+            .list_registered_glyphs(0, 10)
+            .expect("Query should succeed");
         assert_eq!(registered.len(), 0);
 
         // Register one
         db.complete_glyph_registration("ghost1alice", "txid123", 2000)
             .expect("Registration should succeed");
 
-        let registered = db.list_registered_glyphs(0, 10).expect("Query should succeed");
+        let registered = db
+            .list_registered_glyphs(0, 10)
+            .expect("Query should succeed");
         assert_eq!(registered.len(), 1);
         assert_eq!(registered[0].ghost_id, "ghost1alice");
     }
@@ -10212,13 +10216,21 @@ mod tests {
             .expect("Insert should succeed");
 
         // At t=90000: alice's claim expired (87400 < 90000), bob's hasn't (186400 > 90000)
-        let deleted = db.cleanup_expired_glyph_claims(90000).expect("Cleanup should succeed");
+        let deleted = db
+            .cleanup_expired_glyph_claims(90000)
+            .expect("Cleanup should succeed");
         assert_eq!(deleted, 1);
 
         // Alice should be gone
-        assert!(db.get_glyph_by_ghost_id("ghost1alice").expect("Query ok").is_none());
+        assert!(db
+            .get_glyph_by_ghost_id("ghost1alice")
+            .expect("Query ok")
+            .is_none());
         // Bob should still exist
-        assert!(db.get_glyph_by_ghost_id("ghost1bob").expect("Query ok").is_some());
+        assert!(db
+            .get_glyph_by_ghost_id("ghost1bob")
+            .expect("Query ok")
+            .is_some());
     }
 
     #[test]
@@ -10236,11 +10248,16 @@ mod tests {
             .expect("Registration should succeed");
 
         // Cleanup far in the future — should NOT delete registered claims
-        let deleted = db.cleanup_expired_glyph_claims(999999999).expect("Cleanup should succeed");
+        let deleted = db
+            .cleanup_expired_glyph_claims(999999999)
+            .expect("Cleanup should succeed");
         assert_eq!(deleted, 0);
 
         // Record should still exist
-        assert!(db.get_glyph_by_ghost_id("ghost1alice").expect("Query ok").is_some());
+        assert!(db
+            .get_glyph_by_ghost_id("ghost1alice")
+            .expect("Query ok")
+            .is_some());
     }
 
     #[test]
@@ -10258,7 +10275,8 @@ mod tests {
         assert!(!db.is_bitmap_available(&bh).expect("Query ok"));
 
         // Expire the claim (cleanup with time far in the future)
-        db.cleanup_expired_glyph_claims(now + 90000).expect("Cleanup should succeed");
+        db.cleanup_expired_glyph_claims(now + 90000)
+            .expect("Cleanup should succeed");
 
         // Bitmap should be available again (row deleted)
         assert!(db.is_bitmap_available(&bh).expect("Query ok"));

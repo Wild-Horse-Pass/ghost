@@ -579,11 +579,7 @@ mod tests {
         // latency_score = 0.2 (1000ms >= 500), reliability_score = 0.4 (just created, < 1 day),
         // capability_score = 0/15 = 0.0, elder_bonus = 0.0
         // score = 0.06 + 0.12 + 0.0 + 0.0 = 0.18
-        assert!(
-            score.score < 0.3,
-            "Expected low score, got {}",
-            score.score
-        );
+        assert!(score.score < 0.3, "Expected low score, got {}", score.score);
         assert_eq!(score.latency_score, 0.2);
     }
 

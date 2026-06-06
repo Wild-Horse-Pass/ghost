@@ -92,10 +92,7 @@ impl GhostdRpc {
             Ok(r) => r,
             Err(ureq::Error::Status(_, response)) => response,
             Err(ureq::Error::Transport(t)) => {
-                return Err(GhostdError::Unreachable(format!(
-                    "{:?}: {t}",
-                    t.kind()
-                )));
+                return Err(GhostdError::Unreachable(format!("{:?}: {t}", t.kind())));
             }
         };
         let parsed: RpcResponse<R> = resp
@@ -107,9 +104,9 @@ impl GhostdRpc {
                 message: err.message,
             });
         }
-        parsed.result.ok_or_else(|| {
-            GhostdError::Parse("RPC returned neither result nor error".into())
-        })
+        parsed
+            .result
+            .ok_or_else(|| GhostdError::Parse("RPC returned neither result nor error".into()))
     }
 
     /// Current best-block height. Used to check whether a lock's

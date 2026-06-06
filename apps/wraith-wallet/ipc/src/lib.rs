@@ -249,7 +249,9 @@ pub enum Request {
     },
     /// Delete a saved multisig descriptor for the active wallet.
     /// Idempotent — succeeds with `removed=false` if absent.
-    MultisigDescriptorDelete { name: String },
+    MultisigDescriptorDelete {
+        name: String,
+    },
     /// Re-display a wallet's BIP39 mnemonic. Always re-prompts the passphrase.
     WalletShowMnemonic {
         name: String,
@@ -373,7 +375,9 @@ pub enum Request {
     /// Pure function — does not touch any wallet state, so unlike
     /// `PsbtSign` it works without an active wallet. Accepts either
     /// base64 or hex; the daemon sniffs the encoding.
-    PsbtInspect { psbt: String },
+    PsbtInspect {
+        psbt: String,
+    },
     /// Sign every input of a PSBT that the active wallet's keystore
     /// can sign. Inputs the keystore doesn't own are left untouched
     /// — multi-cosigner flows just chain `PsbtSign` across each
@@ -422,7 +426,9 @@ pub enum Request {
     /// extracts the tx from the PSBT before forwarding, so the
     /// caller doesn't have to know how to finalize. If the input
     /// is already raw tx hex (no PSBT magic), it's broadcast as-is.
-    PsbtBroadcast { psbt_or_tx_hex: String },
+    PsbtBroadcast {
+        psbt_or_tx_hex: String,
+    },
     /// BIP-125 fee-bump on an existing PSBT. Reduces the wallet's
     /// change output to absorb the higher fee, returns a fresh
     /// unsigned PSBT (signatures stripped — the sighash changes
@@ -523,7 +529,9 @@ pub enum Response {
     MultisigDescriptorSaved(MultisigDescriptorSaved),
     MultisigDescriptorList(MultisigDescriptorListResponse),
     MultisigDescriptorAddresses(MultisigDescriptorAddressesResponse),
-    MultisigDescriptorDeleted { removed: bool },
+    MultisigDescriptorDeleted {
+        removed: bool,
+    },
     WalletShowMnemonic(WalletShowMnemonicResponse),
     WalletExported {
         name: String,

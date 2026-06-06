@@ -203,7 +203,11 @@ async fn endpoints_08_degraded_mode() {
         .collect();
 
     for ip in &survivor_ips {
-        println!("  Probing {} endpoints on {} (VM2 down)...", key_endpoints.len(), ip);
+        println!(
+            "  Probing {} endpoints on {} (VM2 down)...",
+            key_endpoints.len(),
+            ip
+        );
         for endpoint in &key_endpoints {
             let (status, _) = client.probe_endpoint(ip, endpoint).await;
             assert_ne!(

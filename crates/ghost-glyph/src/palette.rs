@@ -6,37 +6,37 @@
 /// 26-color ghost-themed palette
 pub const PALETTE: [(u8, u8, u8); 26] = [
     // Core tones
-    (0, 0, 0),         //  0: Void Black
-    (255, 255, 255),    //  1: Phantom White
-    (28, 28, 36),       //  2: Midnight
-    (48, 48, 64),       //  3: Shadow
-    (80, 80, 104),      //  4: Dusk
-    (128, 128, 160),    //  5: Fog
-    (192, 192, 212),    //  6: Mist
+    (0, 0, 0),       //  0: Void Black
+    (255, 255, 255), //  1: Phantom White
+    (28, 28, 36),    //  2: Midnight
+    (48, 48, 64),    //  3: Shadow
+    (80, 80, 104),   //  4: Dusk
+    (128, 128, 160), //  5: Fog
+    (192, 192, 212), //  6: Mist
     // Spectral blues
-    (24, 32, 80),       //  7: Deep Haunt
-    (40, 60, 140),      //  8: Specter Blue
-    (64, 100, 200),     //  9: Wraith Blue
-    (120, 160, 230),    // 10: Ether
+    (24, 32, 80),    //  7: Deep Haunt
+    (40, 60, 140),   //  8: Specter Blue
+    (64, 100, 200),  //  9: Wraith Blue
+    (120, 160, 230), // 10: Ether
     // Ghostly greens
-    (16, 48, 32),       // 11: Crypt Green
-    (32, 100, 64),      // 12: Ectoplasm
-    (80, 200, 120),     // 13: Poltergeist
-    (160, 240, 180),    // 14: Spirit Glow
+    (16, 48, 32),    // 11: Crypt Green
+    (32, 100, 64),   // 12: Ectoplasm
+    (80, 200, 120),  // 13: Poltergeist
+    (160, 240, 180), // 14: Spirit Glow
     // Ember / warning
-    (80, 16, 16),       // 15: Blood Shadow
-    (160, 40, 24),      // 16: Ember
-    (220, 80, 40),      // 17: Hellfire
-    (255, 160, 80),     // 18: Lantern
+    (80, 16, 16),   // 15: Blood Shadow
+    (160, 40, 24),  // 16: Ember
+    (220, 80, 40),  // 17: Hellfire
+    (255, 160, 80), // 18: Lantern
     // Purple / arcane
-    (48, 16, 80),       // 19: Abyss Purple
-    (100, 40, 160),     // 20: Phantom Violet
-    (160, 80, 220),     // 21: Arcane
-    (200, 160, 255),    // 22: Spectral Lilac
+    (48, 16, 80),    // 19: Abyss Purple
+    (100, 40, 160),  // 20: Phantom Violet
+    (160, 80, 220),  // 21: Arcane
+    (200, 160, 255), // 22: Spectral Lilac
     // Accents
-    (255, 220, 60),     // 23: Soul Gold
-    (0, 200, 200),      // 24: Ghost Teal
-    (255, 100, 160),    // 25: Banshee Pink
+    (255, 220, 60),  // 23: Soul Gold
+    (0, 200, 200),   // 24: Ghost Teal
+    (255, 100, 160), // 25: Banshee Pink
 ];
 
 /// Get the RGB color for a palette index.
@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn test_palette_known_values() {
-        assert_eq!(palette_index_to_rgb(0), Some((0, 0, 0)));       // Void Black
+        assert_eq!(palette_index_to_rgb(0), Some((0, 0, 0))); // Void Black
         assert_eq!(palette_index_to_rgb(1), Some((255, 255, 255))); // Phantom White
         assert_eq!(palette_index_to_rgb(25), Some((255, 100, 160))); // Banshee Pink
     }

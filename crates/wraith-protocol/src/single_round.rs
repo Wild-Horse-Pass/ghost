@@ -387,16 +387,9 @@ impl LiteRoundBuilder {
         let mut output_provenance: Vec<LiteOutputProvenance> = Vec::with_capacity(outputs.len());
         for (final_idx, item) in outputs.into_iter().enumerate() {
             let address = Address::from_str(&item.address)
-                .map_err(|e| {
-                    WraithError::InvalidInput(format!(
-                        "address {}: {e}",
-                        item.address
-                    ))
-                })?
+                .map_err(|e| WraithError::InvalidInput(format!("address {}: {e}", item.address)))?
                 .require_network(self.network)
-                .map_err(|e| {
-                    WraithError::InvalidInput(format!("network mismatch: {e}"))
-                })?;
+                .map_err(|e| WraithError::InvalidInput(format!("network mismatch: {e}")))?;
             tx_outputs.push(TxOut {
                 value: Amount::from_sat(item.amount_sats),
                 script_pubkey: address.script_pubkey(),

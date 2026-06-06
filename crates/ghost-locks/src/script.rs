@@ -318,7 +318,6 @@ impl RecoveryInputParams {
         // Only 0xFFFFFFFF disables CSV
         nsequence != u32::MAX
     }
-
 }
 
 /// Compute the tagged hash for Ghost Lock ID

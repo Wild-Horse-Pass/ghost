@@ -112,9 +112,10 @@ impl TransactionBuilder {
         // L-10: Reject outputs below dust threshold
         for output in &self.outputs {
             if output.amount < DUST_THRESHOLD_SATS {
-                return Err(TransactionError::InvalidTransaction(
-                    format!("output amount {} below dust threshold {}", output.amount, DUST_THRESHOLD_SATS),
-                ));
+                return Err(TransactionError::InvalidTransaction(format!(
+                    "output amount {} below dust threshold {}",
+                    output.amount, DUST_THRESHOLD_SATS
+                )));
             }
         }
 
@@ -338,13 +339,22 @@ mod tests {
     fn test_insufficient_funds() {
         let utxos = test_utxos();
         let result = select_utxos(&utxos, 50000);
-        assert!(matches!(result, Err(TransactionError::InsufficientFunds { .. })));
+        assert!(matches!(
+            result,
+            Err(TransactionError::InsufficientFunds { .. })
+        ));
     }
 
     #[test]
     fn test_empty_utxos() {
         let result = select_utxos(&[], 1000);
-        assert!(matches!(result, Err(TransactionError::InsufficientFunds { needed: 1000, available: 0 })));
+        assert!(matches!(
+            result,
+            Err(TransactionError::InsufficientFunds {
+                needed: 1000,
+                available: 0
+            })
+        ));
     }
 
     #[test]
@@ -414,7 +424,10 @@ mod tests {
             utxo("tx2", 1000, 1),
         ];
         let result = select_utxos(&utxos, 5000);
-        assert!(matches!(result, Err(TransactionError::InsufficientFunds { .. })));
+        assert!(matches!(
+            result,
+            Err(TransactionError::InsufficientFunds { .. })
+        ));
     }
 
     // ---- TransactionBuilder tests ----
@@ -478,7 +491,10 @@ mod tests {
             .change_address("change".into())
             .build(&utxos, &balance);
 
-        assert!(matches!(result, Err(TransactionError::InsufficientFunds { .. })));
+        assert!(matches!(
+            result,
+            Err(TransactionError::InsufficientFunds { .. })
+        ));
     }
 
     #[test]
@@ -495,7 +511,10 @@ mod tests {
             .add_output("addr".into(), 1000)
             .build(&utxos, &balance);
 
-        assert!(matches!(result, Err(TransactionError::InvalidTransaction(_))));
+        assert!(matches!(
+            result,
+            Err(TransactionError::InvalidTransaction(_))
+        ));
     }
 
     #[test]

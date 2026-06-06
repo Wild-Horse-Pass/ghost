@@ -4,9 +4,7 @@ use tauri::State;
 
 /// List unspent transaction outputs (UTXOs).
 #[tauri::command]
-pub async fn list_unspent(
-    state: State<'_, AppState>,
-) -> AppResult<Vec<serde_json::Value>> {
+pub async fn list_unspent(state: State<'_, AppState>) -> AppResult<Vec<serde_json::Value>> {
     let utxos = state.connection.list_unspent(0, 9999999).await?;
     Ok(utxos)
 }
@@ -21,18 +19,13 @@ pub async fn lock_unspent_output(
 ) -> AppResult<bool> {
     let output = serde_json::json!({ "txid": txid, "vout": vout });
     // lock_unspent(unlock, outputs): unlock=true means unlock, unlock=false means lock
-    let result = state
-        .connection
-        .lock_unspent(!lock, vec![output])
-        .await?;
+    let result = state.connection.lock_unspent(!lock, vec![output]).await?;
     Ok(result)
 }
 
 /// List all currently locked unspent outputs.
 #[tauri::command]
-pub async fn list_locked_outputs(
-    state: State<'_, AppState>,
-) -> AppResult<Vec<serde_json::Value>> {
+pub async fn list_locked_outputs(state: State<'_, AppState>) -> AppResult<Vec<serde_json::Value>> {
     let locked = state.connection.list_lock_unspent().await?;
     Ok(locked)
 }

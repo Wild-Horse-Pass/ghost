@@ -207,21 +207,33 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Public per-window leaderboard: top miners by best-hash and by
         // total shares contributed in the requested window. Used by the
         // pool page gamification; same redaction rules as /records.
-        .route("/api/v1/pool/leaderboard", get(api_pool_leaderboard_handler))
+        .route(
+            "/api/v1/pool/leaderboard",
+            get(api_pool_leaderboard_handler),
+        )
         // "Next block payout" projection: current round's top miners,
         // their work share, and projected sats from the 99% miner pool.
         // Also reports the fee split (treasury + node reward pool) so the
         // website can render the full breakdown. DB-only, no mesh.
-        .route("/api/v1/pool/next_payout", get(api_pool_next_payout_handler))
+        .route(
+            "/api/v1/pool/next_payout",
+            get(api_pool_next_payout_handler),
+        )
         // Tail of recent shares for the live quasar visualisation. One
         // lightweight row per share — the caller polls with ?since=<ts>
         // and gets everything accepted since that watermark.
-        .route("/api/v1/pool/recent_shares", get(api_pool_recent_shares_handler))
+        .route(
+            "/api/v1/pool/recent_shares",
+            get(api_pool_recent_shares_handler),
+        )
         // Treasury + decentralisation-phase state for the Core page.
         // Exposes balance / 21-BTC threshold / decay year / fee split so
         // the website can render the Bootstrap → Decentralising →
         // Sovereign journey against live pool state.
-        .route("/api/v1/pool/treasury_state", get(api_pool_treasury_state_handler))
+        .route(
+            "/api/v1/pool/treasury_state",
+            get(api_pool_treasury_state_handler),
+        )
         // Aggregate node metrics for the Core page. Returns pool-wide
         // counts only — no per-node data, no clearnet/tor breakdown,
         // no identifiers. Tor operators are counted as part of the
@@ -1919,9 +1931,8 @@ async fn api_miner_lookup_handler(
                 // Unpaid ledger side of the lookup: shares this miner has
                 // submitted that haven't been committed to a payout yet.
                 // Frontend sums across VMs (each node has its own ledger).
-                let (unpaid_shares, unpaid_work) = db
-                    .get_miner_unpaid_stats(&m.miner_id)
-                    .unwrap_or((0, 0.0));
+                let (unpaid_shares, unpaid_work) =
+                    db.get_miner_unpaid_stats(&m.miner_id).unwrap_or((0, 0.0));
                 serde_json::json!({
                     "found": true,
                     "miner_id": m.miner_id,
@@ -1977,9 +1988,9 @@ async fn api_pool_next_payout_handler(
     // Pool economics: 1% fee from subsidy only, split 50/50 today.
     // If this changes (post-21-BTC decay), it must also change in
     // bins/ghost-pool/src/treasury.rs — keep the two in sync.
-    const POOL_FEE_BPS: u64 = 100;          // 1.00%
-    const TREASURY_RATE_BPS: u64 = 5000;    // 50% of pool fee
-    const NODE_RATE_BPS: u64 = 5000;        // 50% of pool fee
+    const POOL_FEE_BPS: u64 = 100; // 1.00%
+    const TREASURY_RATE_BPS: u64 = 5000; // 50% of pool fee
+    const NODE_RATE_BPS: u64 = 5000; // 50% of pool fee
     const DUST_THRESHOLD_SATS: u64 = 546;
     const LEDGER_CAP: u32 = 1000;
 
@@ -2068,13 +2079,17 @@ async fn api_pool_next_payout_handler(
     let mut surviving: Vec<(String, f64)> = top_rows;
     loop {
         let total_work: f64 = surviving.iter().map(|(_, w)| *w).sum();
-        if total_work <= 0.0 { break; }
+        if total_work <= 0.0 {
+            break;
+        }
         let pre_len = surviving.len();
         surviving.retain(|(_, work)| {
             let projected = (miner_pool_sats as f64 * work / total_work) as u64;
             projected >= DUST_THRESHOLD_SATS
         });
-        if surviving.len() == pre_len { break; }
+        if surviving.len() == pre_len {
+            break;
+        }
     }
 
     let total_work: f64 = surviving.iter().map(|(_, w)| *w).sum();
@@ -2084,9 +2099,14 @@ async fn api_pool_next_payout_handler(
         .into_iter()
         .enumerate()
         .map(|(i, (miner_id, work))| {
-            let share_pct = if total_work > 0.0 { work / total_work * 100.0 } else { 0.0 };
+            let share_pct = if total_work > 0.0 {
+                work / total_work * 100.0
+            } else {
+                0.0
+            };
             let projected_sats = if total_work > 0.0 {
-                (miner_pool_sats as u128 * ((work * 1_000_000.0) as u128) / ((total_work * 1_000_000.0) as u128)) as u64
+                (miner_pool_sats as u128 * ((work * 1_000_000.0) as u128)
+                    / ((total_work * 1_000_000.0) as u128)) as u64
             } else {
                 0
             };
@@ -2140,8 +2160,7 @@ async fn api_mesh_node_stats_handler(
         }));
     };
 
-    let (total, active_7d, new_7d, median_uptime) =
-        db.get_node_stats().unwrap_or((0, 0, 0, None));
+    let (total, active_7d, new_7d, median_uptime) = db.get_node_stats().unwrap_or((0, 0, 0, None));
 
     Json(serde_json::json!({
         "total_nodes": total,
@@ -2171,8 +2190,8 @@ async fn api_pool_treasury_state_handler(
     // kept inline to avoid adding a new crate dependency for one endpoint.
     // If either side moves, both need to move together.
     const TREASURY_THRESHOLD_SATS: u64 = 21 * 100_000_000; // 21 BTC
-    // (treasury_bps, node_bps) for year 0 (pre-threshold, then year 1…5).
-    // Year 0 = pre-threshold initial split, same as the first decay row.
+                                                           // (treasury_bps, node_bps) for year 0 (pre-threshold, then year 1…5).
+                                                           // Year 0 = pre-threshold initial split, same as the first decay row.
     const DECAY_SCHEDULE_BPS: [(u64, u64); 6] = [
         (5000, 5000), // pre-threshold / year 0
         (4000, 6000), // year 1
@@ -2400,7 +2419,11 @@ async fn api_miner_history_handler(
         }));
     }
 
-    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let window_name = params
+        .window
+        .as_deref()
+        .unwrap_or("day")
+        .to_ascii_lowercase();
     let (window_secs, bucket_secs): (i64, i64) = match window_name.as_str() {
         "day" => (86_400, 300),
         "week" => (604_800, 1_800),
@@ -2469,7 +2492,11 @@ async fn api_pool_records_handler(
     State(state): State<Arc<VerificationState>>,
     Query(params): Query<PoolRecordsQuery>,
 ) -> impl IntoResponse {
-    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let window_name = params
+        .window
+        .as_deref()
+        .unwrap_or("day")
+        .to_ascii_lowercase();
     let window_secs: i64 = match window_name.as_str() {
         "block" => 600,
         "day" => 86_400,
@@ -2510,11 +2537,7 @@ async fn api_pool_records_handler(
             // Count leading '0' hex chars (each = 4 binary leading zeros).
             // This is a coarse signal; the hash itself is the definitive
             // record, but "47 zeros" reads better than a hex blob in tiles.
-            let leading_hex_zeros = best
-                .share_hash
-                .chars()
-                .take_while(|c| *c == '0')
-                .count();
+            let leading_hex_zeros = best.share_hash.chars().take_while(|c| *c == '0').count();
             let leading_zero_bits = leading_hex_zeros * 4;
             // Redact miner_id: `bc1q...tip.worker` keeps enough for the
             // miner themself to recognise while shedding most of the
@@ -2555,7 +2578,11 @@ async fn api_pool_leaderboard_handler(
     State(state): State<Arc<VerificationState>>,
     Query(params): Query<PoolLeaderboardQuery>,
 ) -> impl IntoResponse {
-    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let window_name = params
+        .window
+        .as_deref()
+        .unwrap_or("day")
+        .to_ascii_lowercase();
     let limit = params.limit.unwrap_or(10).min(50).max(1);
 
     // "lifetime" queries the `miners` table directly and ignores the
@@ -3096,10 +3123,22 @@ async fn api_l2_fee_distribution_context_handler(
                     return None;
                 }
                 // Compute total shares from capabilities
-                let archive = if cap_map.get("archive").copied().unwrap_or(false) { 5i32 } else { 0 };
+                let archive = if cap_map.get("archive").copied().unwrap_or(false) {
+                    5i32
+                } else {
+                    0
+                };
                 let ghost_pay_shares = 4i32;
-                let public_mining = if cap_map.get("public_mining").copied().unwrap_or(false) { 3 } else { 0 };
-                let reaper = if cap_map.get("reaper").copied().unwrap_or(false) { 2 } else { 0 };
+                let public_mining = if cap_map.get("public_mining").copied().unwrap_or(false) {
+                    3
+                } else {
+                    0
+                };
+                let reaper = if cap_map.get("reaper").copied().unwrap_or(false) {
+                    2
+                } else {
+                    0
+                };
                 let elder = if node.is_elder { 1 } else { 0 };
                 let total_shares = archive + ghost_pay_shares + public_mining + reaper + elder;
 
@@ -6878,9 +6917,7 @@ fn fxhash(s: &str) -> u32 {
 
 /// Returns peers with public_mining enabled and their miner counts.
 /// Used by the colocated translator for transparent TCP load balancing.
-async fn pool_nodes_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn pool_nodes_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     Json(serde_json::json!({
         "this_node": {
             "miner_count": state.miner_count(),
@@ -6916,8 +6953,8 @@ async fn api_reaper_status_handler(
 async fn api_system_mempool_handler(
     State(_state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
-    use tokio::net::TcpStream;
     use std::time::Duration;
+    use tokio::net::TcpStream;
 
     let marker_path = std::path::Path::new("/etc/ghost/mempool-stack.enabled");
     let marker_present = marker_path.exists();
@@ -7281,19 +7318,13 @@ mod tests {
 
     #[test]
     fn test_safe_proc_path_allowed() {
-        let allowed = vec![
-            "/proc/meminfo".to_string(),
-            "/proc/cpuinfo".to_string(),
-        ];
+        let allowed = vec!["/proc/meminfo".to_string(), "/proc/cpuinfo".to_string()];
         assert!(is_safe_proc_path("/proc/meminfo", &allowed));
     }
 
     #[test]
     fn test_safe_proc_path_traversal() {
-        let allowed = vec![
-            "/proc/meminfo".to_string(),
-            "/proc/cpuinfo".to_string(),
-        ];
+        let allowed = vec!["/proc/meminfo".to_string(), "/proc/cpuinfo".to_string()];
         assert!(!is_safe_proc_path("/proc/../etc/passwd", &allowed));
     }
 }

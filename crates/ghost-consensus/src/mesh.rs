@@ -2238,7 +2238,12 @@ impl MeshNetwork {
                     // Rejects messages cheaply before full deserialization when the
                     // topic maps to exactly one expected MessageType.
                     if let Some(expected_type) = Self::primary_message_type_for_topic(topic_name) {
-                        if crate::message_validator::validate_topic_before_deser(&data, expected_type).is_err() {
+                        if crate::message_validator::validate_topic_before_deser(
+                            &data,
+                            expected_type,
+                        )
+                        .is_err()
+                        {
                             debug!(
                                 topic = topic_name,
                                 "M-9: Fast topic validation rejected message before deserialization"
@@ -2392,15 +2397,19 @@ impl MeshNetwork {
             let ping = ghost_common::types::HealthPing {
                 node_id: self.identity.node_id(),
                 public_address: String::new(), // S-7: Don't broadcast IP in cleartext ZMQ
-                block_height: 0, // Would track actual height
-                round_id: 0,     // Would track current round
+                block_height: 0,               // Would track actual height
+                round_id: 0,                   // Would track current round
                 capabilities: *self.capabilities.read(),
-                miner_count: self.miner_count_fn.as_ref()
+                miner_count: self
+                    .miner_count_fn
+                    .as_ref()
                     .map(|f| f())
                     .unwrap_or(self.peers.peer_count() as u32),
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                 pow_proof,
-                active_miner_id_hashes: self.active_miner_hashes_fn.as_ref()
+                active_miner_id_hashes: self
+                    .active_miner_hashes_fn
+                    .as_ref()
                     .map(|f| f())
                     .unwrap_or_default(),
                 max_capacity: self.max_capacity.load(Ordering::Relaxed),
@@ -2574,8 +2583,9 @@ impl MeshNetwork {
             | MessageType::L2TreeSync
             | MessageType::L2ShieldBroadcast => self.config.ports.consensus_voting,
             MessageType::VerificationResult => self.config.ports.health_monitoring,
-            MessageType::GhostGlyphClaim
-            | MessageType::GhostGlyphRegistered => self.config.ports.consensus_voting,
+            MessageType::GhostGlyphClaim | MessageType::GhostGlyphRegistered => {
+                self.config.ports.consensus_voting
+            }
         };
         port == expected_port
     }

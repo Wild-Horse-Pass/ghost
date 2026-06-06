@@ -12,8 +12,8 @@ pub use balance::*;
 pub use history::*;
 pub use keys::*;
 
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use secrecy::SecretString;
-use secp256k1::{PublicKey, SecretKey, Secp256k1};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
@@ -224,12 +224,22 @@ impl Wallet {
 
         // Receive addresses
         for i in 0..self.next_receive_index {
-            addresses.push(derive_address_at_path(&self.seed, self.account_index, 0, i)?);
+            addresses.push(derive_address_at_path(
+                &self.seed,
+                self.account_index,
+                0,
+                i,
+            )?);
         }
 
         // Change addresses
         for i in 0..self.next_change_index {
-            addresses.push(derive_address_at_path(&self.seed, self.account_index, 1, i)?);
+            addresses.push(derive_address_at_path(
+                &self.seed,
+                self.account_index,
+                1,
+                i,
+            )?);
         }
 
         Ok(addresses)
@@ -432,10 +442,8 @@ pub fn from_encrypted_backup(
     let plaintext = crate::crypto::decrypt_aes_gcm(ciphertext, &key)
         .map_err(|e| WalletError::KeyDerivation(format!("backup decryption failed: {e}")))?;
 
-    let mnemonic_str = Zeroizing::new(
-        String::from_utf8(plaintext)
-            .map_err(|_| WalletError::InvalidMnemonic)?,
-    );
+    let mnemonic_str =
+        Zeroizing::new(String::from_utf8(plaintext).map_err(|_| WalletError::InvalidMnemonic)?);
 
     if !validate_mnemonic(&mnemonic_str) {
         return Err(WalletError::InvalidMnemonic);

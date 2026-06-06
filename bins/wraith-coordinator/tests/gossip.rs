@@ -119,7 +119,12 @@ async fn active_session_creation_replicates_to_standby() {
         .unwrap();
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    assert!(status.is_success(), "find_or_create failed: {} body={}", status, body);
+    assert!(
+        status.is_success(),
+        "find_or_create failed: {} body={}",
+        status,
+        body
+    );
 
     // Standby should have mirrored the new session within a moment.
     let mirrored = poll_until(|| standby_state.sessions.len() == 1).await;
@@ -263,8 +268,7 @@ async fn state_change_replicates_to_standby() {
 #[tokio::test]
 async fn signed_gossip_round_trips_when_secrets_match() {
     let secret = "shared-pool-secret".to_string();
-    let (standby_url, standby_state) =
-        spawn_standby_with_secret(Some(secret.clone())).await;
+    let (standby_url, standby_state) = spawn_standby_with_secret(Some(secret.clone())).await;
     let (active_url, _active_state) =
         spawn_active_with_peer_secret(standby_url, Some(secret)).await;
 
@@ -309,7 +313,10 @@ async fn standby_rejects_gossip_with_wrong_secret() {
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "Active still serves clients fine");
+    assert!(
+        resp.status().is_success(),
+        "Active still serves clients fine"
+    );
 
     // Give the gossip task plenty of time to fan out + get rejected
     // (so the test fails fast if replication is somehow happening).
@@ -328,8 +335,7 @@ async fn standby_rejects_unsigned_gossip_when_secret_is_set() {
         spawn_standby_with_secret(Some("standby-secret".to_string())).await;
     // Active doesn't sign at all (peer_secret = None) — should be
     // identical in effect to a fresh-from-the-internet attacker.
-    let (active_url, _active_state) =
-        spawn_active_with_peer_secret(standby_url, None).await;
+    let (active_url, _active_state) = spawn_active_with_peer_secret(standby_url, None).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -373,6 +379,8 @@ async fn solo_coordinator_with_no_peers_runs_fine() {
     });
 
     // /health should still respond.
-    let resp = reqwest::get(format!("http://{}/health", addr)).await.unwrap();
+    let resp = reqwest::get(format!("http://{}/health", addr))
+        .await
+        .unwrap();
     assert!(resp.status().is_success());
 }

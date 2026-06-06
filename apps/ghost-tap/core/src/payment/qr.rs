@@ -215,37 +215,31 @@ impl PaymentRequest {
                         // BIP-21 amount is decimal BTC. f64 round-trips
                         // exactly for any value below 2^53 sats, well
                         // above the 21M BTC supply cap.
-                        let btc: f64 = value.parse().map_err(|_| {
-                            PaymentUriError::InvalidAmount(value.to_string())
-                        })?;
+                        let btc: f64 = value
+                            .parse()
+                            .map_err(|_| PaymentUriError::InvalidAmount(value.to_string()))?;
                         if !btc.is_finite() || btc < 0.0 {
-                            return Err(PaymentUriError::InvalidAmount(
-                                value.to_string(),
-                            ));
+                            return Err(PaymentUriError::InvalidAmount(value.to_string()));
                         }
                         let sats = (btc * 100_000_000.0).round() as u64;
                         request.amount = Some(sats);
                     }
                     "label" => {
-                        request.label = Some(
-                            percent_decode(value)
-                                .map_err(PaymentUriError::DecodingError)?,
-                        );
+                        request.label =
+                            Some(percent_decode(value).map_err(PaymentUriError::DecodingError)?);
                     }
                     "message" => {
                         // BIP-21's `message` is the free-text note for
                         // the user — the closest analogue to ghost's
                         // `memo` field.
-                        request.memo = Some(
-                            percent_decode(value)
-                                .map_err(PaymentUriError::DecodingError)?,
-                        );
+                        request.memo =
+                            Some(percent_decode(value).map_err(PaymentUriError::DecodingError)?);
                     }
                     "ghost" => {
                         // Ghost extension: bech32 ghost-id for
                         // BIP-352 silent-payment routing.
-                        let decoded = percent_decode(value)
-                            .map_err(PaymentUriError::DecodingError)?;
+                        let decoded =
+                            percent_decode(value).map_err(PaymentUriError::DecodingError)?;
                         if !decoded.is_empty() {
                             request.ghost_id = Some(decoded);
                         }
@@ -310,34 +304,28 @@ impl PaymentRequest {
                 };
                 match key {
                     "amount" => {
-                        let parsed: u64 = value.parse().map_err(|_| {
-                            PaymentUriError::InvalidAmount(value.to_string())
-                        })?;
+                        let parsed: u64 = value
+                            .parse()
+                            .map_err(|_| PaymentUriError::InvalidAmount(value.to_string()))?;
                         request.amount = Some(parsed);
                     }
                     "memo" => {
-                        request.memo = Some(
-                            percent_decode(value)
-                                .map_err(PaymentUriError::DecodingError)?,
-                        );
+                        request.memo =
+                            Some(percent_decode(value).map_err(PaymentUriError::DecodingError)?);
                     }
                     "label" => {
-                        request.label = Some(
-                            percent_decode(value)
-                                .map_err(PaymentUriError::DecodingError)?,
-                        );
+                        request.label =
+                            Some(percent_decode(value).map_err(PaymentUriError::DecodingError)?);
                     }
                     "exp" => {
-                        let parsed: u64 = value.parse().map_err(|_| {
-                            PaymentUriError::InvalidAmount(value.to_string())
-                        })?;
+                        let parsed: u64 = value
+                            .parse()
+                            .map_err(|_| PaymentUriError::InvalidAmount(value.to_string()))?;
                         request.exp = Some(parsed);
                     }
                     "net" => {
-                        request.net = Some(
-                            percent_decode(value)
-                                .map_err(PaymentUriError::DecodingError)?,
-                        );
+                        request.net =
+                            Some(percent_decode(value).map_err(PaymentUriError::DecodingError)?);
                     }
                     _ => {
                         // Unknown parameters are silently ignored for
@@ -398,17 +386,17 @@ pub struct ParsedPaymentRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaymentUriWarning {
     /// The URI specifies a different network than expected.
-    NetworkMismatch {
-        expected: String,
-        found: String,
-    },
+    NetworkMismatch { expected: String, found: String },
 }
 
 impl fmt::Display for PaymentUriWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PaymentUriWarning::NetworkMismatch { expected, found } => {
-                write!(f, "network mismatch: expected '{expected}', found '{found}'")
+                write!(
+                    f,
+                    "network mismatch: expected '{expected}', found '{found}'"
+                )
             }
         }
     }
@@ -426,13 +414,7 @@ fn percent_encode(input: &str) -> String {
     let mut encoded = String::with_capacity(input.len());
     for byte in input.bytes() {
         match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'.'
-            | b'_'
-            | b'~' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 encoded.push(byte as char);
             }
             _ => {
@@ -452,15 +434,21 @@ fn percent_decode(input: &str) -> Result<String, String> {
     while i < bytes.len() {
         if bytes[i] == b'%' {
             if i + 2 >= bytes.len() {
-                return Err(format!(
-                    "incomplete percent-encoding at position {i}"
-                ));
+                return Err(format!("incomplete percent-encoding at position {i}"));
             }
             let hi = hex_digit(bytes[i + 1]).ok_or_else(|| {
-                format!("invalid hex digit '{}' at position {}", bytes[i + 1] as char, i + 1)
+                format!(
+                    "invalid hex digit '{}' at position {}",
+                    bytes[i + 1] as char,
+                    i + 1
+                )
             })?;
             let lo = hex_digit(bytes[i + 2]).ok_or_else(|| {
-                format!("invalid hex digit '{}' at position {}", bytes[i + 2] as char, i + 2)
+                format!(
+                    "invalid hex digit '{}' at position {}",
+                    bytes[i + 2] as char,
+                    i + 2
+                )
             })?;
             decoded.push((hi << 4) | lo);
             i += 3;
@@ -474,8 +462,7 @@ fn percent_decode(input: &str) -> Result<String, String> {
         }
     }
 
-    String::from_utf8(decoded)
-        .map_err(|e| format!("invalid UTF-8 after percent-decoding: {e}"))
+    String::from_utf8(decoded).map_err(|e| format!("invalid UTF-8 after percent-decoding: {e}"))
 }
 
 fn hex_digit(b: u8) -> Option<u8> {
@@ -507,8 +494,7 @@ mod tests {
 
     #[test]
     fn roundtrip_with_amount() {
-        let req = PaymentRequest::new("GhA1b2c3d4e5f6g7h8i9j0klmnop")
-            .with_amount(100_000_000);
+        let req = PaymentRequest::new("GhA1b2c3d4e5f6g7h8i9j0klmnop").with_amount(100_000_000);
         let uri = req.to_uri();
         assert!(uri.contains("amount=100000000"));
 
@@ -593,10 +579,9 @@ mod tests {
 
     #[test]
     fn parse_no_amount() {
-        let parsed = PaymentRequest::from_uri(
-            "ghost:GhAddrABCDEFGHIJKLMNOPQRS?memo=test&label=shop",
-        )
-        .unwrap();
+        let parsed =
+            PaymentRequest::from_uri("ghost:GhAddrABCDEFGHIJKLMNOPQRS?memo=test&label=shop")
+                .unwrap();
         assert_eq!(parsed.amount, None);
         assert_eq!(parsed.memo.as_deref(), Some("test"));
         assert_eq!(parsed.label.as_deref(), Some("shop"));
@@ -633,19 +618,20 @@ mod tests {
 
     #[test]
     fn expired_uri_rejected() {
-        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
-            .with_expiry(1000);
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS").with_expiry(1000);
         let uri = req.to_uri();
 
         // now_unix=2000 > exp=1000 → expired
         let result = PaymentRequest::from_uri_checked(&uri, 2000, None);
-        assert!(matches!(result, Err(PaymentUriError::Expired { exp: 1000 })));
+        assert!(matches!(
+            result,
+            Err(PaymentUriError::Expired { exp: 1000 })
+        ));
     }
 
     #[test]
     fn valid_expiry_accepted() {
-        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
-            .with_expiry(5000);
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS").with_expiry(5000);
         let uri = req.to_uri();
 
         // now_unix=2000 < exp=5000 → valid
@@ -666,8 +652,7 @@ mod tests {
 
     #[test]
     fn network_mismatch_warning() {
-        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
-            .with_network("bitcoin");
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS").with_network("bitcoin");
         let uri = req.to_uri();
 
         let parsed = PaymentRequest::from_uri_checked(&uri, 0, Some("ghost")).unwrap();
@@ -693,8 +678,7 @@ mod tests {
 
     #[test]
     fn network_match_no_warning() {
-        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS")
-            .with_network("ghost");
+        let req = PaymentRequest::new("GhAddrABCDEFGHIJKLMNOPQRS").with_network("ghost");
         let uri = req.to_uri();
 
         let parsed = PaymentRequest::from_uri_checked(&uri, 0, Some("ghost")).unwrap();
@@ -708,9 +692,7 @@ mod tests {
     #[test]
     fn bip21_parse_address_only() {
         // 26-char ASCII alphanumeric — passes the shared validator.
-        let parsed =
-            PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy")
-                .unwrap();
+        let parsed = PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy").unwrap();
         assert_eq!(parsed.address, "bc1qabcdefghijklmnopqrstuvwxy");
         assert_eq!(parsed.amount, None);
         assert_eq!(parsed.label, None);
@@ -722,25 +704,20 @@ mod tests {
     fn bip21_amount_decimal_btc_to_sats() {
         // 0.001 BTC = 100,000 sats — the most common merchant
         // value. Must round-trip exactly through f64.
-        let parsed = PaymentRequest::from_uri(
-            "bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=0.001",
-        )
-        .unwrap();
+        let parsed =
+            PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=0.001").unwrap();
         assert_eq!(parsed.amount, Some(100_000));
 
         // Whole BTC.
-        let parsed = PaymentRequest::from_uri(
-            "bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=21",
-        )
-        .unwrap();
+        let parsed =
+            PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=21").unwrap();
         assert_eq!(parsed.amount, Some(2_100_000_000));
 
         // Sub-sat precision rounds to nearest sat (0.000000005 BTC =
         // 0.5 sat → rounds to 1).
-        let parsed = PaymentRequest::from_uri(
-            "bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=0.000000005",
-        )
-        .unwrap();
+        let parsed =
+            PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=0.000000005")
+                .unwrap();
         assert_eq!(parsed.amount, Some(1));
     }
 
@@ -758,10 +735,9 @@ mod tests {
 
     #[test]
     fn bip21_label_preserved() {
-        let parsed = PaymentRequest::from_uri(
-            "bitcoin:bc1qabcdefghijklmnopqrstuvwxy?label=Acme%20Coffee",
-        )
-        .unwrap();
+        let parsed =
+            PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy?label=Acme%20Coffee")
+                .unwrap();
         assert_eq!(parsed.label.as_deref(), Some("Acme Coffee"));
     }
 
@@ -783,16 +759,14 @@ mod tests {
 
     #[test]
     fn bip21_invalid_amount_rejected() {
-        let result = PaymentRequest::from_uri(
-            "bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=not-a-number",
-        );
+        let result =
+            PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=not-a-number");
         assert!(matches!(result, Err(PaymentUriError::InvalidAmount(_))));
 
         // Negative amount also rejected (sender wouldn't pay the
         // merchant if we silently flipped sign).
-        let result = PaymentRequest::from_uri(
-            "bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=-0.001",
-        );
+        let result =
+            PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy?amount=-0.001");
         assert!(matches!(result, Err(PaymentUriError::InvalidAmount(_))));
     }
 
@@ -824,9 +798,7 @@ mod tests {
         assert_eq!(g.address, "GhAddrABCDEFGHIJKLMNOPQRS");
         assert_eq!(g.ghost_id, None);
 
-        let b =
-            PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy")
-                .unwrap();
+        let b = PaymentRequest::from_uri("bitcoin:bc1qabcdefghijklmnopqrstuvwxy").unwrap();
         assert_eq!(b.address, "bc1qabcdefghijklmnopqrstuvwxy");
         assert_eq!(b.ghost_id, None);
     }

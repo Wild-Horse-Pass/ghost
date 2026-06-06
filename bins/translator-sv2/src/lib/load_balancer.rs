@@ -507,11 +507,7 @@ mod tests {
     async fn no_proxy_when_within_threshold() {
         let lb = LoadBalancer::new(cfg());
         // me: 100/1000 = 10%, peer: 80/1000 = 8% — gap 2%, threshold 5% → no
-        *lb.cache.write().await = Some(cache_with(
-            100,
-            1000,
-            vec![(80, 1000, "10.0.0.1:8559")],
-        ));
+        *lb.cache.write().await = Some(cache_with(100, 1000, vec![(80, 1000, "10.0.0.1:8559")]));
         assert!(lb
             .should_proxy(100, "8.8.8.8".parse().unwrap())
             .await
@@ -522,11 +518,7 @@ mod tests {
     async fn skips_peers_at_or_above_reject_threshold() {
         let lb = LoadBalancer::new(cfg());
         // me: 200/1000 = 20%; only peer is at 91% (over reject_pct 90)
-        *lb.cache.write().await = Some(cache_with(
-            200,
-            1000,
-            vec![(910, 1000, "10.0.0.1:8559")],
-        ));
+        *lb.cache.write().await = Some(cache_with(200, 1000, vec![(910, 1000, "10.0.0.1:8559")]));
         assert!(lb
             .should_proxy(200, "8.8.8.8".parse().unwrap())
             .await
@@ -537,11 +529,7 @@ mod tests {
     async fn legacy_peers_with_zero_capacity_excluded() {
         let lb = LoadBalancer::new(cfg());
         // me: 100/1000 = 10%; peer reports 0 capacity (legacy)
-        *lb.cache.write().await = Some(cache_with(
-            500,
-            1000,
-            vec![(0, 0, "10.0.0.1:8559")],
-        ));
+        *lb.cache.write().await = Some(cache_with(500, 1000, vec![(0, 0, "10.0.0.1:8559")]));
         assert!(
             lb.should_proxy(500, "8.8.8.8".parse().unwrap())
                 .await

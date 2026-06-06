@@ -33,8 +33,8 @@
 //!   - Tx assembly. Once `outputs.len() == enrolled_count` the round
 //!     is ready to be built; that's B/5b.
 
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
@@ -135,7 +135,10 @@ pub async fn post(
         return error(
             StatusCode::BAD_REQUEST,
             "wrong_network",
-            format!("address is not valid for network '{}'", state.network_name()),
+            format!(
+                "address is not valid for network '{}'",
+                state.network_name()
+            ),
         );
     }
 
@@ -229,9 +232,7 @@ pub async fn post(
             return error(
                 StatusCode::CONFLICT,
                 "outputs_full",
-                format!(
-                    "round already has {enrolled_count} outputs; further submissions rejected"
-                ),
+                format!("round already has {enrolled_count} outputs; further submissions rejected"),
             );
         }
         entry.push(AcceptedOutput {
@@ -268,8 +269,7 @@ pub async fn post(
             .cloned()
             .unwrap_or_default();
         let mut entropy = [0u8; 32];
-        getrandom::getrandom(&mut entropy)
-            .expect("OS CSPRNG failed during round assembly");
+        getrandom::getrandom(&mut entropy).expect("OS CSPRNG failed during round assembly");
         match try_assemble_if_ready(
             &session_id,
             session.tier,
@@ -312,10 +312,14 @@ pub async fn post(
                         BondResolution::Refund(RefundReason::CoordinatorAborted),
                     );
                 }
-                let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
-                    session_id: session_id.clone(),
-                    new_state: LiteSessionState::Failed { reason: reason.clone() },
-                });
+                let _ = state
+                    .sessions
+                    .apply_event(SessionGossipEvent::StateChanged {
+                        session_id: session_id.clone(),
+                        new_state: LiteSessionState::Failed {
+                            reason: reason.clone(),
+                        },
+                    });
                 final_state = LiteSessionState::Failed { reason };
             }
             None => {

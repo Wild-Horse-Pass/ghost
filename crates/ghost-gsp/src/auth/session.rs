@@ -253,8 +253,7 @@ impl JwtManager {
                         if let Ok(token_data) = decode::<Claims>(token, prev_key, &validation) {
                             self.verify_ip_binding(&token_data.claims, current_ip)?;
                             let session_id = WalletId::from(token_data.claims.sub);
-                            let static_id =
-                                token_data.claims.static_wallet_id.map(WalletId::from);
+                            let static_id = token_data.claims.static_wallet_id.map(WalletId::from);
                             return Ok((session_id, static_id));
                         }
                     }

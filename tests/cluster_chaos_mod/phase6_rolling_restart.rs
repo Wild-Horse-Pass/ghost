@@ -13,15 +13,13 @@ fn setup() -> Arc<ClusterClient> {
 }
 
 /// Stop → start → wait-for-healthy cycle for a sequence of nodes.
-async fn rolling_restart(
-    client: &ClusterClient,
-    node_names: &[&str],
-    gap: Duration,
-) {
+async fn rolling_restart(client: &ClusterClient, node_names: &[&str], gap: Duration) {
     let config = &client.config;
 
     for (i, name) in node_names.iter().enumerate() {
-        let node = config.node_by_name(name).expect(&format!("{} not found", name));
+        let node = config
+            .node_by_name(name)
+            .expect(&format!("{} not found", name));
 
         println!("  [{}/{}] Stopping {}...", i + 1, node_names.len(), name);
         SshController::stop_node(node, config.service_name)
@@ -205,16 +203,12 @@ async fn rolling_06_no_panics() {
     println!("\n=== Rolling Restart: Panic Check ===");
 
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "15 min ago",
-        )
-        .unwrap_or_else(|e| {
-            println!("  WARNING: Could not check {} logs: {}", node.name, e);
-            0
-        });
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "15 min ago")
+                .unwrap_or_else(|e| {
+                    println!("  WARNING: Could not check {} logs: {}", node.name, e);
+                    0
+                });
         println!("  {} panics in last 15 min: {}", node.name, panics);
         assert_eq!(
             panics, 0,

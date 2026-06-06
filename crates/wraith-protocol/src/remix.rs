@@ -380,11 +380,7 @@ impl RemixQueue {
     /// User cancellation. Only legal from `Queued`. Active enrolments
     /// can't be cancelled — the round is already in flight. Terminal
     /// states return `Terminal`.
-    pub fn cancel(
-        &self,
-        remix_id: &RemixId,
-        now: u64,
-    ) -> Result<RemixEnrolment, RemixError> {
+    pub fn cancel(&self, remix_id: &RemixId, now: u64) -> Result<RemixEnrolment, RemixError> {
         let mut enrolments = self.enrolments.lock().expect("queue mutex");
         let enrolment = enrolments
             .get_mut(remix_id)
@@ -446,7 +442,9 @@ mod tests {
     #[test]
     fn enqueue_creates_a_queued_enrolment() {
         let q = fresh_queue();
-        let id = q.enqueue("alice", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("alice", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         let snap = q.status(&id).unwrap();
         assert_eq!(snap.owner_ghost_id, "alice");
         assert_eq!(snap.target_tier, LiteTier::Denom100kSats);
@@ -489,9 +487,15 @@ mod tests {
     #[test]
     fn drain_pops_in_fifo_order() {
         let q = fresh_queue();
-        let a = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
-        let b = q.enqueue("b", LiteTier::Denom100kSats, 3, 1_000_001).unwrap();
-        let c = q.enqueue("c", LiteTier::Denom100kSats, 3, 1_000_002).unwrap();
+        let a = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
+        let b = q
+            .enqueue("b", LiteTier::Denom100kSats, 3, 1_000_001)
+            .unwrap();
+        let c = q
+            .enqueue("c", LiteTier::Denom100kSats, 3, 1_000_002)
+            .unwrap();
         let drained = q.drain_for_tier(LiteTier::Denom100kSats, "session-x", 3, 1_000_010);
         let ids: Vec<RemixId> = drained.iter().map(|e| e.remix_id.clone()).collect();
         assert_eq!(ids, vec![a, b, c]);
@@ -500,7 +504,9 @@ mod tests {
     #[test]
     fn drain_only_returns_matching_tier() {
         let q = fresh_queue();
-        let _ = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let _ = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         let _ = q.enqueue("b", LiteTier::Denom1mSats, 3, 1_000_000).unwrap();
         let drained_small = q.drain_for_tier(LiteTier::Denom100kSats, "s1", 10, 1_000_010);
         assert_eq!(drained_small.len(), 1);
@@ -531,7 +537,9 @@ mod tests {
     #[test]
     fn drain_marks_enrolments_active() {
         let q = fresh_queue();
-        let id = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         let _ = q.drain_for_tier(LiteTier::Denom100kSats, "session-x", 1, 1_000_010);
         match q.status(&id).unwrap().status {
             RemixStatus::Active { session_id } => assert_eq!(session_id, "session-x"),
@@ -551,8 +559,12 @@ mod tests {
         // Cancellation is lazy — the RemixId stays in by_tier until
         // drained-and-skipped. Verify the skip works.
         let q = fresh_queue();
-        let cancel_me = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
-        let real = q.enqueue("b", LiteTier::Denom100kSats, 3, 1_000_001).unwrap();
+        let cancel_me = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
+        let real = q
+            .enqueue("b", LiteTier::Denom100kSats, 3, 1_000_001)
+            .unwrap();
         q.cancel(&cancel_me, 1_000_005).unwrap();
         let drained = q.drain_for_tier(LiteTier::Denom100kSats, "s1", 10, 1_000_010);
         assert_eq!(drained.len(), 1);
@@ -564,7 +576,9 @@ mod tests {
     #[test]
     fn record_round_complete_decrements_counter_and_requeues() {
         let q = fresh_queue();
-        let id = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         q.drain_for_tier(LiteTier::Denom100kSats, "s1", 1, 1_000_010);
         let after = q.record_round_complete(&id, 1_000_100).unwrap();
         assert_eq!(after.completed_remixes, 1);
@@ -576,7 +590,9 @@ mod tests {
     #[test]
     fn record_round_complete_terminal_at_max() {
         let q = fresh_queue();
-        let id = q.enqueue("a", LiteTier::Denom100kSats, 2, 1_000_000).unwrap();
+        let id = q
+            .enqueue("a", LiteTier::Denom100kSats, 2, 1_000_000)
+            .unwrap();
         // First round.
         q.drain_for_tier(LiteTier::Denom100kSats, "s1", 1, 1_000_010);
         q.record_round_complete(&id, 1_000_100).unwrap();
@@ -591,7 +607,9 @@ mod tests {
     #[test]
     fn record_round_complete_requires_active_state() {
         let q = fresh_queue();
-        let id = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         // Still Queued, not yet drained — record should fail.
         let err = q.record_round_complete(&id, 1_000_100).unwrap_err();
         match err {
@@ -614,7 +632,9 @@ mod tests {
     #[test]
     fn cancel_queued_enrolment_succeeds() {
         let q = fresh_queue();
-        let id = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         let after = q.cancel(&id, 1_000_005).unwrap();
         assert!(matches!(after.status, RemixStatus::Cancelled));
     }
@@ -625,7 +645,9 @@ mod tests {
         // queue level — round either completes (and the queue handles)
         // or fails (and the coordinator's session lifecycle handles).
         let q = fresh_queue();
-        let id = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         q.drain_for_tier(LiteTier::Denom100kSats, "s1", 1, 1_000_010);
         let err = q.cancel(&id, 1_000_020).unwrap_err();
         match err {
@@ -640,7 +662,9 @@ mod tests {
     #[test]
     fn cancel_terminal_enrolment_yields_terminal_error() {
         let q = fresh_queue();
-        let id = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         q.cancel(&id, 1_000_005).unwrap();
         let err = q.cancel(&id, 1_000_100).unwrap_err();
         assert!(matches!(err, RemixError::Terminal(_, "cancelled")));
@@ -652,7 +676,9 @@ mod tests {
     fn expire_stale_marks_old_queued_entries() {
         let q = fresh_queue();
         // Stale: enrolled at T=0, idle for >> timeout when we sweep.
-        let stale = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let stale = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         // Fresh: enrolled just before the sweep (idle = 100s < 3600s).
         let fresh = q
             .enqueue("b", LiteTier::Denom100kSats, 3, 1_004_000 - 100)
@@ -673,7 +699,9 @@ mod tests {
     #[test]
     fn expire_stale_is_idempotent() {
         let q = fresh_queue();
-        let _ = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let _ = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         let first = q.expire_stale(1_004_000, DEFAULT_QUEUE_TIMEOUT_SECS);
         let second = q.expire_stale(1_004_000, DEFAULT_QUEUE_TIMEOUT_SECS);
         assert_eq!(first.len(), 1);
@@ -683,7 +711,9 @@ mod tests {
     #[test]
     fn expire_stale_skips_active_and_completed() {
         let q = fresh_queue();
-        let active = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let active = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         q.drain_for_tier(LiteTier::Denom100kSats, "s1", 1, 1_000_005);
         let expired = q.expire_stale(1_004_000, DEFAULT_QUEUE_TIMEOUT_SECS);
         assert!(
@@ -703,7 +733,9 @@ mod tests {
         // K=3 remix loop: enqueue → drain → complete → drain → complete
         // → drain → complete → terminal Completed.
         let q = fresh_queue();
-        let id = q.enqueue("alice", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("alice", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         for i in 0..3u64 {
             let drained = q.drain_for_tier(
                 LiteTier::Denom100kSats,
@@ -728,9 +760,15 @@ mod tests {
         // Enqueue three. Drain one. Complete with remixes_remaining > 0
         // (re-queues at tail). Subsequent drain should see (b, c, a).
         let q = fresh_queue();
-        let a = q.enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
-        let b = q.enqueue("b", LiteTier::Denom100kSats, 3, 1_000_001).unwrap();
-        let c = q.enqueue("c", LiteTier::Denom100kSats, 3, 1_000_002).unwrap();
+        let a = q
+            .enqueue("a", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
+        let b = q
+            .enqueue("b", LiteTier::Denom100kSats, 3, 1_000_001)
+            .unwrap();
+        let c = q
+            .enqueue("c", LiteTier::Denom100kSats, 3, 1_000_002)
+            .unwrap();
         let _ = q.drain_for_tier(LiteTier::Denom100kSats, "s1", 1, 1_000_010);
         q.record_round_complete(&a, 1_000_100).unwrap(); // a re-queued at tail
         let drained = q.drain_for_tier(LiteTier::Denom100kSats, "s2", 10, 1_000_200);
@@ -749,7 +787,9 @@ mod tests {
     #[test]
     fn enrolment_round_trips_through_serde() {
         let q = fresh_queue();
-        let id = q.enqueue("alice", LiteTier::Denom100kSats, 3, 1_000_000).unwrap();
+        let id = q
+            .enqueue("alice", LiteTier::Denom100kSats, 3, 1_000_000)
+            .unwrap();
         let snap = q.status(&id).unwrap();
         let s = serde_json::to_string(&snap).unwrap();
         let back: RemixEnrolment = serde_json::from_str(&s).unwrap();

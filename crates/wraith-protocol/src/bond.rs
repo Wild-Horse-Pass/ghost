@@ -393,9 +393,9 @@ impl BondLedger for MockBondLedger {
         resolution: BondResolution,
     ) -> Result<BondRecord, BondError> {
         let mut bonds = self.bonds.lock().expect("mock ledger poisoned");
-        let record = bonds.get_mut(bond_id).ok_or_else(|| BondError::Other(format!(
-            "bond {bond_id} unknown to ledger"
-        )))?;
+        let record = bonds
+            .get_mut(bond_id)
+            .ok_or_else(|| BondError::Other(format!("bond {bond_id} unknown to ledger")))?;
         match &record.status {
             BondStatus::Escrowed => {
                 record.status = BondStatus::Resolved(resolution);
@@ -506,10 +506,7 @@ mod tests {
         let ledger = MockBondLedger::new();
         let id = ledger.escrow("alice", "session-1", 500);
         let record = ledger
-            .resolve_bond(
-                &id,
-                BondResolution::Slash(SlashReason::NoSignDuringSigning),
-            )
+            .resolve_bond(&id, BondResolution::Slash(SlashReason::NoSignDuringSigning))
             .expect("resolve should succeed");
         assert!(matches!(
             record.status,
@@ -580,10 +577,7 @@ mod tests {
         let id_b = ledger.escrow("bob", "session-1", 500);
         assert_ne!(id_a, id_b);
         assert_eq!(ledger.len(), 2);
-        assert_eq!(
-            ledger.verify_bond("alice", "session-1", 500).unwrap(),
-            id_a
-        );
+        assert_eq!(ledger.verify_bond("alice", "session-1", 500).unwrap(), id_a);
         assert_eq!(ledger.verify_bond("bob", "session-1", 500).unwrap(), id_b);
     }
 
@@ -595,14 +589,8 @@ mod tests {
         let id_1 = ledger.escrow("alice", "session-1", 500);
         let id_2 = ledger.escrow("alice", "session-2", 500);
         assert_ne!(id_1, id_2);
-        assert_eq!(
-            ledger.verify_bond("alice", "session-1", 500).unwrap(),
-            id_1
-        );
-        assert_eq!(
-            ledger.verify_bond("alice", "session-2", 500).unwrap(),
-            id_2
-        );
+        assert_eq!(ledger.verify_bond("alice", "session-1", 500).unwrap(), id_1);
+        assert_eq!(ledger.verify_bond("alice", "session-2", 500).unwrap(), id_2);
     }
 
     #[test]

@@ -45,8 +45,7 @@ impl ReaperStats {
             self.txs_reaped.fetch_add(1, Ordering::Relaxed);
             self.dead_bytes_total
                 .fetch_add(verdict.total_dead_bytes as u64, Ordering::Relaxed);
-            self.last_reaped_unix
-                .store(now_unix(), Ordering::Relaxed);
+            self.last_reaped_unix.store(now_unix(), Ordering::Relaxed);
             for region in &verdict.dead_regions {
                 let idx = type_index(region.dead_code_type);
                 self.by_type[idx].fetch_add(1, Ordering::Relaxed);
@@ -64,7 +63,11 @@ impl ReaperStats {
             dead_bytes_total: self.dead_bytes_total.load(Ordering::Relaxed),
             last_reaped_unix: {
                 let v = self.last_reaped_unix.load(Ordering::Relaxed);
-                if v == 0 { None } else { Some(v as i64) }
+                if v == 0 {
+                    None
+                } else {
+                    Some(v as i64)
+                }
             },
             by_type: ByDeadCodeType {
                 inscription_envelope: self.by_type[0].load(Ordering::Relaxed),
@@ -171,7 +174,10 @@ mod tests {
     fn corpse_increments_reaped_and_per_type() {
         let s = ReaperStats::new();
         s.record(&corpse_verdict(
-            vec![DeadCodeType::InscriptionEnvelope, DeadCodeType::DropStuffing],
+            vec![
+                DeadCodeType::InscriptionEnvelope,
+                DeadCodeType::DropStuffing,
+            ],
             128,
         ));
         let snap = s.snapshot();

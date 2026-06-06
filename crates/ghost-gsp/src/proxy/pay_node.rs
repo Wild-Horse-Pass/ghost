@@ -942,7 +942,10 @@ impl PayNodeProxy {
         //   { success:true, payment_id, sender, recipient, amount_sats, memo, status, ... }
         //   { success:false, error, ... }
         // Both are 200 OK at the HTTP layer (the failure is in the body).
-        let success = body.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success = body
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !status.is_success() || !success {
             let err_msg = body
                 .get("error")
@@ -954,9 +957,7 @@ impl PayNodeProxy {
         let payment_id = body
             .get("payment_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                GspError::PayNodeError("send_l2_payment: missing payment_id".into())
-            })?
+            .ok_or_else(|| GspError::PayNodeError("send_l2_payment: missing payment_id".into()))?
             .to_string();
         let pay_status = body
             .get("status")

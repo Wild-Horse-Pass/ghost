@@ -52,10 +52,8 @@ async fn partition_01_isolate_vm2() {
 
     // Set up partition chain on all nodes, then block VM2 from each peer
     for node in &config.nodes {
-        SshController::setup_partition_chain(node).expect(&format!(
-            "failed to setup chain on {}",
-            node.name
-        ));
+        SshController::setup_partition_chain(node)
+            .expect(&format!("failed to setup chain on {}", node.name));
     }
 
     // Block VM2 ↔ every other node (bidirectional)
@@ -111,7 +109,10 @@ async fn partition_02_isolated_api_reachable() {
     // VM2's API should still respond (we connect from the test runner, not from other nodes)
     let r = client.get_with_retry(vm2.ip, "/health").await;
     let status = r.status.unwrap_or(0);
-    println!("  VM2 /health → {} (API reachable from test runner)", status);
+    println!(
+        "  VM2 /health → {} (API reachable from test runner)",
+        status
+    );
 
     // Verify partition is effective by checking iptables is actively rejecting packets.
     // The peer count API caches stale data, so we check the network layer directly.
@@ -225,10 +226,8 @@ async fn partition_05_split_brain_setup() {
 
     // Set up partition chains on all nodes
     for node in &config.nodes {
-        SshController::setup_partition_chain(node).expect(&format!(
-            "failed to setup chain on {}",
-            node.name
-        ));
+        SshController::setup_partition_chain(node)
+            .expect(&format!("failed to setup chain on {}", node.name));
     }
 
     // Block cross-group traffic: each node in group A blocks each node in group B and vice versa
@@ -353,8 +352,7 @@ async fn partition_08_heal_split_brain() {
         assert!(
             rejoined,
             "{} did not regain 3 peers after split-brain heal (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
 
@@ -379,13 +377,9 @@ async fn partition_08_heal_split_brain() {
 
     // Zero panics
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "15 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "15 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post split-brain: {} had {} panics",

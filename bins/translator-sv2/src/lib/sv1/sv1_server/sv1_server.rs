@@ -544,9 +544,10 @@ impl Sv1Server {
                     // `authorized_worker_name` — when `handle_authorize` returns true, so an
                     // empty name here means the miner failed validation and we'd otherwise burn
                     // an upstream channel for a connection that's about to be torn down.
-                    let (channel_open, name_set) = downstream
-                        .downstream_data
-                        .super_safe_lock(|d| (d.channel_id.is_some(), !d.authorized_worker_name.is_empty()));
+                    let (channel_open, name_set) =
+                        downstream.downstream_data.super_safe_lock(|d| {
+                            (d.channel_id.is_some(), !d.authorized_worker_name.is_empty())
+                        });
                     if !channel_open && name_set {
                         debug!(
                             "Down: Authorize handled, opening upstream channel for downstream {} now that user_identity is known",
@@ -790,7 +791,8 @@ impl Sv1Server {
                         && !self.vardiff.contains_key(&downstream_id)
                     {
                         let vardiff = VardiffState::new().expect("Failed to create vardiffstate");
-                        self.vardiff.insert(downstream_id, Arc::new(Mutex::new(vardiff)));
+                        self.vardiff
+                            .insert(downstream_id, Arc::new(Mutex::new(vardiff)));
                     }
 
                     // Public-pool defer-open: if subscribe was responded to with a placeholder

@@ -255,7 +255,8 @@ impl GhostPayClient {
             let resp_body = resp.text().await.unwrap_or_default();
             warn!(status = %status, body = %resp_body, "Glyph claim failed");
             return Err(NetworkError::RequestFailed(format!(
-                "HTTP {}: {}", status, resp_body
+                "HTTP {}: {}",
+                status, resp_body
             )));
         }
 
@@ -266,7 +267,11 @@ impl GhostPayClient {
 
     /// Get glyph info by ghost ID
     pub async fn get_glyph(&self, ghost_id: &str) -> Result<Option<GlyphInfo>, NetworkError> {
-        let url = format!("{}/api/v1/glyph/{}", self.config.base_url, encode_path_segment(ghost_id));
+        let url = format!(
+            "{}/api/v1/glyph/{}",
+            self.config.base_url,
+            encode_path_segment(ghost_id)
+        );
 
         let mut last_err = None;
         for attempt in 0..=MAX_RETRIES {
@@ -297,13 +302,15 @@ impl GhostPayClient {
                     if is_retryable_status(status) && attempt < MAX_RETRIES {
                         warn!(status = %status, attempt, "Get glyph got retryable status, retrying");
                         last_err = Some(NetworkError::RequestFailed(format!(
-                            "HTTP {}: {}", status, body
+                            "HTTP {}: {}",
+                            status, body
                         )));
                         continue;
                     }
 
                     return Err(NetworkError::RequestFailed(format!(
-                        "HTTP {}: {}", status, body
+                        "HTTP {}: {}",
+                        status, body
                     )));
                 }
                 Err(e) => {
@@ -332,7 +339,10 @@ impl GhostPayClient {
 
     /// Get a Merkle proof for a note at the given index.
     pub async fn get_merkle_proof(&self, index: u64) -> Result<MerkleProofResponse, NetworkError> {
-        let url = format!("{}/api/v1/confidential/proof/{}", self.config.base_url, index);
+        let url = format!(
+            "{}/api/v1/confidential/proof/{}",
+            self.config.base_url, index
+        );
         self.get_with_retry(&url).await
     }
 
@@ -437,13 +447,15 @@ impl GhostPayClient {
                     if is_retryable_status(status) && attempt < MAX_RETRIES {
                         warn!(status = %status, attempt, "Retryable status, retrying");
                         last_err = Some(NetworkError::RequestFailed(format!(
-                            "HTTP {}: {}", status, body
+                            "HTTP {}: {}",
+                            status, body
                         )));
                         continue;
                     }
 
                     return Err(NetworkError::RequestFailed(format!(
-                        "HTTP {}: {}", status, body
+                        "HTTP {}: {}",
+                        status, body
                     )));
                 }
                 Err(e) => {
@@ -499,7 +511,8 @@ impl GhostPayClient {
             let body = resp.text().await.unwrap_or_default();
             warn!(status = %status, body = %body, "L2 write endpoint failed");
             return Err(NetworkError::RequestFailed(format!(
-                "HTTP {}: {}", status, body
+                "HTTP {}: {}",
+                status, body
             )));
         }
 
@@ -519,7 +532,8 @@ impl GhostPayClient {
     ) -> Result<bool, NetworkError> {
         let url = format!(
             "{}/api/v1/glyph/check/{}",
-            self.config.base_url, encode_path_segment(bitmap_hash_hex)
+            self.config.base_url,
+            encode_path_segment(bitmap_hash_hex)
         );
 
         let mut last_err = None;
@@ -547,13 +561,15 @@ impl GhostPayClient {
                     if is_retryable_status(status) && attempt < MAX_RETRIES {
                         warn!(status = %status, attempt, "Glyph availability check got retryable status, retrying");
                         last_err = Some(NetworkError::RequestFailed(format!(
-                            "HTTP {}: {}", status, body
+                            "HTTP {}: {}",
+                            status, body
                         )));
                         continue;
                     }
 
                     return Err(NetworkError::RequestFailed(format!(
-                        "HTTP {}: {}", status, body
+                        "HTTP {}: {}",
+                        status, body
                     )));
                 }
                 Err(e) => {
@@ -582,25 +598,44 @@ impl GhostPayClient {
 
     /// Get a specific lock by ID.
     pub async fn get_lock(&self, lock_id: &str) -> Result<LockInfo, NetworkError> {
-        let url = format!("{}/api/v1/locks/{}", self.config.base_url, encode_path_segment(lock_id));
+        let url = format!(
+            "{}/api/v1/locks/{}",
+            self.config.base_url,
+            encode_path_segment(lock_id)
+        );
         self.get_with_retry(&url).await
     }
 
     /// Create a new ghost lock.
-    pub async fn create_lock(&self, req: &CreateLockRequest) -> Result<CreateLockResponse, NetworkError> {
+    pub async fn create_lock(
+        &self,
+        req: &CreateLockRequest,
+    ) -> Result<CreateLockResponse, NetworkError> {
         let url = format!("{}/api/v1/locks/create", self.config.base_url);
         self.post_authenticated(&url, req).await
     }
 
     /// Initiate a key rotation jump on a lock.
     pub async fn jump_lock(&self, lock_id: &str) -> Result<SuccessResponse, NetworkError> {
-        let url = format!("{}/api/v1/locks/{}/jump", self.config.base_url, encode_path_segment(lock_id));
+        let url = format!(
+            "{}/api/v1/locks/{}/jump",
+            self.config.base_url,
+            encode_path_segment(lock_id)
+        );
         self.post_authenticated(&url, &serde_json::json!({})).await
     }
 
     /// Reconcile (settle) a lock to L1.
-    pub async fn reconcile_lock(&self, lock_id: &str, req: &ReconcileRequest) -> Result<ReconcileResponse, NetworkError> {
-        let url = format!("{}/api/v1/locks/{}/reconcile", self.config.base_url, encode_path_segment(lock_id));
+    pub async fn reconcile_lock(
+        &self,
+        lock_id: &str,
+        req: &ReconcileRequest,
+    ) -> Result<ReconcileResponse, NetworkError> {
+        let url = format!(
+            "{}/api/v1/locks/{}/reconcile",
+            self.config.base_url,
+            encode_path_segment(lock_id)
+        );
         self.post_authenticated(&url, req).await
     }
 
@@ -623,7 +658,7 @@ impl GhostPayClient {
     /// Export ghost keys.
     pub async fn export_ghost_keys(&self) -> Result<GhostIdInfo, NetworkError> {
         let url = format!("{}/api/v1/keys/export", self.config.base_url);
-        self.get_with_retry(&url).await  // This uses auth via get, but the endpoint may require it
+        self.get_with_retry(&url).await // This uses auth via get, but the endpoint may require it
     }
 
     // =========================================================================
@@ -631,7 +666,10 @@ impl GhostPayClient {
     // =========================================================================
 
     /// Send an L2 payment.
-    pub async fn send_l2_payment(&self, req: &SendL2PaymentRequest) -> Result<SuccessResponse, NetworkError> {
+    pub async fn send_l2_payment(
+        &self,
+        req: &SendL2PaymentRequest,
+    ) -> Result<SuccessResponse, NetworkError> {
         let url = format!("{}/api/v1/payments/send", self.config.base_url);
         self.post_authenticated(&url, req).await
     }
@@ -808,9 +846,13 @@ mod tests {
 
     #[test]
     fn test_retryable_status_codes() {
-        assert!(is_retryable_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retryable_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
         assert!(is_retryable_status(reqwest::StatusCode::BAD_GATEWAY));
-        assert!(is_retryable_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable_status(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
         assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
         assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
         assert!(!is_retryable_status(reqwest::StatusCode::NOT_FOUND));

@@ -220,7 +220,8 @@ impl IsServer<'static> for Sv1Server {
             // Extract the worker-name portion of `<addr>.<worker>` so the TLV carries the
             // per-device identifier (which fits in 32 bytes) rather than the wallet address
             // (which doesn't and would duplicate the channel-level user_identity anyway).
-            data.user_identity = tlv_compatible_username(super::extract_worker_name(name)).to_string();
+            data.user_identity =
+                tlv_compatible_username(super::extract_worker_name(name)).to_string();
             debug!(
                 "Down: Set user_identity to '{}' for downstream {}",
                 data.user_identity, downstream_id

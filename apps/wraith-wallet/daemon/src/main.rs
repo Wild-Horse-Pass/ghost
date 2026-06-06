@@ -58,15 +58,14 @@ mod unix {
         GspAuthResponse, GspPingResponse, GspSessionStatusResponse, HealthResponse,
         LightBalanceResponse, LightDetectedResponse, LightHistoryEntry, LightHistoryResponse,
         LightL1UtxoEntry, LightL1UtxosResponse, LightReceiveResponse, LightSentResponse,
-        LightUtxoEntry, LightUtxosResponse, LockEntry,
-        LocksConfirmedResponse, LocksJumpedResponse, LocksListResponse, LocksPreparedResponse,
-        PsbtBroadcastResponse, PsbtBumpFeeResponse, PsbtInputSummary, PsbtInspectResponse,
-        PsbtOutputSummary, PsbtSignResponse,
-        ReleaseManifest, Request, Response, SignerInfoIpc, WalletAuthInfoResponse,
-        WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse, WalletListEntry,
-        WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse, WalletXpubResponse,
-        WraithDiscoverResponse, WraithDiscoverTier, WraithMixCompletedResponse,
-        WraithMixPreparedResponse, LocksRecoveredResponse,
+        LightUtxoEntry, LightUtxosResponse, LockEntry, LocksConfirmedResponse, LocksJumpedResponse,
+        LocksListResponse, LocksPreparedResponse, LocksRecoveredResponse, PsbtBroadcastResponse,
+        PsbtBumpFeeResponse, PsbtInputSummary, PsbtInspectResponse, PsbtOutputSummary,
+        PsbtSignResponse, ReleaseManifest, Request, Response, SignerInfoIpc,
+        WalletAuthInfoResponse, WalletCreateResponse, WalletDeriveResponse, WalletGhostIdResponse,
+        WalletListEntry, WalletListResponse, WalletShowMnemonicResponse, WalletStatusResponse,
+        WalletXpubResponse, WraithDiscoverResponse, WraithDiscoverTier, WraithMixCompletedResponse,
+        WraithMixPreparedResponse,
     };
 
     const DEFAULT_GHOST_PAY: &str = "http://127.0.0.1:8800";
@@ -309,9 +308,7 @@ mod unix {
         }
         let allowed = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
         if !name.chars().all(allowed) {
-            return Err(
-                "descriptor name must be ascii alphanumeric, '-', or '_' only".into(),
-            );
+            return Err("descriptor name must be ascii alphanumeric, '-', or '_' only".into());
         }
         Ok(())
     }
@@ -508,9 +505,7 @@ mod unix {
             .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
         if kiosk_mode {
-            tracing::info!(
-                "kiosk mode enabled — wallet-management operations will be refused"
-            );
+            tracing::info!("kiosk mode enabled — wallet-management operations will be refused");
         }
         let state = Arc::new(DaemonState {
             started: Instant::now(),
@@ -1412,15 +1407,14 @@ mod unix {
         let trimmed = psbt_or_tx_hex.trim();
         // PSBT magic in hex is 70736274ff; in base64 it's `cHNidP`.
         // Anything else, treat as raw consensus-encoded tx hex.
-        let is_psbt = trimmed.to_lowercase().starts_with("70736274ff")
-            || trimmed.starts_with("cHNidP");
+        let is_psbt =
+            trimmed.to_lowercase().starts_with("70736274ff") || trimmed.starts_with("cHNidP");
         let tx_hex = if is_psbt {
             let (parsed, _) =
                 psbt_mod::decode_psbt(trimmed).map_err(|e| format!("decode_psbt: {e}"))?;
             if !psbt_mod::is_complete(&parsed) {
                 return Err(
-                    "PSBT is not complete — every input must be finalized before broadcast"
-                        .into(),
+                    "PSBT is not complete — every input must be finalized before broadcast".into(),
                 );
             }
             let tx = parsed
@@ -1642,8 +1636,8 @@ mod unix {
             .clone()
             .ok_or_else(|| "no active wallet".to_string())?;
         let path = descriptor_path(&state.wallets_dir, &active, name);
-        let body = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read descriptor '{name}': {e}"))?;
+        let body =
+            std::fs::read_to_string(&path).map_err(|e| format!("read descriptor '{name}': {e}"))?;
         let parsed = desc::parse(&body).map_err(|e| format!("descriptor: {e}"))?;
         let count = count.min(64);
         let mut addresses = Vec::with_capacity(count as usize);
@@ -2050,48 +2044,36 @@ mod unix {
                     scriptpubkey_hex: String,
                     index: u32,
                 }
-                let derived: Result<Vec<DerivedAddr>, String> = with_active_wallet(state, |_, ks| {
-                    let mut out = Vec::with_capacity(scan_max as usize);
-                    for i in 0..scan_max {
-                        let a = light::receive_address(ks, i, network)
-                            .map_err(|e| format!("derive index {i}: {e}"))?;
-                        let spk_hex = hex::encode(a.script_pubkey().as_bytes());
-                        out.push(DerivedAddr {
-                            address: a.to_string(),
-                            scriptpubkey_hex: spk_hex,
-                            index: i,
-                        });
-                    }
-                    Ok(out)
-                })
-                .await;
+                let derived: Result<Vec<DerivedAddr>, String> =
+                    with_active_wallet(state, |_, ks| {
+                        let mut out = Vec::with_capacity(scan_max as usize);
+                        for i in 0..scan_max {
+                            let a = light::receive_address(ks, i, network)
+                                .map_err(|e| format!("derive index {i}: {e}"))?;
+                            let spk_hex = hex::encode(a.script_pubkey().as_bytes());
+                            out.push(DerivedAddr {
+                                address: a.to_string(),
+                                scriptpubkey_hex: spk_hex,
+                                index: i,
+                            });
+                        }
+                        Ok(out)
+                    })
+                    .await;
                 let pairs = match derived {
                     Ok(p) => p,
                     Err(e) => {
-                        return Envelope::new(
-                            id,
-                            Response::Error(ErrorResponse { message: e }),
-                        );
+                        return Envelope::new(id, Response::Error(ErrorResponse { message: e }));
                     }
                 };
                 // scriptpubkey_hex → (bip86_index, address). The
                 // canonical match key — see comment above.
                 let spk_to_idx: HashMap<String, (u32, String)> = pairs
                     .iter()
-                    .map(|d| {
-                        (
-                            d.scriptpubkey_hex.clone(),
-                            (d.index, d.address.clone()),
-                        )
-                    })
+                    .map(|d| (d.scriptpubkey_hex.clone(), (d.index, d.address.clone())))
                     .collect();
-                let addresses: Vec<String> =
-                    pairs.into_iter().map(|d| d.address).collect();
-                let scan = match state
-                    .chain
-                    .scan_utxos(&addresses, min_confirmations)
-                    .await
-                {
+                let addresses: Vec<String> = pairs.into_iter().map(|d| d.address).collect();
+                let scan = match state.chain.scan_utxos(&addresses, min_confirmations).await {
                     Ok(s) => s,
                     Err(e) => {
                         return Envelope::new(
@@ -2269,9 +2251,7 @@ mod unix {
                     }
                 };
                 let recovery_pubkey_hex = match with_active_wallet(state, |_, ks| {
-                    let ghost_keys = ks
-                        .ghost_keys()
-                        .map_err(|e| format!("ghost_keys: {e}"))?;
+                    let ghost_keys = ks.ghost_keys().map_err(|e| format!("ghost_keys: {e}"))?;
                     let pk_bytes = ghost_keys
                         .derive_recovery_pubkey(recovery_index)
                         .map_err(|e| format!("derive_recovery_pubkey: {e}"))?;
@@ -2385,12 +2365,10 @@ mod unix {
                         // can persist after dropping the write guard.
                         let wallet_to_persist = {
                             let mut guard = state.prepared_locks.write().await;
-                            guard
-                                .get_mut(&r.lock_id)
-                                .map(|m| {
-                                    m.funding_txid = Some(r.txid.clone());
-                                    m.wallet_name.clone()
-                                })
+                            guard.get_mut(&r.lock_id).map(|m| {
+                                m.funding_txid = Some(r.txid.clone());
+                                m.wallet_name.clone()
+                            })
                         };
                         if let Some(wallet) = wallet_to_persist {
                             persist_prepared_locks(state, &wallet).await;
@@ -2556,10 +2534,9 @@ mod unix {
                         );
                     }
                 };
-                let matching_vout = raw_tx
-                    .vout
-                    .iter()
-                    .find(|v| v.script_pubkey.first_address() == Some(meta.funding_address.as_str()));
+                let matching_vout = raw_tx.vout.iter().find(|v| {
+                    v.script_pubkey.first_address() == Some(meta.funding_address.as_str())
+                });
                 let vout = match matching_vout {
                     Some(v) => v,
                     None => {
@@ -2613,9 +2590,7 @@ mod unix {
                 };
 
                 let built = match with_active_wallet(state, |_, ks| {
-                    let ghost_keys = ks
-                        .ghost_keys()
-                        .map_err(|e| format!("ghost_keys: {e}"))?;
+                    let ghost_keys = ks.ghost_keys().map_err(|e| format!("ghost_keys: {e}"))?;
                     let recovery_secret = ghost_keys
                         .derive_recovery_secret(recovery_index)
                         .map_err(|e| format!("derive_recovery_secret: {e}"))?;
@@ -2810,8 +2785,7 @@ mod unix {
                                 // Restore the wallet's previously-prepared locks
                                 // from disk. Merges into the in-memory map so
                                 // multi-wallet setups don't clobber each other.
-                                let restored =
-                                    load_locks_for_wallet(&state.wallets_dir, &name);
+                                let restored = load_locks_for_wallet(&state.wallets_dir, &name);
                                 if !restored.is_empty() {
                                     let mut guard = state.prepared_locks.write().await;
                                     for (k, v) in restored {
@@ -3002,14 +2976,7 @@ mod unix {
                 start_index,
                 count,
                 internal,
-            } => match multisig_addresses_handler(
-                state,
-                &name,
-                start_index,
-                count,
-                internal,
-            )
-            .await
+            } => match multisig_addresses_handler(state, &name, start_index, count, internal).await
             {
                 Ok(r) => Response::MultisigDescriptorAddresses(r),
                 Err(e) => Response::Error(ErrorResponse { message: e }),
@@ -3271,9 +3238,7 @@ mod unix {
                 };
                 // No-op bond_setup: v1 daemon takes bond escrow as a
                 // precondition. Phase C wires this to ghost-pay.
-                let bond_setup = |_: &str, _: u64| async {
-                    Ok::<(), WraithClientError>(())
-                };
+                let bond_setup = |_: &str, _: u64| async { Ok::<(), WraithClientError>(()) };
                 match client.prepare_mix(req, bond_setup).await {
                     Ok(prepared) => {
                         let resp = WraithMixPreparedResponse {
@@ -3287,10 +3252,7 @@ mod unix {
                         };
                         state.wraith_mixes.write().await.insert(
                             prepared.session_id.clone(),
-                            StoredWraithMix {
-                                prepared,
-                                client,
-                            },
+                            StoredWraithMix { prepared, client },
                         );
                         Response::WraithMixPrepared(resp)
                     }
@@ -3321,10 +3283,11 @@ mod unix {
                     Ok(b) => b,
                     Err(e) => {
                         // Re-stash: caller can retry with corrected hex.
-                        state.wraith_mixes.write().await.insert(
-                            session_id.clone(),
-                            stored,
-                        );
+                        state
+                            .wraith_mixes
+                            .write()
+                            .await
+                            .insert(session_id.clone(), stored);
                         return Envelope::new(
                             id,
                             Response::Error(ErrorResponse {
@@ -3337,10 +3300,11 @@ mod unix {
                     match bitcoin::consensus::encode::deserialize(&witness_bytes) {
                         Ok(w) => w,
                         Err(e) => {
-                            state.wraith_mixes.write().await.insert(
-                                session_id.clone(),
-                                stored,
-                            );
+                            state
+                                .wraith_mixes
+                                .write()
+                                .await
+                                .insert(session_id.clone(), stored);
                             return Envelope::new(
                                 id,
                                 Response::Error(ErrorResponse {
@@ -3349,7 +3313,11 @@ mod unix {
                             );
                         }
                     };
-                match stored.client.submit_witness(&stored.prepared, witness).await {
+                match stored
+                    .client
+                    .submit_witness(&stored.prepared, witness)
+                    .await
+                {
                     Ok(outcome) => Response::WraithMixCompleted(WraithMixCompletedResponse {
                         session_id: outcome.session_id,
                         broadcast_txid: outcome.broadcast_txid.to_string(),
@@ -3426,9 +3394,10 @@ mod unix {
                         state.network,
                         proxy,
                     ),
-                    None if coordinator_peers.is_empty() => {
-                        Ok(WraithSessionClient::new(coordinator_url.clone(), state.network))
-                    }
+                    None if coordinator_peers.is_empty() => Ok(WraithSessionClient::new(
+                        coordinator_url.clone(),
+                        state.network,
+                    )),
                     None => Ok(WraithSessionClient::with_peers(
                         coordinator_url.clone(),
                         coordinator_peers.clone(),
@@ -3459,9 +3428,7 @@ mod unix {
                     change_address,
                     mix_output_address,
                 };
-                let bond_setup = |_: &str, _: u64| async {
-                    Ok::<(), WraithClientError>(())
-                };
+                let bond_setup = |_: &str, _: u64| async { Ok::<(), WraithClientError>(()) };
                 let prepared = match client.prepare_mix(req, bond_setup).await {
                     Ok(p) => p,
                     Err(e) => {
@@ -3504,10 +3471,7 @@ mod unix {
                 let witness = match witness_result {
                     Ok(w) => w,
                     Err(message) => {
-                        return Envelope::new(
-                            id,
-                            Response::Error(ErrorResponse { message }),
-                        );
+                        return Envelope::new(id, Response::Error(ErrorResponse { message }));
                     }
                 };
                 match client.submit_witness(&prepared, witness).await {
@@ -3544,11 +3508,13 @@ mod unix {
                                     .inputs
                                     .iter()
                                     .map(|iv| match &iv.script_pubkey {
-                                        Some(spk) if spk.is_p2tr() => psbt_mod::find_bip86_index_for_script(
-                                            ks, network, spk, scan_max,
-                                        )
-                                        .unwrap_or(None)
-                                        .is_some(),
+                                        Some(spk) if spk.is_p2tr() => {
+                                            psbt_mod::find_bip86_index_for_script(
+                                                ks, network, spk, scan_max,
+                                            )
+                                            .unwrap_or(None)
+                                            .is_some()
+                                        }
                                         _ => false,
                                     })
                                     .collect();
@@ -3601,8 +3567,7 @@ mod unix {
                                     .and_then(|s| psbt_mod::script_to_address(s, network)),
                                 is_finalized: iv.is_finalized,
                                 partial_signatures: iv.partial_signatures,
-                                is_signable_by_active_wallet: input_signable[i]
-                                    && !iv.is_finalized,
+                                is_signable_by_active_wallet: input_signable[i] && !iv.is_finalized,
                             })
                             .collect();
                         let outputs: Vec<PsbtOutputSummary> = inspect
@@ -3617,13 +3582,13 @@ mod unix {
                             })
                             .collect();
 
-                        let total_in_sats: Option<u64> = if inputs.iter().all(|i| i.value_sats.is_some()) {
-                            Some(inputs.iter().map(|i| i.value_sats.unwrap_or(0)).sum())
-                        } else {
-                            None
-                        };
-                        let total_out_sats: u64 =
-                            outputs.iter().map(|o| o.value_sats).sum();
+                        let total_in_sats: Option<u64> =
+                            if inputs.iter().all(|i| i.value_sats.is_some()) {
+                                Some(inputs.iter().map(|i| i.value_sats.unwrap_or(0)).sum())
+                            } else {
+                                None
+                            };
+                        let total_out_sats: u64 = outputs.iter().map(|o| o.value_sats).sum();
                         let fee_sats = total_in_sats.and_then(|t| t.checked_sub(total_out_sats));
                         let is_complete = psbt_mod::is_complete(&parsed);
                         let has_signable_inputs =
@@ -3686,13 +3651,8 @@ mod unix {
                 new_fee_rate_sats_per_vb,
                 bip86_scan_max,
             } => {
-                match psbt_bump_fee_handler(
-                    state,
-                    &psbt,
-                    new_fee_rate_sats_per_vb,
-                    bip86_scan_max,
-                )
-                .await
+                match psbt_bump_fee_handler(state, &psbt, new_fee_rate_sats_per_vb, bip86_scan_max)
+                    .await
                 {
                     Ok(r) => Response::PsbtBumped(r),
                     Err(e) => Response::Error(ErrorResponse { message: e }),

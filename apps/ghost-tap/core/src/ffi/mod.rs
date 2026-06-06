@@ -181,9 +181,10 @@ pub fn wallet_validate_mnemonic(mnemonic: String) -> bool {
 #[uniffi::export]
 pub fn set_pin(pin: String) -> Result<(), GhostTapFfiError> {
     let pm = crate::wallet::auth::PinManager::new();
-    pm.set_pin(&pin).map_err(|e| GhostTapFfiError::OperationFailed {
-        message: e.to_string(),
-    })
+    pm.set_pin(&pin)
+        .map_err(|e| GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        })
 }
 
 /// Verify PIN and unlock. Returns: 0=success, 1=wrong PIN, 2=locked out.
@@ -220,7 +221,10 @@ pub fn authenticate_biometric() -> bool {
 #[uniffi::export]
 pub fn nfc_check_limit(amount: u64) -> bool {
     let limits = crate::payment::limits::NfcLimits::new();
-    matches!(limits.check(amount), crate::payment::limits::NfcLimitResult::Allowed)
+    matches!(
+        limits.check(amount),
+        crate::payment::limits::NfcLimitResult::Allowed
+    )
 }
 
 /// Set the GHOST/GBP exchange rate for NFC limit calculation.
@@ -254,8 +258,11 @@ pub struct FfiParsedPaymentRequest {
 /// Parse a ghost: URI into a payment request.
 #[uniffi::export]
 pub fn parse_payment_uri(uri: String) -> Result<FfiPaymentRequest, GhostTapFfiError> {
-    let req = crate::payment::qr::PaymentRequest::from_uri(&uri)
-        .map_err(|e| GhostTapFfiError::OperationFailed { message: e.to_string() })?;
+    let req = crate::payment::qr::PaymentRequest::from_uri(&uri).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
     Ok(FfiPaymentRequest {
         address: req.address,
         amount: req.amount,
@@ -278,7 +285,9 @@ pub fn parse_payment_uri_checked(
         now_unix,
         expected_network.as_deref(),
     )
-    .map_err(|e| GhostTapFfiError::OperationFailed { message: e.to_string() })?;
+    .map_err(|e| GhostTapFfiError::OperationFailed {
+        message: e.to_string(),
+    })?;
 
     let warnings: Vec<String> = parsed.warnings.iter().map(|w| w.to_string()).collect();
 
@@ -306,11 +315,21 @@ pub fn create_payment_uri(
     network: Option<String>,
 ) -> String {
     let mut req = crate::payment::qr::PaymentRequest::new(address);
-    if let Some(a) = amount { req = req.with_amount(a); }
-    if let Some(m) = memo { req = req.with_memo(m); }
-    if let Some(l) = label { req = req.with_label(l); }
-    if let Some(e) = exp { req = req.with_expiry(e); }
-    if let Some(n) = network { req = req.with_network(n); }
+    if let Some(a) = amount {
+        req = req.with_amount(a);
+    }
+    if let Some(m) = memo {
+        req = req.with_memo(m);
+    }
+    if let Some(l) = label {
+        req = req.with_label(l);
+    }
+    if let Some(e) = exp {
+        req = req.with_expiry(e);
+    }
+    if let Some(n) = network {
+        req = req.with_network(n);
+    }
     req.to_uri()
 }
 
@@ -331,8 +350,7 @@ pub fn nfc_encode_payment_request(
     memo: Option<String>,
 ) -> Result<Vec<u8>, GhostTapFfiError> {
     use crate::payment::nfc::{
-        encode_nfc_payment_request, NfcPaymentRequest,
-        PROTOCOL_VERSION, MSG_TYPE_PAYMENT_REQUEST,
+        encode_nfc_payment_request, NfcPaymentRequest, MSG_TYPE_PAYMENT_REQUEST, PROTOCOL_VERSION,
     };
 
     let req = NfcPaymentRequest {
@@ -342,8 +360,9 @@ pub fn nfc_encode_payment_request(
         address,
         memo,
     };
-    encode_nfc_payment_request(&req)
-        .map_err(|e| GhostTapFfiError::OperationFailed { message: e.to_string() })
+    encode_nfc_payment_request(&req).map_err(|e| GhostTapFfiError::OperationFailed {
+        message: e.to_string(),
+    })
 }
 
 /// Decode an NFC payment response from binary wire format.
@@ -351,8 +370,11 @@ pub fn nfc_encode_payment_request(
 pub fn nfc_decode_payment_response(
     bytes: Vec<u8>,
 ) -> Result<FfiNfcPaymentResponse, GhostTapFfiError> {
-    let resp = crate::payment::nfc::decode_nfc_payment_response(&bytes)
-        .map_err(|e| GhostTapFfiError::OperationFailed { message: e.to_string() })?;
+    let resp = crate::payment::nfc::decode_nfc_payment_response(&bytes).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
+            message: e.to_string(),
+        }
+    })?;
 
     Ok(FfiNfcPaymentResponse {
         txid: resp.txid,
@@ -451,9 +473,12 @@ impl WalletHandle {
 
     /// Open or reuse the cached WalletStorage.
     fn ensure_storage(&self, db_path: &str, key: &[u8; 32]) -> Result<(), GhostTapFfiError> {
-        let mut guard = self.storage.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let mut guard = self
+            .storage
+            .lock()
+            .map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
         if guard.is_none() {
             let storage = WalletStorage::open(db_path, key)?;
             *guard = Some(storage);
@@ -508,14 +533,14 @@ impl WalletHandle {
 
     /// Recover a wallet from an existing mnemonic
     #[uniffi::constructor]
-    pub fn from_mnemonic(mnemonic: String, passphrase: Option<String>) -> Result<Self, GhostTapFfiError> {
+    pub fn from_mnemonic(
+        mnemonic: String,
+        passphrase: Option<String>,
+    ) -> Result<Self, GhostTapFfiError> {
         let mnemonic_z = Zeroizing::new(mnemonic);
         let secret_mnemonic = SecretString::new(mnemonic_z.to_string());
         let secret_passphrase = passphrase.map(SecretString::new);
-        let wallet = Wallet::from_mnemonic(
-            &secret_mnemonic,
-            secret_passphrase.as_ref(),
-        )?;
+        let wallet = Wallet::from_mnemonic(&secret_mnemonic, secret_passphrase.as_ref())?;
         Ok(Self::new(wallet, mnemonic_z.to_string()))
     }
 
@@ -572,7 +597,11 @@ impl WalletHandle {
     // --- History ---
 
     /// Get transaction history with pagination
-    pub fn get_history(&self, offset: u32, limit: u32) -> Result<Vec<FfiHistoryEntry>, GhostTapFfiError> {
+    pub fn get_history(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<FfiHistoryEntry>, GhostTapFfiError> {
         self.with_wallet(|w| {
             w.get_history()
                 .iter()
@@ -614,12 +643,12 @@ impl WalletHandle {
     ) -> Result<FfiUnsignedTx, GhostTapFfiError> {
         // Try to fetch a live fee rate from the connected node.
         // Falls back to hardcoded priority tiers on failure.
-        let fetched_rate: Option<u64> = tokio::runtime::Runtime::new()
-            .ok()
-            .and_then(|rt| {
-                let conf_target = fee_priority_to_conf_target(fee_priority);
-                rt.block_on(self.connection.estimate_fee(conf_target)).ok().flatten()
-            });
+        let fetched_rate: Option<u64> = tokio::runtime::Runtime::new().ok().and_then(|rt| {
+            let conf_target = fee_priority_to_conf_target(fee_priority);
+            rt.block_on(self.connection.estimate_fee(conf_target))
+                .ok()
+                .flatten()
+        });
 
         self.with_wallet_mut(|w| {
             let change_addr = w.new_change_address()?;
@@ -675,10 +704,9 @@ impl WalletHandle {
             let signer = crate::transaction::TransactionSigner::new();
             let signed = signer
                 .sign(&unsigned, |change, address_index| {
-                    w.get_private_key(change, address_index)
-                        .map_err(|e| {
-                            crate::transaction::TransactionError::SigningFailed(e.to_string())
-                        })
+                    w.get_private_key(change, address_index).map_err(|e| {
+                        crate::transaction::TransactionError::SigningFailed(e.to_string())
+                    })
                 })
                 .map_err(|e| GhostTapFfiError::OperationFailed {
                     message: e.to_string(),
@@ -705,15 +733,17 @@ impl WalletHandle {
     /// Unlock the wallet with PIN verification.
     /// If no PIN is set, allows unlock directly (first-time use).
     pub fn unlock(&self, pin: String) -> Result<(), GhostTapFfiError> {
-        self.with_wallet_mut(|w| {
-            w.unlock_with_pin(&pin).map_err(|e| e.into())
-        })
+        self.with_wallet_mut(|w| w.unlock_with_pin(&pin).map_err(|e| e.into()))
     }
 
     // --- Persistence ---
 
     /// Save wallet to a database file
-    pub fn save_wallet(&self, db_path: String, encryption_key: Vec<u8>) -> Result<(), GhostTapFfiError> {
+    pub fn save_wallet(
+        &self,
+        db_path: String,
+        encryption_key: Vec<u8>,
+    ) -> Result<(), GhostTapFfiError> {
         if encryption_key.len() != 32 {
             return Err(GhostTapFfiError::OperationFailed {
                 message: "Encryption key must be 32 bytes".into(),
@@ -725,9 +755,12 @@ impl WalletHandle {
 
         self.ensure_storage(&db_path, &key)?;
 
-        let storage_guard = self.storage.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let storage_guard = self
+            .storage
+            .lock()
+            .map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
         let storage = storage_guard.as_ref().unwrap();
 
         self.with_wallet(|w| -> Result<(), GhostTapFfiError> {
@@ -747,7 +780,11 @@ impl WalletHandle {
     }
 
     /// Load wallet history and UTXOs from database
-    pub fn load_wallet(&self, db_path: String, encryption_key: Vec<u8>) -> Result<(), GhostTapFfiError> {
+    pub fn load_wallet(
+        &self,
+        db_path: String,
+        encryption_key: Vec<u8>,
+    ) -> Result<(), GhostTapFfiError> {
         if encryption_key.len() != 32 {
             return Err(GhostTapFfiError::OperationFailed {
                 message: "Encryption key must be 32 bytes".into(),
@@ -759,9 +796,12 @@ impl WalletHandle {
 
         self.ensure_storage(&db_path, &key)?;
 
-        let storage_guard = self.storage.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let storage_guard = self
+            .storage
+            .lock()
+            .map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
         let storage = storage_guard.as_ref().unwrap();
 
         self.with_wallet_mut(|w| -> Result<(), GhostTapFfiError> {
@@ -796,7 +836,11 @@ impl WalletHandle {
 
     /// Configure the RPC endpoint (e.g. "http://127.0.0.1:8332").
     /// Optional auth as "user:password".
-    pub fn set_rpc_endpoint(&self, endpoint: String, auth: Option<String>) -> Result<(), GhostTapFfiError> {
+    pub fn set_rpc_endpoint(
+        &self,
+        endpoint: String,
+        auth: Option<String>,
+    ) -> Result<(), GhostTapFfiError> {
         let mut config = NodeConfig {
             endpoints: vec![endpoint],
             ..NodeConfig::default()
@@ -873,22 +917,31 @@ impl WalletHandle {
     /// Export the wallet mnemonic as an encrypted backup blob.
     /// Requires that the mnemonic has not yet been consumed by `get_mnemonic()`.
     pub fn export_encrypted_backup(&self, password: String) -> Result<Vec<u8>, GhostTapFfiError> {
-        let guard = self.mnemonic.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
-        let mnemonic_str = guard.as_ref().ok_or_else(|| GhostTapFfiError::OperationFailed {
-            message: "mnemonic already consumed".into(),
-        })?;
-        let mnemonic = SecretString::new(mnemonic_str.to_string());
-        crate::wallet::export_encrypted_backup(&mnemonic, &password)
+        let guard = self
+            .mnemonic
+            .lock()
             .map_err(|e| GhostTapFfiError::OperationFailed {
                 message: e.to_string(),
-            })
+            })?;
+        let mnemonic_str = guard
+            .as_ref()
+            .ok_or_else(|| GhostTapFfiError::OperationFailed {
+                message: "mnemonic already consumed".into(),
+            })?;
+        let mnemonic = SecretString::new(mnemonic_str.to_string());
+        crate::wallet::export_encrypted_backup(&mnemonic, &password).map_err(|e| {
+            GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            }
+        })
     }
 
     /// Restore a wallet from an encrypted backup blob.
     #[uniffi::constructor]
-    pub fn from_encrypted_backup(encrypted: Vec<u8>, password: String) -> Result<Self, GhostTapFfiError> {
+    pub fn from_encrypted_backup(
+        encrypted: Vec<u8>,
+        password: String,
+    ) -> Result<Self, GhostTapFfiError> {
         let (wallet, mnemonic) = crate::wallet::from_encrypted_backup(&encrypted, &password)
             .map_err(|e| GhostTapFfiError::OperationFailed {
                 message: e.to_string(),
@@ -899,7 +952,11 @@ impl WalletHandle {
     // --- Merchant Dashboard ---
 
     /// Compute a merchant dashboard summary over a time period.
-    pub fn compute_dashboard(&self, since: u64, until: u64) -> Result<FfiDashboardSummary, GhostTapFfiError> {
+    pub fn compute_dashboard(
+        &self,
+        since: u64,
+        until: u64,
+    ) -> Result<FfiDashboardSummary, GhostTapFfiError> {
         self.with_wallet(|w| {
             let history = w.get_history();
             let mut total_received: u64 = 0;
@@ -939,18 +996,24 @@ impl WalletHandle {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let mut washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let mut washer = self
+            .washer
+            .lock()
+            .map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
         washer.wash_payment(txid, amount, now);
         Ok(())
     }
 
     /// Get the current wash queue.
     pub fn get_wash_queue(&self) -> Result<Vec<FfiWashRequest>, GhostTapFfiError> {
-        let washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let washer = self
+            .washer
+            .lock()
+            .map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
         Ok(washer
             .get_queue()
             .iter()
@@ -974,9 +1037,12 @@ impl WalletHandle {
 
     /// Get wash queue summary statistics.
     pub fn get_wash_stats(&self) -> Result<FfiWashStats, GhostTapFfiError> {
-        let washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let washer = self
+            .washer
+            .lock()
+            .map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
         let s = washer.stats();
         Ok(FfiWashStats {
             queued: s.queued as u32,
@@ -993,9 +1059,12 @@ impl WalletHandle {
 
     /// Start the background wash processor. No-op if already running.
     pub fn start_wash_processor(&self) -> Result<(), GhostTapFfiError> {
-        let mut guard = self.wash_processor.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let mut guard =
+            self.wash_processor
+                .lock()
+                .map_err(|e| GhostTapFfiError::OperationFailed {
+                    message: e.to_string(),
+                })?;
 
         if guard.is_some() {
             return Ok(());
@@ -1022,9 +1091,12 @@ impl WalletHandle {
 
     /// Stop the background wash processor.
     pub fn stop_wash_processor(&self) -> Result<(), GhostTapFfiError> {
-        let mut guard = self.wash_processor.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let mut guard =
+            self.wash_processor
+                .lock()
+                .map_err(|e| GhostTapFfiError::OperationFailed {
+                    message: e.to_string(),
+                })?;
         if let Some(handle) = guard.take() {
             handle.stop();
         }
@@ -1041,9 +1113,12 @@ impl WalletHandle {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let mut washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let mut washer = self
+            .washer
+            .lock()
+            .map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
         Ok(washer.retry_failed(&txid, now))
     }
 
@@ -1066,9 +1141,12 @@ impl WalletHandle {
 
         let wash_storage = Arc::new(Mutex::new(WalletStorage::open(&db_path, &key)?));
 
-        let mut washer = self.washer.lock().map_err(|e| GhostTapFfiError::OperationFailed {
-            message: e.to_string(),
-        })?;
+        let mut washer = self
+            .washer
+            .lock()
+            .map_err(|e| GhostTapFfiError::OperationFailed {
+                message: e.to_string(),
+            })?;
         washer.attach_storage(wash_storage);
         Ok(())
     }
@@ -1078,12 +1156,16 @@ impl WalletHandle {
     /// Get the L2 confidential balance.
     pub fn l2_balance(&self) -> Result<FfiL2Balance, GhostTapFfiError> {
         self.with_wallet_mut(|wallet| {
-            let balance = wallet.l2_balance().map_err(|e| GhostTapFfiError::OperationFailed {
-                message: e.to_string(),
-            })?;
-            let count = wallet.l2_note_count().map_err(|e| GhostTapFfiError::OperationFailed {
-                message: e.to_string(),
-            })?;
+            let balance = wallet
+                .l2_balance()
+                .map_err(|e| GhostTapFfiError::OperationFailed {
+                    message: e.to_string(),
+                })?;
+            let count = wallet
+                .l2_note_count()
+                .map_err(|e| GhostTapFfiError::OperationFailed {
+                    message: e.to_string(),
+                })?;
             Ok(FfiL2Balance {
                 confirmed: balance,
                 note_count: count as u32,
@@ -1094,9 +1176,11 @@ impl WalletHandle {
     /// Get all owned L2 notes.
     pub fn l2_notes(&self) -> Result<Vec<FfiL2Note>, GhostTapFfiError> {
         self.with_wallet_mut(|wallet| {
-            wallet.ensure_note_store().map_err(|e| GhostTapFfiError::OperationFailed {
-                message: e.to_string(),
-            })?;
+            wallet
+                .ensure_note_store()
+                .map_err(|e| GhostTapFfiError::OperationFailed {
+                    message: e.to_string(),
+                })?;
             let notes: Vec<FfiL2Note> = wallet
                 .note_store()
                 .map(|store| {
@@ -1119,9 +1203,12 @@ impl WalletHandle {
     /// Get the L2 owner public key (hex-encoded compressed secp256k1 pubkey).
     pub fn l2_owner_pubkey(&self) -> Result<String, GhostTapFfiError> {
         self.with_wallet_mut(|wallet| {
-            let pubkey = wallet.l2_owner_pubkey().map_err(|e| GhostTapFfiError::OperationFailed {
-                message: e.to_string(),
-            })?;
+            let pubkey =
+                wallet
+                    .l2_owner_pubkey()
+                    .map_err(|e| GhostTapFfiError::OperationFailed {
+                        message: e.to_string(),
+                    })?;
             Ok(hex::encode(pubkey.serialize()))
         })
     }
@@ -1207,7 +1294,9 @@ pub fn glyph_compute_bitmap_hash(pixels: Vec<u8>) -> Result<String, GhostTapFfiE
     }
     let mut arr = [0u8; crate::glyph::GLYPH_SIZE];
     arr.copy_from_slice(&pixels);
-    Ok(hex::encode(crate::glyph::GlyphManager::compute_bitmap_hash(&arr)))
+    Ok(hex::encode(
+        crate::glyph::GlyphManager::compute_bitmap_hash(&arr),
+    ))
 }
 
 /// Maximum render scale on mobile (L-9: cap to 32x = 512x512 to save memory)
@@ -1224,7 +1313,10 @@ pub fn glyph_render(
 ) -> Result<Vec<u8>, GhostTapFfiError> {
     if scale > MOBILE_MAX_SCALE {
         return Err(GhostTapFfiError::OperationFailed {
-            message: format!("Scale {} exceeds mobile maximum of {}", scale, MOBILE_MAX_SCALE),
+            message: format!(
+                "Scale {} exceeds mobile maximum of {}",
+                scale, MOBILE_MAX_SCALE
+            ),
         });
     }
     if pixels.len() != crate::glyph::GLYPH_SIZE {
@@ -1237,9 +1329,12 @@ pub fn glyph_render(
         });
     }
     let arr: [u8; crate::glyph::GLYPH_SIZE] =
-        pixels.as_slice().try_into().map_err(|_| GhostTapFfiError::OperationFailed {
-            message: "Invalid pixel array".into(),
-        })?;
+        pixels
+            .as_slice()
+            .try_into()
+            .map_err(|_| GhostTapFfiError::OperationFailed {
+                message: "Invalid pixel array".into(),
+            })?;
     let glyph = crate::glyph::GhostGlyph::new(arr, ghost_id).map_err(|e| {
         GhostTapFfiError::OperationFailed {
             message: e.to_string(),
@@ -1301,11 +1396,10 @@ pub fn glyph_claim(
         base_url: ghost_pay_url,
         ..crate::network::PayConfig::default()
     };
-    let manager = crate::glyph::GlyphManager::new(config).map_err(|e| {
-        GhostTapFfiError::OperationFailed {
+    let manager =
+        crate::glyph::GlyphManager::new(config).map_err(|e| GhostTapFfiError::OperationFailed {
             message: e.to_string(),
-        }
-    })?;
+        })?;
     // M-6: Use single-threaded runtime (lighter for FFI blocking calls)
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1340,22 +1434,21 @@ pub fn glyph_get_info(
         base_url: ghost_pay_url,
         ..crate::network::PayConfig::default()
     };
-    let manager = crate::glyph::GlyphManager::new(config).map_err(|e| {
-        GhostTapFfiError::OperationFailed {
+    let manager =
+        crate::glyph::GlyphManager::new(config).map_err(|e| GhostTapFfiError::OperationFailed {
             message: e.to_string(),
-        }
-    })?;
+        })?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| GhostTapFfiError::OperationFailed {
             message: format!("Failed to create runtime: {e}"),
         })?;
-    let info = rt
-        .block_on(manager.get_glyph(&ghost_id))
-        .map_err(|e| GhostTapFfiError::OperationFailed {
+    let info = rt.block_on(manager.get_glyph(&ghost_id)).map_err(|e| {
+        GhostTapFfiError::OperationFailed {
             message: e.to_string(),
-        })?;
+        }
+    })?;
     Ok(info.map(|g| FfiGlyphInfo {
         ghost_id: g.ghost_id,
         pixels: g.pixels,
@@ -1388,18 +1481,20 @@ pub fn glyph_check_availability(
         });
     }
     let arr: [u8; crate::glyph::GLYPH_SIZE] =
-        pixels.as_slice().try_into().map_err(|_| GhostTapFfiError::OperationFailed {
-            message: "Invalid pixel array".into(),
-        })?;
+        pixels
+            .as_slice()
+            .try_into()
+            .map_err(|_| GhostTapFfiError::OperationFailed {
+                message: "Invalid pixel array".into(),
+            })?;
     let config = crate::network::PayConfig {
         base_url: ghost_pay_url,
         ..crate::network::PayConfig::default()
     };
-    let manager = crate::glyph::GlyphManager::new(config).map_err(|e| {
-        GhostTapFfiError::OperationFailed {
+    let manager =
+        crate::glyph::GlyphManager::new(config).map_err(|e| GhostTapFfiError::OperationFailed {
             message: e.to_string(),
-        }
-    })?;
+        })?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1510,7 +1605,12 @@ mod tests {
     #[test]
     fn test_parse_payment_uri_checked_expired() {
         let uri = create_payment_uri(
-            "GhAddrABCDEFGHIJKLMNOPQRS".into(), None, None, None, Some(1000), None,
+            "GhAddrABCDEFGHIJKLMNOPQRS".into(),
+            None,
+            None,
+            None,
+            Some(1000),
+            None,
         );
         let result = parse_payment_uri_checked(uri, 2000, None);
         assert!(result.is_err());
@@ -1519,7 +1619,12 @@ mod tests {
     #[test]
     fn test_parse_payment_uri_checked_network_warning() {
         let uri = create_payment_uri(
-            "GhAddrABCDEFGHIJKLMNOPQRS".into(), None, None, None, None, Some("bitcoin".into()),
+            "GhAddrABCDEFGHIJKLMNOPQRS".into(),
+            None,
+            None,
+            None,
+            None,
+            Some("bitcoin".into()),
         );
         let parsed = parse_payment_uri_checked(uri, 0, Some("ghost".into())).unwrap();
         assert_eq!(parsed.warnings.len(), 1);
@@ -1530,11 +1635,9 @@ mod tests {
 
     #[test]
     fn test_nfc_encode_payment_request_format() {
-        let encoded = nfc_encode_payment_request(
-            "GhTestAddr".into(),
-            100_000,
-            Some("Coffee".into()),
-        ).unwrap();
+        let encoded =
+            nfc_encode_payment_request("GhTestAddr".into(), 100_000, Some("Coffee".into()))
+                .unwrap();
         assert!(!encoded.is_empty());
         assert_eq!(encoded[0], 1); // version
         assert_eq!(encoded[1], 0x01); // MSG_TYPE_PAYMENT_REQUEST

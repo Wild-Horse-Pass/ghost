@@ -133,8 +133,8 @@ impl BondLedger for GhostPayBondLedger {
             expected_sats,
         };
         debug!(
-            ghost_id, session_id, expected_sats,
-            "ghost-pay /verify_bond"
+            ghost_id,
+            session_id, expected_sats, "ghost-pay /verify_bond"
         );
         let body = serde_json::to_value(&req)
             .map_err(|e| BondError::Other(format!("verify: encode {e}")))?;
@@ -151,24 +151,25 @@ impl BondLedger for GhostPayBondLedger {
                 Ok(BondId::new(parsed.bond_id))
             }
             Err(ureq::Error::Status(_, response)) => {
-                Err(decode_error_body(response, |env| match env.error.as_str() {
-                    "not_bonded" => BondError::NotBonded {
-                        ghost_id: ghost_id.into(),
-                        session_id: session_id.into(),
-                    },
-                    "amount_mismatch" => BondError::AmountMismatch {
-                        bond_id: BondId::new("unknown"),
-                        expected_sats,
-                        actual_sats: 0,
-                    },
-                    "ledger_unreachable" => BondError::LedgerUnreachable(env.detail),
-                    other => BondError::Other(format!("{other}: {}", env.detail)),
+                Err(decode_error_body(response, |env| {
+                    match env.error.as_str() {
+                        "not_bonded" => BondError::NotBonded {
+                            ghost_id: ghost_id.into(),
+                            session_id: session_id.into(),
+                        },
+                        "amount_mismatch" => BondError::AmountMismatch {
+                            bond_id: BondId::new("unknown"),
+                            expected_sats,
+                            actual_sats: 0,
+                        },
+                        "ledger_unreachable" => BondError::LedgerUnreachable(env.detail),
+                        other => BondError::Other(format!("{other}: {}", env.detail)),
+                    }
                 }))
             }
-            Err(ureq::Error::Transport(t)) => Err(BondError::LedgerUnreachable(format!(
-                "{:?}: {t}",
-                t.kind()
-            ))),
+            Err(ureq::Error::Transport(t)) => {
+                Err(BondError::LedgerUnreachable(format!("{:?}: {t}", t.kind())))
+            }
         }
     }
 
@@ -193,20 +194,21 @@ impl BondLedger for GhostPayBondLedger {
             Ok(r) => r
                 .into_json::<BondRecord>()
                 .map_err(|e| BondError::Other(format!("resolve: parse {e}"))),
-            Err(ureq::Error::Status(_, response)) => Err(decode_error_body(response, |env| {
-                match env.error.as_str() {
-                    "already_resolved" => BondError::AlreadyResolved {
-                        bond_id: bond_id.clone(),
-                    },
-                    "not_found" => BondError::Other(format!("bond {bond_id} not found")),
-                    "ledger_unreachable" => BondError::LedgerUnreachable(env.detail),
-                    other => BondError::Other(format!("{other}: {}", env.detail)),
-                }
-            })),
-            Err(ureq::Error::Transport(t)) => Err(BondError::LedgerUnreachable(format!(
-                "{:?}: {t}",
-                t.kind()
-            ))),
+            Err(ureq::Error::Status(_, response)) => {
+                Err(decode_error_body(response, |env| {
+                    match env.error.as_str() {
+                        "already_resolved" => BondError::AlreadyResolved {
+                            bond_id: bond_id.clone(),
+                        },
+                        "not_found" => BondError::Other(format!("bond {bond_id} not found")),
+                        "ledger_unreachable" => BondError::LedgerUnreachable(env.detail),
+                        other => BondError::Other(format!("{other}: {}", env.detail)),
+                    }
+                }))
+            }
+            Err(ureq::Error::Transport(t)) => {
+                Err(BondError::LedgerUnreachable(format!("{:?}: {t}", t.kind())))
+            }
         }
     }
 
@@ -221,17 +223,18 @@ impl BondLedger for GhostPayBondLedger {
             Ok(r) => r
                 .into_json::<BondRecord>()
                 .map_err(|e| BondError::Other(format!("snapshot: parse {e}"))),
-            Err(ureq::Error::Status(_, response)) => Err(decode_error_body(response, |env| {
-                match env.error.as_str() {
-                    "not_found" => BondError::Other(format!("bond {bond_id} not found")),
-                    "ledger_unreachable" => BondError::LedgerUnreachable(env.detail),
-                    other => BondError::Other(format!("{other}: {}", env.detail)),
-                }
-            })),
-            Err(ureq::Error::Transport(t)) => Err(BondError::LedgerUnreachable(format!(
-                "{:?}: {t}",
-                t.kind()
-            ))),
+            Err(ureq::Error::Status(_, response)) => {
+                Err(decode_error_body(response, |env| {
+                    match env.error.as_str() {
+                        "not_found" => BondError::Other(format!("bond {bond_id} not found")),
+                        "ledger_unreachable" => BondError::LedgerUnreachable(env.detail),
+                        other => BondError::Other(format!("{other}: {}", env.detail)),
+                    }
+                }))
+            }
+            Err(ureq::Error::Transport(t)) => {
+                Err(BondError::LedgerUnreachable(format!("{:?}: {t}", t.kind())))
+            }
         }
     }
 }
@@ -310,10 +313,7 @@ mod tests {
 
     #[test]
     fn verify_bond_returns_bond_id_on_success() {
-        let (url, server) = one_shot(
-            200,
-            serde_json::json!({ "bond_id": "ghost-pay-bond-abc" }),
-        );
+        let (url, server) = one_shot(200, serde_json::json!({ "bond_id": "ghost-pay-bond-abc" }));
         let ledger = GhostPayBondLedger::new(url, "tok").unwrap();
         let id = ledger
             .verify_bond("wallet-x", "session-y", 500)
@@ -335,7 +335,10 @@ mod tests {
         let ledger = GhostPayBondLedger::new(url, "tok").unwrap();
         let err = ledger.verify_bond("wx", "sy", 500).unwrap_err();
         match err {
-            BondError::NotBonded { ghost_id, session_id } => {
+            BondError::NotBonded {
+                ghost_id,
+                session_id,
+            } => {
                 assert_eq!(ghost_id, "wx");
                 assert_eq!(session_id, "sy");
             }

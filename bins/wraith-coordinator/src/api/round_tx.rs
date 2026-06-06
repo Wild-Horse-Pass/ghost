@@ -93,7 +93,8 @@ pub async fn get(
     // was built and then thrown out); in Filling/Locked it doesn't
     // exist yet.
     match &session.state {
-        LiteSessionState::Signing | LiteSessionState::Broadcasting | LiteSessionState::Complete => {}
+        LiteSessionState::Signing | LiteSessionState::Broadcasting | LiteSessionState::Complete => {
+        }
         other => {
             return error(
                 StatusCode::CONFLICT,

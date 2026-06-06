@@ -88,17 +88,13 @@ pub fn assemble_round(
                 .to_string();
             LiteRoundBuilder::new_mix(session_id.to_string(), tier, network, fee_addr)
         }
-        SessionType::Jump => {
-            LiteRoundBuilder::new_jump(session_id.to_string(), tier, network)
-        }
+        SessionType::Jump => LiteRoundBuilder::new_jump(session_id.to_string(), tier, network),
     };
 
     for (i, (input, output)) in inputs.iter().zip(outputs.iter()).enumerate() {
-        let txid = Txid::from_str(input.input.txid.trim()).map_err(|e| {
-            AssembleError::BadTxid {
-                participant_id: i as u32,
-                detail: e.to_string(),
-            }
+        let txid = Txid::from_str(input.input.txid.trim()).map_err(|e| AssembleError::BadTxid {
+            participant_id: i as u32,
+            detail: e.to_string(),
         })?;
         let scriptpubkey_bytes = hex::decode(input.input.scriptpubkey_hex.trim()).map_err(|e| {
             AssembleError::BadScriptPubkey {
@@ -117,12 +113,12 @@ pub fn assemble_round(
             change_address: input.change_address.clone(),
             participant_id: i as u32,
         };
-        builder.add_participant(participant).map_err(|e| {
-            AssembleError::AddParticipant {
+        builder
+            .add_participant(participant)
+            .map_err(|e| AssembleError::AddParticipant {
                 participant_id: i as u32,
                 detail: e.to_string(),
-            }
-        })?;
+            })?;
     }
 
     let round = builder

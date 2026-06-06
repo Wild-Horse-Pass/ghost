@@ -948,11 +948,7 @@ mod unix {
                         );
                         println!("              spk={}", x.scriptpubkey_hex);
                     }
-                    println!(
-                        "\ntotal: {} sats ({} utxos)",
-                        u.total_sats,
-                        u.utxos.len()
-                    );
+                    println!("\ntotal: {} sats ({} utxos)", u.total_sats, u.utxos.len());
                 }
                 std::process::ExitCode::SUCCESS
             }
@@ -1318,7 +1314,8 @@ mod unix {
             // output is not wired up yet, so emit the structured response as JSON —
             // the data is fully usable (`--json` produces the same). Replace with
             // per-command formatting when the PSBT/multisig CLI UX is finalised.
-            Ok(resp @ (Response::WalletXpub(_)
+            Ok(
+                resp @ (Response::WalletXpub(_)
                 | Response::MultisigDescriptorInspected(_)
                 | Response::MultisigDescriptorSaved(_)
                 | Response::MultisigDescriptorList(_)
@@ -1328,7 +1325,8 @@ mod unix {
                 | Response::PsbtSigned(_)
                 | Response::PsbtBroadcast(_)
                 | Response::PsbtBumped(_)
-                | Response::PsbtInspected(_))) => {
+                | Response::PsbtInspected(_)),
+            ) => {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&resp).unwrap_or_else(|_| format!("{resp:?}"))
@@ -1560,10 +1558,7 @@ mod unix {
                 return error_out(json, format!("LocksPrepare: {}", e.message))
             }
             Ok(other) => {
-                return error_out(
-                    json,
-                    format!("LocksPrepare: unexpected response {other:?}"),
-                )
+                return error_out(json, format!("LocksPrepare: unexpected response {other:?}"))
             }
             Err(e) => return error_out(json, format!("LocksPrepare: {e}")),
         };
@@ -1629,10 +1624,7 @@ mod unix {
                 return error_out(json, format!("LocksConfirm: {}", e.message))
             }
             Ok(other) => {
-                return error_out(
-                    json,
-                    format!("LocksConfirm: unexpected response {other:?}"),
-                )
+                return error_out(json, format!("LocksConfirm: unexpected response {other:?}"))
             }
             Err(e) => return error_out(json, format!("LocksConfirm: {e}")),
         };

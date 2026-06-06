@@ -159,16 +159,23 @@ async fn check_public_mining(config: &NodeConfig) -> CapabilityCheck {
 
     let mut missing = Vec::new();
     if !sv1_ok {
-        missing.push(format!("SV1 stratum (port {}) not listening — start sri-translator", config.network.sv1_port));
+        missing.push(format!(
+            "SV1 stratum (port {}) not listening — start sri-translator",
+            config.network.sv1_port
+        ));
     }
     if !sv2_ok {
-        missing.push(format!("SV2 stratum (port {}) not listening — start sri-pool", config.network.sv2_port));
+        missing.push(format!(
+            "SV2 stratum (port {}) not listening — start sri-pool",
+            config.network.sv2_port
+        ));
     }
     if config.network.public_address.is_none() {
         missing.push("public_address unset in pool.toml".to_string());
     }
     if config.network.signing_key.is_none() {
-        missing.push("signing_key unset in pool.toml — generate with --generate-identity".to_string());
+        missing
+            .push("signing_key unset in pool.toml — generate with --generate-identity".to_string());
     }
 
     let passed = missing.is_empty();

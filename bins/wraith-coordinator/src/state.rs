@@ -168,7 +168,10 @@ impl CoordinatorState {
     /// Get-or-create the per-round signer. Idempotent under concurrent
     /// access — only one signer is ever created per session_id, even
     /// if multiple `/nonce` requests race.
-    pub fn signer_for(&self, session_id: &str) -> Result<SharedSigner, wraith_protocol::WraithError> {
+    pub fn signer_for(
+        &self,
+        session_id: &str,
+    ) -> Result<SharedSigner, wraith_protocol::WraithError> {
         let mut signers = self.signers.lock().expect("signers poisoned");
         if let Some(existing) = signers.get(session_id) {
             return Ok(existing.clone());

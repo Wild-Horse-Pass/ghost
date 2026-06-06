@@ -86,10 +86,7 @@ impl ClusterClient {
             let ip_owned = ip.to_string();
             handles.push(tokio::spawn(async move {
                 let start = Instant::now();
-                let temp_client = Client::builder()
-                    .timeout(timeout)
-                    .build()
-                    .unwrap_or(client);
+                let temp_client = Client::builder().timeout(timeout).build().unwrap_or(client);
                 match temp_client.get(&url).send().await {
                     Ok(resp) => {
                         let status = resp.status().as_u16();

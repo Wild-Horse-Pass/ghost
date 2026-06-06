@@ -16,9 +16,7 @@ use std::time::Duration;
 use bitcoin::{secp256k1::SecretKey, Address, Network, Witness};
 use wraith_coordinator::broadcaster::{Broadcaster, StubBroadcaster};
 use wraith_coordinator::{build_router, CoordinatorState};
-use wraith_protocol::{
-    BondLedger, LiteSessionState, MockBondLedger, SessionGossipEvent,
-};
+use wraith_protocol::{BondLedger, LiteSessionState, MockBondLedger, SessionGossipEvent};
 use wraith_wallet_core::wraith::{
     MixRequest, ParticipantUtxo, WraithClientError, WraithSessionClient,
 };
@@ -112,18 +110,17 @@ async fn five_wallets_complete_a_full_mix_round() {
     //    state's session registry until exactly one session has
     //    `min_participants` slots filled. Bounded retry.
     let session_id = wait_for_quorum(&state).await;
-    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
-        session_id: session_id.clone(),
-        new_state: LiteSessionState::Locked,
-    });
+    let _ = state
+        .sessions
+        .apply_event(SessionGossipEvent::StateChanged {
+            session_id: session_id.clone(),
+            new_state: LiteSessionState::Locked,
+        });
 
     // 4. Wait for all 5 wallet tasks to finish.
     let mut outcomes = Vec::with_capacity(N);
     for h in handles {
-        let outcome = h
-            .await
-            .expect("task join")
-            .expect("execute_mix succeeded");
+        let outcome = h.await.expect("task join").expect("execute_mix succeeded");
         outcomes.push(outcome);
     }
 
@@ -131,7 +128,10 @@ async fn five_wallets_complete_a_full_mix_round() {
     let broadcast_txid = outcomes[0].broadcast_txid;
     for (i, o) in outcomes.iter().enumerate() {
         assert_eq!(o.session_id, session_id, "wallet-{i} different session");
-        assert_eq!(o.broadcast_txid, broadcast_txid, "wallet-{i} different txid");
+        assert_eq!(
+            o.broadcast_txid, broadcast_txid,
+            "wallet-{i} different txid"
+        );
     }
 
     // 6. The broadcaster received exactly one tx with 5 inputs.
@@ -149,11 +149,7 @@ async fn five_wallets_complete_a_full_mix_round() {
             "wallet-{i} duplicate mixed_output_tx_index",
         );
         let txout = &final_tx.output[o.mixed_output_tx_index];
-        assert_eq!(
-            txout.value.to_sat(),
-            TIER_DENOM,
-            "wallet-{i} wrong amount"
-        );
+        assert_eq!(txout.value.to_sat(), TIER_DENOM, "wallet-{i} wrong amount");
         let expected_addr = Address::from_str(&signet_addr(i as u8 + 1))
             .unwrap()
             .require_network(Network::Signet)
@@ -215,7 +211,6 @@ async fn wait_for_quorum(state: &CoordinatorState) -> String {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // SOCKS5 proxy wiring (B: Tor anonymity for /outputs)
 // ---------------------------------------------------------------------------
@@ -242,7 +237,6 @@ async fn with_outputs_proxy_rejects_malformed_url() {
     );
     assert!(result.is_err(), "malformed proxy URL must be rejected");
 }
-
 
 // ---------------------------------------------------------------------------
 // prepare_mix / submit_witness split (async-signer-friendly API)
@@ -326,10 +320,12 @@ async fn prepare_then_submit_works_via_split_api() {
     }
 
     let session_id = wait_for_quorum(&state).await;
-    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
-        session_id: session_id.clone(),
-        new_state: LiteSessionState::Locked,
-    });
+    let _ = state
+        .sessions
+        .apply_event(SessionGossipEvent::StateChanged {
+            session_id: session_id.clone(),
+            new_state: LiteSessionState::Locked,
+        });
 
     let mut outcomes = Vec::with_capacity(N);
     for h in handles {
@@ -342,7 +338,6 @@ async fn prepare_then_submit_works_via_split_api() {
     }
     assert_eq!(stub_broadcaster.count(), 1);
 }
-
 
 // ---------------------------------------------------------------------------
 // Real BIP-341 witness signing through the full pipeline
@@ -403,25 +398,13 @@ async fn five_wallets_sign_real_taproot_witnesses_end_to_end() {
         let base_url = base_url.clone();
         let handle = tokio::spawn(async move {
             let keystore = Keystore::from_mnemonic(mnemonic_for(i)).unwrap();
-            let my_addr = wraith_wallet_core::light::receive_address(
-                &keystore,
-                0,
-                Network::Signet,
-            )
-            .unwrap();
+            let my_addr =
+                wraith_wallet_core::light::receive_address(&keystore, 0, Network::Signet).unwrap();
             let my_spk_hex = hex::encode(my_addr.script_pubkey().as_bytes());
-            let mix_addr = wraith_wallet_core::light::receive_address(
-                &keystore,
-                1,
-                Network::Signet,
-            )
-            .unwrap();
-            let change_addr = wraith_wallet_core::light::receive_address(
-                &keystore,
-                2,
-                Network::Signet,
-            )
-            .unwrap();
+            let mix_addr =
+                wraith_wallet_core::light::receive_address(&keystore, 1, Network::Signet).unwrap();
+            let change_addr =
+                wraith_wallet_core::light::receive_address(&keystore, 2, Network::Signet).unwrap();
 
             let client = WraithSessionClient::new(base_url, Network::Signet);
             let ghost = format!("wallet-{i}");
@@ -465,10 +448,12 @@ async fn five_wallets_sign_real_taproot_witnesses_end_to_end() {
     }
 
     let session_id = wait_for_quorum(&state).await;
-    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
-        session_id: session_id.clone(),
-        new_state: LiteSessionState::Locked,
-    });
+    let _ = state
+        .sessions
+        .apply_event(SessionGossipEvent::StateChanged {
+            session_id: session_id.clone(),
+            new_state: LiteSessionState::Locked,
+        });
 
     let mut outcomes = Vec::with_capacity(N);
     for h in handles {
@@ -525,11 +510,12 @@ async fn five_wallets_sign_real_taproot_witnesses_end_to_end() {
             .and_then(|n| n.parse().ok())
             .expect("ghost_id wallet-N");
         let keystore = Keystore::from_mnemonic(mnemonic_for(wallet_idx)).unwrap();
-        let xprv = keystore.derive_xprv(&format!(
-            "m/86'/{}'/0'/0/0",
-            wraith_wallet_core::light::GHOST_COIN_TYPE
-        ))
-        .unwrap();
+        let xprv = keystore
+            .derive_xprv(&format!(
+                "m/86'/{}'/0'/0/0",
+                wraith_wallet_core::light::GHOST_COIN_TYPE
+            ))
+            .unwrap();
         let sk = bitcoin::secp256k1::SecretKey::from_slice(&xprv.private_key().to_bytes()).unwrap();
         let untweaked = Keypair::from_secret_key(&secp, &sk);
         let tweaked = untweaked.tap_tweak(&secp, None);
@@ -538,7 +524,11 @@ async fn five_wallets_sign_real_taproot_witnesses_end_to_end() {
         // The witness should have one stack item: the 64-byte sig.
         let txin = &final_tx.input[idx];
         let sig_bytes = txin.witness.iter().next().expect("witness present");
-        assert_eq!(sig_bytes.len(), 64, "BIP-341 SIGHASH_DEFAULT sig is 64 bytes");
+        assert_eq!(
+            sig_bytes.len(),
+            64,
+            "BIP-341 SIGHASH_DEFAULT sig is 64 bytes"
+        );
         let sig = SchnorrSig::from_slice(sig_bytes).unwrap();
 
         secp.verify_schnorr(&sig, &msg, &xonly).unwrap_or_else(|e| {

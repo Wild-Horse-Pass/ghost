@@ -734,12 +734,10 @@ impl PayoutProposalCreator {
             .saturating_add(proposal.treasury_amount);
         let expected_total = data.subsidy_sats.saturating_add(data.tx_fees_sats);
         if proposal_total != expected_total {
-            return Err(ghost_common::error::GhostError::PayoutCalculation(
-                format!(
-                    "M-04: Solo cross-check failed: proposal={} != expected={}",
-                    proposal_total, expected_total
-                ),
-            ));
+            return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                "M-04: Solo cross-check failed: proposal={} != expected={}",
+                proposal_total, expected_total
+            )));
         }
 
         info!(
@@ -2402,8 +2400,7 @@ mod tests {
         assert_eq!(fee_dist.node_reward_pool, 1_562_500);
 
         // Verify: solo_miner + treasury + node_pool = subsidy + tx_fees
-        let total =
-            solo_miner_amount + fee_dist.treasury_amount + fee_dist.node_reward_pool;
+        let total = solo_miner_amount + fee_dist.treasury_amount + fee_dist.node_reward_pool;
         assert_eq!(
             total,
             subsidy_sats + tx_fees_sats,
@@ -2429,8 +2426,10 @@ mod tests {
 
         let now = chrono::Utc::now();
         let threshold_time = now - chrono::Duration::days(365 * 2 + 100); // ~year 3
-        let treasury_state =
-            TreasuryState::from_stored(crate::treasury::TREASURY_THRESHOLD_SATS, Some(threshold_time));
+        let treasury_state = TreasuryState::from_stored(
+            crate::treasury::TREASURY_THRESHOLD_SATS,
+            Some(threshold_time),
+        );
 
         // Solo mode: tx_fees passed as 0 to FeeDistribution
         let fee_dist = FeeDistribution::calculate(subsidy_sats, 0, &treasury_state, now);
@@ -2497,7 +2496,11 @@ mod tests {
         assert!(tiny_expected > dust_threshold);
 
         // All miners (whale + 99 tiny) should get payouts since all are above dust
-        assert_eq!(payouts.len(), 100, "All miners should be above dust threshold with 50 BTC pool");
+        assert_eq!(
+            payouts.len(),
+            100,
+            "All miners should be above dust threshold with 50 BTC pool"
+        );
 
         // Verify: dust + payouts + remainder = miner_pool
         let remainder = miner_pool - allocated;
@@ -2641,10 +2644,7 @@ mod tests {
 
         // Year 1: 40/60
         let t1 = now - chrono::Duration::days(10); // Just crossed
-        let state1 = TreasuryState::from_stored(
-            crate::treasury::TREASURY_THRESHOLD_SATS,
-            Some(t1),
-        );
+        let state1 = TreasuryState::from_stored(crate::treasury::TREASURY_THRESHOLD_SATS, Some(t1));
         let d1 = FeeDistribution::calculate(subsidy, tx_fees, &state1, now);
         // Year 1 = 40% treasury, 60% nodes
         assert_eq!(d1.treasury_amount, 1_250_000);
@@ -2653,10 +2653,7 @@ mod tests {
 
         // Year 2: 30/70
         let t2 = now - chrono::Duration::days(365 + 10);
-        let state2 = TreasuryState::from_stored(
-            crate::treasury::TREASURY_THRESHOLD_SATS,
-            Some(t2),
-        );
+        let state2 = TreasuryState::from_stored(crate::treasury::TREASURY_THRESHOLD_SATS, Some(t2));
         let d2 = FeeDistribution::calculate(subsidy, tx_fees, &state2, now);
         assert_eq!(d2.treasury_amount, 937_500);
         assert_eq!(d2.node_reward_pool, 2_187_500);
@@ -2664,10 +2661,7 @@ mod tests {
 
         // Year 3: 20/80
         let t3 = now - chrono::Duration::days(365 * 2 + 10);
-        let state3 = TreasuryState::from_stored(
-            crate::treasury::TREASURY_THRESHOLD_SATS,
-            Some(t3),
-        );
+        let state3 = TreasuryState::from_stored(crate::treasury::TREASURY_THRESHOLD_SATS, Some(t3));
         let d3 = FeeDistribution::calculate(subsidy, tx_fees, &state3, now);
         assert_eq!(d3.treasury_amount, 625_000);
         assert_eq!(d3.node_reward_pool, 2_500_000);
@@ -2675,10 +2669,7 @@ mod tests {
 
         // Year 4: 10/90
         let t4 = now - chrono::Duration::days(365 * 3 + 10);
-        let state4 = TreasuryState::from_stored(
-            crate::treasury::TREASURY_THRESHOLD_SATS,
-            Some(t4),
-        );
+        let state4 = TreasuryState::from_stored(crate::treasury::TREASURY_THRESHOLD_SATS, Some(t4));
         let d4 = FeeDistribution::calculate(subsidy, tx_fees, &state4, now);
         assert_eq!(d4.treasury_amount, 312_500);
         assert_eq!(d4.node_reward_pool, 2_812_500);
@@ -2686,10 +2677,7 @@ mod tests {
 
         // Year 5+: 0/100
         let t5 = now - chrono::Duration::days(365 * 5 + 10);
-        let state5 = TreasuryState::from_stored(
-            crate::treasury::TREASURY_THRESHOLD_SATS,
-            Some(t5),
-        );
+        let state5 = TreasuryState::from_stored(crate::treasury::TREASURY_THRESHOLD_SATS, Some(t5));
         let d5 = FeeDistribution::calculate(subsidy, tx_fees, &state5, now);
         assert_eq!(d5.treasury_amount, 0);
         assert_eq!(d5.node_reward_pool, 3_125_000);
@@ -2743,7 +2731,10 @@ mod tests {
         // Zero hash should be detected by validate_block_hash
         // We verify the value directly since we can't call the private method
         assert_eq!(zero_hash, [0u8; 32], "Zero hash is all zeros");
-        assert_ne!(nonzero_hash, [0u8; 32], "Non-zero hash differs from all-zeros");
+        assert_ne!(
+            nonzero_hash, [0u8; 32],
+            "Non-zero hash differs from all-zeros"
+        );
 
         // The check in validate_block_hash is: block_hash == &[0u8; 32]
         // Verify this comparison works correctly

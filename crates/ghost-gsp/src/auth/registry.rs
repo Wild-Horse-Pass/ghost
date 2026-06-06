@@ -254,11 +254,7 @@ impl WalletRegistry {
     /// existing entry (i.e. supports scan-key rotation).
     ///
     /// `scan_pubkey` must be exactly 33 bytes (SEC1 compressed).
-    pub fn upsert_scan_key(
-        &self,
-        wallet_id: &WalletId,
-        scan_pubkey: &[u8; 33],
-    ) -> GspResult<()> {
+    pub fn upsert_scan_key(&self, wallet_id: &WalletId, scan_pubkey: &[u8; 33]) -> GspResult<()> {
         let conn = self.conn.lock();
         let now = chrono::Utc::now().timestamp();
         conn.execute(

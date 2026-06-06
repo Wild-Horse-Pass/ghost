@@ -1195,9 +1195,7 @@ mod tests {
 
     #[test]
     fn test_get_recent_l2_transactions_requires_auth() {
-        assert!(
-            ClientMessage::GetRecentL2Transactions { since_height: 0 }.requires_auth()
-        );
+        assert!(ClientMessage::GetRecentL2Transactions { since_height: 0 }.requires_auth());
     }
 
     #[test]

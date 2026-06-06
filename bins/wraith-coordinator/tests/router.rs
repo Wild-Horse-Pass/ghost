@@ -257,7 +257,10 @@ async fn find_or_create_joins_an_existing_open_session() {
     assert_eq!(alice.status(), StatusCode::OK);
     let alice_body = to_bytes(alice.into_body(), 4096).await.unwrap();
     let alice_json: serde_json::Value = serde_json::from_slice(&alice_body).unwrap();
-    let alice_session = alice_json["session"]["session_id"].as_str().unwrap().to_owned();
+    let alice_session = alice_json["session"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     let bob = router
         .oneshot(post_json(
@@ -273,7 +276,10 @@ async fn find_or_create_joins_an_existing_open_session() {
     // Both wallets land in the same session — slots are now 2.
     assert_eq!(bob_json["session"]["session_id"], alice_session);
     assert_eq!(bob_json["session"]["slots_filled"], 2);
-    assert_eq!(bob_json["joined"], true, "second wallet joined, didn't create");
+    assert_eq!(
+        bob_json["joined"], true,
+        "second wallet joined, didn't create"
+    );
 }
 
 #[tokio::test]
@@ -406,7 +412,6 @@ async fn find_or_create_rejects_blank_ghost_id_with_400() {
     assert_eq!(json["error"], "missing_ghost_id");
 }
 
-
 // ---------------------------------------------------------------------------
 // GET /api/v1/session/{id} — status polling
 // ---------------------------------------------------------------------------
@@ -514,7 +519,6 @@ async fn session_status_reflects_fill_window_expiry_after_clock_advance() {
         "fill_window_expires_at should be cleared once not in Filling",
     );
 }
-
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/session/:id/inputs — commit phase (B/4a, validation only)
@@ -919,7 +923,6 @@ async fn inputs_idempotent_on_resubmission() {
     assert_eq!(second_json["submitted_count"], 1);
 }
 
-
 // ---------------------------------------------------------------------------
 // POST /api/v1/session/:id/nonce + /blind-sign — Schnorr blind signature (B/4b)
 // ---------------------------------------------------------------------------
@@ -1099,9 +1102,7 @@ async fn blind_sign_rejects_cross_participant_nonce_hijack() {
 #[tokio::test]
 async fn blind_sign_full_round_trip_produces_valid_signature() {
     use secp256k1::PublicKey;
-    use wraith_protocol::{
-        BlindSignatureResponse, BlindingContext, PublicNonce, TokenVerifier,
-    };
+    use wraith_protocol::{BlindSignatureResponse, BlindingContext, PublicNonce, TokenVerifier};
 
     let (router, state, ledger, _broadcaster) = deterministic_router(1_000_000);
     let session_id = make_signing_session(router.clone(), &state, &ledger).await;
@@ -1122,8 +1123,7 @@ async fn blind_sign_full_round_trip_produces_valid_signature() {
     let signing_pubkey_bytes = hex::decode(nonce_json["signing_pubkey"].as_str().unwrap()).unwrap();
     let signer_session_id_bytes =
         hex::decode(nonce_json["signer_session_id"].as_str().unwrap()).unwrap();
-    let signing_key_id_bytes =
-        hex::decode(nonce_json["signing_key_id"].as_str().unwrap()).unwrap();
+    let signing_key_id_bytes = hex::decode(nonce_json["signing_key_id"].as_str().unwrap()).unwrap();
     let nonce_point_bytes = hex::decode(nonce_json["nonce_point"].as_str().unwrap()).unwrap();
     let blind_sid_bytes = hex::decode(nonce_json["blind_session_id"].as_str().unwrap()).unwrap();
 
@@ -1148,7 +1148,9 @@ async fn blind_sign_full_round_trip_produces_valid_signature() {
     let message = b"wallet-0 chose this output address".to_vec();
     let blinding = BlindingContext::new(message.clone(), &coordinator_pubkey, &public_nonce)
         .expect("blinding context");
-    let blinded_challenge = blinding.create_blinded_challenge().expect("blinded challenge");
+    let blinded_challenge = blinding
+        .create_blinded_challenge()
+        .expect("blinded challenge");
 
     // Step 3 — wallet posts the blinded challenge to /blind-sign.
     let sign_resp = router
@@ -1178,7 +1180,9 @@ async fn blind_sign_full_round_trip_produces_valid_signature() {
     // sees only the unblinded signature on the wallet's chosen message,
     // and the verification ought to pass — proving the coordinator
     // signed something it never saw.
-    let token = blinding.unblind(&response, signing_key_id_arr).expect("unblind");
+    let token = blinding
+        .unblind(&response, signing_key_id_arr)
+        .expect("unblind");
     assert_eq!(token.message, message, "message preserved through unblind");
 
     // The verifier takes the SIGNER's session_id (not the key_id) and
@@ -1195,7 +1199,6 @@ async fn blind_sign_full_round_trip_produces_valid_signature() {
     // coordinator returns s = k + c'*x without learning c (β was
     // generated locally and never transmitted). Unlinkability holds.
 }
-
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/session/:id/outputs — anonymous output submission (B/5a)
@@ -1386,12 +1389,7 @@ async fn outputs_rejects_when_no_signer_initialised() {
     let (router, state, ledger, _broadcaster) = deterministic_router(1_000_000);
     let session_id = make_signing_session(router.clone(), &state, &ledger).await;
     // Sanity: signers map is empty.
-    assert!(state
-        .signers
-        .lock()
-        .unwrap()
-        .get(&session_id)
-        .is_none());
+    assert!(state.signers.lock().unwrap().get(&session_id).is_none());
 
     let response = router
         .oneshot(post_json(
@@ -1592,7 +1590,6 @@ async fn outputs_rejects_over_submission_with_409() {
     assert_eq!(json["error"], "outputs_full");
 }
 
-
 // ---------------------------------------------------------------------------
 // GET /api/v1/session/:id/round-tx — assembled tx fetch (B/5b)
 // ---------------------------------------------------------------------------
@@ -1781,7 +1778,6 @@ async fn round_tx_decodes_to_a_valid_bitcoin_transaction() {
     assert_eq!(json["txid"].as_str().unwrap(), computed_txid);
 }
 
-
 // ---------------------------------------------------------------------------
 // POST /api/v1/session/:id/witness — witness collection + broadcast (B/5c)
 // ---------------------------------------------------------------------------
@@ -1863,7 +1859,10 @@ fn find_input_index(state: &CoordinatorState, session_id: &str, ghost_id: &str) 
         .get(session_id)
         .cloned()
         .unwrap_or_default();
-    let mine = inputs.iter().find(|i| i.ghost_id == ghost_id).expect("mine");
+    let mine = inputs
+        .iter()
+        .find(|i| i.ghost_id == ghost_id)
+        .expect("mine");
     let target_txid = bitcoin::Txid::from_str(&mine.input.txid).unwrap();
     tx.input
         .iter()
@@ -1999,7 +1998,11 @@ async fn witness_returns_503_on_final_submission_when_broadcaster_missing() {
         if i + 1 < MIN_5 {
             assert_eq!(resp.status(), StatusCode::OK, "non-final submission #{i}");
         } else {
-            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "final submission");
+            assert_eq!(
+                resp.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "final submission"
+            );
             let body = to_bytes(resp.into_body(), 4096).await.unwrap();
             let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(json["error"], "broadcaster_not_configured");
@@ -2104,7 +2107,6 @@ async fn witness_idempotent_on_resubmission() {
     assert_eq!(second_json["witnesses_collected"], 1, "duplicate replaced");
 }
 
-
 // ---------------------------------------------------------------------------
 // Bond resolution on round terminal transitions (B/5d)
 // ---------------------------------------------------------------------------
@@ -2201,14 +2203,11 @@ async fn bonds_refund_coordinator_aborted_when_witness_merge_fails() {
     //
     // Use the broadcaster-rejection path instead: replace the
     // broadcaster with one that always rejects.
-    use wraith_coordinator::broadcaster::{BroadcastError, Broadcaster};
     use std::sync::Mutex as StdMutex;
+    use wraith_coordinator::broadcaster::{BroadcastError, Broadcaster};
     struct RejectingBroadcaster(StdMutex<u32>);
     impl Broadcaster for RejectingBroadcaster {
-        fn broadcast(
-            &self,
-            _tx: &bitcoin::Transaction,
-        ) -> Result<bitcoin::Txid, BroadcastError> {
+        fn broadcast(&self, _tx: &bitcoin::Transaction) -> Result<bitcoin::Txid, BroadcastError> {
             *self.0.lock().unwrap() += 1;
             Err(BroadcastError::Rejected("simulated rejection".into()))
         }
@@ -2228,8 +2227,8 @@ async fn bonds_refund_coordinator_aborted_when_witness_merge_fails() {
         Some(rejecting.clone() as Arc<dyn Broadcaster>),
     ));
     let fresh_router = build_router(fresh_state.clone());
-    let (fresh_sid, _) = make_assembled_session(fresh_router.clone(), &fresh_state, &fresh_ledger)
-        .await;
+    let (fresh_sid, _) =
+        make_assembled_session(fresh_router.clone(), &fresh_state, &fresh_ledger).await;
     assert_eq!(fresh_ledger.len(), 5);
 
     // Drive 5 witnesses; the final one triggers the rejecting broadcast.
@@ -2274,7 +2273,6 @@ async fn bonds_refund_coordinator_aborted_when_witness_merge_fails() {
     // Broadcaster was tried exactly once.
     assert_eq!(*rejecting.0.lock().unwrap(), 1);
 }
-
 
 // ---------------------------------------------------------------------------
 // No-sign deadline + slashing (B/5e)
@@ -2408,10 +2406,9 @@ async fn witness_partitions_signers_and_non_signers_at_deadline() {
     for b in &bonds {
         let signer = matches!(b.ghost_id.as_str(), "wallet-0" | "wallet-1" | "wallet-2");
         match (&b.status, signer) {
-            (
-                BondStatus::Resolved(BondResolution::Refund(RefundReason::RoundVoided)),
-                true,
-            ) => refunded += 1,
+            (BondStatus::Resolved(BondResolution::Refund(RefundReason::RoundVoided)), true) => {
+                refunded += 1
+            }
             (
                 BondStatus::Resolved(BondResolution::Slash(SlashReason::NoSignDuringSigning)),
                 false,
@@ -2425,7 +2422,6 @@ async fn witness_partitions_signers_and_non_signers_at_deadline() {
     assert_eq!(refunded, 3);
     assert_eq!(slashed, 2);
 }
-
 
 // ---------------------------------------------------------------------------
 // Background tick — deadline sweep without anyone pinging /witness

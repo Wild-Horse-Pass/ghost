@@ -13,7 +13,9 @@ use std::sync::Arc;
 use axum::{routing::post, Json, Router};
 use bitcoin::Network;
 use serde_json::{json, Value};
-use wraith_wallet_core::wraith::{MixRequest, ParticipantUtxo, WraithClientError, WraithSessionClient};
+use wraith_wallet_core::wraith::{
+    MixRequest, ParticipantUtxo, WraithClientError, WraithSessionClient,
+};
 
 /// Stub `/api/v1/session/find_or_create` that increments a counter on
 /// each hit and returns a Filling-state session reply. We don't care
@@ -100,11 +102,7 @@ async fn rotates_to_peer_when_primary_unreachable() {
     // Port 1 is well-known to refuse — connect-error path.
     let dead_url = "http://127.0.0.1:1".to_string();
 
-    let client = WraithSessionClient::with_peers(
-        dead_url,
-        vec![live_url],
-        Network::Signet,
-    );
+    let client = WraithSessionClient::with_peers(dead_url, vec![live_url], Network::Signet);
 
     // We expect this to FAIL — the stub only answers find_or_create —
     // but it must reach find_or_create on the peer at least once.
@@ -136,16 +134,15 @@ async fn does_not_rotate_on_http_error() {
     let (peer_addr, peer_counter) = spawn_stub().await;
     let peer_url = format!("http://{peer_addr}");
 
-    let client = WraithSessionClient::with_peers(
-        primary,
-        vec![peer_url],
-        Network::Signet,
-    );
+    let client = WraithSessionClient::with_peers(primary, vec![peer_url], Network::Signet);
 
     let result = client.prepare_mix(fixture_request(), bond_setup_noop).await;
 
     assert!(
-        matches!(result, Err(WraithClientError::Coordinator { status: 500, .. })),
+        matches!(
+            result,
+            Err(WraithClientError::Coordinator { status: 500, .. })
+        ),
         "expected 500 from primary, got {result:?}"
     );
     assert_eq!(
@@ -210,11 +207,7 @@ async fn discover_rotates_to_peer_when_primary_unreachable() {
     let live_url = format!("http://{addr}");
     let dead_url = "http://127.0.0.1:1".to_string();
 
-    let client = WraithSessionClient::with_peers(
-        dead_url,
-        vec![live_url.clone()],
-        Network::Signet,
-    );
+    let client = WraithSessionClient::with_peers(dead_url, vec![live_url.clone()], Network::Signet);
 
     let (answered_by, parsed) = client
         .discover()
@@ -242,9 +235,7 @@ async fn discover_does_not_rotate_on_http_error() {
     // routing past it would mask real bugs.
     let primary_app = Router::new().route(
         "/api/v1/pool/discover",
-        axum::routing::get(|| async {
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom")
-        }),
+        axum::routing::get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
     );
     let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let primary_addr = primary_listener.local_addr().unwrap();
@@ -263,7 +254,10 @@ async fn discover_does_not_rotate_on_http_error() {
 
     let result = client.discover().await;
     assert!(
-        matches!(result, Err(WraithClientError::Coordinator { status: 500, .. })),
+        matches!(
+            result,
+            Err(WraithClientError::Coordinator { status: 500, .. })
+        ),
         "expected 500 from primary, got {result:?}"
     );
     assert_eq!(
@@ -276,10 +270,8 @@ async fn discover_does_not_rotate_on_http_error() {
 #[tokio::test]
 async fn discover_returns_primary_url_on_success() {
     // Both endpoints are live; the primary must answer first.
-    let (primary_addr, primary_counter) =
-        spawn_discover_stub(canonical_discover_body()).await;
-    let (peer_addr, peer_counter) =
-        spawn_discover_stub(canonical_discover_body()).await;
+    let (primary_addr, primary_counter) = spawn_discover_stub(canonical_discover_body()).await;
+    let (peer_addr, peer_counter) = spawn_discover_stub(canonical_discover_body()).await;
 
     let primary_url = format!("http://{primary_addr}");
     let client = WraithSessionClient::with_peers(

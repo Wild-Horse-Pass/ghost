@@ -80,9 +80,7 @@ async fn handle_ws(mut socket: WebSocket) {
 async fn spawn_mock() -> std::net::SocketAddr {
     let app = Router::new().route(
         "/ws/v1",
-        get(|ws: WebSocketUpgrade| async move {
-            ws.on_upgrade(handle_ws).into_response()
-        }),
+        get(|ws: WebSocketUpgrade| async move { ws.on_upgrade(handle_ws).into_response() }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -98,12 +96,7 @@ async fn light_send_round_trips_send_l2_payment() {
     let addr = spawn_mock().await;
     let ws_url = format!("ws://{addr}/ws/v1");
 
-    let session = spawn_session(
-        vec![ws_url],
-        "mock-jwt-token".to_string(),
-        None,
-        None,
-    );
+    let session = spawn_session(vec![ws_url], "mock-jwt-token".to_string(), None, None);
 
     // The mock accepts any structurally-valid WalletProof; the test's
     // assertion is on the wire round-trip, not on the proof crypto
@@ -162,7 +155,11 @@ async fn light_history_round_trips_get_transactions() {
                         .send(WsMessage::Text(serde_json::to_string(&auth).unwrap()))
                         .await;
                 }
-                ClientMessage::GetTransactions { limit, offset: _, wallet_bech32: _ } => {
+                ClientMessage::GetTransactions {
+                    limit,
+                    offset: _,
+                    wallet_bech32: _,
+                } => {
                     // Build a tiny fake ledger: one send (-5000), one
                     // receive (+5000), both with the new shape.
                     let txs = vec![
@@ -204,9 +201,7 @@ async fn light_history_round_trips_get_transactions() {
 
     let app = Router::new().route(
         "/ws/v1",
-        get(|ws: WebSocketUpgrade| async move {
-            ws.on_upgrade(handle_ws).into_response()
-        }),
+        get(|ws: WebSocketUpgrade| async move { ws.on_upgrade(handle_ws).into_response() }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -216,20 +211,12 @@ async fn light_history_round_trips_get_transactions() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     let ws_url = format!("ws://{addr}/ws/v1");
 
-    let session = spawn_session(
-        vec![ws_url],
-        "mock-jwt-token".to_string(),
-        None,
-        None,
-    );
+    let session = spawn_session(vec![ws_url], "mock-jwt-token".to_string(), None, None);
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(3),
-        session.get_transactions(50, 0),
-    )
-    .await
-    .expect("get_transactions timeout")
-    .expect("get_transactions failed");
+    let result = tokio::time::timeout(Duration::from_secs(3), session.get_transactions(50, 0))
+        .await
+        .expect("get_transactions timeout")
+        .expect("get_transactions failed");
 
     assert_eq!(result.total_count, 2);
     assert_eq!(result.transactions.len(), 2);
@@ -290,9 +277,7 @@ async fn send_l2_payment_propagates_server_error() {
 
     let app = Router::new().route(
         "/ws/v1",
-        get(|ws: WebSocketUpgrade| async move {
-            ws.on_upgrade(handle_ws_failure).into_response()
-        }),
+        get(|ws: WebSocketUpgrade| async move { ws.on_upgrade(handle_ws_failure).into_response() }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -302,23 +287,13 @@ async fn send_l2_payment_propagates_server_error() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     let ws_url = format!("ws://{addr}/ws/v1");
 
-    let session = spawn_session(
-        vec![ws_url],
-        "mock-jwt-token".to_string(),
-        None,
-        None,
-    );
+    let session = spawn_session(vec![ws_url], "mock-jwt-token".to_string(), None, None);
 
     let proof = WalletProof::new("send-l2", &[8u8; 32]).expect("build proof");
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(3),
-        session.send_l2_payment(
-            "bob_ghost_id".to_string(),
-            999_999_999,
-            proof,
-            None,
-        ),
+        session.send_l2_payment("bob_ghost_id".to_string(), 999_999_999, proof, None),
     )
     .await
     .expect("timeout waiting for failure response");

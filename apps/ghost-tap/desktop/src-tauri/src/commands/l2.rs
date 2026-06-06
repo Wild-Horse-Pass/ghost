@@ -2,8 +2,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use ghost_tap_core::l2::prover::{ConsolidationResult, TransferResult, UnshieldResult};
 use ghost_tap_core::network::ghost_pay::{
-    ConsolidateRequest, GhostPayClient, PayConfig, ShieldRequest, TransferRequest,
-    UnshieldRequest,
+    ConsolidateRequest, GhostPayClient, PayConfig, ShieldRequest, TransferRequest, UnshieldRequest,
 };
 use serde::Serialize;
 use tauri::State;
@@ -54,7 +53,10 @@ fn ghost_pay_client(state: &AppState) -> AppResult<GhostPayClient> {
         timeout_ms: 30_000,
         api_secret: state.ghost_pay_secret.lock().clone(),
     };
-    Ok(GhostPayClient::with_client(config, state.http_client.clone()))
+    Ok(GhostPayClient::with_client(
+        config,
+        state.http_client.clone(),
+    ))
 }
 
 // =============================================================================
@@ -149,8 +151,7 @@ pub async fn l2_scan(state: State<'_, AppState>) -> AppResult<u32> {
         .map_err(|e| AppError::from(e.to_string()))?;
 
     // Scan transactions (sync, no wallet lock needed)
-    let mut scanner =
-        ghost_tap_core::l2::NoteScanner::new_from_height(scan_secret, last_height);
+    let mut scanner = ghost_tap_core::l2::NoteScanner::new_from_height(scan_secret, last_height);
     let discovered = scanner.scan_transactions(&txs);
     let count = discovered.len() as u32;
     let last_seen_epoch = scanner.last_seen_epoch();
@@ -384,11 +385,7 @@ pub async fn l2_consolidate(state: State<'_, AppState>) -> AppResult<String> {
             let note_store = wallet
                 .note_store()
                 .ok_or_else(|| AppError::from("Note store not initialized"))?;
-            note_store
-                .unspent_notes()
-                .iter()
-                .map(|n| n.index)
-                .collect()
+            note_store.unspent_notes().iter().map(|n| n.index).collect()
         };
         indices.truncate(4);
 
@@ -460,10 +457,7 @@ pub async fn l2_consolidate(state: State<'_, AppState>) -> AppResult<String> {
 
 /// Unshield (withdraw L2 to L1).
 #[tauri::command]
-pub async fn l2_unshield(
-    state: State<'_, AppState>,
-    destination: String,
-) -> AppResult<String> {
+pub async fn l2_unshield(state: State<'_, AppState>, destination: String) -> AppResult<String> {
     let client = ghost_pay_client(&state)?;
 
     // Get tree state (async, no lock)

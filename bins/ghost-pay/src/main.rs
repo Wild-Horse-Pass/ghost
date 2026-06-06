@@ -165,7 +165,11 @@ struct Args {
     /// Ghost-pool HTTP API URL for L2 transaction relay
     /// Ghost-pay forwards verified NoteSpend transactions to ghost-pool for consensus.
     /// Defaults to http://127.0.0.1:8080 (local ghost-pool)
-    #[arg(long, env = "GHOST_POOL_API_URL", default_value = "http://127.0.0.1:8080")]
+    #[arg(
+        long,
+        env = "GHOST_POOL_API_URL",
+        default_value = "http://127.0.0.1:8080"
+    )]
     pool_api_url: String,
 
     /// Bitcoin address for receiving this node's share of L2 fees.
@@ -1592,10 +1596,7 @@ async fn main() -> Result<()> {
             "/api/v1/confidential/consolidate",
             post(submit_consolidation),
         )
-        .route(
-            "/api/v1/confidential/unshield",
-            post(submit_unshield),
-        )
+        .route("/api/v1/confidential/unshield", post(submit_unshield))
         .route("/api/v1/confidential/shield", post(shield_balance))
         // Lock reconciliation (SENSITIVE - settles lock to L1)
         .route("/api/v1/locks/:id/reconcile", post(reconcile_lock))
@@ -1655,13 +1656,13 @@ async fn main() -> Result<()> {
             get(get_confidential_notes),
         )
         // L2 transaction scanning for wallets
-        .route(
-            "/api/v1/l2/transactions",
-            get(get_recent_l2_transactions),
-        )
+        .route("/api/v1/l2/transactions", get(get_recent_l2_transactions))
         // GhostGlyph read-only endpoints
         .route("/api/v1/glyph/:ghost_id", get(get_glyph))
-        .route("/api/v1/glyph/check/:bitmap_hash_hex", get(check_glyph_availability))
+        .route(
+            "/api/v1/glyph/check/:bitmap_hash_hex",
+            get(check_glyph_availability),
+        )
         .with_state(state.clone());
 
     // MEDIUM-1: L2 block production endpoints are localhost-only.
@@ -1670,11 +1671,20 @@ async fn main() -> Result<()> {
         .route("/api/v1/l2/state", get(l2_state_handler))
         .route("/api/v1/l2/pending", get(l2_pending_handler))
         .route("/api/v1/l2/finalize", post(l2_finalize_handler))
-        .route("/api/v1/admin/verify-fee-pipeline", post(verify_fee_pipeline))
-        .route("/api/v1/admin/simulate-l2-activity", post(simulate_l2_activity))
+        .route(
+            "/api/v1/admin/verify-fee-pipeline",
+            post(verify_fee_pipeline),
+        )
+        .route(
+            "/api/v1/admin/simulate-l2-activity",
+            post(simulate_l2_activity),
+        )
         .route("/api/v1/admin/simulate-unshield", post(simulate_unshield))
         .route("/api/v1/admin/test-withdrawal", post(test_withdrawal))
-        .route("/api/v1/admin/trigger-settlement", post(admin_trigger_settlement))
+        .route(
+            "/api/v1/admin/trigger-settlement",
+            post(admin_trigger_settlement),
+        )
         .route("/api/v1/admin/seed-test-balance", post(seed_test_balance))
         .layer(axum::middleware::from_fn(localhost_only))
         .with_state(state.clone());
@@ -1833,7 +1843,10 @@ async fn main() -> Result<()> {
             }
         }
     } else {
-        info!("Ghost Pay API starting on {} (HTTP — no operator cert and no --identity-key)", addr);
+        info!(
+            "Ghost Pay API starting on {} (HTTP — no operator cert and no --identity-key)",
+            addr
+        );
         None
     };
 
@@ -1996,9 +2009,7 @@ async fn generate_keys(
                     .saturating_sub(r.creation_height),
                 recovery_pubkey: Some(r.recovery_pubkey.clone()),
                 recovery_index: None,
-                recovery_blocks: Some(
-                    r.recovery_height.saturating_sub(r.creation_height),
-                ),
+                recovery_blocks: Some(r.recovery_height.saturating_sub(r.creation_height)),
                 creation_height: Some(r.creation_height),
             })
             .collect();
@@ -2404,14 +2415,10 @@ async fn confirm_lock_funding(
 
     // Refresh the in-memory lock cache so subsequent /api/v1/locks
     // listings reflect the new state without waiting for a restart.
-    if let Ok(db_locks) = state.db.get_ghost_locks_by_owner(
-        state
-            .ghost_id
-            .read()
-            .clone()
-            .unwrap_or_default()
-            .as_str(),
-    ) {
+    if let Ok(db_locks) = state
+        .db
+        .get_ghost_locks_by_owner(state.ghost_id.read().clone().unwrap_or_default().as_str())
+    {
         let network = state.network;
         let lock_infos: Vec<LockInfo> = db_locks
             .iter()
@@ -2638,19 +2645,14 @@ async fn scan_utxos(
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("address {a}: {e}")))?;
     }
 
-    let scan_objs: Vec<String> = req
-        .addresses
-        .iter()
-        .map(|a| format!("addr({a})"))
-        .collect();
+    let scan_objs: Vec<String> = req.addresses.iter().map(|a| format!("addr({a})")).collect();
     let scan_refs: Vec<&str> = scan_objs.iter().map(String::as_str).collect();
 
-    let scan = state.rpc.scan_tx_out_set(scan_refs).await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("scantxoutset failed: {e}"),
-        )
-    })?;
+    let scan = state
+        .rpc
+        .scan_tx_out_set(scan_refs)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("scantxoutset failed: {e}")))?;
     if !scan.success {
         return Err((
             StatusCode::BAD_GATEWAY,
@@ -2753,8 +2755,8 @@ async fn broadcast_tx(
     }
     // Deserialize once on our side so a malformed hex string fails
     // fast with a 400, before round-tripping to bitcoind.
-    let bytes = hex::decode(trimmed)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid hex: {e}")))?;
+    let bytes =
+        hex::decode(trimmed).map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid hex: {e}")))?;
     let _: bitcoin::Transaction = bitcoin::consensus::encode::deserialize(&bytes)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid tx: {e}")))?;
 
@@ -2782,10 +2784,7 @@ async fn broadcast_tx(
             // reason ("min relay fee not met", "non-final", "missing
             // inputs", etc.). Pass it through unmodified — the
             // wallet GUI surfaces it verbatim.
-            Err((
-                StatusCode::BAD_GATEWAY,
-                format!("sendrawtransaction: {e}"),
-            ))
+            Err((StatusCode::BAD_GATEWAY, format!("sendrawtransaction: {e}")))
         }
     }
 }
@@ -2873,8 +2872,8 @@ async fn request_withdrawal(
     }
 
     // Validate settlement class
-    let class = ghost_common::constants::SettlementClass::parse(&req.settlement_class)
-        .unwrap_or_default();
+    let class =
+        ghost_common::constants::SettlementClass::parse(&req.settlement_class).unwrap_or_default();
 
     // Validate amount — fee scaled by settlement class multiplier
     let fee_rate = estimate_fee_rate(&state).await;
@@ -3494,13 +3493,17 @@ async fn submit_confidential_transfer(
     if req.encrypted_change.len() < MIN_ENCRYPTED_HEX_LEN {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "encrypted_change is required (ECIES-encrypted NoteData, min 109 bytes)"})),
+            Json(
+                serde_json::json!({"error": "encrypted_change is required (ECIES-encrypted NoteData, min 109 bytes)"}),
+            ),
         ));
     }
     if req.encrypted_recipient.len() < MIN_ENCRYPTED_HEX_LEN {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "encrypted_recipient is required (ECIES-encrypted NoteData, min 109 bytes)"})),
+            Json(
+                serde_json::json!({"error": "encrypted_recipient is required (ECIES-encrypted NoteData, min 109 bytes)"}),
+            ),
         ));
     }
     // Verify they're valid hex
@@ -3807,7 +3810,9 @@ async fn submit_consolidation(
     if req.encrypted_output.len() < 218 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "encrypted_output too short (min 109 bytes hex-encoded)"})),
+            Json(
+                serde_json::json!({"error": "encrypted_output too short (min 109 bytes hex-encoded)"}),
+            ),
         ));
     }
     hex::decode(&req.encrypted_output).map_err(|_| {
@@ -3919,7 +3924,9 @@ async fn submit_consolidation(
         Ok(false) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Consolidation proof verification returned false"})),
+                Json(
+                    serde_json::json!({"error": "Consolidation proof verification returned false"}),
+                ),
             ));
         }
         Err(e) => {
@@ -4447,10 +4454,7 @@ async fn shield_balance(
         warn!(error = %e, "Failed to persist shielded note");
     }
 
-    info!(
-        note_index = note_index,
-        "Balance shielded into commitment"
-    );
+    info!(note_index = note_index, "Balance shielded into commitment");
 
     // Sync commitment to ghost-pool tree with retry (ghost-pool must have this root
     // before any transfer proof built against it can be relayed).
@@ -4768,19 +4772,26 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                     // Refresh in-memory lock cache
                                     {
                                         let mut locks_cache = state.locks.write();
-                                        if let Some(cached) = locks_cache.iter_mut().find(|l| l.id == lock.lock_id) {
+                                        if let Some(cached) =
+                                            locks_cache.iter_mut().find(|l| l.id == lock.lock_id)
+                                        {
                                             cached.state = "Active".to_string();
                                         }
                                     }
 
                                     // GhostGlyph: complete registration if pending claim exists
-                                    if let Ok(Some(glyph_record)) = state.db.get_glyph_by_ghost_id(gid) {
+                                    if let Ok(Some(glyph_record)) =
+                                        state.db.get_glyph_by_ghost_id(gid)
+                                    {
                                         if glyph_record.funding_txid.is_none() {
                                             let now = std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap_or_default()
                                                 .as_secs();
-                                            if let Err(e) = state.db.complete_glyph_registration(gid, &req.txid, now) {
+                                            if let Err(e) = state
+                                                .db
+                                                .complete_glyph_registration(gid, &req.txid, now)
+                                            {
                                                 error!(error = %e, ghost_id = %gid, "Failed to complete glyph registration");
                                             } else {
                                                 info!(ghost_id = %gid, txid = %req.txid, "GhostGlyph registered");
@@ -4792,14 +4803,24 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                                     "registered_at": now,
                                                 });
                                                 // L-8: Await relay instead of fire-and-forget so failures are visible
-                                                let relay_url = format!("{}/api/v1/glyph/relay-registered", state.pool_api_url);
-                                                match state.pool_http_client.post(&relay_url).json(&relay_body).send().await {
+                                                let relay_url = format!(
+                                                    "{}/api/v1/glyph/relay-registered",
+                                                    state.pool_api_url
+                                                );
+                                                match state
+                                                    .pool_http_client
+                                                    .post(&relay_url)
+                                                    .json(&relay_body)
+                                                    .send()
+                                                    .await
+                                                {
                                                     Ok(resp) if resp.status().is_success() => {
                                                         info!("Glyph registration relayed to ghost-pool");
                                                     }
                                                     Ok(resp) => {
                                                         let status = resp.status();
-                                                        let body = resp.text().await.unwrap_or_default();
+                                                        let body =
+                                                            resp.text().await.unwrap_or_default();
                                                         warn!(status = %status, body = %body, "Glyph registration relay failed");
                                                     }
                                                     Err(e) => {
@@ -4824,10 +4845,8 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
             let ghost_id = state.ghost_id.read().clone();
             if let Some(ref gid) = ghost_id {
                 if let Ok(locks) = state.db.get_ghost_locks_by_owner(gid) {
-                    let unfunded_locks: Vec<_> = locks
-                        .iter()
-                        .filter(|l| l.funding_txid.is_none())
-                        .collect();
+                    let unfunded_locks: Vec<_> =
+                        locks.iter().filter(|l| l.funding_txid.is_none()).collect();
 
                     if !unfunded_locks.is_empty() {
                         // Check each output against unfunded lock scripts
@@ -4837,11 +4856,14 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                 .and_then(|s| s.get("hex"))
                                 .and_then(|h| h.as_str())
                                 .unwrap_or("");
-                            let value_btc = vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let value_btc =
+                                vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let value_sats = (value_btc * SATS_PER_BTC_F64).round() as u64;
 
                             for lock in &unfunded_locks {
-                                if lock.output_script == script_hex && lock.amount_sats == value_sats {
+                                if lock.output_script == script_hex
+                                    && lock.amount_sats == value_sats
+                                {
                                     if let Err(e) = state.db.update_ghost_lock_funding(
                                         &lock.lock_id,
                                         &req.txid,
@@ -4858,7 +4880,9 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                         );
                                         // Refresh in-memory lock cache
                                         let mut locks_cache = state.locks.write();
-                                        if let Some(cached) = locks_cache.iter_mut().find(|l| l.id == lock.lock_id) {
+                                        if let Some(cached) =
+                                            locks_cache.iter_mut().find(|l| l.id == lock.lock_id)
+                                        {
                                             cached.state = "Active".to_string();
                                         }
                                     }
@@ -4874,7 +4898,6 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
     }
 }
 
-
 /// L1 Settlement loop - reconciles L2 balances to Bitcoin L1
 /// Fee distribution context returned by ghost-pool.
 struct FeeDistributionContext {
@@ -4885,17 +4908,12 @@ struct FeeDistributionContext {
 
 /// Query ghost-pool for treasury state and qualified Ghost Pay nodes.
 async fn query_fee_distribution_context(state: &AppState) -> Option<FeeDistributionContext> {
-    let url = format!(
-        "{}/api/v1/l2/fee-distribution-context",
-        state.pool_api_url
-    );
+    let url = format!("{}/api/v1/l2/fee-distribution-context", state.pool_api_url);
     let resp = state.pool_http_client.get(&url).send().await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
 
     let treasury_balance_sats = json.get("treasury_balance_sats")?.as_u64()?;
-    let threshold_reached_at = json
-        .get("threshold_reached_at")
-        .and_then(|v| v.as_i64());
+    let threshold_reached_at = json.get("threshold_reached_at").and_then(|v| v.as_i64());
 
     let nodes_array = json.get("ghost_pay_nodes")?.as_array()?;
     let ghost_pay_nodes: Vec<(String, String, i32)> = nodes_array
@@ -4922,10 +4940,7 @@ async fn query_treasury_state(
 ) -> Option<ghost_reconciliation::fee_distribution::TreasuryState> {
     use ghost_reconciliation::fee_distribution::TreasuryState;
 
-    let url = format!(
-        "{}/api/v1/l2/fee-distribution-context",
-        state.pool_api_url
-    );
+    let url = format!("{}/api/v1/l2/fee-distribution-context", state.pool_api_url);
     let resp = state.pool_http_client.get(&url).send().await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
 
@@ -4935,14 +4950,15 @@ async fn query_treasury_state(
         .and_then(|v| v.as_i64())
         .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
 
-    Some(TreasuryState::from_stored(treasury_balance_sats, threshold_ts))
+    Some(TreasuryState::from_stored(
+        treasury_balance_sats,
+        threshold_ts,
+    ))
 }
 
 /// Localhost-only diagnostic: exercises every component of the L2 fee pipeline
 /// with synthetic data but real DB/HTTP/node connections.
-async fn verify_fee_pipeline(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn verify_fee_pipeline(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use ghost_reconciliation::fee_distribution::{L2FeeDistribution, TreasuryState};
 
     let mut steps = serde_json::Map::new();
@@ -4964,7 +4980,10 @@ async fn verify_fee_pipeline(
         Ok(()) => serde_json::json!({ "pass": true, "epoch": test_epoch, "fee_sats": test_fee }),
         Err(e) => serde_json::json!({ "pass": false, "error": format!("{e}") }),
     };
-    let db_write_pass = db_write.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let db_write_pass = db_write
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("db_write".into(), db_write);
 
     // Step 2: DB Read — verify test epoch appears in undistributed fees
@@ -4983,7 +5002,10 @@ async fn verify_fee_pipeline(
     } else {
         serde_json::json!({ "pass": false, "error": "skipped (db_write failed)" })
     };
-    let db_read_pass = db_read.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let db_read_pass = db_read
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("db_read".into(), db_read);
 
     // Step 3: HTTP Call — query ghost-pool for fee distribution context
@@ -5002,7 +5024,10 @@ async fn verify_fee_pipeline(
             None,
         ),
     };
-    let http_pass = http_call.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let http_pass = http_call
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("http_call".into(), http_call);
 
     // Step 4: Fee Distribution — calculate with real treasury state + nodes + test fee pool
@@ -5047,7 +5072,10 @@ async fn verify_fee_pipeline(
     } else {
         serde_json::json!({ "pass": false, "error": "skipped (http_call failed)" })
     };
-    let fee_dist_pass = fee_dist.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let fee_dist_pass = fee_dist
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("fee_distribution".into(), fee_dist);
 
     // Step 5: Settlement Build — synthetic batch with L2 fee outputs
@@ -5080,9 +5108,10 @@ async fn verify_fee_pipeline(
         executor.set_block_height(800_000);
 
         let dest = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string();
-        let txid: bitcoin::Txid = "0000000000000000000000000000000000000000000000000000000000000001"
-            .parse()
-            .unwrap();
+        let txid: bitcoin::Txid =
+            "0000000000000000000000000000000000000000000000000000000000000001"
+                .parse()
+                .unwrap();
 
         let settlement_count = 10u32;
         let amount_per = 10_000u64;
@@ -5159,7 +5188,10 @@ async fn verify_fee_pipeline(
         Ok(()) => serde_json::json!({ "pass": true }),
         Err(e) => serde_json::json!({ "pass": false, "error": format!("{e}") }),
     };
-    let cleanup_pass = cleanup.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let cleanup_pass = cleanup
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("cleanup".into(), cleanup);
 
     let all_pass = db_write_pass
@@ -5180,9 +5212,7 @@ async fn verify_fee_pipeline(
 // =============================================================================
 
 /// Simulate L2 activity: shield, ZK proof, transfer, fee injection, distribution
-async fn simulate_l2_activity(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn simulate_l2_activity(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use ghost_reconciliation::fee_distribution::{L2FeeDistribution, TreasuryState};
     use std::path::PathBuf;
 
@@ -5237,7 +5267,9 @@ async fn simulate_l2_activity(
     let spending_key: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5245,7 +5277,9 @@ async fn simulate_l2_activity(
     let blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5273,12 +5307,10 @@ async fn simulate_l2_activity(
 
     // Persist shield note
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
-    let _ = state.db.insert_confidential_note(
-        note_index,
-        &commitment,
-        &spending_key,
-        current_height,
-    );
+    let _ =
+        state
+            .db
+            .insert_confidential_note(note_index, &commitment, &spending_key, current_height);
 
     // Sync to ghost-pool with retry
     let sync_ok = sync_commitment_with_retry(
@@ -5329,7 +5361,9 @@ async fn simulate_l2_activity(
     let change_blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5337,7 +5371,9 @@ async fn simulate_l2_activity(
     let recipient_blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5539,9 +5575,7 @@ async fn simulate_l2_activity(
 
 /// Simulate unshield (L2 → L1 withdrawal): shield a note, generate unshield proof, verify it.
 /// Does NOT create an actual L1 transaction — validates the ZK pipeline only.
-async fn simulate_unshield(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn simulate_unshield(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use std::path::PathBuf;
 
     let mut steps = serde_json::Map::new();
@@ -5592,7 +5626,9 @@ async fn simulate_unshield(
     let spending_key: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5600,7 +5636,9 @@ async fn simulate_unshield(
     let blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5610,7 +5648,10 @@ async fn simulate_unshield(
     let commitment = match ghost_zkp::compute_commitment_bytes(note_value, &blinding) {
         Ok(c) => c,
         Err(e) => {
-            steps.insert("shield_note".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "shield_note".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
@@ -5624,7 +5665,10 @@ async fn simulate_unshield(
     };
 
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
-    let _ = state.db.insert_confidential_note(note_index, &commitment, &spending_key, current_height);
+    let _ =
+        state
+            .db
+            .insert_confidential_note(note_index, &commitment, &spending_key, current_height);
 
     // Sync to ghost-pool with retry
     let synced = sync_commitment_with_retry(
@@ -5636,12 +5680,15 @@ async fn simulate_unshield(
     )
     .await;
 
-    steps.insert("shield_note".into(), serde_json::json!({
-        "pass": true,
-        "note_index": note_index,
-        "note_value": note_value,
-        "synced_to_pool": synced,
-    }));
+    steps.insert(
+        "shield_note".into(),
+        serde_json::json!({
+            "pass": true,
+            "note_index": note_index,
+            "note_value": note_value,
+            "synced_to_pool": synced,
+        }),
+    );
 
     // Step 3: Get Merkle proof
     let merkle_siblings = {
@@ -5649,12 +5696,18 @@ async fn simulate_unshield(
         match tree.get_proof(note_index) {
             Ok(proof) => proof.siblings,
             Err(e) => {
-                steps.insert("merkle_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+                steps.insert(
+                    "merkle_proof".into(),
+                    serde_json::json!({"pass": false, "error": format!("{e}")}),
+                );
                 return Json(serde_json::json!({"success": false, "steps": steps}));
             }
         }
     };
-    steps.insert("merkle_proof".into(), serde_json::json!({"pass": true, "depth": merkle_siblings.len()}));
+    steps.insert(
+        "merkle_proof".into(),
+        serde_json::json!({"pass": true, "depth": merkle_siblings.len()}),
+    );
 
     // Step 4: Generate unshield proof (MPC slot 3 circuit)
     let epoch = ghost_common::constants::l2_epoch_from_height(current_height);
@@ -5670,17 +5723,23 @@ async fn simulate_unshield(
     let proof_start = std::time::Instant::now();
     let proof = match prover.prove(&witness) {
         Ok(p) => {
-            steps.insert("unshield_proof".into(), serde_json::json!({
-                "pass": true,
-                "proof_bytes": p.proof.len(),
-                "nullifier": hex::encode(p.public_inputs.nullifier),
-                "withdrawal_amount": p.public_inputs.withdrawal_amount,
-                "elapsed_ms": proof_start.elapsed().as_millis(),
-            }));
+            steps.insert(
+                "unshield_proof".into(),
+                serde_json::json!({
+                    "pass": true,
+                    "proof_bytes": p.proof.len(),
+                    "nullifier": hex::encode(p.public_inputs.nullifier),
+                    "withdrawal_amount": p.public_inputs.withdrawal_amount,
+                    "elapsed_ms": proof_start.elapsed().as_millis(),
+                }),
+            );
             p
         }
         Err(e) => {
-            steps.insert("unshield_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "unshield_proof".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
@@ -5689,31 +5748,45 @@ async fn simulate_unshield(
     let verifier = match state.unshield_verifier.read().as_ref().cloned() {
         Some(v) => v,
         None => {
-            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": "Unshield verifier not initialized"}));
+            steps.insert(
+                "verify_unshield".into(),
+                serde_json::json!({"pass": false, "error": "Unshield verifier not initialized"}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
 
     match verifier.verify(&proof) {
         Ok(true) => {
-            steps.insert("verify_unshield".into(), serde_json::json!({
-                "pass": true,
-                "verified_by_mpc_vk": true,
-                "nullifier": hex::encode(proof.public_inputs.nullifier),
-                "withdrawal_amount": proof.public_inputs.withdrawal_amount,
-            }));
+            steps.insert(
+                "verify_unshield".into(),
+                serde_json::json!({
+                    "pass": true,
+                    "verified_by_mpc_vk": true,
+                    "nullifier": hex::encode(proof.public_inputs.nullifier),
+                    "withdrawal_amount": proof.public_inputs.withdrawal_amount,
+                }),
+            );
         }
         Ok(false) => {
-            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": "Proof verification returned false"}));
+            steps.insert(
+                "verify_unshield".into(),
+                serde_json::json!({"pass": false, "error": "Proof verification returned false"}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
         Err(e) => {
-            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "verify_unshield".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     }
 
-    let all_pass = steps.values().all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
+    let all_pass = steps
+        .values()
+        .all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
 
     Json(serde_json::json!({
         "success": all_pass,
@@ -5724,21 +5797,26 @@ async fn simulate_unshield(
 
 /// Test the full L1 withdrawal pipeline: shield → proof → submit_unshield → relay.
 /// POST /api/v1/admin/trigger-settlement — Force-trigger epoch settlement now
-async fn admin_trigger_settlement(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn admin_trigger_settlement(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use ghost_common::constants::{SettlementClass, L2_EPOCH_BLOCKS};
 
     // Use the current L2 epoch (or next one) to trigger settlement for all due classes
-    let current_epoch = state.db.with_connection(|conn| {
-        let h: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(height), 0) FROM blocks", [], |r| r.get(0)
-        ).unwrap_or(0);
-        Ok(h as u64 / L2_EPOCH_BLOCKS)
-    }).unwrap_or(1);
+    let current_epoch = state
+        .db
+        .with_connection(|conn| {
+            let h: i64 = conn
+                .query_row("SELECT COALESCE(MAX(height), 0) FROM blocks", [], |r| {
+                    r.get(0)
+                })
+                .unwrap_or(0);
+            Ok(h as u64 / L2_EPOCH_BLOCKS)
+        })
+        .unwrap_or(1);
 
     // Use a synthetic epoch that triggers all classes (divisible by 28)
-    let trigger_epoch = if current_epoch == 0 { 28 } else {
+    let trigger_epoch = if current_epoch == 0 {
+        28
+    } else {
         // Round up to next multiple of 28 to trigger all classes
         ((current_epoch / 28) + 1) * 28
     };
@@ -5757,9 +5835,7 @@ async fn admin_trigger_settlement(
 
 /// Does NOT broadcast to Bitcoin L1 (requires a funded Ghost Lock).
 /// Exercises: ZK proof generation, nullifier spending, and relay to ghost-pool.
-async fn test_withdrawal(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn test_withdrawal(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use std::path::PathBuf;
 
     let mut steps = serde_json::Map::new();
@@ -5782,8 +5858,13 @@ async fn test_withdrawal(
                 prover
             }
             Err(e) => {
-                steps.insert("load_prover".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
-                return Json(serde_json::json!({"success": false, "steps": steps, "error": "Prover params not available"}));
+                steps.insert(
+                    "load_prover".into(),
+                    serde_json::json!({"pass": false, "error": format!("{e}")}),
+                );
+                return Json(
+                    serde_json::json!({"success": false, "steps": steps, "error": "Prover params not available"}),
+                );
             }
         }
     };
@@ -5792,7 +5873,9 @@ async fn test_withdrawal(
     let spending_key: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5800,7 +5883,9 @@ async fn test_withdrawal(
     let blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5810,7 +5895,10 @@ async fn test_withdrawal(
     let commitment = match ghost_zkp::compute_commitment_bytes(note_value, &blinding) {
         Ok(c) => c,
         Err(e) => {
-            steps.insert("shield_note".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "shield_note".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
@@ -5824,7 +5912,10 @@ async fn test_withdrawal(
     };
 
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
-    let _ = state.db.insert_confidential_note(note_index, &commitment, &spending_key, current_height);
+    let _ =
+        state
+            .db
+            .insert_confidential_note(note_index, &commitment, &spending_key, current_height);
 
     // Sync to ghost-pool
     let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
@@ -5833,15 +5924,23 @@ async fn test_withdrawal(
         "note_index": note_index,
         "block_height": current_height,
     });
-    let sync_result = state.pool_http_client.post(&sync_url).json(&sync_body).send().await;
+    let sync_result = state
+        .pool_http_client
+        .post(&sync_url)
+        .json(&sync_body)
+        .send()
+        .await;
     let synced = sync_result.is_ok();
 
-    steps.insert("shield_note".into(), serde_json::json!({
-        "pass": true,
-        "note_index": note_index,
-        "note_value": note_value,
-        "synced_to_pool": synced,
-    }));
+    steps.insert(
+        "shield_note".into(),
+        serde_json::json!({
+            "pass": true,
+            "note_index": note_index,
+            "note_value": note_value,
+            "synced_to_pool": synced,
+        }),
+    );
 
     // Step 3: Get Merkle proof
     let merkle_siblings = {
@@ -5849,12 +5948,18 @@ async fn test_withdrawal(
         match tree.get_proof(note_index) {
             Ok(proof) => proof.siblings,
             Err(e) => {
-                steps.insert("merkle_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+                steps.insert(
+                    "merkle_proof".into(),
+                    serde_json::json!({"pass": false, "error": format!("{e}")}),
+                );
                 return Json(serde_json::json!({"success": false, "steps": steps}));
             }
         }
     };
-    steps.insert("merkle_proof".into(), serde_json::json!({"pass": true, "depth": merkle_siblings.len()}));
+    steps.insert(
+        "merkle_proof".into(),
+        serde_json::json!({"pass": true, "depth": merkle_siblings.len()}),
+    );
 
     // Step 4: Generate unshield proof
     let epoch = ghost_common::constants::l2_epoch_from_height(current_height);
@@ -5870,17 +5975,23 @@ async fn test_withdrawal(
     let proof_start = std::time::Instant::now();
     let proof = match prover.prove(&witness) {
         Ok(p) => {
-            steps.insert("unshield_proof".into(), serde_json::json!({
-                "pass": true,
-                "proof_bytes": p.proof.len(),
-                "nullifier": hex::encode(p.public_inputs.nullifier),
-                "withdrawal_amount": p.public_inputs.withdrawal_amount,
-                "elapsed_ms": proof_start.elapsed().as_millis(),
-            }));
+            steps.insert(
+                "unshield_proof".into(),
+                serde_json::json!({
+                    "pass": true,
+                    "proof_bytes": p.proof.len(),
+                    "nullifier": hex::encode(p.public_inputs.nullifier),
+                    "withdrawal_amount": p.public_inputs.withdrawal_amount,
+                    "elapsed_ms": proof_start.elapsed().as_millis(),
+                }),
+            );
             p
         }
         Err(e) => {
-            steps.insert("unshield_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "unshield_proof".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
@@ -5912,7 +6023,8 @@ async fn test_withdrawal(
         String::new()
     };
 
-    let submit_result = state.pool_http_client
+    let submit_result = state
+        .pool_http_client
         .post(&submit_url)
         .header("Content-Type", "application/json")
         .header("X-Ghost-Signature", &signature)
@@ -5926,7 +6038,8 @@ async fn test_withdrawal(
             let status = resp.status();
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             if status.is_success() {
-                let relayed = body.get("relayed_to_pool")
+                let relayed = body
+                    .get("relayed_to_pool")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 (true, relayed, body)
@@ -5934,19 +6047,22 @@ async fn test_withdrawal(
                 (false, false, body)
             }
         }
-        Err(e) => {
-            (false, false, serde_json::json!({"error": format!("{e}")}))
-        }
+        Err(e) => (false, false, serde_json::json!({"error": format!("{e}")})),
     };
 
-    steps.insert("submit_unshield".into(), serde_json::json!({
-        "pass": nullifier_spent,
-        "nullifier_spent": nullifier_spent,
-        "relayed_to_pool": relayed_to_pool,
-        "detail": submit_detail,
-    }));
+    steps.insert(
+        "submit_unshield".into(),
+        serde_json::json!({
+            "pass": nullifier_spent,
+            "nullifier_spent": nullifier_spent,
+            "relayed_to_pool": relayed_to_pool,
+            "detail": submit_detail,
+        }),
+    );
 
-    let all_pass = steps.values().all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
+    let all_pass = steps
+        .values()
+        .all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
 
     Json(serde_json::json!({
         "success": all_pass,
@@ -5964,7 +6080,8 @@ async fn seed_test_balance(
     State(state): State<Arc<AppState>>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let amount_sats = req.get("amount_sats")
+    let amount_sats = req
+        .get("amount_sats")
         .and_then(|v| v.as_u64())
         .unwrap_or(1_000_000); // default 0.01 BTC
 
@@ -6029,7 +6146,6 @@ async fn seed_test_balance(
         })),
     }
 }
-
 
 /// Execute a settlement batch for a set of withdrawal requests.
 ///
@@ -6145,9 +6261,10 @@ async fn execute_settlement_batch(
         {
             let keys_guard = state.keys.read();
             if let Some(keys) = keys_guard.as_ref() {
-                let lock_index = match state.db.get_lock_index_for_owner(
-                    &lock.owner_ghost_id, &lock.lock_id,
-                ) {
+                let lock_index = match state
+                    .db
+                    .get_lock_index_for_owner(&lock.owner_ghost_id, &lock.lock_id)
+                {
                     Ok(idx) => idx,
                     Err(e) => {
                         warn!(lock_id = %lock.lock_id, error = %e, "Cannot get lock index, skipping");
@@ -6162,9 +6279,12 @@ async fn execute_settlement_batch(
                     }
                 };
                 let secp = Secp256k1::new();
-                let derived_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
+                let derived_pubkey =
+                    bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
                 if let Ok(stored_bytes) = hex::decode(&lock.lock_pubkey) {
-                    if let Ok(stored_pubkey) = bitcoin::secp256k1::PublicKey::from_slice(&stored_bytes) {
+                    if let Ok(stored_pubkey) =
+                        bitcoin::secp256k1::PublicKey::from_slice(&stored_bytes)
+                    {
                         if derived_pubkey != stored_pubkey {
                             warn!(lock_id = %lock.lock_id, "Pubkey mismatch, skipping (stale lock)");
                             continue;
@@ -6263,8 +6383,7 @@ async fn execute_settlement_batch(
     if l2_fee_pool > 0 && !include_l2_fees {
         info!(
             l2_fee_pool,
-            available_for_l2,
-            "L2 fees exceed available batch capacity, deferring to larger batch"
+            available_for_l2, "L2 fees exceed available batch capacity, deferring to larger batch"
         );
     }
 
@@ -6316,8 +6435,7 @@ async fn execute_settlement_batch(
         executor.build_transaction(&batch, fee_rate)
     };
 
-    let batch_tx = build_result
-        .map_err(|e| format!("Failed to build batch transaction: {}", e))?;
+    let batch_tx = build_result.map_err(|e| format!("Failed to build batch transaction: {}", e))?;
 
     // Update withdrawal requests to batched status
     for withdrawal_id in &processed_withdrawal_ids {
@@ -6336,10 +6454,10 @@ async fn execute_settlement_batch(
     // H-PAY-1 FIX: Mark associated locks as PendingSettlement BEFORE broadcast
     for withdrawal in &withdrawals {
         if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
-            if let Err(e) = state.db.update_ghost_lock_state(
-                &withdrawal.lock_id,
-                DbLockState::PendingSettlement,
-            ) {
+            if let Err(e) = state
+                .db
+                .update_ghost_lock_state(&withdrawal.lock_id, DbLockState::PendingSettlement)
+            {
                 error!(
                     lock_id = %withdrawal.lock_id,
                     error = %e,
@@ -6382,14 +6500,12 @@ async fn execute_settlement_batch(
 
             let lock_pubkey_bytes = hex::decode(&lock.lock_pubkey)
                 .map_err(|e| format!("Invalid lock_pubkey hex: {}", e))?;
-            let lock_pubkey =
-                bitcoin::secp256k1::PublicKey::from_slice(&lock_pubkey_bytes)
-                    .map_err(|e| format!("Invalid lock_pubkey: {}", e))?;
+            let lock_pubkey = bitcoin::secp256k1::PublicKey::from_slice(&lock_pubkey_bytes)
+                .map_err(|e| format!("Invalid lock_pubkey: {}", e))?;
             let recovery_pubkey_bytes = hex::decode(&lock.recovery_pubkey)
                 .map_err(|e| format!("Invalid recovery_pubkey hex: {}", e))?;
-            let recovery_pubkey =
-                bitcoin::secp256k1::PublicKey::from_slice(&recovery_pubkey_bytes)
-                    .map_err(|e| format!("Invalid recovery_pubkey: {}", e))?;
+            let recovery_pubkey = bitcoin::secp256k1::PublicKey::from_slice(&recovery_pubkey_bytes)
+                .map_err(|e| format!("Invalid recovery_pubkey: {}", e))?;
 
             let derived_pubkey =
                 bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
@@ -6400,8 +6516,7 @@ async fn execute_settlement_batch(
                 ));
             }
 
-            let recovery_blocks =
-                lock.recovery_height.saturating_sub(lock.creation_height);
+            let recovery_blocks = lock.recovery_height.saturating_sub(lock.creation_height);
 
             let witness_script = ghost_locks::build_wsh_witness_script(
                 &lock_pubkey,
@@ -6431,10 +6546,8 @@ async fn execute_settlement_batch(
             let mut sig_bytes = sig.serialize_der().to_vec();
             sig_bytes.push(0x01); // SIGHASH_ALL
 
-            let witness_vec =
-                ghost_locks::build_normal_witness(&sig_bytes, &witness_script);
-            signed_tx.input[input_idx].witness =
-                bitcoin::Witness::from_slice(&witness_vec);
+            let witness_vec = ghost_locks::build_normal_witness(&sig_bytes, &witness_script);
+            signed_tx.input[input_idx].witness = bitcoin::Witness::from_slice(&witness_vec);
 
             input_idx += 1;
         }
@@ -6453,10 +6566,9 @@ async fn execute_settlement_batch(
             // Revert lock states on signing failure
             for withdrawal in &withdrawals {
                 if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
-                    let _ = state.db.update_ghost_lock_state(
-                        &withdrawal.lock_id,
-                        DbLockState::Active,
-                    );
+                    let _ = state
+                        .db
+                        .update_ghost_lock_state(&withdrawal.lock_id, DbLockState::Active);
                 }
             }
             return Err(format!("Signing failed: {}", e));
@@ -6478,10 +6590,10 @@ async fn execute_settlement_batch(
 
             // Update withdrawals to submitted status
             for withdrawal_id in &processed_withdrawal_ids {
-                if let Err(e) = state.db.update_withdrawal_submitted(
-                    *withdrawal_id,
-                    &broadcast_txid,
-                ) {
+                if let Err(e) = state
+                    .db
+                    .update_withdrawal_submitted(*withdrawal_id, &broadcast_txid)
+                {
                     error!(
                         withdrawal_id = withdrawal_id,
                         error = %e,
@@ -6503,8 +6615,7 @@ async fn execute_settlement_batch(
                 }
                 info!(
                     epochs = undistributed.len(),
-                    l2_fee_pool,
-                    "Marked L2 epoch fees as distributed"
+                    l2_fee_pool, "Marked L2 epoch fees as distributed"
                 );
             }
 
@@ -6563,10 +6674,10 @@ async fn execute_settlement_batch(
             // Revert lock states back to Active on broadcast failure
             for withdrawal in &withdrawals {
                 if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
-                    if let Err(revert_err) = state.db.update_ghost_lock_state(
-                        &withdrawal.lock_id,
-                        DbLockState::Active,
-                    ) {
+                    if let Err(revert_err) = state
+                        .db
+                        .update_ghost_lock_state(&withdrawal.lock_id, DbLockState::Active)
+                    {
                         error!(
                             lock_id = %withdrawal.lock_id,
                             error = %revert_err,
@@ -6595,7 +6706,10 @@ async fn execute_settlement_batch(
 async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
     use ghost_common::constants::SettlementClass;
 
-    info!(epoch, "Epoch boundary detected, checking settlement classes");
+    info!(
+        epoch,
+        "Epoch boundary detected, checking settlement classes"
+    );
 
     for class in SettlementClass::ALL {
         if !class.is_due_at_epoch(epoch) {
@@ -6609,8 +6723,7 @@ async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
                 if last >= epoch {
                     debug!(
                         class = class.as_str(),
-                        epoch,
-                        "Already settled this class at epoch, skipping"
+                        epoch, "Already settled this class at epoch, skipping"
                     );
                     continue;
                 }
@@ -6632,8 +6745,7 @@ async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
         if pending.is_empty() {
             debug!(
                 class = class.as_str(),
-                epoch,
-                "No pending withdrawals for class"
+                epoch, "No pending withdrawals for class"
             );
             continue;
         }
@@ -6661,8 +6773,7 @@ async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
             Ok(None) => {
                 debug!(
                     class = class.as_str(),
-                    epoch,
-                    "No batch formed (insufficient inputs)"
+                    epoch, "No batch formed (insufficient inputs)"
                 );
             }
             Err(e) => {
@@ -7115,11 +7226,16 @@ async fn reconcile_lock(
     // Mining: ~300 vbytes * fee_rate * class multiplier.
     // L2 headroom: reserve undistributed L2 fees so settlement batch can include them.
     let fee_rate = estimate_fee_rate(&state).await;
-    let class = ghost_common::constants::SettlementClass::parse(&req.settlement_class)
-        .unwrap_or_default();
+    let class =
+        ghost_common::constants::SettlementClass::parse(&req.settlement_class).unwrap_or_default();
     let mining_fee = ((300u64 * fee_rate) as f64 * class.fee_multiplier()).ceil() as u64;
-    let l2_fee_headroom: u64 = state.db.get_undistributed_fees().unwrap_or_default()
-        .iter().map(|(_, fee)| fee).sum();
+    let l2_fee_headroom: u64 = state
+        .db
+        .get_undistributed_fees()
+        .unwrap_or_default()
+        .iter()
+        .map(|(_, fee)| fee)
+        .sum();
     let settlement_fee = mining_fee.saturating_add(l2_fee_headroom).max(546);
     let settlement_amount = lock.amount_sats.saturating_sub(settlement_fee);
 
@@ -7464,16 +7580,24 @@ async fn list_transactions(
                 .next()
                 .map_err(|e| GhostError::Database(e.to_string()))?
             {
-                let txid: String = row.get(0).map_err(|e| GhostError::Database(e.to_string()))?;
-                let block_height: i64 =
-                    row.get(1).map_err(|e| GhostError::Database(e.to_string()))?;
-                let ts: i64 = row.get(2).map_err(|e| GhostError::Database(e.to_string()))?;
-                let amount_abs: i64 =
-                    row.get(3).map_err(|e| GhostError::Database(e.to_string()))?;
-                let tx_type: String =
-                    row.get(4).map_err(|e| GhostError::Database(e.to_string()))?;
-                let memo: Option<String> =
-                    row.get(5).map_err(|e| GhostError::Database(e.to_string()))?;
+                let txid: String = row
+                    .get(0)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let block_height: i64 = row
+                    .get(1)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let ts: i64 = row
+                    .get(2)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let amount_abs: i64 = row
+                    .get(3)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let tx_type: String = row
+                    .get(4)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let memo: Option<String> = row
+                    .get(5)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
                 out.push((txid, block_height, ts, amount_abs, tx_type, memo));
             }
             Ok(out)
@@ -7683,7 +7807,11 @@ async fn l2_finalize_handler(
     // MEDIUM-2: Parse included nullifiers (hex-encoded [u8; 32]) from finalization callback
     let included_nullifiers: Vec<String> = req["included_tx_ids"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     if !included_nullifiers.is_empty() {
@@ -7839,8 +7967,7 @@ async fn l2_finalize_handler(
         if new_epoch > prev_epoch && height > 0 {
             info!(
                 height,
-                new_epoch,
-                "Epoch boundary crossed, spawning settlement check"
+                new_epoch, "Epoch boundary crossed, spawning settlement check"
             );
             let settlement_state = state.clone();
             tokio::spawn(try_epoch_settlement(settlement_state, new_epoch));
@@ -7890,7 +8017,10 @@ fn validate_ghost_id(ghost_id: &str) -> Result<(), String> {
 }
 
 /// JSON error response for glyph endpoints (L-3: consistent error format)
-fn glyph_error(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
+fn glyph_error(
+    status: StatusCode,
+    msg: impl Into<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({"error": msg.into()})))
 }
 
@@ -7946,24 +8076,34 @@ async fn claim_glyph(
         .map_err(|e| glyph_error(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     // Convert to fixed array
-    let pixels: [u8; ghost_glyph::GLYPH_SIZE] = req.pixels.as_slice().try_into().map_err(|_| {
-        glyph_error(StatusCode::BAD_REQUEST, "Invalid pixel array")
-    })?;
+    let pixels: [u8; ghost_glyph::GLYPH_SIZE] = req
+        .pixels
+        .as_slice()
+        .try_into()
+        .map_err(|_| glyph_error(StatusCode::BAD_REQUEST, "Invalid pixel array"))?;
 
     // Compute hashes
     let commitment = ghost_glyph::GhostGlyph::compute_commitment(&pixels, req.ghost_id.as_bytes());
     let bitmap_hash = ghost_glyph::GhostGlyph::compute_bitmap_hash(&pixels);
 
     // Check availability
-    let available = state.db.is_bitmap_available(&bitmap_hash)
+    let available = state
+        .db
+        .is_bitmap_available(&bitmap_hash)
         .map_err(|e| glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if !available {
-        return Err(glyph_error(StatusCode::CONFLICT, "Bitmap already registered"));
+        return Err(glyph_error(
+            StatusCode::CONFLICT,
+            "Bitmap already registered",
+        ));
     }
 
     // Check ghost_id not already claimed
     if let Ok(Some(_)) = state.db.get_glyph_by_ghost_id(&req.ghost_id) {
-        return Err(glyph_error(StatusCode::CONFLICT, "Ghost ID already has a glyph"));
+        return Err(glyph_error(
+            StatusCode::CONFLICT,
+            "Ghost ID already has a glyph",
+        ));
     }
 
     let now = std::time::SystemTime::now()
@@ -7972,19 +8112,16 @@ async fn claim_glyph(
         .as_secs();
 
     // Insert pending claim
-    state.db.insert_glyph_claim(
-        &req.ghost_id,
-        &req.pixels,
-        &bitmap_hash,
-        &commitment,
-        now,
-    ).map_err(|e| {
-        if e.to_string().contains("already") || e.to_string().contains("UNIQUE") {
-            glyph_error(StatusCode::CONFLICT, e.to_string())
-        } else {
-            glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        }
-    })?;
+    state
+        .db
+        .insert_glyph_claim(&req.ghost_id, &req.pixels, &bitmap_hash, &commitment, now)
+        .map_err(|e| {
+            if e.to_string().contains("already") || e.to_string().contains("UNIQUE") {
+                glyph_error(StatusCode::CONFLICT, e.to_string())
+            } else {
+                glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })?;
 
     info!(ghost_id = %req.ghost_id, "GhostGlyph claim submitted");
 
@@ -7997,7 +8134,13 @@ async fn claim_glyph(
         "timestamp": now,
     });
     let relay_url = format!("{}/api/v1/glyph/relay-claim", state.pool_api_url);
-    match state.pool_http_client.post(&relay_url).json(&relay_body).send().await {
+    match state
+        .pool_http_client
+        .post(&relay_url)
+        .json(&relay_body)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => {
             info!(ghost_id = %req.ghost_id, "Glyph claim relayed to mesh");
         }
@@ -8400,7 +8543,7 @@ mod tests {
             serde_json::from_value(json).expect("Valid JSON should parse");
 
         assert_eq!(req.proof_hex.len(), 384); // 192 bytes * 2 hex chars
-        assert_eq!(req.nullifier.len(), 64);  // 32 bytes * 2 hex chars
+        assert_eq!(req.nullifier.len(), 64); // 32 bytes * 2 hex chars
         assert_eq!(req.commitment_root.len(), 64);
         assert_eq!(req.change_commitment.len(), 64);
         assert_eq!(req.recipient_commitment.len(), 64);

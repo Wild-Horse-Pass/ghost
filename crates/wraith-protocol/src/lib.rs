@@ -43,7 +43,7 @@ mod error;
 mod tier;
 
 pub use blind::{
-    BlindSignature, BlindedAddress, BlindedChallenge, BlindSignatureResponse, BlindingContext,
+    BlindSignature, BlindSignatureResponse, BlindedAddress, BlindedChallenge, BlindingContext,
     CoordinatorSigner, CoordinatorSignerConfig, PublicNonce, TokenVerifier, UnblindedToken,
 };
 pub use error::WraithError;
@@ -54,14 +54,14 @@ pub use tier::{
 
 pub mod single_round;
 pub use single_round::{
-    LiteOutputKind, LiteOutputProvenance, LiteParticipantInput, LiteRound,
-    LiteRoundBuilder, CHANGE_DUST_THRESHOLD_SATS, DEFAULT_FEE_RATE_SATS_PER_VB,
+    LiteOutputKind, LiteOutputProvenance, LiteParticipantInput, LiteRound, LiteRoundBuilder,
+    CHANGE_DUST_THRESHOLD_SATS, DEFAULT_FEE_RATE_SATS_PER_VB,
 };
 
 pub mod bond;
 pub use bond::{
-    BondError, BondId, BondLedger, BondRecord, BondResolution, BondStatus,
-    MockBondLedger, RefundReason, SlashReason,
+    BondError, BondId, BondLedger, BondRecord, BondResolution, BondStatus, MockBondLedger,
+    RefundReason, SlashReason,
 };
 
 pub mod lite_session;

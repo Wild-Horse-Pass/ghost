@@ -201,14 +201,8 @@ pub async fn post(
     // wrong-index witness onto the wrong input.
     {
         let inputs_guard = state.inputs_store.lock().expect("inputs_store poisoned");
-        let inputs = inputs_guard
-            .get(&session_id)
-            .cloned()
-            .unwrap_or_default();
-        let mine = inputs
-            .iter()
-            .find(|i| i.ghost_id == req.ghost_id)
-            .cloned();
+        let inputs = inputs_guard.get(&session_id).cloned().unwrap_or_default();
+        let mine = inputs.iter().find(|i| i.ghost_id == req.ghost_id).cloned();
         drop(inputs_guard);
 
         let mine = match mine {
@@ -485,10 +479,12 @@ fn fail_round(
         session_id,
         BondResolution::Refund(RefundReason::CoordinatorAborted),
     );
-    let _ = state.sessions.apply_event(SessionGossipEvent::StateChanged {
-        session_id: session_id.to_string(),
-        new_state: LiteSessionState::Failed { reason },
-    });
+    let _ = state
+        .sessions
+        .apply_event(SessionGossipEvent::StateChanged {
+            session_id: session_id.to_string(),
+            new_state: LiteSessionState::Failed { reason },
+        });
     error(StatusCode::INTERNAL_SERVER_ERROR, code, detail)
 }
 

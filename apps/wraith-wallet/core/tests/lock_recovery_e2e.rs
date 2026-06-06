@@ -70,24 +70,25 @@ fn spawn_mock(mock: Arc<MockBitcoind>, expect_calls: usize) -> (String, JoinHand
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let url = format!("http://127.0.0.1:{port}/");
-    let handle = std::thread::spawn(move || {
-        // Serve EXACTLY the expected number of requests then exit.
-        // accept() blocks indefinitely; we'd hang on join() if we
-        // looped past the test's bounded request count.
-        for _ in 0..expect_calls {
-            let (mut stream, _) = match listener.accept() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            let body = read_request(&stream);
-            let parsed: serde_json::Value = match serde_json::from_str(&body) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let method = parsed["method"].as_str().unwrap_or("").to_string();
-            mock.received.lock().unwrap().push(method.clone());
-            let mut replies = mock.replies.lock().unwrap();
-            let reply_value = replies
+    let handle =
+        std::thread::spawn(move || {
+            // Serve EXACTLY the expected number of requests then exit.
+            // accept() blocks indefinitely; we'd hang on join() if we
+            // looped past the test's bounded request count.
+            for _ in 0..expect_calls {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let body = read_request(&stream);
+                let parsed: serde_json::Value = match serde_json::from_str(&body) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let method = parsed["method"].as_str().unwrap_or("").to_string();
+                mock.received.lock().unwrap().push(method.clone());
+                let mut replies = mock.replies.lock().unwrap();
+                let reply_value = replies
                 .get_mut(&method)
                 .and_then(|q| if q.is_empty() { None } else { Some(q.remove(0)) })
                 .unwrap_or_else(|| {
@@ -97,19 +98,19 @@ fn spawn_mock(mock: Arc<MockBitcoind>, expect_calls: usize) -> (String, JoinHand
                         "id": "wraithd",
                     })
                 });
-            let body_str = reply_value.to_string();
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\n\
+                let body_str = reply_value.to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\n\
                  Content-Type: application/json\r\n\
                  Content-Length: {}\r\n\
                  \r\n\
                  {}",
-                body_str.len(),
-                body_str
-            );
-            let _ = stream.write_all(resp.as_bytes());
-        }
-    });
+                    body_str.len(),
+                    body_str
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
     (url, handle)
 }
 
@@ -300,7 +301,10 @@ fn unilateral_exit_e2e_recovers_locked_funds_with_no_operator_cooperation() {
         .unwrap()
         .script_pubkey();
     assert_eq!(built.tx.output[0].script_pubkey, dest_spk);
-    assert_eq!(built.tx.output[0].value.to_sat(), funding_value_sats - 1_000);
+    assert_eq!(
+        built.tx.output[0].value.to_sat(),
+        funding_value_sats - 1_000
+    );
     let witness_items = built.tx.input[0].witness.iter().count();
     assert_eq!(witness_items, 3, "recovery witness has 3 items");
     let _ = ScriptBuf::new();

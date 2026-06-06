@@ -244,10 +244,7 @@ mod tests {
     use blstrs::Scalar as Fr;
     use ff::Field;
 
-    fn build_tree(
-        depth: usize,
-        leaves: &[(u64, Fr)],
-    ) -> (Fr, Vec<Vec<[u8; 32]>>) {
+    fn build_tree(depth: usize, leaves: &[(u64, Fr)]) -> (Fr, Vec<Vec<[u8; 32]>>) {
         let leaf_map: std::collections::HashMap<u64, Fr> = leaves.iter().cloned().collect();
 
         fn compute_node(
@@ -349,8 +346,7 @@ mod tests {
     #[test]
     #[ignore] // Expensive ~10-30s
     fn test_groth16_prove_verify_roundtrip() {
-        let prover =
-            GhostUnshieldProver::new_with_setup(4).expect("Setup should succeed");
+        let prover = GhostUnshieldProver::new_with_setup(4).expect("Setup should succeed");
         assert!(prover.has_groth16_params());
 
         let verifier = GhostUnshieldVerifier::for_prover(&prover);

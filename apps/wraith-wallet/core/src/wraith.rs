@@ -58,9 +58,7 @@ use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use wraith_protocol::{
-    BlindSignatureResponse, BlindingContext, PublicNonce, UnblindedToken,
-};
+use wraith_protocol::{BlindSignatureResponse, BlindingContext, PublicNonce, UnblindedToken};
 
 #[derive(Debug, thiserror::Error)]
 pub enum WraithClientError {
@@ -286,11 +284,7 @@ impl WraithSessionClient {
     /// Pass `peers` as the `--peers` list configured on the
     /// coordinator binary so wallet and operator agree on the
     /// pool's address set.
-    pub fn with_peers(
-        base_url: impl Into<String>,
-        peers: Vec<String>,
-        network: Network,
-    ) -> Self {
+    pub fn with_peers(base_url: impl Into<String>, peers: Vec<String>, network: Network) -> Self {
         let mut client = Self::new(base_url, network);
         client.peers = peers
             .into_iter()
@@ -315,9 +309,8 @@ impl WraithSessionClient {
         let direct = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?;
-        let proxy = reqwest::Proxy::all(socks5_proxy_url).map_err(|e| {
-            WraithClientError::Shape(format!("invalid SOCKS5 proxy URL: {e}"))
-        })?;
+        let proxy = reqwest::Proxy::all(socks5_proxy_url)
+            .map_err(|e| WraithClientError::Shape(format!("invalid SOCKS5 proxy URL: {e}")))?;
         let outputs_http = reqwest::Client::builder()
             .timeout(Duration::from_secs(60))
             .proxy(proxy)
@@ -508,9 +501,7 @@ impl WraithSessionClient {
         //    here while the coordinator still has incomplete output
         //    data, so poll with backoff. Bounded so a stuck round
         //    doesn't hang the caller forever.
-        let rt: RoundTxResponse = self
-            .wait_for_round_tx(session_id.as_str())
-            .await?;
+        let rt: RoundTxResponse = self.wait_for_round_tx(session_id.as_str()).await?;
         let tx: Transaction = deserialize_hex(&rt.unsigned_tx_hex)
             .map_err(|e| WraithClientError::Consensus(e.to_string()))?;
 
@@ -520,8 +511,7 @@ impl WraithSessionClient {
             .input
             .iter()
             .position(|t| {
-                t.previous_output.txid == target_txid
-                    && t.previous_output.vout == request.utxo.vout
+                t.previous_output.txid == target_txid && t.previous_output.vout == request.utxo.vout
             })
             .ok_or_else(|| {
                 WraithClientError::Shape("our input is not in the assembled tx".into())
@@ -531,11 +521,8 @@ impl WraithSessionClient {
         //    The wallet's mix_output_address is unique within the
         //    round (coordinator rejects duplicates), so the address
         //    parses to a single scriptPubKey we can find in tx.output.
-        let mixed_output_tx_index = locate_mix_output_index(
-            &tx,
-            &request.mix_output_address,
-            self.network,
-        )?;
+        let mixed_output_tx_index =
+            locate_mix_output_index(&tx, &request.mix_output_address, self.network)?;
 
         let prevouts = rt
             .prevouts
@@ -587,9 +574,7 @@ impl WraithSessionClient {
             Some(txid_hex) => Txid::from_str_hex(&txid_hex)?,
             None => {
                 self.wait_for_complete(session_id).await?;
-                Txid::from_str_hex(
-                    &prepared.unsigned_tx.compute_txid().to_string(),
-                )?
+                Txid::from_str_hex(&prepared.unsigned_tx.compute_txid().to_string())?
             }
         };
 
@@ -677,9 +662,7 @@ impl WraithSessionClient {
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         loop {
             match self
-                .get_json::<RoundTxResponse>(&format!(
-                    "/api/v1/session/{session_id}/round-tx"
-                ))
+                .get_json::<RoundTxResponse>(&format!("/api/v1/session/{session_id}/round-tx"))
                 .await
             {
                 Ok(rt) => return Ok(rt),
@@ -691,7 +674,10 @@ impl WraithSessionClient {
                 // future versions may not — fall through to retry
                 // on any 404.
                 Err(WraithClientError::Coordinator { status: 404, .. }) => {}
-                Err(WraithClientError::Coordinator { status: 410, detail }) => {
+                Err(WraithClientError::Coordinator {
+                    status: 410,
+                    detail,
+                }) => {
                     return Err(WraithClientError::Coordinator {
                         status: 410,
                         detail,
@@ -701,8 +687,7 @@ impl WraithSessionClient {
             }
             if std::time::Instant::now() >= deadline {
                 return Err(WraithClientError::Shape(
-                    "timed out waiting for /round-tx (round never assembled)"
-                        .into(),
+                    "timed out waiting for /round-tx (round never assembled)".into(),
                 ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;

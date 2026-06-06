@@ -149,10 +149,7 @@ async fn core_mode_deploy_04_baseline_with_tor() {
     let vm4 = config.node_by_name("VM4").unwrap();
     let cmdline4 = SshController::read_ghostd_cmdline(vm4).unwrap_or_default();
     println!("  VM4 ghostd cmdline: {}", cmdline4);
-    assert!(
-        cmdline4.contains("tormode"),
-        "VM4 lost tormode flag"
-    );
+    assert!(cmdline4.contains("tormode"), "VM4 lost tormode flag");
 
     println!("  Baseline verified: 2 Tor + 2 clearnet nodes operational");
 }

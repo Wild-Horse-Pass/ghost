@@ -5,7 +5,7 @@ mod live_tests;
 
 #[cfg(test)]
 mod wallet_tests {
-    use ghost_tap_core::wallet::{validate_mnemonic, WordCount, Wallet};
+    use ghost_tap_core::wallet::{validate_mnemonic, Wallet, WordCount};
     use secrecy::{ExposeSecret, SecretString};
 
     #[test]
@@ -43,7 +43,7 @@ mod wallet_tests {
 
 #[cfg(test)]
 mod crypto_tests {
-    use ghost_tap_core::crypto::{encrypt_aes_gcm, decrypt_aes_gcm, random_bytes};
+    use ghost_tap_core::crypto::{decrypt_aes_gcm, encrypt_aes_gcm, random_bytes};
 
     #[test]
     fn test_encryption_roundtrip() {
@@ -78,8 +78,8 @@ mod crypto_tests {
 
 #[cfg(test)]
 mod transaction_tests {
+    use ghost_tap_core::transaction::{FeePriority, TransactionBuilder};
     use ghost_tap_core::wallet::{Utxo, UtxoSet};
-    use ghost_tap_core::transaction::{TransactionBuilder, FeePriority};
 
     #[test]
     fn test_transaction_building() {
@@ -111,7 +111,7 @@ mod transaction_tests {
 
 #[cfg(test)]
 mod network_tests {
-    use ghost_tap_core::network::{NodeConfig, NodeClient};
+    use ghost_tap_core::network::{NodeClient, NodeConfig};
 
     #[tokio::test]
     async fn test_node_client_creation() {
@@ -164,7 +164,14 @@ mod invoice_tests {
 
     #[test]
     fn test_invoice_creation_and_fields() {
-        let inv = Invoice::new("INV-001", "Ghost Cafe", "123 Main St", 500_000, "ghost1abc", 1_700_000_000);
+        let inv = Invoice::new(
+            "INV-001",
+            "Ghost Cafe",
+            "123 Main St",
+            500_000,
+            "ghost1abc",
+            1_700_000_000,
+        );
         assert_eq!(inv.invoice_id, "INV-001");
         assert_eq!(inv.business_name, "Ghost Cafe");
         assert_eq!(inv.amount, 500_000);
@@ -177,8 +184,15 @@ mod invoice_tests {
 
     #[test]
     fn test_invoice_with_line_items() {
-        let mut inv = Invoice::new("INV-002", "Ghost Cafe", "123 Main St", 300_000, "ghost1abc", 1_700_000_000)
-            .with_memo("Thank you for your purchase");
+        let mut inv = Invoice::new(
+            "INV-002",
+            "Ghost Cafe",
+            "123 Main St",
+            300_000,
+            "ghost1abc",
+            1_700_000_000,
+        )
+        .with_memo("Thank you for your purchase");
 
         inv.add_item(LineItem::new("Espresso", 150_000));
         inv.add_item(LineItem::new("Croissant", 150_000));
@@ -221,7 +235,14 @@ mod invoice_tests {
 
     #[test]
     fn test_invoice_payment_uri_generation() {
-        let inv = Invoice::new("INV-005", "Ghost Cafe", "Addr", 100_000, "ghost1recipient", 0);
+        let inv = Invoice::new(
+            "INV-005",
+            "Ghost Cafe",
+            "Addr",
+            100_000,
+            "ghost1recipient",
+            0,
+        );
         let uri = inv.to_payment_uri();
         assert!(uri.contains("ghost1recipient"));
         assert!(uri.contains("100000"));
@@ -232,8 +253,15 @@ mod invoice_tests {
         let key = [42u8; 32];
         let storage = WalletStorage::open(":memory:", &key).unwrap();
 
-        let mut inv = Invoice::new("INV-006", "Ghost Cafe", "123 Main St", 750_000, "ghost1abc", 1_700_000_000)
-            .with_memo("Roundtrip test");
+        let mut inv = Invoice::new(
+            "INV-006",
+            "Ghost Cafe",
+            "123 Main St",
+            750_000,
+            "ghost1abc",
+            1_700_000_000,
+        )
+        .with_memo("Roundtrip test");
         inv.add_item(LineItem::new("Widget", 750_000));
         inv.add_payment("tx_rt", 750_000, 5000);
 
@@ -258,7 +286,14 @@ mod invoice_tests {
         let storage = WalletStorage::open(":memory:", &key).unwrap();
 
         for i in 1..=3 {
-            let inv = Invoice::new(format!("INV-{i}"), "Biz", "Addr", 1000 * i as u64, "ghost1x", 0);
+            let inv = Invoice::new(
+                format!("INV-{i}"),
+                "Biz",
+                "Addr",
+                1000 * i as u64,
+                "ghost1x",
+                0,
+            );
             let json = serde_json::to_vec(&inv).unwrap();
             storage.set(&format!("invoice:INV-{i}"), &json).unwrap();
         }
@@ -276,8 +311,8 @@ mod invoice_tests {
 
 #[cfg(test)]
 mod wraith_tests {
-    use ghost_tap_core::merchant::wraith::{WraithWasher, WashStatus};
     use ghost_tap_core::merchant::wash_task::spawn_wash_processor;
+    use ghost_tap_core::merchant::wraith::{WashStatus, WraithWasher};
     use ghost_tap_core::network::connection::ConnectionManager;
     use ghost_tap_core::storage::WalletStorage;
     use std::sync::{Arc, Mutex};
@@ -294,7 +329,10 @@ mod wraith_tests {
 
         assert!(washer.mark_completed("tx_a", "wraith_out_1", 300));
         assert_eq!(washer.get_queue()[0].status, WashStatus::Completed);
-        assert_eq!(washer.get_queue()[0].wraith_out_txid.as_deref(), Some("wraith_out_1"));
+        assert_eq!(
+            washer.get_queue()[0].wraith_out_txid.as_deref(),
+            Some("wraith_out_1")
+        );
     }
 
     #[test]
@@ -365,9 +403,7 @@ mod wraith_tests {
     #[test]
     fn test_wash_persistence_roundtrip() {
         let key = [99u8; 32];
-        let storage = Arc::new(Mutex::new(
-            WalletStorage::open(":memory:", &key).unwrap(),
-        ));
+        let storage = Arc::new(Mutex::new(WalletStorage::open(":memory:", &key).unwrap()));
 
         // Create washer with storage, queue items
         {
@@ -425,10 +461,16 @@ mod wraith_tests {
 #[cfg(test)]
 mod merchant_export_tests {
     use ghost_tap_core::merchant::export::TransactionExporter;
-    use ghost_tap_core::merchant::receipt::{Receipt, LineItem};
+    use ghost_tap_core::merchant::receipt::{LineItem, Receipt};
     use ghost_tap_core::wallet::{HistoryEntry, TxDirection, TxStatus};
 
-    fn make_entry(txid: &str, dir: TxDirection, amount: u64, fee: Option<u64>, ts: u64) -> HistoryEntry {
+    fn make_entry(
+        txid: &str,
+        dir: TxDirection,
+        amount: u64,
+        fee: Option<u64>,
+        ts: u64,
+    ) -> HistoryEntry {
         HistoryEntry {
             txid: txid.to_string(),
             direction: dir,
@@ -491,7 +533,14 @@ mod merchant_export_tests {
 
     #[test]
     fn test_receipt_generation() {
-        let mut receipt = Receipt::new("REC-001", "Ghost Cafe", "123 Main St", 250_000, "tx_receipt_1", 1_700_000_000);
+        let mut receipt = Receipt::new(
+            "REC-001",
+            "Ghost Cafe",
+            "123 Main St",
+            250_000,
+            "tx_receipt_1",
+            1_700_000_000,
+        );
         receipt.add_item(LineItem::new("Latte", 150_000));
         receipt.add_item(LineItem::new("Muffin", 100_000));
 
@@ -514,14 +563,14 @@ mod merchant_export_tests {
 
 #[cfg(test)]
 mod e2e_tests {
-    use ghost_tap_core::wallet::{Wallet, WordCount, Utxo, HistoryEntry, TxDirection, TxStatus};
-    use ghost_tap_core::transaction::{TransactionBuilder, FeePriority};
-    use ghost_tap_core::merchant::invoice::Invoice;
-    use ghost_tap_core::merchant::receipt::{Receipt, LineItem};
     use ghost_tap_core::merchant::export::TransactionExporter;
+    use ghost_tap_core::merchant::invoice::Invoice;
+    use ghost_tap_core::merchant::receipt::{LineItem, Receipt};
     use ghost_tap_core::merchant::wraith::WraithWasher;
     use ghost_tap_core::payment::qr::PaymentRequest;
     use ghost_tap_core::storage::WalletStorage;
+    use ghost_tap_core::transaction::{FeePriority, TransactionBuilder};
+    use ghost_tap_core::wallet::{HistoryEntry, TxDirection, TxStatus, Utxo, Wallet, WordCount};
 
     fn test_utxo(txid: &str, amount: u64) -> Utxo {
         Utxo {
@@ -551,7 +600,10 @@ mod e2e_tests {
         assert!(result.is_ok());
         let tx = result.unwrap();
         assert_eq!(tx.inputs.len(), 1);
-        assert!(tx.outputs.iter().any(|o| o.address == "ghost1dest" && o.amount == 80_000));
+        assert!(tx
+            .outputs
+            .iter()
+            .any(|o| o.address == "ghost1dest" && o.amount == 80_000));
         assert!(tx.fee > 0);
 
         wallet.add_history(HistoryEntry {
@@ -583,7 +635,10 @@ mod e2e_tests {
         let mut inv = inv;
         inv.add_payment("tx_e2e_pay", 100_000, 5000);
         assert!(inv.is_fully_paid());
-        assert_eq!(inv.status, ghost_tap_core::merchant::invoice::InvoiceStatus::Paid);
+        assert_eq!(
+            inv.status,
+            ghost_tap_core::merchant::invoice::InvoiceStatus::Paid
+        );
     }
 
     #[test]
@@ -605,7 +660,10 @@ mod e2e_tests {
         let mut washer = WraithWasher::new();
         washer.wash_payment("tx_incoming", 500_000, 1000);
         assert_eq!(washer.get_queue().len(), 1);
-        assert_eq!(washer.get_queue()[0].status, ghost_tap_core::merchant::wraith::WashStatus::Queued);
+        assert_eq!(
+            washer.get_queue()[0].status,
+            ghost_tap_core::merchant::wraith::WashStatus::Queued
+        );
 
         washer.mark_in_progress("tx_incoming", "wraith_in_tx", 2000);
         washer.mark_completed("tx_incoming", "wraith_out_tx", 3000);
@@ -677,11 +735,13 @@ mod e2e_tests {
         assert!(html.contains("Product A"));
 
         // Dashboard summary
-        let total_in: u64 = entries.iter()
+        let total_in: u64 = entries
+            .iter()
             .filter(|e| e.direction == TxDirection::Incoming)
             .map(|e| e.amount)
             .sum();
-        let total_out: u64 = entries.iter()
+        let total_out: u64 = entries
+            .iter()
             .filter(|e| e.direction == TxDirection::Outgoing)
             .map(|e| e.amount)
             .sum();
@@ -699,7 +759,10 @@ mod e2e_tests {
 
         let (mut wallet, _mnemonic) = Wallet::generate(WordCount::Words12).unwrap();
 
-        let utxos = vec![test_utxo("utxo_persist_1", 100_000), test_utxo("utxo_persist_2", 200_000)];
+        let utxos = vec![
+            test_utxo("utxo_persist_1", 100_000),
+            test_utxo("utxo_persist_2", 200_000),
+        ];
         for u in &utxos {
             wallet.add_utxo(u.clone());
         }
@@ -986,7 +1049,9 @@ mod l2_storage_tests {
     #[test]
     fn test_l2_sync_state_roundtrip() {
         let storage = test_storage();
-        storage.save_l2_sync_state(100, 5, "abcdef1234567890").unwrap();
+        storage
+            .save_l2_sync_state(100, 5, "abcdef1234567890")
+            .unwrap();
 
         let (height, epoch, root) = storage.load_l2_sync_state().unwrap();
         assert_eq!(height, 100);
@@ -1003,7 +1068,9 @@ mod l2_storage_tests {
     #[test]
     fn test_l2_params_info_roundtrip() {
         let storage = test_storage();
-        storage.save_l2_params_info("/tmp/params", 1234567890).unwrap();
+        storage
+            .save_l2_params_info("/tmp/params", 1234567890)
+            .unwrap();
 
         let (path, ts) = storage.load_l2_params_info().unwrap();
         assert_eq!(path, "/tmp/params");
@@ -1302,9 +1369,7 @@ mod gsp_type_sync_tests {
 
         // ghost-gsp-proto uses internally tagged with snake_case
         // If we ever align these, both should produce the same format
-        let server_msg = ghost_gsp_proto::ClientMessage::GetBalance {
-            max_k: None,
-        };
+        let server_msg = ghost_gsp_proto::ClientMessage::GetBalance { max_k: None };
         let server_json = serde_json::to_string(&server_msg).unwrap();
         assert!(
             server_json.contains("\"type\":\"get_balance\""),

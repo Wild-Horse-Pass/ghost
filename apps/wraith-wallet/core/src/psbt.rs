@@ -87,12 +87,15 @@ pub fn decode_psbt(input: &str) -> Result<(Psbt, PsbtEncoding), PsbtError> {
     if trimmed.is_empty() {
         return Err(PsbtError::Decode("empty input".into()));
     }
-    let lower10: String = trimmed.chars().take(10).flat_map(|c| c.to_lowercase()).collect();
+    let lower10: String = trimmed
+        .chars()
+        .take(10)
+        .flat_map(|c| c.to_lowercase())
+        .collect();
     if lower10.starts_with("70736274ff") {
-        let bytes = hex::decode(trimmed)
-            .map_err(|e| PsbtError::Decode(format!("hex: {e}")))?;
-        let psbt = Psbt::deserialize(&bytes)
-            .map_err(|e| PsbtError::Decode(format!("psbt: {e}")))?;
+        let bytes = hex::decode(trimmed).map_err(|e| PsbtError::Decode(format!("hex: {e}")))?;
+        let psbt =
+            Psbt::deserialize(&bytes).map_err(|e| PsbtError::Decode(format!("psbt: {e}")))?;
         return Ok((psbt, PsbtEncoding::Hex));
     }
     if trimmed.starts_with("cHNidP") {
@@ -100,13 +103,12 @@ pub fn decode_psbt(input: &str) -> Result<(Psbt, PsbtEncoding), PsbtError> {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(trimmed)
             .map_err(|e| PsbtError::Decode(format!("base64: {e}")))?;
-        let psbt = Psbt::deserialize(&bytes)
-            .map_err(|e| PsbtError::Decode(format!("psbt: {e}")))?;
+        let psbt =
+            Psbt::deserialize(&bytes).map_err(|e| PsbtError::Decode(format!("psbt: {e}")))?;
         return Ok((psbt, PsbtEncoding::Base64));
     }
     Err(PsbtError::Decode(
-        "unrecognised PSBT — expected hex starting `70736274ff` or base64 starting `cHNidP`"
-            .into(),
+        "unrecognised PSBT — expected hex starting `70736274ff` or base64 starting `cHNidP`".into(),
     ))
 }
 
@@ -218,7 +220,9 @@ pub fn inspect(psbt: &Psbt) -> InspectResult {
 /// have a canonical address (e.g. OP_RETURN, bare multisig). The
 /// GUI shows raw hex in that case.
 pub fn script_to_address(script: &ScriptBuf, network: Network) -> Option<String> {
-    Address::from_script(script, network).ok().map(|a| a.to_string())
+    Address::from_script(script, network)
+        .ok()
+        .map(|a| a.to_string())
 }
 
 /// Walk BIP86 indices 0..=`scan_max` for `keystore` and return the
@@ -337,10 +341,7 @@ pub fn sign_owned_inputs(
         // combiner step (whoever has all sigs) builds the final
         // witness once the script's threshold is reached.
         if target_spk.is_p2wsh() {
-            let psbt_in = psbt
-                .inputs
-                .get(input_index)
-                .expect("bounds checked above");
+            let psbt_in = psbt.inputs.get(input_index).expect("bounds checked above");
             // Snapshot the derivation hints + witness_script + sighash type
             // before mutating, so the borrow checker stays happy.
             let derivations: Vec<(bitcoin::PublicKey, bitcoin::bip32::DerivationPath)> = psbt_in
@@ -425,11 +426,7 @@ pub fn sign_owned_inputs(
         };
 
         // Derive the signing key.
-        let path = format!(
-            "m/86'/{}'/0'/0/{}",
-            light::GHOST_COIN_TYPE,
-            idx
-        );
+        let path = format!("m/86'/{}'/0'/0/{}", light::GHOST_COIN_TYPE, idx);
         let xprv = keystore.derive_xprv(&path)?;
         let priv_bytes = xprv.private_key().to_bytes();
         let sk = SecretKey::from_slice(&priv_bytes)
@@ -686,8 +683,8 @@ pub fn create_psbt(
         output: tx_outputs,
     };
 
-    let mut psbt = Psbt::from_unsigned_tx(tx)
-        .map_err(|e| CreateError::Bitcoin(format!("psbt: {e}")))?;
+    let mut psbt =
+        Psbt::from_unsigned_tx(tx).map_err(|e| CreateError::Bitcoin(format!("psbt: {e}")))?;
     // Attach witness_utxo for every input. P2TR sighash needs the
     // prevout commitment; without this the signer would refuse.
     for (i, s) in selected.iter().enumerate() {
@@ -868,9 +865,7 @@ pub fn bump_fee(
     owned_outs.sort_by_key(|i| std::cmp::Reverse(unsigned.output[*i].value.to_sat()));
     let change_idx = *owned_outs
         .iter()
-        .find(|i| {
-            unsigned.output[**i].value.to_sat() >= extra_fee + DUST
-        })
+        .find(|i| unsigned.output[**i].value.to_sat() >= extra_fee + DUST)
         .unwrap_or(&owned_outs[0]);
 
     let old_change = unsigned.output[change_idx].value.to_sat();
@@ -889,8 +884,8 @@ pub fn bump_fee(
         txin.witness = Witness::new();
     }
 
-    let mut new_psbt = Psbt::from_unsigned_tx(new_tx)
-        .map_err(|e| BumpError::Bitcoin(format!("psbt: {e}")))?;
+    let mut new_psbt =
+        Psbt::from_unsigned_tx(new_tx).map_err(|e| BumpError::Bitcoin(format!("psbt: {e}")))?;
     // Re-attach witness_utxos from the originals so the next signer
     // call has the prevout it needs for sighash.
     for (i, prev) in prev_txouts.iter().enumerate() {
@@ -1018,11 +1013,9 @@ mod tests {
         // Use the wallet's index-0 address as the source of the UTXO
         // (so a follow-up sign step would actually work end-to-end).
         let src_addr = light::receive_address(&keystore, 0, Network::Signet).unwrap();
-        let change_addr =
-            light::receive_address(&keystore, 1, Network::Signet).unwrap();
+        let change_addr = light::receive_address(&keystore, 1, Network::Signet).unwrap();
         // External recipient — same wallet for test convenience, idx 5.
-        let recipient_addr =
-            light::receive_address(&keystore, 5, Network::Signet).unwrap();
+        let recipient_addr = light::receive_address(&keystore, 5, Network::Signet).unwrap();
         use bitcoin::hashes::Hash as _;
         let avail = vec![AvailableUtxo {
             txid: bitcoin::Txid::from_byte_array([0x22; 32]),
@@ -1056,10 +1049,8 @@ mod tests {
     fn create_psbt_drops_change_when_residual_below_dust() {
         let keystore = ks();
         let src_addr = light::receive_address(&keystore, 0, Network::Signet).unwrap();
-        let change_addr =
-            light::receive_address(&keystore, 1, Network::Signet).unwrap();
-        let recipient_addr =
-            light::receive_address(&keystore, 5, Network::Signet).unwrap();
+        let change_addr = light::receive_address(&keystore, 1, Network::Signet).unwrap();
+        let recipient_addr = light::receive_address(&keystore, 5, Network::Signet).unwrap();
         use bitcoin::hashes::Hash as _;
         // 1 input, 2 outputs, 5 sat/vB → fee = 131*5 = 655. With
         // total_in = 100,800 and amount = 100,000 the residual
@@ -1093,10 +1084,8 @@ mod tests {
     fn create_psbt_insufficient_funds() {
         let keystore = ks();
         let src_addr = light::receive_address(&keystore, 0, Network::Signet).unwrap();
-        let change_addr =
-            light::receive_address(&keystore, 1, Network::Signet).unwrap();
-        let recipient_addr =
-            light::receive_address(&keystore, 5, Network::Signet).unwrap();
+        let change_addr = light::receive_address(&keystore, 1, Network::Signet).unwrap();
+        let recipient_addr = light::receive_address(&keystore, 5, Network::Signet).unwrap();
         use bitcoin::hashes::Hash as _;
         let avail = vec![AvailableUtxo {
             txid: bitcoin::Txid::from_byte_array([0x22; 32]),
@@ -1125,10 +1114,8 @@ mod tests {
         // Build a real-shape PSBT with change going back to BIP86
         // idx 1 (so the bump scanner can find it).
         let src_addr = light::receive_address(&keystore, 0, Network::Signet).unwrap();
-        let change_addr =
-            light::receive_address(&keystore, 1, Network::Signet).unwrap();
-        let recipient_addr =
-            light::receive_address(&keystore, 5, Network::Signet).unwrap();
+        let change_addr = light::receive_address(&keystore, 1, Network::Signet).unwrap();
+        let recipient_addr = light::receive_address(&keystore, 5, Network::Signet).unwrap();
         use bitcoin::hashes::Hash as _;
         let avail = vec![AvailableUtxo {
             txid: bitcoin::Txid::from_byte_array([0x33; 32]),
@@ -1149,12 +1136,18 @@ mod tests {
 
         let (bumped, bm) = bump_fee(&psbt, &keystore, Network::Signet, 4, 20).expect("bump");
         assert!(bm.new_fee_sats > bm.old_fee_sats);
-        assert_eq!(bm.new_change_sats, bm.old_change_sats - (bm.new_fee_sats - bm.old_fee_sats));
+        assert_eq!(
+            bm.new_change_sats,
+            bm.old_change_sats - (bm.new_fee_sats - bm.old_fee_sats)
+        );
         // Same number of inputs/outputs in the bumped PSBT — RBF
         // requires same input set, and we don't drop the change
         // output.
         assert_eq!(bumped.unsigned_tx.input.len(), psbt.unsigned_tx.input.len());
-        assert_eq!(bumped.unsigned_tx.output.len(), psbt.unsigned_tx.output.len());
+        assert_eq!(
+            bumped.unsigned_tx.output.len(),
+            psbt.unsigned_tx.output.len()
+        );
         // Witness_utxos preserved so next sign_owned_inputs call
         // can compute sighash.
         assert!(bumped.inputs[0].witness_utxo.is_some());
@@ -1179,10 +1172,8 @@ mod tests {
     fn bump_fee_rejects_non_increasing_rate() {
         let keystore = ks();
         let src_addr = light::receive_address(&keystore, 0, Network::Signet).unwrap();
-        let change_addr =
-            light::receive_address(&keystore, 1, Network::Signet).unwrap();
-        let recipient_addr =
-            light::receive_address(&keystore, 5, Network::Signet).unwrap();
+        let change_addr = light::receive_address(&keystore, 1, Network::Signet).unwrap();
+        let recipient_addr = light::receive_address(&keystore, 5, Network::Signet).unwrap();
         use bitcoin::hashes::Hash as _;
         let avail = vec![AvailableUtxo {
             txid: bitcoin::Txid::from_byte_array([0x33; 32]),
@@ -1211,10 +1202,8 @@ mod tests {
     fn bump_fee_errors_when_change_would_drop_below_dust() {
         let keystore = ks();
         let src_addr = light::receive_address(&keystore, 0, Network::Signet).unwrap();
-        let change_addr =
-            light::receive_address(&keystore, 1, Network::Signet).unwrap();
-        let recipient_addr =
-            light::receive_address(&keystore, 5, Network::Signet).unwrap();
+        let change_addr = light::receive_address(&keystore, 1, Network::Signet).unwrap();
+        let recipient_addr = light::receive_address(&keystore, 5, Network::Signet).unwrap();
         use bitcoin::hashes::Hash as _;
         // Tight UTXO so the change is small. Trying to bump by a
         // huge rate then has nowhere to take the extra fee from.
@@ -1237,8 +1226,7 @@ mod tests {
         // it should fail with ChangeBelowDust. m.change_sats here
         // is roughly 1345.
         assert!(m.change_sats < 2000);
-        let err =
-            bump_fee(&psbt, &keystore, Network::Signet, 4, 50).unwrap_err();
+        let err = bump_fee(&psbt, &keystore, Network::Signet, 4, 50).unwrap_err();
         match err {
             BumpError::ChangeBelowDust { .. } => {}
             BumpError::NotIncreasing { .. } => {} // also acceptable when est rate already high
@@ -1321,10 +1309,7 @@ mod tests {
         psbt.inputs[0].witness_script = Some(redeem);
         // Tell the PSBT that pk_a's owner is us (fingerprint match
         // on the path we used).
-        let path_a_parsed = bitcoin::bip32::DerivationPath::from_str(
-            "m/48'/1'/0'/2'/0/0",
-        )
-        .unwrap();
+        let path_a_parsed = bitcoin::bip32::DerivationPath::from_str("m/48'/1'/0'/2'/0/0").unwrap();
         psbt.inputs[0]
             .bip32_derivation
             .insert(pk_a, (our_fp_bitcoin, path_a_parsed));

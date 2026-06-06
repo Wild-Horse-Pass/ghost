@@ -722,8 +722,7 @@ pub type GlyphRegisteredRelayFn = Arc<dyn Fn(Vec<u8>) -> GhostResult<()> + Send 
 
 /// Callback for retrieving live L2 tree state from the epoch manager.
 /// Returns (epoch, tree_root, checkpoint_height, note_count).
-pub type L2TreeStateFn =
-    Arc<dyn Fn() -> GhostResult<L2TreeStateInfo> + Send + Sync>;
+pub type L2TreeStateFn = Arc<dyn Fn() -> GhostResult<L2TreeStateInfo> + Send + Sync>;
 
 /// Live L2 tree state info returned by the epoch manager callback.
 #[derive(Debug, Clone)]
@@ -1581,10 +1580,7 @@ impl VerificationState {
     }
 
     /// Set the mesh-wide active-miner count callback.
-    pub fn with_mesh_active_miners(
-        mut self,
-        f: impl Fn() -> u32 + Send + Sync + 'static,
-    ) -> Self {
+    pub fn with_mesh_active_miners(mut self, f: impl Fn() -> u32 + Send + Sync + 'static) -> Self {
         self.get_mesh_active_miners = Some(Box::new(f));
         self
     }

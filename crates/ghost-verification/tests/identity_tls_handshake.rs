@@ -35,8 +35,8 @@ async fn end_to_end_handshake_succeeds_when_pubkey_is_allowed() {
     let server_pubkey = signing_key.verifying_key().to_bytes();
 
     // Server: identity-derived TLS config
-    let server_config =
-        build_server_config_with_identity(&TlsConfig::default(), &secret, None).expect("server config");
+    let server_config = build_server_config_with_identity(&TlsConfig::default(), &secret, None)
+        .expect("server config");
 
     // Bind and accept exactly one TLS connection
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -66,13 +66,10 @@ async fn end_to_end_handshake_succeeds_when_pubkey_is_allowed() {
 
     let tcp = tokio::net::TcpStream::connect(addr).await.expect("connect");
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls = tokio::time::timeout(
-        Duration::from_secs(5),
-        connector.connect(server_name, tcp),
-    )
-    .await
-    .expect("handshake timeout")
-    .expect("handshake error");
+    let mut tls = tokio::time::timeout(Duration::from_secs(5), connector.connect(server_name, tcp))
+        .await
+        .expect("handshake timeout")
+        .expect("handshake error");
 
     tls.write_all(b"HELLO").await.expect("client write");
     let mut response = [0u8; 4];
@@ -88,8 +85,8 @@ async fn handshake_fails_when_pubkey_not_in_allow_list() {
     ensure_crypto_provider();
 
     let secret: [u8; 32] = [9u8; 32];
-    let server_config =
-        build_server_config_with_identity(&TlsConfig::default(), &secret, None).expect("server config");
+    let server_config = build_server_config_with_identity(&TlsConfig::default(), &secret, None)
+        .expect("server config");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().unwrap();
@@ -113,12 +110,9 @@ async fn handshake_fails_when_pubkey_not_in_allow_list() {
 
     let tcp = tokio::net::TcpStream::connect(addr).await.expect("connect");
     let server_name = ServerName::try_from("localhost").unwrap();
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        connector.connect(server_name, tcp),
-    )
-    .await
-    .expect("handshake timeout");
+    let result = tokio::time::timeout(Duration::from_secs(5), connector.connect(server_name, tcp))
+        .await
+        .expect("handshake timeout");
     assert!(
         result.is_err(),
         "Empty allow list must reject the handshake"
@@ -150,7 +144,9 @@ async fn handshake_fails_when_pubkey_does_not_match_cert() {
     });
 
     // Client only trusts the attacker_secret's pubkey, not the server's
-    let attacker_pubkey = SigningKey::from_bytes(&attacker_secret).verifying_key().to_bytes();
+    let attacker_pubkey = SigningKey::from_bytes(&attacker_secret)
+        .verifying_key()
+        .to_bytes();
     let allow: PubkeyAllowList = Arc::new(move |k: &[u8; 32]| *k == attacker_pubkey);
     let verifier = Arc::new(IdentityPinningVerifier::new(allow));
     let client_config = rustls::ClientConfig::builder()
@@ -161,12 +157,9 @@ async fn handshake_fails_when_pubkey_does_not_match_cert() {
 
     let tcp = tokio::net::TcpStream::connect(addr).await.expect("connect");
     let server_name = ServerName::try_from("localhost").unwrap();
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        connector.connect(server_name, tcp),
-    )
-    .await
-    .expect("handshake timeout");
+    let result = tokio::time::timeout(Duration::from_secs(5), connector.connect(server_name, tcp))
+        .await
+        .expect("handshake timeout");
     assert!(
         result.is_err(),
         "MITM-substituted cert must be rejected when its pubkey is not pinned"
@@ -174,4 +167,3 @@ async fn handshake_fails_when_pubkey_does_not_match_cert() {
 
     let _ = server_task.await;
 }
-

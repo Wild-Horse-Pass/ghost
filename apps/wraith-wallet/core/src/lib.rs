@@ -4,9 +4,9 @@
 //! Binaries (`wraithd`, `wraith`) and the GUI shell are thin wrappers over this crate.
 
 pub mod auth;
-pub mod ghostd;
 pub mod chain;
 pub mod descriptor;
+pub mod ghostd;
 pub mod gsp;
 pub mod keystore;
 pub mod light;

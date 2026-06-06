@@ -39,7 +39,6 @@ pub const VBYTES_PER_OUTPUT: usize = 43;
 #[allow(dead_code)]
 pub const MAX_TX_VBYTES: usize = 90_000;
 
-
 // ---------------------------------------------------------------------------
 // LITE TIERS — single-round atomic CoinJoin (Wraith Lite v1, see DESIGN_LITE.md)
 // ---------------------------------------------------------------------------
@@ -176,7 +175,10 @@ impl LiteTier {
         // + n mixed outputs (one per participant)
         // + n change outputs (worst case: every input is larger than denom + fee_share)
         // + 1 fee output (to coordinator)
-        (n * VBYTES_PER_INPUT) + (n * VBYTES_PER_OUTPUT) + (n * VBYTES_PER_OUTPUT) + VBYTES_PER_OUTPUT
+        (n * VBYTES_PER_INPUT)
+            + (n * VBYTES_PER_OUTPUT)
+            + (n * VBYTES_PER_OUTPUT)
+            + VBYTES_PER_OUTPUT
     }
 
     /// All four tiers, in ascending denomination order.
@@ -198,9 +200,7 @@ impl LiteTier {
     /// for faster fill or upgrading via remix queue.
     pub fn suggest_for_balance(sats: u64) -> Option<Self> {
         for tier in Self::all().iter().rev() {
-            let needed = tier.denomination_sats()
-                + tier.service_fee_sats()
-                + tier.bond_sats();
+            let needed = tier.denomination_sats() + tier.service_fee_sats() + tier.bond_sats();
             if sats >= needed {
                 return Some(*tier);
             }

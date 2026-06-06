@@ -148,12 +148,7 @@ impl WraithWasher {
     /// the `InProgress` -> `Completed` states.
     ///
     /// `now` should be the current unix timestamp.
-    pub fn wash_payment(
-        &mut self,
-        txid: impl Into<String>,
-        amount: u64,
-        now: u64,
-    ) -> &WashRequest {
+    pub fn wash_payment(&mut self, txid: impl Into<String>, amount: u64, now: u64) -> &WashRequest {
         let request = WashRequest::new(txid, amount, now);
         self.queue.push(request);
         let req = self.queue.last().unwrap();
@@ -165,12 +160,7 @@ impl WraithWasher {
     ///
     /// This is a convenience alias for `wash_payment` for callers that
     /// want to emphasise the async/background nature.
-    pub fn queue_wash(
-        &mut self,
-        txid: impl Into<String>,
-        amount: u64,
-        now: u64,
-    ) -> &WashRequest {
+    pub fn queue_wash(&mut self, txid: impl Into<String>, amount: u64, now: u64) -> &WashRequest {
         self.wash_payment(txid, amount, now)
     }
 
@@ -281,9 +271,11 @@ impl WraithWasher {
 
     /// Re-queue a failed wash request for another attempt.
     pub fn retry_failed(&mut self, txid: &str, now: u64) -> bool {
-        if let Some(req) = self.queue.iter_mut().find(|r| {
-            r.txid == txid && r.status == WashStatus::Failed
-        }) {
+        if let Some(req) = self
+            .queue
+            .iter_mut()
+            .find(|r| r.txid == txid && r.status == WashStatus::Failed)
+        {
             req.status = WashStatus::Queued;
             req.wraith_in_txid = None;
             req.wraith_out_txid = None;
@@ -333,13 +325,11 @@ impl WraithWasher {
             Self::persist_delete(&self.storage, txid);
         }
 
-        self.queue.retain(|r| {
-            match r.status {
-                WashStatus::Completed | WashStatus::Failed => {
-                    now.saturating_sub(r.updated_at) < max_age
-                }
-                _ => true,
+        self.queue.retain(|r| match r.status {
+            WashStatus::Completed | WashStatus::Failed => {
+                now.saturating_sub(r.updated_at) < max_age
             }
+            _ => true,
         });
     }
 
@@ -420,7 +410,10 @@ mod tests {
         assert!(washer.mark_completed("tx_original", "tx_wraith_out", 3000));
         let completed = washer.get_completed();
         assert_eq!(completed.len(), 1);
-        assert_eq!(completed[0].wraith_out_txid.as_deref(), Some("tx_wraith_out"));
+        assert_eq!(
+            completed[0].wraith_out_txid.as_deref(),
+            Some("tx_wraith_out")
+        );
 
         // Pending should now be empty
         assert!(washer.get_pending().is_empty());

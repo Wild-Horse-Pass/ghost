@@ -236,11 +236,7 @@ impl Keystore {
     /// / miniscript. A coordinator drops this fragment into a
     /// wrapper like `wsh(sortedmulti(2, A, B, C))` or
     /// `tr(multi_a(2, A, B, C))` to assemble the multisig.
-    pub fn export_xpub(
-        &self,
-        path: &str,
-        mainnet: bool,
-    ) -> Result<XpubExport, KeystoreError> {
+    pub fn export_xpub(&self, path: &str, mainnet: bool) -> Result<XpubExport, KeystoreError> {
         let xprv = self.derive_xprv(path)?;
         let xpub = xprv.public_key();
         let prefix = if mainnet {
@@ -355,7 +351,9 @@ mod tests {
             exp.xpub
         );
         assert!(exp.descriptor_key_fragment.contains("tpub"));
-        assert!(exp.descriptor_key_fragment.starts_with("[73c5da0a/48'/1'/0'/2']"));
+        assert!(exp
+            .descriptor_key_fragment
+            .starts_with("[73c5da0a/48'/1'/0'/2']"));
     }
 
     #[test]

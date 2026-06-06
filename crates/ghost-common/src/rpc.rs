@@ -581,12 +581,11 @@ impl BitcoinRpc {
             base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes()),
         );
 
-        let mut client_builder =
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(config.timeout_secs))
-                // Proactively close idle connections before ghostd's HTTP keep-alive
-                // expires, preventing "error sending request" on stale connections
-                .pool_idle_timeout(std::time::Duration::from_secs(15));
+        let mut client_builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            // Proactively close idle connections before ghostd's HTTP keep-alive
+            // expires, preventing "error sending request" on stale connections
+            .pool_idle_timeout(std::time::Duration::from_secs(15));
 
         // Add custom CA certificate if provided
         if let Some(ref cert_path) = config.tls_cert_path {
@@ -1154,11 +1153,8 @@ impl BitcoinRpc {
         &self,
         scan_objects: Vec<&str>,
     ) -> GhostResult<ScanTxOutSetResult> {
-        self.call(
-            "scantxoutset",
-            vec![json!("start"), json!(scan_objects)],
-        )
-        .await
+        self.call("scantxoutset", vec![json!("start"), json!(scan_objects)])
+            .await
     }
 
     /// Create raw transaction
@@ -1192,11 +1188,7 @@ impl BitcoinRpc {
     }
 
     /// Call an arbitrary RPC method (for methods not wrapped with typed helpers)
-    pub async fn call_raw(
-        &self,
-        method: &str,
-        params: Vec<Value>,
-    ) -> GhostResult<Value> {
+    pub async fn call_raw(&self, method: &str, params: Vec<Value>) -> GhostResult<Value> {
         self.call(method, params).await
     }
 
