@@ -407,15 +407,24 @@ pub fn into_static(m: AnyMessage<'_>) -> AnyMessage<'static> {
 }
 
 pub mod http {
+    use std::io::Read;
+
+    // Uses `ureq` (rustls 0.23 / rustls-webpki 0.103) rather than `minreq`,
+    // whose `https` feature pins the vulnerable rustls-webpki 0.101.
     pub fn make_get_request(download_url: &str, retries: usize) -> Vec<u8> {
         for attempt in 1..=retries {
-            let response = minreq::get(download_url).send();
-            match response {
-                Ok(res) => {
-                    let status_code = res.status_code;
-                    if (200..300).contains(&status_code) {
-                        return res.as_bytes().to_vec();
-                    } else if (500..600).contains(&status_code) {
+            match ureq::get(download_url).call() {
+                Ok(response) => {
+                    let mut buf = Vec::new();
+                    match response.into_reader().read_to_end(&mut buf) {
+                        Ok(_) => return buf,
+                        Err(err) => eprintln!(
+                            "Attempt {attempt}: failed reading body from {download_url}: {err:?}"
+                        ),
+                    }
+                }
+                Err(ureq::Error::Status(status_code, _)) => {
+                    if (500..600).contains(&status_code) {
                         eprintln!(
                             "Attempt {attempt}: URL {download_url} returned a server error code {status_code}"
                         );
@@ -426,12 +435,7 @@ pub mod http {
                     }
                 }
                 Err(err) => {
-                    eprintln!(
-                        "Attempt {}: Failed to fetch URL {}: {:?}",
-                        attempt + 1,
-                        download_url,
-                        err
-                    );
+                    eprintln!("Attempt {attempt}: Failed to fetch URL {download_url}: {err:?}");
                 }
             }
 
