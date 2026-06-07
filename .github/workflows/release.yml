@@ -27,7 +27,7 @@ jobs:
             suffix: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -84,7 +84,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bitcoin-ghost-${{ matrix.target }}
           path: bitcoin-ghost-${{ github.ref_name }}-${{ matrix.target }}.*
@@ -96,10 +96,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -131,7 +131,7 @@ jobs:
           gpg --verify SHA256SUMS.txt.asc SHA256SUMS.txt
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true
