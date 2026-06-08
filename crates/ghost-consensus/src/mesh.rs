@@ -3152,10 +3152,7 @@ mod tests {
         );
 
         // No path => no persistence (start 0, effectively unbounded ceiling).
-        assert_eq!(
-            MeshNetwork::load_and_reserve_sequence(None),
-            (0, u64::MAX)
-        );
+        assert_eq!(MeshNetwork::load_and_reserve_sequence(None), (0, u64::MAX));
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();
