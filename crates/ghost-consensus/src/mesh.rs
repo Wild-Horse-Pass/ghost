@@ -588,24 +588,42 @@ impl SeenMessageCache {
                 true
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
-                // First message from this sender
-                if sequence > MAX_SEQUENCE_JUMP {
-                    warn!(
-                        sender = %hex::encode(&sender[..8]),
-                        sequence = sequence,
-                        max_initial = MAX_SEQUENCE_JUMP,
-                        "H-P2P-5: Rejecting first message with unreasonably high sequence"
-                    );
-                    return false;
-                }
-
-                // Valid first message - insert state atomically
+                // First message from this sender — establish the sequence baseline.
+                //
+                // RESTART RE-BASELINE (H-P2P-5): after our own restart the
+                // sequence_state map is empty, so the first message from an honest
+                // long-running peer carries its current (high) counter. We MUST
+                // accept it as the baseline. Previously this rejected any first
+                // message with sequence > MAX_SEQUENCE_JUMP and returned WITHOUT
+                // inserting state — which permanently locked a restarted node out
+                // of every peer past 1M messages: each later message was again
+                // "first", re-rejected forever, leaving the node stuck behind on
+                // checkpoint consensus until the peer itself restarted.
+                //
+                // Accepting any first sequence is safe:
+                //  - the sender is authenticated (mesh Noise/signed), so a high
+                //    sequence is the peer's real counter, not a forgery;
+                //  - a first message cannot be a replay (no prior state);
+                //  - everything after the baseline is still bounded by strict
+                //    forward-ordering, the per-message jump cap (MAX_SEQUENCE_JUMP)
+                //    and the H-7 cumulative-distance gate;
+                //  - a near-u64::MAX baseline cannot fake a wrap-around — that
+                //    path requires message_count >= MIN_MESSAGES_BEFORE_WRAP, and a
+                //    fresh baseline has message_count == 1.
+                //
+                // cumulative_distance starts at 0: no distance has been travelled
+                // since we began observing this peer.
+                debug!(
+                    sender = %hex::encode(&sender[..8]),
+                    sequence = sequence,
+                    "H-P2P-5: Establishing sequence baseline for peer (first message since (re)start)"
+                );
                 entry.insert(SequenceState {
                     highest_seq: sequence,
                     epoch: 0,
                     message_count: 1,
                     last_message_time: now_secs,
-                    cumulative_distance: sequence,
+                    cumulative_distance: 0,
                 });
                 true
             }
@@ -2975,6 +2993,36 @@ mod tests {
 
         // Total should still be 5 (sender1: 3, sender2: 2)
         assert_eq!(cache.len(), 5);
+    }
+
+    #[test]
+    fn test_restart_rebaseline_accepts_high_first_sequence() {
+        // H-P2P-5 RESTART RE-BASELINE: after a node restart the sequence_state map
+        // is empty, so an honest long-running peer's first message carries its
+        // current (high) counter. That first message MUST be accepted as the
+        // baseline, otherwise the restarted node is permanently locked out of the
+        // peer (every later message is again "first" and re-rejected), leaving it
+        // stuck behind on checkpoint consensus.
+        let mut cache = SeenMessageCache::new(100);
+        let sender = [7u8; 32];
+
+        // First message well past the old 1M first-message cap — this is the
+        // real value observed on mainnet when a single node was restarted.
+        let high_seq = MAX_SEQUENCE_JUMP + 134_147; // 1,134,147
+        assert!(
+            cache.validate_and_update_sequence(&sender, high_seq),
+            "a high first sequence must be accepted as the baseline after restart"
+        );
+
+        // Subsequent in-order messages from the same peer keep flowing.
+        assert!(cache.validate_and_update_sequence(&sender, high_seq + 1));
+        assert!(cache.validate_and_update_sequence(&sender, high_seq + 2));
+
+        // Replay protection still holds: a sequence far below the baseline is rejected.
+        assert!(
+            !cache.validate_and_update_sequence(&sender, high_seq - 1_000),
+            "replays below the established baseline must still be rejected"
+        );
     }
 
     #[test]
