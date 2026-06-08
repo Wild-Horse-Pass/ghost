@@ -53,7 +53,7 @@ use futures::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tmq::{publish, subscribe, Context, Multipart};
 use tokio::sync::mpsc;
@@ -217,6 +217,10 @@ pub struct MeshNetwork {
     /// to gossip the local active set so peers can compute a deduplicated
     /// mesh-wide active miner count.
     active_miner_hashes_fn: Option<Arc<dyn Fn() -> Vec<[u8; 16]> + Send + Sync>>,
+    /// Hardware-derived effective capacity advertised in health pings.
+    /// `0` means we haven't computed it yet (mesh started before capacity
+    /// init); peers treat it as unknown and skip utilisation routing for us.
+    max_capacity: AtomicU32,
 }
 
 /// Message identifier for deduplication
@@ -584,24 +588,42 @@ impl SeenMessageCache {
                 true
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
-                // First message from this sender
-                if sequence > MAX_SEQUENCE_JUMP {
-                    warn!(
-                        sender = %hex::encode(&sender[..8]),
-                        sequence = sequence,
-                        max_initial = MAX_SEQUENCE_JUMP,
-                        "H-P2P-5: Rejecting first message with unreasonably high sequence"
-                    );
-                    return false;
-                }
-
-                // Valid first message - insert state atomically
+                // First message from this sender — establish the sequence baseline.
+                //
+                // RESTART RE-BASELINE (H-P2P-5): after our own restart the
+                // sequence_state map is empty, so the first message from an honest
+                // long-running peer carries its current (high) counter. We MUST
+                // accept it as the baseline. Previously this rejected any first
+                // message with sequence > MAX_SEQUENCE_JUMP and returned WITHOUT
+                // inserting state — which permanently locked a restarted node out
+                // of every peer past 1M messages: each later message was again
+                // "first", re-rejected forever, leaving the node stuck behind on
+                // checkpoint consensus until the peer itself restarted.
+                //
+                // Accepting any first sequence is safe:
+                //  - the sender is authenticated (mesh Noise/signed), so a high
+                //    sequence is the peer's real counter, not a forgery;
+                //  - a first message cannot be a replay (no prior state);
+                //  - everything after the baseline is still bounded by strict
+                //    forward-ordering, the per-message jump cap (MAX_SEQUENCE_JUMP)
+                //    and the H-7 cumulative-distance gate;
+                //  - a near-u64::MAX baseline cannot fake a wrap-around — that
+                //    path requires message_count >= MIN_MESSAGES_BEFORE_WRAP, and a
+                //    fresh baseline has message_count == 1.
+                //
+                // cumulative_distance starts at 0: no distance has been travelled
+                // since we began observing this peer.
+                debug!(
+                    sender = %hex::encode(&sender[..8]),
+                    sequence = sequence,
+                    "H-P2P-5: Establishing sequence baseline for peer (first message since (re)start)"
+                );
                 entry.insert(SequenceState {
                     highest_seq: sequence,
                     epoch: 0,
                     message_count: 1,
                     last_message_time: now_secs,
-                    cumulative_distance: sequence,
+                    cumulative_distance: 0,
                 });
                 true
             }
@@ -985,7 +1007,15 @@ impl MeshNetwork {
             noise_pool,
             miner_count_fn: None,
             active_miner_hashes_fn: None,
+            max_capacity: AtomicU32::new(0),
         })
+    }
+
+    /// Set the hardware-derived miner capacity advertised in health pings.
+    /// Should be called once at startup after `capacity::measure`; can be
+    /// re-called if the operator throttle (`network.max_miners`) changes.
+    pub fn set_max_capacity(&self, value: u32) {
+        self.max_capacity.store(value, Ordering::Relaxed);
     }
 
     /// Set a callback that provides the real connected-miner count for health pings.
@@ -2226,7 +2256,12 @@ impl MeshNetwork {
                     // Rejects messages cheaply before full deserialization when the
                     // topic maps to exactly one expected MessageType.
                     if let Some(expected_type) = Self::primary_message_type_for_topic(topic_name) {
-                        if crate::message_validator::validate_topic_before_deser(&data, expected_type).is_err() {
+                        if crate::message_validator::validate_topic_before_deser(
+                            &data,
+                            expected_type,
+                        )
+                        .is_err()
+                        {
                             debug!(
                                 topic = topic_name,
                                 "M-9: Fast topic validation rejected message before deserialization"
@@ -2380,17 +2415,22 @@ impl MeshNetwork {
             let ping = ghost_common::types::HealthPing {
                 node_id: self.identity.node_id(),
                 public_address: String::new(), // S-7: Don't broadcast IP in cleartext ZMQ
-                block_height: 0, // Would track actual height
-                round_id: 0,     // Would track current round
+                block_height: 0,               // Would track actual height
+                round_id: 0,                   // Would track current round
                 capabilities: *self.capabilities.read(),
-                miner_count: self.miner_count_fn.as_ref()
+                miner_count: self
+                    .miner_count_fn
+                    .as_ref()
                     .map(|f| f())
                     .unwrap_or(self.peers.peer_count() as u32),
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                 pow_proof,
-                active_miner_id_hashes: self.active_miner_hashes_fn.as_ref()
+                active_miner_id_hashes: self
+                    .active_miner_hashes_fn
+                    .as_ref()
                     .map(|f| f())
                     .unwrap_or_default(),
+                max_capacity: self.max_capacity.load(Ordering::Relaxed),
             };
 
             match self.create_envelope(
@@ -2561,8 +2601,9 @@ impl MeshNetwork {
             | MessageType::L2TreeSync
             | MessageType::L2ShieldBroadcast => self.config.ports.consensus_voting,
             MessageType::VerificationResult => self.config.ports.health_monitoring,
-            MessageType::GhostGlyphClaim
-            | MessageType::GhostGlyphRegistered => self.config.ports.consensus_voting,
+            MessageType::GhostGlyphClaim | MessageType::GhostGlyphRegistered => {
+                self.config.ports.consensus_voting
+            }
         };
         port == expected_port
     }
@@ -2952,6 +2993,36 @@ mod tests {
 
         // Total should still be 5 (sender1: 3, sender2: 2)
         assert_eq!(cache.len(), 5);
+    }
+
+    #[test]
+    fn test_restart_rebaseline_accepts_high_first_sequence() {
+        // H-P2P-5 RESTART RE-BASELINE: after a node restart the sequence_state map
+        // is empty, so an honest long-running peer's first message carries its
+        // current (high) counter. That first message MUST be accepted as the
+        // baseline, otherwise the restarted node is permanently locked out of the
+        // peer (every later message is again "first" and re-rejected), leaving it
+        // stuck behind on checkpoint consensus.
+        let mut cache = SeenMessageCache::new(100);
+        let sender = [7u8; 32];
+
+        // First message well past the old 1M first-message cap — this is the
+        // real value observed on mainnet when a single node was restarted.
+        let high_seq = MAX_SEQUENCE_JUMP + 134_147; // 1,134,147
+        assert!(
+            cache.validate_and_update_sequence(&sender, high_seq),
+            "a high first sequence must be accepted as the baseline after restart"
+        );
+
+        // Subsequent in-order messages from the same peer keep flowing.
+        assert!(cache.validate_and_update_sequence(&sender, high_seq + 1));
+        assert!(cache.validate_and_update_sequence(&sender, high_seq + 2));
+
+        // Replay protection still holds: a sequence far below the baseline is rejected.
+        assert!(
+            !cache.validate_and_update_sequence(&sender, high_seq - 1_000),
+            "replays below the established baseline must still be rejected"
+        );
     }
 
     #[test]

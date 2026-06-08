@@ -15,8 +15,8 @@ pub mod note_consolidate;
 pub mod note_spend;
 pub mod payment;
 pub mod range_proof;
-pub mod unshield;
 pub mod state_transition;
+pub mod unshield;
 
 pub use block::{BlockCircuit, BlockCircuitBuilder};
 pub use commitment::{

@@ -199,15 +199,11 @@ impl L2Prover {
             note_index: sender_note_index,
         }
         .encrypt(recipient_pubkey)
-        .map_err(|e| {
-            NetworkError::RequestFailed(format!("Recipient encryption failed: {}", e))
-        })?;
+        .map_err(|e| NetworkError::RequestFailed(format!("Recipient encryption failed: {}", e)))?;
 
         info!(
             sender_index = sender_note_index,
-            amount,
-            epoch,
-            "NoteSpend proof generated"
+            amount, epoch, "NoteSpend proof generated"
         );
 
         Ok(TransferResult {
@@ -243,9 +239,9 @@ impl L2Prover {
         let mut total_value = 0u64;
 
         for &idx in note_indices {
-            let note = note_store.get_note(idx).ok_or_else(|| {
-                NetworkError::RequestFailed(format!("Note {} not found", idx))
-            })?;
+            let note = note_store
+                .get_note(idx)
+                .ok_or_else(|| NetworkError::RequestFailed(format!("Note {} not found", idx)))?;
             if note.spent {
                 return Err(NetworkError::RequestFailed(format!(
                     "Note {} is already spent",
@@ -305,9 +301,7 @@ impl L2Prover {
 
         info!(
             input_count = note_indices.len(),
-            total_value,
-            epoch,
-            "Consolidation proof generated"
+            total_value, epoch, "Consolidation proof generated"
         );
 
         Ok(ConsolidationResult {
@@ -329,9 +323,9 @@ impl L2Prover {
         note_index: u64,
         epoch: u64,
     ) -> Result<UnshieldResult, NetworkError> {
-        let note = note_store.get_note(note_index).ok_or_else(|| {
-            NetworkError::RequestFailed(format!("Note {} not found", note_index))
-        })?;
+        let note = note_store
+            .get_note(note_index)
+            .ok_or_else(|| NetworkError::RequestFailed(format!("Note {} not found", note_index)))?;
 
         if note.spent {
             return Err(NetworkError::RequestFailed(format!(
@@ -340,9 +334,9 @@ impl L2Prover {
             )));
         }
 
-        let merkle_proof = tree.get_proof(note_index).map_err(|e| {
-            NetworkError::RequestFailed(format!("Merkle proof failed: {}", e))
-        })?;
+        let merkle_proof = tree
+            .get_proof(note_index)
+            .map_err(|e| NetworkError::RequestFailed(format!("Merkle proof failed: {}", e)))?;
 
         let witness = UnshieldWitness {
             spending_key: *note_store.spending_key(),
@@ -353,9 +347,10 @@ impl L2Prover {
             merkle_siblings: merkle_proof.siblings,
         };
 
-        let proof = self.unshield_prover.prove(&witness).map_err(|e| {
-            NetworkError::RequestFailed(format!("Unshield proof failed: {}", e))
-        })?;
+        let proof = self
+            .unshield_prover
+            .prove(&witness)
+            .map_err(|e| NetworkError::RequestFailed(format!("Unshield proof failed: {}", e)))?;
 
         info!(
             note_index,

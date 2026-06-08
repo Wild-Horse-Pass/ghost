@@ -27,7 +27,9 @@ impl std::fmt::Display for PinError {
         match self {
             PinError::InvalidFormat => write!(f, "PIN must be exactly 6 digits"),
             PinError::Storage(e) => write!(f, "storage error: {e}"),
-            PinError::LockedOut => write!(f, "too many failed attempts, re-import mnemonic required"),
+            PinError::LockedOut => {
+                write!(f, "too many failed attempts, re-import mnemonic required")
+            }
         }
     }
 }
@@ -81,7 +83,8 @@ impl PinManager {
         stored.extend_from_slice(&hash);
         self.keychain.store(KEYCHAIN_KEY_PIN_HASH, &stored)?;
         // Reset fail counter on PIN change
-        self.keychain.store(KEYCHAIN_KEY_FAIL_COUNT, &0u32.to_le_bytes())?;
+        self.keychain
+            .store(KEYCHAIN_KEY_FAIL_COUNT, &0u32.to_le_bytes())?;
         Ok(())
     }
 
@@ -139,8 +142,7 @@ impl PinManager {
 
     /// Authenticate with biometrics (delegates to keychain).
     pub fn authenticate_biometric() -> Result<bool, PinError> {
-        Keychain::authenticate_biometric("Unlock GhostTap wallet")
-            .map_err(PinError::from)
+        Keychain::authenticate_biometric("Unlock GhostTap wallet").map_err(PinError::from)
     }
 
     // -- Private helpers --
@@ -252,7 +254,10 @@ mod tests {
     fn test_invalid_pin_format() {
         let pm = test_pm("format");
         assert!(matches!(pm.set_pin("12345"), Err(PinError::InvalidFormat)));
-        assert!(matches!(pm.set_pin("1234567"), Err(PinError::InvalidFormat)));
+        assert!(matches!(
+            pm.set_pin("1234567"),
+            Err(PinError::InvalidFormat)
+        ));
         assert!(matches!(pm.set_pin("abcdef"), Err(PinError::InvalidFormat)));
         assert!(matches!(pm.set_pin("12ab56"), Err(PinError::InvalidFormat)));
     }

@@ -149,9 +149,7 @@ async fn load_04_rate_limiting_triggers() {
     for _ in 0..50 {
         let c = client.clone();
         let ip = target_ip.clone();
-        handles.push(tokio::spawn(
-            async move { c.get(&ip, "/health").await },
-        ));
+        handles.push(tokio::spawn(async move { c.get(&ip, "/health").await }));
     }
 
     let mut got_429 = false;
@@ -345,7 +343,8 @@ async fn load_07_mixed_realistic_traffic() {
             let mut req_count = 0u64;
             while start.elapsed() < duration {
                 let ip = &ips[user_id % ips.len()];
-                let endpoint = dashboard_endpoints[(req_count as usize) % dashboard_endpoints.len()];
+                let endpoint =
+                    dashboard_endpoints[(req_count as usize) % dashboard_endpoints.len()];
                 let result = c.get(ip, endpoint).await;
                 m.lock().await.record(result);
                 req_count += 1;

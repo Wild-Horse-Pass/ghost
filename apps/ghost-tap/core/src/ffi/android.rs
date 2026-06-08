@@ -12,11 +12,14 @@ use jni::{
 };
 
 #[cfg(target_os = "android")]
+use once_cell::sync::Lazy;
+#[cfg(target_os = "android")]
 use std::collections::HashMap;
 #[cfg(target_os = "android")]
-use std::sync::{atomic::{AtomicI64, Ordering}, Mutex};
-#[cfg(target_os = "android")]
-use once_cell::sync::Lazy;
+use std::sync::{
+    atomic::{AtomicI64, Ordering},
+    Mutex,
+};
 
 // ---------------------------------------------------------------------------
 // Wallet handle registry + Connection singleton
@@ -175,7 +178,11 @@ pub extern "system" fn Java_com_ghost_tap_RustBridge_importWallet(
         match env.get_string(&passphrase) {
             Ok(s) => {
                 let s: String = s.into();
-                if s.is_empty() { None } else { Some(s) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
             }
             Err(_) => None,
         }
@@ -395,9 +402,7 @@ pub extern "system" fn Java_com_ghost_tap_RustBridge_broadcastTransaction<'a>(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let output = env
-        .new_string(&txid)
-        .expect("Failed to create txid string");
+    let output = env.new_string(&txid).expect("Failed to create txid string");
     output.into_raw()
 }
 

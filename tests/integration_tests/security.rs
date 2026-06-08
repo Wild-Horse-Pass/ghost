@@ -782,16 +782,18 @@ async fn test_658_noise_connection_pool_establishment() {
     let keypair2 = NoiseKeypair::generate();
 
     let test_config = NoisePoolConfig {
-        noise: NoiseConfig { allow_unknown_peers: true, ..NoiseConfig::default() },
+        noise: NoiseConfig {
+            allow_unknown_peers: true,
+            ..NoiseConfig::default()
+        },
         ..NoisePoolConfig::default()
     };
 
     let pool1 = std::sync::Arc::new(
         NoiseConnectionPool::new(keypair1.clone(), test_config.clone()).unwrap(),
     );
-    let pool2 = std::sync::Arc::new(
-        NoiseConnectionPool::new(keypair2.clone(), test_config).unwrap(),
-    );
+    let pool2 =
+        std::sync::Arc::new(NoiseConnectionPool::new(keypair2.clone(), test_config).unwrap());
 
     // Start listener for pool2
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -6,6 +6,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ghost Core · Bitcoin Ghost</title>
   <meta name="description" content="The bootstrap-to-sovereign journey. Live treasury progress, mesh state, and the rules that make Ghost run forever on its own.">
+  <meta property="og:site_name" content="Bitcoin Ghost">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Ghost Core · Bitcoin Ghost">
+  <meta property="og:description" content="Node mesh, treasury, elders, and the 5-year decay to ossification. Live state for the Bitcoin Ghost network.">
+  <meta property="og:url" content="https://bitcoinghost.org/core.html">
+  <meta property="og:image" content="https://bitcoinghost.org/logo.png">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:site" content="@defenwycke">
+  <meta name="twitter:creator" content="@defenwycke">
+  <meta name="twitter:title" content="Ghost Core · Bitcoin Ghost">
+  <meta name="twitter:description" content="Node mesh, treasury, elders, and the 5-year decay to ossification. Live state for the Bitcoin Ghost network.">
+  <meta name="twitter:image" content="https://bitcoinghost.org/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -412,6 +424,48 @@
     return (ths / 1e6).toFixed(2) + '<span class="unit"> EH/s</span>';
   }
 
+  // ─── Sliding-window smoothers ──────────────────────────────────────────
+  // Damp poll-cycle jitter on numeric metrics. Each `smooth(key, raw)` call
+  // appends `raw` to the named ring buffer (default 8 samples ≈ 4 min at
+  // 30s polls) and returns a smoothed value:
+  //   • mode 'ema' (default)    — exponential moving average, alpha=0.35
+  //   • mode 'median'           — middle of the buffer, ideal for discrete
+  //                               counts where fractional EMAs look silly
+  // Drop-in: replace `raw` with `smooth('hashrate', raw)` at render time.
+  // The buffers live only in-memory — page refresh resets them, which keeps
+  // the smoothing honest after a real outage.
+  var __smoothers = {};
+  function smooth(key, raw, opts) {
+    opts = opts || {};
+    var maxN = opts.window || 8;
+    var mode = opts.mode || 'ema';
+    var alpha = opts.alpha != null ? opts.alpha : 0.35;
+    var s = __smoothers[key] || (__smoothers[key] = []);
+    if (raw != null && isFinite(raw)) s.push(raw);
+    while (s.length > maxN) s.shift();
+    if (!s.length) return null;
+    if (mode === 'median') {
+      var sorted = s.slice().sort(function (a, b) { return a - b; });
+      var mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+    var v = s[0];
+    for (var i = 1; i < s.length; i++) v = alpha * s[i] + (1 - alpha) * v;
+    return v;
+  }
+  // Smooth a stored history series of [t, v] points into a new EMA series
+  // for charting. Same alpha as point-wise smoother so headline tile and
+  // chart line agree visually.
+  function smoothSeries(series, alpha) {
+    if (!series || !series.length) return [];
+    alpha = alpha != null ? alpha : 0.35;
+    var out = [series[0].slice()];
+    for (var i = 1; i < series.length; i++) {
+      out.push([series[i][0], alpha * series[i][1] + (1 - alpha) * out[i - 1][1]]);
+    }
+    return out;
+  }
+
   // Fetches the first VM that responds (falls back through the list).
   async function fetchAny(path) {
     for (var i = 0; i < POOL_VMS.length; i++) {
@@ -597,8 +651,11 @@
       if (r.block_height && r.block_height > height) height = r.block_height;
       blocksFound = Math.max(blocksFound, r.blocks_found || 0);
     });
-    document.getElementById('ct-hashrate').innerHTML = fmtHashrate(hashrate);
-    document.getElementById('ct-miners').textContent = (mesh !== null ? mesh : maxActive) + ' active miners';
+    var hashrateSmoothed = smooth('hashrate', hashrate);
+    document.getElementById('ct-hashrate').innerHTML = fmtHashrate(hashrateSmoothed != null ? hashrateSmoothed : hashrate);
+    var rawMiners = mesh !== null ? mesh : maxActive;
+    var minersSmoothed = smooth('miners', rawMiners, { mode: 'median' });
+    document.getElementById('ct-miners').textContent = Math.round(minersSmoothed != null ? minersSmoothed : rawMiners) + ' active miners';
     document.getElementById('ct-height').textContent = height ? height.toLocaleString() : '—';
     document.getElementById('ct-blocks-found').textContent = blocksFound.toLocaleString() + ' blocks found by ghost';
   }

@@ -87,7 +87,10 @@ impl WalletStorage {
     const SCHEMA_VERSION: i32 = 3;
 
     fn create_tables(&self) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
 
         // Check current schema version
         let version: i32 = conn
@@ -185,7 +188,10 @@ impl WalletStorage {
 
     /// Store a key-value pair (optionally encrypted)
     pub fn set(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO kv_store (key, value, encrypted) VALUES (?1, ?2, 0)",
             params![key, value],
@@ -196,7 +202,10 @@ impl WalletStorage {
     /// Store an encrypted key-value pair
     pub fn set_encrypted(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
         let encrypted = self.encrypt_value(value)?;
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO kv_store (key, value, encrypted) VALUES (?1, ?2, 1)",
             params![key, encrypted],
@@ -206,7 +215,10 @@ impl WalletStorage {
 
     /// Retrieve a value by key (auto-decrypts if encrypted)
     pub fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         let (value, encrypted): (Vec<u8>, bool) = conn
             .query_row(
                 "SELECT value, encrypted FROM kv_store WHERE key = ?1",
@@ -214,9 +226,7 @@ impl WalletStorage {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StorageError::NotFound(key.to_string())
-                }
+                rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(key.to_string()),
                 _ => StorageError::Database(e.to_string()),
             })?;
 
@@ -229,14 +239,20 @@ impl WalletStorage {
 
     /// Delete a key
     pub fn delete(&self, key: &str) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute("DELETE FROM kv_store WHERE key = ?1", params![key])?;
         Ok(())
     }
 
     /// List all keys with a prefix
     pub fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         let escaped = prefix
             .replace('\\', "\\\\")
             .replace('%', "\\%")
@@ -253,10 +269,13 @@ impl WalletStorage {
 
     /// Save the UTXO set (replaces all existing) as a single encrypted blob.
     pub fn save_utxos(&self, utxos: &[Utxo]) -> Result<(), StorageError> {
-        let json = serde_json::to_vec(utxos)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let json =
+            serde_json::to_vec(utxos).map_err(|e| StorageError::Serialization(e.to_string()))?;
         let encrypted = self.encrypt_value(&json)?;
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO utxos (id, data) VALUES (1, ?1)",
             params![encrypted],
@@ -266,30 +285,32 @@ impl WalletStorage {
 
     /// Load all UTXOs from the encrypted blob.
     pub fn load_utxos(&self) -> Result<Vec<Utxo>, StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
-        let encrypted: Vec<u8> = match conn.query_row(
-            "SELECT data FROM utxos WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ) {
-            Ok(data) => data,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
-            Err(e) => return Err(StorageError::Database(e.to_string())),
-        };
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let encrypted: Vec<u8> =
+            match conn.query_row("SELECT data FROM utxos WHERE id = 1", [], |row| row.get(0)) {
+                Ok(data) => data,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+                Err(e) => return Err(StorageError::Database(e.to_string())),
+            };
         drop(conn);
         let json = self.decrypt_value(&encrypted)?;
-        serde_json::from_slice(&json)
-            .map_err(|e| StorageError::Serialization(e.to_string()))
+        serde_json::from_slice(&json).map_err(|e| StorageError::Serialization(e.to_string()))
     }
 
     // --- History ---
 
     /// Save a history entry (encrypted blob with plaintext txid + timestamp for ordering).
     pub fn save_history_entry(&self, entry: &HistoryEntry) -> Result<(), StorageError> {
-        let json = serde_json::to_vec(entry)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let json =
+            serde_json::to_vec(entry).map_err(|e| StorageError::Serialization(e.to_string()))?;
         let encrypted = self.encrypt_value(&json)?;
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO history (txid, timestamp, data) VALUES (?1, ?2, ?3)",
             params![entry.txid, entry.timestamp as i64, encrypted],
@@ -298,11 +319,17 @@ impl WalletStorage {
     }
 
     /// Load transaction history (newest first)
-    pub fn load_history(&self, offset: usize, limit: usize) -> Result<Vec<HistoryEntry>, StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
-        let mut stmt = conn.prepare(
-            "SELECT data FROM history ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2",
-        )?;
+    pub fn load_history(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut stmt =
+            conn.prepare("SELECT data FROM history ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2")?;
         let blobs: Vec<Vec<u8>> = stmt
             .query_map(params![limit as i64, offset as i64], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -328,7 +355,10 @@ impl WalletStorage {
 
     /// Save wallet metadata
     pub fn save_wallet_meta(&self, meta: &WalletMeta) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO wallet_meta (id, wallet_id, account_index, next_receive_index, next_change_index, created_at)
              VALUES (1, ?1, ?2, ?3, ?4, ?5)",
@@ -345,7 +375,10 @@ impl WalletStorage {
 
     /// Load wallet metadata
     pub fn load_wallet_meta(&self) -> Result<WalletMeta, StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.query_row(
             "SELECT wallet_id, account_index, next_receive_index, next_change_index, created_at FROM wallet_meta WHERE id = 1",
             [],
@@ -370,7 +403,10 @@ impl WalletStorage {
     /// Save merchant profile (serialized as JSON, encrypted)
     pub fn save_merchant_profile(&self, data: &[u8]) -> Result<(), StorageError> {
         let encrypted = self.encrypt_value(data)?;
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO merchant_profile (id, data) VALUES (1, ?1)",
             params![encrypted],
@@ -380,7 +416,10 @@ impl WalletStorage {
 
     /// Load merchant profile (decrypted)
     pub fn load_merchant_profile(&self) -> Result<Vec<u8>, StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         let encrypted: Vec<u8> = conn
             .query_row(
                 "SELECT data FROM merchant_profile WHERE id = 1",
@@ -403,11 +442,14 @@ impl WalletStorage {
         &self,
         req: &crate::merchant::wraith::WashRequest,
     ) -> Result<(), StorageError> {
-        let json = serde_json::to_vec(req)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let json =
+            serde_json::to_vec(req).map_err(|e| StorageError::Serialization(e.to_string()))?;
         let encrypted = self.encrypt_value(&json)?;
         let status = req.status.to_string();
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO wash_queue (txid, status, updated_at, data) VALUES (?1, ?2, ?3, ?4)",
             params![req.txid, status, req.updated_at as i64, encrypted],
@@ -419,7 +461,10 @@ impl WalletStorage {
     pub fn load_wash_queue(
         &self,
     ) -> Result<Vec<crate::merchant::wraith::WashRequest>, StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         let mut stmt = conn.prepare("SELECT data FROM wash_queue")?;
         let blobs: Vec<Vec<u8>> = stmt
             .query_map([], |row| row.get(0))?
@@ -439,7 +484,10 @@ impl WalletStorage {
 
     /// Delete a wash request by txid
     pub fn delete_wash_request(&self, txid: &str) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute("DELETE FROM wash_queue WHERE txid = ?1", params![txid])?;
         Ok(())
     }
@@ -452,7 +500,10 @@ impl WalletStorage {
             .to_json()
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let encrypted = self.encrypt_value(json.as_bytes())?;
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO l2_notes (id, data) VALUES (1, ?1)",
             params![encrypted],
@@ -465,16 +516,18 @@ impl WalletStorage {
         &self,
         spending_key: [u8; 32],
     ) -> Result<Option<crate::l2::NoteStore>, StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
-        let encrypted: Vec<u8> = match conn.query_row(
-            "SELECT data FROM l2_notes WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ) {
-            Ok(data) => data,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-            Err(e) => return Err(StorageError::Database(e.to_string())),
-        };
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let encrypted: Vec<u8> =
+            match conn.query_row("SELECT data FROM l2_notes WHERE id = 1", [], |row| {
+                row.get(0)
+            }) {
+                Ok(data) => data,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(e) => return Err(StorageError::Database(e.to_string())),
+            };
         drop(conn);
 
         let json_bytes = self.decrypt_value(&encrypted)?;
@@ -494,7 +547,10 @@ impl WalletStorage {
         epoch: u64,
         root: &str,
     ) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO l2_sync (id, last_synced_height, current_epoch, tree_root)
              VALUES (1, ?1, ?2, ?3)",
@@ -505,7 +561,10 @@ impl WalletStorage {
 
     /// Load L2 sync state.
     pub fn load_l2_sync_state(&self) -> Result<(u64, u64, String), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.query_row(
             "SELECT last_synced_height, current_epoch, tree_root FROM l2_sync WHERE id = 1",
             [],
@@ -527,7 +586,10 @@ impl WalletStorage {
 
     /// Save MPC params cache metadata.
     pub fn save_l2_params_info(&self, path: &str, timestamp: u64) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO l2_params (id, params_path, downloaded_at)
              VALUES (1, ?1, ?2)",
@@ -538,16 +600,14 @@ impl WalletStorage {
 
     /// Load MPC params cache metadata.
     pub fn load_l2_params_info(&self) -> Result<(String, u64), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         conn.query_row(
             "SELECT params_path, downloaded_at FROM l2_params WHERE id = 1",
             [],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)? as u64,
-                ))
-            },
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)),
         )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound("l2_params".into()),
@@ -559,7 +619,10 @@ impl WalletStorage {
 
     /// Prune completed/failed wash requests older than max_age seconds
     pub fn prune_wash_queue(&self, now: u64, max_age: u64) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|e| StorageError::Database(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         let cutoff = now.saturating_sub(max_age) as i64;
         conn.execute(
             "DELETE FROM wash_queue WHERE (status = 'Completed' OR status = 'Failed') AND updated_at < ?1",

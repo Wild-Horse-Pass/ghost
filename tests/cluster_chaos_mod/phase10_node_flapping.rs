@@ -23,20 +23,29 @@ async fn flap_node(node: &NodeInfo, service: &str, cycles: usize, gap: Duration)
     for i in 1..=cycles {
         println!("  [FLAP] {} cycle {}/{}: stopping", node.name, i, cycles);
         if let Err(e) = SshController::stop_node(node, service) {
-            println!("  [FLAP] {} cycle {}/{}: stop error (continuing): {}", node.name, i, cycles, e);
+            println!(
+                "  [FLAP] {} cycle {}/{}: stop error (continuing): {}",
+                node.name, i, cycles, e
+            );
         }
         tokio::time::sleep(gap).await;
 
         println!("  [FLAP] {} cycle {}/{}: starting", node.name, i, cycles);
         if let Err(e) = SshController::start_node(node, service) {
-            println!("  [FLAP] {} cycle {}/{}: start error (continuing): {}", node.name, i, cycles, e);
+            println!(
+                "  [FLAP] {} cycle {}/{}: start error (continuing): {}",
+                node.name, i, cycles, e
+            );
         }
         tokio::time::sleep(gap).await;
     }
 
     // Ensure the node is in a running state after flapping, even if
     // systemd job cancellation left it stopped or in start-limit-hit.
-    println!("  [FLAP] {} ensuring service is running after flap cycles", node.name);
+    println!(
+        "  [FLAP] {} ensuring service is running after flap cycles",
+        node.name
+    );
     let _ = SshController::run_raw(node, &format!("sudo systemctl reset-failed {}", service));
     let _ = SshController::start_node(node, service);
 }
@@ -69,7 +78,9 @@ async fn flap_01_vm2_moderate_5x5s() {
     let mut peers = 0;
     for _ in 0..30 {
         peers = client.get_peer_count(vm2.ip).await.unwrap_or(0);
-        if peers >= 3 { break; }
+        if peers >= 3 {
+            break;
+        }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
     assert!(
@@ -108,7 +119,9 @@ async fn flap_02_vm2_aggressive_5x2s() {
     let mut peers = 0;
     for _ in 0..30 {
         peers = client.get_peer_count(vm2.ip).await.unwrap_or(0);
-        if peers >= 3 { break; }
+        if peers >= 3 {
+            break;
+        }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
     assert!(
@@ -210,8 +223,7 @@ async fn flap_04_survivors_healthy_during_flap() {
     });
 
     // Poll survivors during the flap (~30s)
-    let poll_deadline =
-        tokio::time::Instant::now() + Duration::from_secs(35);
+    let poll_deadline = tokio::time::Instant::now() + Duration::from_secs(35);
     while tokio::time::Instant::now() < poll_deadline {
         for entry in &mut polls_per_node {
             let r = client.get(&entry.0, "/health").await;
@@ -320,11 +332,7 @@ async fn flap_06_heights_consistent() {
 
     let max = heights.iter().map(|(_, h)| *h).max().unwrap();
     let min = heights.iter().map(|(_, h)| *h).min().unwrap();
-    assert!(
-        max - min <= 1,
-        "Post-flap heights diverge: {:?}",
-        heights
-    );
+    assert!(max - min <= 1, "Post-flap heights diverge: {:?}", heights);
     println!("  Heights consistent (diff <=1)");
 }
 
@@ -339,13 +347,9 @@ async fn flap_07_zero_panics() {
     println!("\n=== Node Flapping: Zero Panics Check ===");
 
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "20 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "20 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post-flap: {} had {} panics in last 20 min",

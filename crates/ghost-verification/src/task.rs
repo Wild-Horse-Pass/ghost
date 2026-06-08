@@ -675,6 +675,47 @@ impl VerificationTask {
         })
     }
 
+    /// Mainnet-correct constructor: HTTPS with identity-pinned TLS verification.
+    ///
+    /// This is the path you want when peers serve identity-derived certs (cert
+    /// pubkey == node_id). The supplied `pubkey_allow_list` is consulted
+    /// during the TLS handshake — return true iff the cert pubkey is a
+    /// currently-registered peer.
+    pub fn new_with_identity_pinned(
+        db: Arc<Database>,
+        identity: &ghost_common::identity::NodeIdentity,
+        peer_provider: Arc<dyn PeerProvider>,
+        pubkey_allow_list: ghost_common::tls::PubkeyAllowList,
+    ) -> Result<Self, VerificationTaskError> {
+        use crate::client::VerificationClientConfig;
+
+        let config = VerificationClientConfig {
+            use_https: true,
+            timeout: std::time::Duration::from_secs(
+                ghost_common::constants::VERIFICATION_TIMEOUT_SECS,
+            ),
+            danger_accept_invalid_certs: false,
+            is_mainnet: true,
+        };
+
+        let client = VerificationClient::with_pinning(config, pubkey_allow_list)
+            .map_err(|e| VerificationTaskError::ClientInit(e.to_string()))?;
+
+        let our_node_id = identity.node_id();
+
+        Ok(Self {
+            client,
+            db,
+            our_node_id,
+            identity_verified: true,
+            peer_provider,
+            config: VerificationTaskConfig::default(),
+            broadcast_tx: None,
+            rpc: None,
+            challenge_tracker: std::sync::Mutex::new(ChallengeTracker::new()),
+        })
+    }
+
     /// Create with custom configuration
     ///
     /// C-3: Returns Result instead of panicking on client creation failure.

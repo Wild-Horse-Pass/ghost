@@ -1076,4 +1076,3 @@ mod tests {
         assert!(matches!(action, L2ReorgAction::SlashProposer { .. }));
     }
 }
-

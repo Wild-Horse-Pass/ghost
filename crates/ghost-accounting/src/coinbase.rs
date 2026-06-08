@@ -293,18 +293,26 @@ mod tests {
 
     #[test]
     fn test_bip34_height_zero() {
-        let builder = CoinbaseBuilder::new(0).with_extra_nonce_size(0).with_pool_tag(Vec::new());
+        let builder = CoinbaseBuilder::new(0)
+            .with_extra_nonce_size(0)
+            .with_pool_tag(Vec::new());
         let script = builder.build_script_sig();
         let bytes = script.as_bytes();
         // Height 0: length byte = 1, then 0x00
         assert_eq!(bytes[0], 1, "height length byte should be 1 for height 0");
         assert_eq!(bytes[1], 0x00, "height 0 should encode as 0x00");
-        assert_eq!(bytes.len(), 2, "script should be exactly 2 bytes with no extras");
+        assert_eq!(
+            bytes.len(),
+            2,
+            "script should be exactly 2 bytes with no extras"
+        );
     }
 
     #[test]
     fn test_bip34_height_500k() {
-        let builder = CoinbaseBuilder::new(500_000).with_extra_nonce_size(0).with_pool_tag(Vec::new());
+        let builder = CoinbaseBuilder::new(500_000)
+            .with_extra_nonce_size(0)
+            .with_pool_tag(Vec::new());
         let script = builder.build_script_sig();
         let bytes = script.as_bytes();
         // 500,000 = 0x07A120 → LE bytes: [0x20, 0xA1, 0x07]
@@ -318,7 +326,9 @@ mod tests {
     #[test]
     fn test_bip34_height_max_u32() {
         let height: u64 = u32::MAX as u64; // 4,294,967,295
-        let builder = CoinbaseBuilder::new(height).with_extra_nonce_size(0).with_pool_tag(Vec::new());
+        let builder = CoinbaseBuilder::new(height)
+            .with_extra_nonce_size(0)
+            .with_pool_tag(Vec::new());
         let script = builder.build_script_sig();
         let bytes = script.as_bytes();
         // 0xFFFFFFFF → LE bytes: [0xFF, 0xFF, 0xFF, 0xFF]
@@ -385,10 +395,7 @@ mod tests {
             treasury: Some((vec![0x00; 25], 50_000)),
             tx_fees: None,
             node_rewards: vec![(vec![0x01; 25], 10_000)],
-            miners: vec![
-                (vec![0x02; 25], 20_000),
-                (vec![0x03; 25], 20_000),
-            ],
+            miners: vec![(vec![0x02; 25], 20_000), (vec![0x03; 25], 20_000)],
         };
         assert_eq!(alloc.output_count(), 4);
     }
@@ -398,14 +405,8 @@ mod tests {
         let alloc = CoinbaseAllocation {
             treasury: Some((vec![0x00; 25], 50_000)),
             tx_fees: Some((vec![0x04; 25], 5_000)),
-            node_rewards: vec![
-                (vec![0x01; 25], 10_000),
-                (vec![0x05; 25], 8_000),
-            ],
-            miners: vec![
-                (vec![0x02; 25], 20_000),
-                (vec![0x03; 25], 7_000),
-            ],
+            node_rewards: vec![(vec![0x01; 25], 10_000), (vec![0x05; 25], 8_000)],
+            miners: vec![(vec![0x02; 25], 20_000), (vec![0x03; 25], 7_000)],
         };
         let expected = 50_000 + 5_000 + 10_000 + 8_000 + 20_000 + 7_000;
         assert_eq!(alloc.total_amount(), expected);

@@ -281,7 +281,11 @@ impl EpochManager {
             };
 
             *self.nullifier_set.write() = set;
-            info!(confirmed = confirmed_count, pending = pending_count, "Reconstructed nullifier set");
+            info!(
+                confirmed = confirmed_count,
+                pending = pending_count,
+                "Reconstructed nullifier set"
+            );
         }
 
         // Load valid roots
@@ -300,9 +304,7 @@ impl EpochManager {
             // M-2: Startup integrity check — verify the rebuilt tree's root is consistent
             // with the latest checkpoint. If they differ, the tree may have phantom notes
             // or be missing notes. Log an error but don't panic — tree sync will fix it.
-            let tree_root = self.commitment_tree.read()
-                .root()
-                .unwrap_or([0u8; 32]);
+            let tree_root = self.commitment_tree.read().root().unwrap_or([0u8; 32]);
             if tree_root != checkpoint.commitment_root {
                 // Check if the tree root is in the valid_roots window (it may differ from
                 // the checkpoint root if there are pending shields that aren't checkpointed)
@@ -320,9 +322,8 @@ impl EpochManager {
                     if let Some(epoch) = loaded_epoch {
                         match self.prune_phantom_notes(epoch, &loaded_notes, &checkpoint) {
                             Ok(pruned) if pruned > 0 => {
-                                let new_root = self.commitment_tree.read()
-                                    .root()
-                                    .unwrap_or([0u8; 32]);
+                                let new_root =
+                                    self.commitment_tree.read().root().unwrap_or([0u8; 32]);
                                 if new_root == checkpoint.commitment_root {
                                     info!(
                                         pruned,
@@ -450,7 +451,9 @@ impl EpochManager {
         let max_valid_index = notes[valid_count - 1].0;
 
         // Delete phantom notes from DB
-        let deleted = self.db.delete_l2_notes_above_index(epoch, max_valid_index)?;
+        let deleted = self
+            .db
+            .delete_l2_notes_above_index(epoch, max_valid_index)?;
 
         // Clean up orphaned pending shields
         let pending_cleaned = self.db.delete_stale_pending_shields()?;
@@ -557,7 +560,10 @@ impl EpochManager {
             .write()
             .push((nullifier, epoch, block_height));
 
-        if let Err(e) = self.db.insert_pending_nullifier(&nullifier, epoch, block_height) {
+        if let Err(e) = self
+            .db
+            .insert_pending_nullifier(&nullifier, epoch, block_height)
+        {
             warn!(epoch, height = block_height, error = %e, "Failed to write-ahead nullifier (in-memory protection still active)");
         }
 
@@ -766,8 +772,12 @@ impl EpochManager {
 
         // 4. Persist epoch records BEFORE migrating notes (FK trigger on l2_notes.epoch)
         let old_final_root_copy = old_final_root;
-        self.db
-            .finalize_l2_epoch(old_epoch, boundary_height, &old_final_root_copy, notes_migrated)?;
+        self.db.finalize_l2_epoch(
+            old_epoch,
+            boundary_height,
+            &old_final_root_copy,
+            notes_migrated,
+        )?;
 
         // Insert new epoch record before any l2_notes reference it
         // Initial root computed after tree build; use placeholder, update below

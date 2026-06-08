@@ -70,10 +70,7 @@ impl VerificationResultHandler {
         Self {
             db,
             peers: None,
-            rate_limiter: RateLimiter::new(
-                VERIFICATION_RATE_LIMIT_BURST,
-                VERIFICATION_RATE_REFILL,
-            ),
+            rate_limiter: RateLimiter::new(VERIFICATION_RATE_LIMIT_BURST, VERIFICATION_RATE_REFILL),
         }
     }
 
@@ -86,10 +83,7 @@ impl VerificationResultHandler {
         Self {
             db,
             peers: Some(peers),
-            rate_limiter: RateLimiter::new(
-                VERIFICATION_RATE_LIMIT_BURST,
-                VERIFICATION_RATE_REFILL,
-            ),
+            rate_limiter: RateLimiter::new(VERIFICATION_RATE_LIMIT_BURST, VERIFICATION_RATE_REFILL),
         }
     }
 

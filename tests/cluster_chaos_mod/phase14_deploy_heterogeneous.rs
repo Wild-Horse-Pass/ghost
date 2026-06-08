@@ -56,17 +56,18 @@ async fn deploy_01_backup_all_configs() {
     for node in &config.nodes {
         // If backup already exists (from a failed previous run), restore it first
         if SshController::has_config_backup(node).unwrap_or(false) {
-            println!("  {} already has backup — restoring first for clean state", node.name);
+            println!(
+                "  {} already has backup — restoring first for clean state",
+                node.name
+            );
             SshController::restore_config(node).expect(&format!(
                 "failed to restore existing backup on {}",
                 node.name
             ));
         }
 
-        SshController::backup_config(node).expect(&format!(
-            "failed to backup config on {}",
-            node.name
-        ));
+        SshController::backup_config(node)
+            .expect(&format!("failed to backup config on {}", node.name));
         assert!(
             SshController::has_config_backup(node).unwrap_or(false),
             "Backup not created on {}",
@@ -107,16 +108,17 @@ async fn deploy_02_vm2_pruned_permissive() {
         .expect("failed to patch reaper mode on VM2");
 
     // Verify patches applied
-    let archive = SshController::read_config_field(vm2, "storage", "archive_mode")
-        .unwrap_or_default();
-    let prune = SshController::read_config_field(vm2, "storage", "prune_height")
-        .unwrap_or_default();
-    let policy = SshController::read_config_field(vm2, "policy", "profile")
-        .unwrap_or_default();
-    let reaper = SshController::read_config_field(vm2, "reaper", "enabled")
-        .unwrap_or_default();
+    let archive =
+        SshController::read_config_field(vm2, "storage", "archive_mode").unwrap_or_default();
+    let prune =
+        SshController::read_config_field(vm2, "storage", "prune_height").unwrap_or_default();
+    let policy = SshController::read_config_field(vm2, "policy", "profile").unwrap_or_default();
+    let reaper = SshController::read_config_field(vm2, "reaper", "enabled").unwrap_or_default();
 
-    println!("  VM2 config: archive={}, prune={}, policy={}, reaper={}", archive, prune, policy, reaper);
+    println!(
+        "  VM2 config: archive={}, prune={}, policy={}, reaper={}",
+        archive, prune, policy, reaper
+    );
     assert_eq!(archive, "false", "VM2 archive_mode not patched");
     assert_eq!(prune, "1000", "VM2 prune_height not patched");
     assert_eq!(policy, "permissive", "VM2 policy not patched");
@@ -149,10 +151,8 @@ async fn deploy_03_vm3_archive_fullopen_reaper() {
         .expect("failed to patch reaper mode on VM3");
 
     // Verify
-    let policy = SshController::read_config_field(vm3, "policy", "profile")
-        .unwrap_or_default();
-    let reaper = SshController::read_config_field(vm3, "reaper", "enabled")
-        .unwrap_or_default();
+    let policy = SshController::read_config_field(vm3, "policy", "profile").unwrap_or_default();
+    let reaper = SshController::read_config_field(vm3, "reaper", "enabled").unwrap_or_default();
 
     println!("  VM3 config: policy={}, reaper={}", policy, reaper);
     assert_eq!(policy, "full_open", "VM3 policy not patched");
@@ -181,10 +181,9 @@ async fn deploy_04_vm4_nonarchive_pure() {
     // reaper stays disabled (already false on VM4)
 
     // Verify
-    let archive = SshController::read_config_field(vm4, "storage", "archive_mode")
-        .unwrap_or_default();
-    let policy = SshController::read_config_field(vm4, "policy", "profile")
-        .unwrap_or_default();
+    let archive =
+        SshController::read_config_field(vm4, "storage", "archive_mode").unwrap_or_default();
+    let policy = SshController::read_config_field(vm4, "policy", "profile").unwrap_or_default();
 
     println!("  VM4 config: archive={}, policy={}", archive, policy);
     assert_eq!(archive, "false", "VM4 archive_mode not patched");
@@ -209,10 +208,8 @@ async fn deploy_05_restart_modified_services() {
             node,
             &format!("sudo systemctl reset-failed {}", config.service_name),
         );
-        SshController::restart_service(node, config.service_name).expect(&format!(
-            "failed to restart {} service",
-            name
-        ));
+        SshController::restart_service(node, config.service_name)
+            .expect(&format!("failed to restart {} service", name));
         println!("  {} restarted", name);
     }
 
@@ -271,8 +268,7 @@ async fn deploy_06_mesh_convergence() {
         assert!(
             rejoined,
             "{} did not reach 3 peers with heterogeneous configs (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
 

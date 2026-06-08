@@ -4,10 +4,7 @@ use tauri::State;
 
 /// Encrypt the node wallet with a passphrase.
 #[tauri::command]
-pub async fn node_encrypt_wallet(
-    state: State<'_, AppState>,
-    passphrase: String,
-) -> AppResult<()> {
+pub async fn node_encrypt_wallet(state: State<'_, AppState>, passphrase: String) -> AppResult<()> {
     state.connection.encrypt_wallet(&passphrase).await?;
     Ok(())
 }
@@ -49,13 +46,10 @@ pub async fn node_change_passphrase(
 
 /// Get node wallet info (encryption status, balance, tx count, etc.).
 #[tauri::command]
-pub async fn get_node_wallet_info(
-    state: State<'_, AppState>,
-) -> AppResult<serde_json::Value> {
-    let info = state
-        .connection
-        .get_wallet_info()
-        .await?
-        .ok_or_else(|| AppError::from("Node wallet info not available (not in Full Node mode)"))?;
+pub async fn get_node_wallet_info(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
+    let info =
+        state.connection.get_wallet_info().await?.ok_or_else(|| {
+            AppError::from("Node wallet info not available (not in Full Node mode)")
+        })?;
     Ok(info)
 }

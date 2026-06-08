@@ -295,14 +295,14 @@ phase_3() {
 # ══════════════════════════════════════════════════════════════════════
 
 phase_4() {
-    phase_header 4 "Wraith Mixing" 2
+    phase_header 4 "Wraith Mixing" 0
 
-    # P4.1: List wraith sessions (pool port, no auth)
-    test_pool_endpoint "P4.1" "List wraith sessions" "/api/v1/wraith/sessions" || true
-
-    # P4.2: Join a wraith session (ghost-pay port, may fail if no session/funds)
-    test_api_no_500 "P4.2" "Join wraith session" "POST" "/api/v1/wraith/join" \
-        '{"tier": "micro", "denomination": "micro", "lock_id": "0000000000000000000000000000000000000000000000000000000000000000"}'
+    # Wraith mixing moved out of ghost-pay into the wraith-coordinator
+    # binary. The legacy `/api/v1/wraith/{join,sessions}` endpoints on
+    # ghost-pay were removed; coverage is now in
+    # `wraith-coordinator/tests/router.rs` (58 tests) and
+    # `wraith-wallet-core/tests/wraith_e2e.rs` (5 tests).
+    echo "  (skipped — see wraith-coordinator tests for v1 single-round flow)"
 }
 
 # ══════════════════════════════════════════════════════════════════════

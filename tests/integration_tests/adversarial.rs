@@ -48,7 +48,13 @@ fn make_signed_envelope(
     signed_data.extend_from_slice(&sequence.to_le_bytes());
     let signature = identity.sign(&signed_data);
 
-    MessageEnvelope::new(msg_type, identity.node_id(), payload.to_vec(), sequence, signature)
+    MessageEnvelope::new(
+        msg_type,
+        identity.node_id(),
+        payload.to_vec(),
+        sequence,
+        signature,
+    )
 }
 
 /// Build a VerificationResultMessage and wrap it in a properly signed envelope.
@@ -101,10 +107,7 @@ fn test_930_deeply_nested_json_rejected() {
                 MAX_JSON_DEPTH
             );
         }
-        other => panic!(
-            "Expected ExcessiveNesting error, got: {:?}",
-            other
-        ),
+        other => panic!("Expected ExcessiveNesting error, got: {:?}", other),
     }
 
     // Verify 16 levels of nesting is fine (passes depth check, may fail at
@@ -115,7 +118,10 @@ fn test_930_deeply_nested_json_rejected() {
     let result = validate_and_verify(ok_data);
     match result {
         Err(MessageValidationError::ExcessiveNesting(_)) => {
-            panic!("{}-level nesting should NOT trigger ExcessiveNesting", MAX_JSON_DEPTH);
+            panic!(
+                "{}-level nesting should NOT trigger ExcessiveNesting",
+                MAX_JSON_DEPTH
+            );
         }
         // Any other error (TooSmall, DeserializationFailed, etc.) is acceptable
         // -- we only care that the depth check itself passes.
@@ -251,7 +257,10 @@ async fn test_933_forged_verification_result_wrong_signature() {
     // so it should be silently dropped.
     let target_hex = hex::encode(target.node_id());
     let (passed, total) = db.get_archive_pass_rate(&target_hex, 0).unwrap();
-    assert_eq!(total, 0, "No archive challenge should be recorded for forged sig");
+    assert_eq!(
+        total, 0,
+        "No archive challenge should be recorded for forged sig"
+    );
     assert_eq!(passed, 0);
 }
 
@@ -420,7 +429,10 @@ fn test_938_replay_attack_dedup() {
     };
 
     // Same sender + sequence => same MessageId (dedup key).
-    assert_eq!(id1, id2, "Identical sender+sequence must produce same MessageId");
+    assert_eq!(
+        id1, id2,
+        "Identical sender+sequence must produce same MessageId"
+    );
 
     // Different sequence => different MessageId.
     let env3 = make_signed_envelope(&identity, MessageType::HealthPing, payload, 43);
@@ -428,7 +440,10 @@ fn test_938_replay_attack_dedup() {
         sender: env3.sender,
         sequence: env3.sequence,
     };
-    assert_ne!(id1, id3, "Different sequence must produce different MessageId");
+    assert_ne!(
+        id1, id3,
+        "Different sequence must produce different MessageId"
+    );
 
     // Different sender => different MessageId.
     let other = NodeIdentity::generate();
@@ -437,7 +452,10 @@ fn test_938_replay_attack_dedup() {
         sender: env4.sender,
         sequence: env4.sequence,
     };
-    assert_ne!(id1, id4, "Different sender must produce different MessageId");
+    assert_ne!(
+        id1, id4,
+        "Different sender must produce different MessageId"
+    );
 
     // Additionally, validate_and_verify on the same data twice should both succeed
     // (validator is stateless; dedup happens in MeshNetwork layer).
@@ -445,7 +463,10 @@ fn test_938_replay_attack_dedup() {
     let r1 = validate_and_verify(&data1);
     let r2 = validate_and_verify(&data1);
     assert!(r1.is_ok(), "First validation should succeed");
-    assert!(r2.is_ok(), "Second validation should also succeed (stateless)");
+    assert!(
+        r2.is_ok(),
+        "Second validation should also succeed (stateless)"
+    );
 }
 
 // =============================================================================
@@ -482,5 +503,8 @@ async fn test_939_oversized_challenge_data_rejected() {
     // Verify no DB record was created.
     let target_hex = hex::encode(target.node_id());
     let (_, total) = db.get_archive_pass_rate(&target_hex, 0).unwrap();
-    assert_eq!(total, 0, "Oversized challenge_data must not create a DB record");
+    assert_eq!(
+        total, 0,
+        "Oversized challenge_data must not create a DB record"
+    );
 }

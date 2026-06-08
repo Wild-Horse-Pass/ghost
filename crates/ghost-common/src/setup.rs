@@ -3,9 +3,7 @@
 //! Provides `apply_*` functions that modify `NodeConfig` based on wizard field values.
 //! Used by both the TUI wizard dispatch and the headless `ghost-setup` CLI.
 
-use crate::config::{
-    GhostPayConfig, HazeMode, NodeConfig, PolicyProfile,
-};
+use crate::config::{GhostPayConfig, HazeMode, NodeConfig, PolicyProfile};
 use crate::identity::NodeIdentity;
 use crate::types::TreasuryAddress;
 use std::collections::HashMap;
@@ -56,8 +54,8 @@ fn load_and_modify(
 ) -> Result<String, String> {
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Load config {}: {e}", config_path.display()))?;
-    let mut config: NodeConfig = toml::from_str(&content)
-        .map_err(|e| format!("Parse config: {e}"))?;
+    let mut config: NodeConfig =
+        toml::from_str(&content).map_err(|e| format!("Parse config: {e}"))?;
     modify(&mut config);
     config
         .save_atomic(config_path)
@@ -75,7 +73,10 @@ pub fn apply_initial_setup(
         .get("nickname")
         .map(|v| v.as_text().to_string())
         .unwrap_or_default();
-    let public_mining = fields
+    // The wizard's "public_mining" toggle maps to mining_mode = PublicPool.
+    // Disabled → keeps the default mining_mode (PublicPool unless overridden
+    // elsewhere). Operators choosing private modes use a different setup flow.
+    let public_mining_intent = fields
         .get("public_mining")
         .map(|v| v.as_bool())
         .unwrap_or(false);
@@ -87,14 +88,8 @@ pub fn apply_initial_setup(
         .get("archive_mode")
         .map(|v| v.as_bool())
         .unwrap_or(true);
-    let ghost_pay_enabled = fields
-        .get("ghost_pay")
-        .map(|v| v.as_bool())
-        .unwrap_or(true);
-    let reaper_enabled = fields
-        .get("reaper")
-        .map(|v| v.as_bool())
-        .unwrap_or(true);
+    let ghost_pay_enabled = fields.get("ghost_pay").map(|v| v.as_bool()).unwrap_or(true);
+    let reaper_enabled = fields.get("reaper").map(|v| v.as_bool()).unwrap_or(true);
     let mempool_idx = fields
         .get("mempool_profile")
         .map(|v| v.as_selected())
@@ -137,7 +132,11 @@ pub fn apply_initial_setup(
     if !nickname.is_empty() {
         config.identity.display_name = Some(nickname);
     }
-    config.network.public_mining = public_mining;
+    config.network.mining_mode = if public_mining_intent {
+        crate::config::MiningMode::PublicPool
+    } else {
+        crate::config::MiningMode::PrivatePool
+    };
     config.network.noise_enabled = true;
     config.network.internal_api_secret = Some(api_secret);
     config.storage.archive_mode = archive_mode;
@@ -180,7 +179,11 @@ pub fn apply_change_setup(
             }
         }
         if let Some(v) = fields.get("public_mining") {
-            config.network.public_mining = v.as_bool();
+            config.network.mining_mode = if v.as_bool() {
+                crate::config::MiningMode::PublicPool
+            } else {
+                crate::config::MiningMode::PrivatePool
+            };
         }
         if let Some(v) = fields.get("payout_address") {
             let addr = v.as_text().to_string();
@@ -248,7 +251,11 @@ pub fn apply_pool_setup(
 ) -> Result<String, String> {
     load_and_modify(config_path, |config| {
         if let Some(v) = fields.get("public_mining") {
-            config.network.public_mining = v.as_bool();
+            config.network.mining_mode = if v.as_bool() {
+                crate::config::MiningMode::PublicPool
+            } else {
+                crate::config::MiningMode::PrivatePool
+            };
         }
         if let Some(v) = fields.get("payout_address") {
             let addr = v.as_text().to_string();

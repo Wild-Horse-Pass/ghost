@@ -150,7 +150,11 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             // No parameters to validate
         }
 
-        ClientMessage::GetTransactions { limit, offset: _ } => {
+        ClientMessage::GetTransactions {
+            limit,
+            offset: _,
+            wallet_bech32: _,
+        } => {
             if *limit == 0 {
                 result.add_error("Limit must be greater than 0");
             }
@@ -198,6 +202,36 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             }
         }
 
+        ClientMessage::SendL2Payment {
+            recipient,
+            amount_sats,
+            proof,
+            memo,
+        } => {
+            if recipient.is_empty() {
+                result.add_error("Recipient cannot be empty");
+            } else if !is_valid_recipient(recipient) {
+                result.add_error("Invalid recipient format");
+            }
+            if *amount_sats == 0 {
+                result.add_error("Amount must be greater than 0");
+            }
+            if *amount_sats < 546 {
+                result.add_warning("Amount below dust threshold");
+            }
+            if let Some(m) = memo {
+                if m.len() > 59 {
+                    result.add_error("Memo exceeds 59-char limit");
+                }
+            }
+            if let Err(e) = proof.validate_structure() {
+                result.add_error(format!("Invalid proof: {}", e));
+            }
+            if !proof.is_timestamp_valid() {
+                result.add_error("Proof timestamp out of range");
+            }
+        }
+
         ClientMessage::SubmitSignedPayment {
             payment_id,
             signature,
@@ -240,12 +274,30 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
         ClientMessage::PrepareGhostLock {
             owner_pubkey,
             capacity_sats,
+            recovery_pubkey,
+            recovery_index: _,
         } => {
-            // Validate owner pubkey (32 bytes = 64 hex chars)
+            // Validate owner pubkey (32 bytes x-only = 64 hex chars)
             if owner_pubkey.len() != 64 {
                 result.add_error("Owner pubkey must be 64 hex characters");
             } else if hex::decode(owner_pubkey).is_err() {
                 result.add_error("Invalid owner pubkey hex encoding");
+            }
+
+            // Validate recovery pubkey (33-byte SEC1 compressed = 66 hex chars).
+            // Must start with 02 or 03 (compressed prefix) — uncompressed (04)
+            // is rejected.
+            if recovery_pubkey.len() != 66 {
+                result.add_error(
+                    "recovery_pubkey must be 66 hex characters (33-byte SEC1 compressed)",
+                );
+            } else {
+                match hex::decode(recovery_pubkey) {
+                    Ok(bytes) if bytes.len() == 33 && (bytes[0] == 0x02 || bytes[0] == 0x03) => {}
+                    Ok(_) => result
+                        .add_error("recovery_pubkey must be SEC1-compressed (0x02/0x03 prefix)"),
+                    Err(_) => result.add_error("Invalid recovery_pubkey hex encoding"),
+                }
             }
 
             // Validate capacity
@@ -273,6 +325,18 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
                 result.add_error("Invalid funding txid hex encoding");
             }
 
+            if let Err(e) = proof.validate_structure() {
+                result.add_error(format!("Invalid proof: {}", e));
+            }
+        }
+
+        ClientMessage::RegisterScanKey { scan_pubkey, proof } => {
+            // 33-byte SEC1 compressed pubkey = 66 hex chars.
+            if scan_pubkey.len() != 66 {
+                result.add_error("scan_pubkey must be 66 hex chars (33 bytes SEC1 compressed)");
+            } else if hex::decode(scan_pubkey).is_err() {
+                result.add_error("scan_pubkey is not valid hex");
+            }
             if let Err(e) = proof.validate_structure() {
                 result.add_error(format!("Invalid proof: {}", e));
             }
@@ -312,7 +376,9 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
         | ClientMessage::SubscribePayments
         | ClientMessage::SubscribeLocks
         | ClientMessage::SubscribeReorgs
-        | ClientMessage::UnsubscribeReorgs => {
+        | ClientMessage::UnsubscribeReorgs
+        | ClientMessage::SubscribeSilentPayments
+        | ClientMessage::UnsubscribeSilentPayments => {
             // No parameters to validate
         }
 
@@ -536,9 +602,18 @@ fn validate_payment_id(id: &str, result: &mut ValidationResult) {
 
 /// Check if recipient is a valid Ghost ID or Bitcoin address
 fn is_valid_recipient(recipient: &str) -> bool {
-    // Ghost ID format: ghost1...
-    if recipient.starts_with("ghost1") {
-        return recipient.len() >= 20 && recipient.len() <= 100;
+    // Ghost ID format: <network>ghost1... where the network prefix is
+    // empty on mainnet (`ghost1`), `t` on testnet (`tghost1`), `s` on
+    // signet (`sghost1`), or `r` on regtest (`rghost1`).
+    if recipient.contains("ghost1") {
+        let i = recipient.find("ghost1").unwrap();
+        // Allow only an empty prefix or one of the single-letter
+        // network discriminators — anything else is a malformed ID.
+        let prefix = &recipient[..i];
+        let ok = matches!(prefix, "" | "t" | "s" | "r");
+        if ok && recipient.len() >= 20 && recipient.len() <= 130 {
+            return true;
+        }
     }
 
     // Bitcoin address
@@ -619,6 +694,7 @@ mod tests {
         let msg = ClientMessage::GetTransactions {
             limit: 100,
             offset: 0,
+            wallet_bech32: None,
         };
         let result = validate_message(&msg);
         assert!(result.valid);
@@ -626,6 +702,7 @@ mod tests {
         let msg2 = ClientMessage::GetTransactions {
             limit: 0,
             offset: 0,
+            wallet_bech32: None,
         };
         let result2 = validate_message(&msg2);
         assert!(!result2.valid);
@@ -633,6 +710,7 @@ mod tests {
         let msg3 = ClientMessage::GetTransactions {
             limit: 2000,
             offset: 0,
+            wallet_bech32: None,
         };
         let result3 = validate_message(&msg3);
         assert!(!result3.valid);

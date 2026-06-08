@@ -130,17 +130,11 @@ mod tests {
     #[test]
     fn test_low_affordability() {
         // 30K sats, 10K jump cost → (30K - 10K) / 10K = 2 jumps → Low
-        assert_eq!(
-            assess_affordability(30_000, 10_000),
-            JumpAffordability::Low
-        );
+        assert_eq!(assess_affordability(30_000, 10_000), JumpAffordability::Low);
         assert_eq!(remaining_jumps_estimate(30_000, 10_000), 2);
 
         // 20K sats, 10K jump cost → (20K - 10K) / 10K = 1 jump → Low
-        assert_eq!(
-            assess_affordability(20_000, 10_000),
-            JumpAffordability::Low
-        );
+        assert_eq!(assess_affordability(20_000, 10_000), JumpAffordability::Low);
         assert_eq!(remaining_jumps_estimate(20_000, 10_000), 1);
     }
 

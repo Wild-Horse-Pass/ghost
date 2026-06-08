@@ -336,8 +336,10 @@ mod tests {
 
     #[test]
     fn test_analyze_outputs_op_return() {
-        let op_return_script =
-            ScriptBuilder::new().push_opcode(bitcoin::opcodes::all::OP_RETURN).push_slice(b"hello").into_script();
+        let op_return_script = ScriptBuilder::new()
+            .push_opcode(bitcoin::opcodes::all::OP_RETURN)
+            .push_slice(b"hello")
+            .into_script();
         let outputs = vec![TxOut {
             value: Amount::from_sat(0),
             script_pubkey: op_return_script,

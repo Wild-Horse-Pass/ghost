@@ -284,7 +284,8 @@ export default function SwarmPage() {
     <div className="space-y-6">
       {/* Page Header with view toggle + action buttons */}
       <PageHeader
-        title="Swarm"
+        eyebrow="swarm"
+        title="Multi-node fleet."
         subtitle="Multi-node fleet management"
         actions={
           <>

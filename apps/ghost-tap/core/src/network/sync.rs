@@ -154,7 +154,11 @@ impl GhostSync {
 
     /// Add a stealth address to watch
     pub fn watch_stealth_address(&mut self, stealth: StealthAddress) {
-        if !self.stealth_addresses.iter().any(|s| s.address == stealth.address) {
+        if !self
+            .stealth_addresses
+            .iter()
+            .any(|s| s.address == stealth.address)
+        {
             self.stealth_addresses.push(stealth);
         }
     }
@@ -331,7 +335,9 @@ impl GhostSync {
     ) -> Result<AddressSyncResult, NetworkError> {
         // For stealth addresses, we query the daemon which has already
         // scanned for matching outputs using the scan key
-        let utxos = client.get_address_utxos(&stealth.address).await
+        let utxos = client
+            .get_address_utxos(&stealth.address)
+            .await
             .unwrap_or_default();
 
         Ok(AddressSyncResult {
@@ -409,7 +415,6 @@ impl GhostSync {
             }
         }
     }
-
 }
 
 impl Default for GhostSync {

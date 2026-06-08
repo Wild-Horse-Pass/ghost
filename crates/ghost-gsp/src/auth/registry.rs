@@ -158,6 +158,20 @@ impl WalletRegistry {
             [],
         )?;
 
+        // BIP-352 scan key per wallet (one per wallet_id; upserted on rotation).
+        // The scan key is public — used by the server to detect incoming silent
+        // payments on the wallet's behalf. Spending still requires the spend
+        // secret, which never leaves the wallet.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_scan_keys (
+                wallet_id TEXT PRIMARY KEY,
+                scan_pubkey BLOB NOT NULL,
+                registered_at INTEGER NOT NULL,
+                FOREIGN KEY (wallet_id) REFERENCES wallets(wallet_id)
+            )",
+            [],
+        )?;
+
         // M-11 FIX: Initialize last_cleanup to current time
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -231,6 +245,44 @@ impl WalletRegistry {
                 Ok(Some(arr))
             }
             Ok(_) => Err(GspError::Database("Invalid pubkey length".to_string())),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Upsert the BIP-352 scan public key for a wallet. Replaces any
+    /// existing entry (i.e. supports scan-key rotation).
+    ///
+    /// `scan_pubkey` must be exactly 33 bytes (SEC1 compressed).
+    pub fn upsert_scan_key(&self, wallet_id: &WalletId, scan_pubkey: &[u8; 33]) -> GspResult<()> {
+        let conn = self.conn.lock();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO wallet_scan_keys (wallet_id, scan_pubkey, registered_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(wallet_id) DO UPDATE SET
+                 scan_pubkey = excluded.scan_pubkey,
+                 registered_at = excluded.registered_at",
+            params![wallet_id.as_str(), scan_pubkey.as_slice(), now],
+        )?;
+        Ok(())
+    }
+
+    /// Look up the registered BIP-352 scan public key for a wallet, if any.
+    pub fn get_scan_key(&self, wallet_id: &WalletId) -> GspResult<Option<[u8; 33]>> {
+        let conn = self.conn.lock();
+        let result: Result<Vec<u8>, _> = conn.query_row(
+            "SELECT scan_pubkey FROM wallet_scan_keys WHERE wallet_id = ?",
+            [wallet_id.as_str()],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(bytes) if bytes.len() == 33 => {
+                let mut arr = [0u8; 33];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(arr))
+            }
+            Ok(_) => Err(GspError::Database("Invalid scan_pubkey length".to_string())),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }

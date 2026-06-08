@@ -150,6 +150,20 @@ pub struct GhostLockInfo {
 
     /// Last update timestamp
     pub updated_at: i64,
+    /// Operator-derived lock public key (cooperative-path key).
+    /// 33-byte SEC1 compressed, hex-encoded.
+    #[serde(default)]
+    pub lock_pubkey: String,
+    /// Echo of the wallet-supplied recovery_pubkey.
+    /// 33-byte SEC1 compressed, hex-encoded.
+    #[serde(default)]
+    pub recovery_pubkey: String,
+    /// Echo of the wallet-supplied derivation index.
+    #[serde(default)]
+    pub recovery_index: u32,
+    /// CSV blocks the recovery branch waits before becoming spendable.
+    #[serde(default)]
+    pub recovery_blocks: u32,
 }
 
 impl GhostLockInfo {
@@ -398,6 +412,10 @@ mod tests {
             blocks_until_jump: 10000,
             created_at: 0,
             updated_at: 0,
+            lock_pubkey: String::new(),
+            recovery_pubkey: String::new(),
+            recovery_index: 0,
+            recovery_blocks: 26000,
         };
 
         assert!(lock.is_funded());

@@ -42,8 +42,8 @@
 //!
 //! # References
 //!
-//! - Schnorr blind signatures: https://eprint.iacr.org/2019/877
-//! - Interactive demo: https://blindsigs.utxo.club/
+//! - Schnorr blind signatures: <https://eprint.iacr.org/2019/877>
+//! - Interactive demo: <https://blindsigs.utxo.club/>
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
@@ -638,6 +638,13 @@ impl CoordinatorSigner {
     /// Get the public key for verification
     pub fn public_key(&self) -> &PublicKey {
         &self.public_key
+    }
+
+    /// Get the per-signer session id. Stable across nonce issuance and
+    /// the eventual `TokenVerifier::new(pubkey, &session_id)` call so
+    /// wallets can verify their unblinded signatures end-to-end.
+    pub fn session_id(&self) -> &[u8; 32] {
+        &self.session_id
     }
 
     /// Step 1: Create a new signing nonce bound to a specific participant

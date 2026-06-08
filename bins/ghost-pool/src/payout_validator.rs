@@ -355,7 +355,7 @@ fn validate_output_script(script: &[u8]) -> Result<(), PayoutValidationError> {
 /// Validate a multi-sig witness script (redeem script)
 ///
 /// Multi-sig scripts have the format:
-/// OP_M <pubkey1> <pubkey2> ... <pubkeyN> OP_N OP_CHECKMULTISIG
+/// `OP_M <pubkey1> <pubkey2> ... <pubkeyN> OP_N OP_CHECKMULTISIG`
 ///
 /// Where:
 /// - OP_M (0x51-0x60) represents M (1-16)

@@ -5,9 +5,9 @@
 use bip32::{ChildNumber, DerivationPath, ExtendedPrivateKey};
 use bip39::{Language, Mnemonic};
 use k256::ecdsa::SigningKey;
-use secrecy::{ExposeSecret, SecretString};
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use ripemd::Ripemd160;
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -44,21 +44,26 @@ pub struct ExtendedKey {
 impl ExtendedKey {
     /// Create from seed bytes
     pub fn from_seed(seed: &[u8]) -> Result<Self, WalletError> {
-        let xprv = ExtendedPrivateKey::new(seed)
-            .map_err(|e| WalletError::KeyDerivation(format!("Failed to create master key: {}", e)))?;
+        let xprv = ExtendedPrivateKey::new(seed).map_err(|e| {
+            WalletError::KeyDerivation(format!("Failed to create master key: {}", e))
+        })?;
         Ok(Self { xprv })
     }
 
     /// Derive a child key at a single child number
     pub fn derive_child(&self, child: ChildNumber) -> Result<Self, WalletError> {
-        let child_key = self.xprv.derive_child(child)
+        let child_key = self
+            .xprv
+            .derive_child(child)
             .map_err(|e| WalletError::KeyDerivation(format!("Child derivation failed: {}", e)))?;
         Ok(Self { xprv: child_key })
     }
 
     /// Derive a child key at a path
     pub fn derive_path(&self, path: &DerivationPath) -> Result<Self, WalletError> {
-        let mut current = Self { xprv: self.xprv.clone() };
+        let mut current = Self {
+            xprv: self.xprv.clone(),
+        };
 
         for child_num in path.clone() {
             current = current.derive_child(child_num)?;
@@ -104,9 +109,8 @@ pub fn generate_mnemonic(word_count: WordCount) -> Result<SecretString, WalletEr
     let mut entropy = Zeroizing::new(vec![0u8; entropy_bytes]);
 
     // Use platform CSPRNG
-    getrandom::getrandom(&mut entropy).map_err(|e| {
-        WalletError::KeyDerivation(format!("Failed to generate entropy: {}", e))
-    })?;
+    getrandom::getrandom(&mut entropy)
+        .map_err(|e| WalletError::KeyDerivation(format!("Failed to generate entropy: {}", e)))?;
 
     let mnemonic = Mnemonic::from_entropy(&entropy)
         .map_err(|_| WalletError::KeyDerivation("Failed to create mnemonic".into()))?;
@@ -127,9 +131,7 @@ pub fn derive_seed_from_mnemonic(
     let parsed = Mnemonic::parse_in_normalized(Language::English, mnemonic.expose_secret())
         .map_err(|_| WalletError::InvalidMnemonic)?;
 
-    let passphrase_str = passphrase
-        .map(|p| p.expose_secret().as_str())
-        .unwrap_or("");
+    let passphrase_str = passphrase.map(|p| p.expose_secret().as_str()).unwrap_or("");
 
     let seed = parsed.to_seed(passphrase_str);
     Ok(Zeroizing::new(seed))
@@ -233,9 +235,10 @@ pub fn derive_l2_spending_key(seed: &[u8; 64]) -> Result<Zeroizing<[u8; 32]>, Wa
     let base = master.derive_path(&base_path)?;
 
     // m/352'/0'/0'/3' (hardened child index 3)
-    let child = base.derive_child(ChildNumber::new(3, true).map_err(|e| {
-        WalletError::KeyDerivation(format!("Invalid child number: {}", e))
-    })?)?;
+    let child = base.derive_child(
+        ChildNumber::new(3, true)
+            .map_err(|e| WalletError::KeyDerivation(format!("Invalid child number: {}", e)))?,
+    )?;
 
     let mut key = child.private_key_bytes();
     // Ensure valid BLS12-381 scalar by clearing top 2 bits (~255 bit field)
@@ -253,9 +256,10 @@ pub fn derive_l2_scan_secret(seed: &[u8; 64]) -> Result<SecretKey, WalletError> 
     let base = master.derive_path(&base_path)?;
 
     // m/352'/0'/0'/0' (hardened child index 0)
-    let child = base.derive_child(ChildNumber::new(0, true).map_err(|e| {
-        WalletError::KeyDerivation(format!("Invalid child number: {}", e))
-    })?)?;
+    let child = base.derive_child(
+        ChildNumber::new(0, true)
+            .map_err(|e| WalletError::KeyDerivation(format!("Invalid child number: {}", e)))?,
+    )?;
 
     let key_bytes = child.private_key_bytes();
     SecretKey::from_slice(&*key_bytes)
@@ -361,7 +365,10 @@ mod tests {
         let addr2 = derive_address_at_path(&seed, 0, 0, 0).unwrap();
         assert_eq!(addr, addr2, "address generation must be deterministic");
         // Ensure it starts with '1' (version byte 0x00 → Base58Check '1')
-        assert!(addr.starts_with('1'), "mainnet P2PKH addresses start with '1'");
+        assert!(
+            addr.starts_with('1'),
+            "mainnet P2PKH addresses start with '1'"
+        );
     }
 
     #[test]

@@ -166,7 +166,8 @@ export default function WatchdogPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Watchdog"
+        eyebrow="watchdog"
+        title="Capability verification."
         subtitle="Service health and resource monitoring"
         actions={
           status ? (

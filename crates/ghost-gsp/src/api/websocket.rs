@@ -158,18 +158,30 @@ fn validate_quantum_safe_address(address: &str) -> Result<(), GspError> {
 /// 5. Nonce replay protection (tracked in registry database)
 ///
 /// Returns Ok(()) on success or a descriptive error message.
+/// Verify a per-action `WalletProof` against the connection's
+/// authenticated wallet. The proof is checked against the connection's
+/// **static** wallet ID (`conn_state.static_wallet_id`), NOT the
+/// session-rotating one — `verify_proof_for_wallet` internally
+/// derives the wallet ID from the proof's pubkey using
+/// `WalletId::from_pubkey`, so comparing it against a session-rotating
+/// ID (which mixes in the session nonce) would always fail.
+///
+/// Sessions issued before the static-id JWT field landed have
+/// `static_wallet_id == None`; we refuse those with a clear "session
+/// predates per-action proofs, re-authenticate" error rather than
+/// falling back to the broken comparison.
 fn verify_websocket_proof(
     state: &Arc<GspState>,
     proof: &WalletProof,
-    session_wallet_id: &WalletId,
+    conn_state: &ConnectionState,
 ) -> Result<(), String> {
-    // Use the registry's comprehensive verification which includes:
-    // - Signature verification
-    // - Wallet ID derivation check
-    // - Nonce replay protection
+    let static_wallet_id = conn_state
+        .static_wallet_id
+        .as_ref()
+        .ok_or_else(|| "session predates static-wallet-id binding; re-authenticate".to_string())?;
     state
         .registry
-        .verify_proof_for_wallet(proof, session_wallet_id)
+        .verify_proof_for_wallet(proof, static_wallet_id)
         .map_err(|e| e.to_string())
 }
 
@@ -203,8 +215,19 @@ pub async fn ws_handler(
 
 /// Connection state
 struct ConnectionState {
-    /// Authenticated wallet ID (None if not yet authenticated)
+    /// Authenticated wallet ID (None if not yet authenticated).
+    /// This is the *session-rotating* ID; used for routing,
+    /// subscriptions, and on-the-wire identity.
     wallet_id: Option<WalletId>,
+
+    /// Static wallet ID derived from the wallet's public key
+    /// (`WalletId::from_pubkey`). Populated from the JWT at
+    /// `Authenticate` time. Used by `verify_websocket_proof` so
+    /// per-action `WalletProof` ownership checks compare against the
+    /// static derivation (the proof's pubkey hashes statically) —
+    /// matching `wallet_id` (rotating) is incorrect because the
+    /// proof carries the pubkey alone, not the session nonce.
+    static_wallet_id: Option<WalletId>,
 
     /// MED-DOS-2 FIX: Active subscriptions stored in HashSet to prevent duplicates
     /// Using HashSet eliminates duplicate subscription attacks where malicious clients
@@ -233,6 +256,7 @@ impl ConnectionState {
     fn new(client_ip: String) -> Self {
         Self {
             wallet_id: None,
+            static_wallet_id: None,
             subscriptions: HashSet::new(),
             lock_state_subscriptions: HashSet::new(),
             last_activity: None,
@@ -256,6 +280,12 @@ async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>, 
     // M-3: Ping interval timer
     let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // BIP-352 candidate-tx push fan-out. Subscribe up-front so we don't miss
+    // any messages even if the client subscribes mid-connection. Until the
+    // session sends `SubscribeSilentPayments`, any received broadcasts are
+    // dropped silently in the select arm below.
+    let mut silent_payments_rx = state.silent_payments_tx.subscribe();
 
     // Main message loop with M-3 ping/timeout
     loop {
@@ -310,6 +340,54 @@ async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>, 
                 if let Err(e) = sender.send(Message::Text(json)).await {
                     error!("WebSocket send error: {}", e);
                     break;
+                }
+            }
+
+            // BIP-352 candidate-tx broadcaster fan-out.
+            // Each subscribed session receives every push and forwards to its WS.
+            broadcast_msg = silent_payments_rx.recv() => {
+                match broadcast_msg {
+                    Ok(msg) => {
+                        // Only forward when this session has actually subscribed,
+                        // otherwise drop silently.
+                        let subscribed = conn_state
+                            .wallet_id
+                            .as_ref()
+                            .map(|w| {
+                                state.subscriptions.is_subscribed(
+                                    w,
+                                    crate::state::SubscriptionType::SilentPayments,
+                                )
+                            })
+                            .unwrap_or(false);
+                        debug!(
+                            wallet_id = ?conn_state.wallet_id,
+                            subscribed,
+                            "candidate-tx fan-out arm fired"
+                        );
+                        if !subscribed {
+                            continue;
+                        }
+                        let json = match serde_json::to_string(&msg) {
+                            Ok(j) => j,
+                            Err(e) => {
+                                error!("serialize candidate-tx push: {e}");
+                                continue;
+                            }
+                        };
+                        if let Err(e) = sender.send(Message::Text(json)).await {
+                            debug!("client write failed during candidate-tx push: {e}");
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("silent-payments fan-out: {n} pushes dropped (laggard subscriber)");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Broadcaster closed (server shutting down). Bail out.
+                        break;
+                    }
                 }
             }
 
@@ -567,8 +645,13 @@ async fn handle_message(
 
         ClientMessage::GetGhostLocks => handle_get_ghost_locks(state, conn_state).await,
 
-        ClientMessage::GetTransactions { limit, offset } => {
-            handle_get_transactions(state, conn_state, limit, offset).await
+        ClientMessage::GetTransactions {
+            limit,
+            offset,
+            wallet_bech32,
+        } => {
+            handle_get_transactions(state, conn_state, limit, offset, wallet_bech32.as_deref())
+                .await
         }
 
         ClientMessage::SubscribeBalance => handle_subscribe(state, conn_state, "balance").await,
@@ -580,6 +663,14 @@ async fn handle_message(
         ClientMessage::SubscribeReorgs => handle_subscribe(state, conn_state, "reorgs").await,
 
         ClientMessage::UnsubscribeReorgs => handle_unsubscribe(state, conn_state, "reorgs").await,
+
+        ClientMessage::SubscribeSilentPayments => {
+            handle_subscribe(state, conn_state, "silent_payments").await
+        }
+
+        ClientMessage::UnsubscribeSilentPayments => {
+            handle_unsubscribe(state, conn_state, "silent_payments").await
+        }
 
         ClientMessage::Unsubscribe { subscription } => {
             handle_unsubscribe(state, conn_state, &subscription).await
@@ -616,6 +707,23 @@ async fn handle_message(
                 .await
         }
 
+        ClientMessage::SendL2Payment {
+            recipient,
+            amount_sats,
+            proof,
+            memo,
+        } => {
+            handle_send_l2_payment(
+                state,
+                conn_state,
+                &recipient,
+                amount_sats,
+                &proof,
+                memo.as_deref(),
+            )
+            .await
+        }
+
         ClientMessage::GetPaymentStatus { payment_id, proof } => {
             handle_get_payment_status(state, conn_state, &payment_id, &proof).await
         }
@@ -628,7 +736,19 @@ async fn handle_message(
         ClientMessage::PrepareGhostLock {
             owner_pubkey,
             capacity_sats,
-        } => handle_prepare_ghost_lock(state, conn_state, &owner_pubkey, capacity_sats).await,
+            recovery_pubkey,
+            recovery_index,
+        } => {
+            handle_prepare_ghost_lock(
+                state,
+                conn_state,
+                &owner_pubkey,
+                capacity_sats,
+                &recovery_pubkey,
+                recovery_index,
+            )
+            .await
+        }
 
         ClientMessage::ConfirmGhostLockFunding {
             lock_id,
@@ -637,6 +757,10 @@ async fn handle_message(
         } => {
             handle_confirm_ghost_lock_funding(state, conn_state, &lock_id, &funding_txid, &proof)
                 .await
+        }
+
+        ClientMessage::RegisterScanKey { scan_pubkey, proof } => {
+            handle_register_scan_key(state, conn_state, &scan_pubkey, &proof).await
         }
 
         ClientMessage::RequestJump {
@@ -756,15 +880,17 @@ async fn handle_authenticate(
     // M-26: Pass client IP to token validation for IP binding check
     match state
         .jwt
-        .validate_token_with_ip(token, Some(&conn_state.client_ip))
+        .validate_token_full(token, Some(&conn_state.client_ip))
     {
-        Ok(wallet_id) => {
+        Ok((wallet_id, static_wallet_id)) => {
             info!(
                 wallet_id = %wallet_id,
+                static_wallet_id = ?static_wallet_id,
                 client_ip = %conn_state.client_ip,
                 "M-26: WebSocket authenticated (IP validated)"
             );
             conn_state.wallet_id = Some(wallet_id.clone());
+            conn_state.static_wallet_id = static_wallet_id;
 
             Ok(Some(ServerMessage::AuthResult {
                 success: true,
@@ -869,16 +995,22 @@ async fn handle_get_transactions(
     conn_state: &ConnectionState,
     limit: u32,
     offset: u32,
+    wallet_bech32: Option<&str>,
 ) -> Result<Option<ServerMessage>, GspError> {
     let wallet_id = conn_state
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
+    // Use the static wallet ID for sender-side matching (ghost-pay
+    // stores `sender_ghost_id` as the static derivation). The
+    // optional bech32 from the wallet matches recipient-side rows
+    // (`merchant_wallet_id` is stored as bech32 because it's the
+    // only stable identifier the sender has at INSERT time).
+    let owner_id = conn_state.static_wallet_id.as_ref().unwrap_or(wallet_id);
 
-    // Query pay node for transactions
     let (transactions, total_count) = state
         .pay_node
-        .get_transactions(&wallet_id.to_string(), limit, offset)
+        .get_transactions(&owner_id.to_string(), wallet_bech32, limit, offset)
         .await?;
 
     Ok(Some(ServerMessage::Transactions {
@@ -964,7 +1096,7 @@ async fn handle_request_jump(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::JumpRequested {
             success: false,
             lock_id: lock_id.to_string(),
@@ -1061,7 +1193,7 @@ async fn handle_prepare_payment(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::PaymentPrepared {
             success: false,
             payment: None,
@@ -1246,6 +1378,88 @@ async fn handle_submit_signed_payment(
     }
 }
 
+/// One-shot L2 send. Calls PayClient::send_l2_payment which
+/// forwards to ghost-pay's `/api/v1/payments/send`. Replaces the
+/// prepare/sign/submit dance for the new wallet path — L2
+/// transfers are session-authenticated ledger ops, not Bitcoin
+/// txs requiring per-payment sighashes.
+async fn handle_send_l2_payment(
+    state: &Arc<GspState>,
+    conn_state: &ConnectionState,
+    recipient: &str,
+    amount_sats: u64,
+    proof: &WalletProof,
+    memo: Option<&str>,
+) -> Result<Option<ServerMessage>, GspError> {
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
+    // Use the *static* wallet ID for the per-wallet ledger lookup.
+    // Session-rotating IDs change per-session, so balance/lock
+    // queries against them never find the records that were
+    // recorded under the static derivation.
+    let owner_id = conn_state.static_wallet_id.as_ref().unwrap_or(wallet_id);
+
+    // QUANTUM SAFETY: Reject P2TR recipient addresses (same rule
+    // as PreparePayment — applies to anything that could end up
+    // as an on-chain output during settlement).
+    if let Err(e) = validate_quantum_safe_address(recipient) {
+        return Ok(Some(ServerMessage::PaymentSent {
+            success: false,
+            payment_id: None,
+            amount_sats,
+            recipient: recipient.to_string(),
+            status: None,
+            error: Some(e.to_string()),
+        }));
+    }
+
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
+        return Ok(Some(ServerMessage::PaymentSent {
+            success: false,
+            payment_id: None,
+            amount_sats,
+            recipient: recipient.to_string(),
+            status: None,
+            error: Some(e),
+        }));
+    }
+
+    info!(
+        wallet_id = %wallet_id,
+        recipient = %recipient,
+        amount_sats = amount_sats,
+        "L2 send_l2_payment"
+    );
+
+    match state
+        .pay_node
+        .send_l2_payment(&owner_id.to_string(), recipient, amount_sats, memo)
+        .await
+    {
+        Ok(result) => Ok(Some(ServerMessage::PaymentSent {
+            success: true,
+            payment_id: Some(result.payment_id),
+            amount_sats: result.amount_sats,
+            recipient: result.recipient,
+            status: Some(result.status),
+            error: None,
+        })),
+        Err(e) => {
+            warn!(wallet_id = %wallet_id, error = %e, "L2 send_l2_payment failed");
+            Ok(Some(ServerMessage::PaymentSent {
+                success: false,
+                payment_id: None,
+                amount_sats,
+                recipient: recipient.to_string(),
+                status: None,
+                error: Some(sanitize_external_error(&e.to_string(), "send_l2_payment")),
+            }))
+        }
+    }
+}
+
 /// Handle get payment status
 ///
 /// H-1: Requires wallet proof for authorization to prevent information leakage.
@@ -1264,7 +1478,7 @@ async fn handle_get_payment_status(
 
     // H-AUTH-1 FIX: Verify wallet proof before returning payment information
     // Return proper auth error, not a fake payment status that could confuse clients
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         warn!(
             wallet_id = %wallet_id,
             payment_id = %payment_id,
@@ -1371,7 +1585,7 @@ async fn handle_cancel_payment(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::PaymentCancelled {
             success: false,
             payment_id: payment_id.to_string(),
@@ -1442,22 +1656,38 @@ async fn handle_prepare_ghost_lock(
     conn_state: &ConnectionState,
     _owner_pubkey: &str,
     capacity_sats: u64,
+    recovery_pubkey: &str,
+    recovery_index: u32,
 ) -> Result<Option<ServerMessage>, GspError> {
     let wallet_id = conn_state
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
+    // Locks must be recorded under the *static* wallet ID so that
+    // subsequent sessions (which get fresh rotating IDs) can still
+    // query ownership. The static ID is stable across reauths.
+    let owner_id = conn_state.static_wallet_id.as_ref().unwrap_or(wallet_id);
 
     info!(
         wallet_id = %wallet_id,
+        owner_id = %owner_id,
         capacity_sats = capacity_sats,
-        "Preparing ghost lock"
+        recovery_index = recovery_index,
+        "Preparing ghost lock with user-supplied recovery_pubkey"
     );
 
-    // Create lock via pay node
+    // Create lock via pay node — pass through the wallet's
+    // recovery_pubkey so ghost-pay builds the script with the
+    // user's recovery branch (not its own).
     match state
         .pay_node
-        .create_lock(&wallet_id.to_string(), capacity_sats, None)
+        .create_lock(
+            &owner_id.to_string(),
+            capacity_sats,
+            None,
+            recovery_pubkey,
+            recovery_index,
+        )
         .await
     {
         Ok(lock_info) => Ok(Some(ServerMessage::LockPrepared {
@@ -1465,6 +1695,11 @@ async fn handle_prepare_ghost_lock(
             lock_id: Some(lock_info.lock_id),
             funding_address: Some(lock_info.funding_address),
             required_sats: Some(capacity_sats),
+            lock_pubkey: Some(lock_info.lock_pubkey),
+            recovery_pubkey: Some(lock_info.recovery_pubkey),
+            recovery_index: Some(lock_info.recovery_index),
+            recovery_blocks: Some(lock_info.recovery_blocks),
+            creation_height: Some(lock_info.creation_height),
             error: None,
         })),
         Err(e) => {
@@ -1479,6 +1714,11 @@ async fn handle_prepare_ghost_lock(
                 lock_id: None,
                 funding_address: None,
                 required_sats: None,
+                lock_pubkey: None,
+                recovery_pubkey: None,
+                recovery_index: None,
+                recovery_blocks: None,
+                creation_height: None,
                 // L-10 FIX: Sanitize external error message
                 error: Some(sanitize_external_error(&e.to_string(), "prepare_lock")),
             }))
@@ -1506,7 +1746,7 @@ async fn handle_confirm_ghost_lock_funding(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::Error {
             code: "PROOF_VERIFICATION_FAILED".to_string(),
             message: e,
@@ -1555,6 +1795,107 @@ async fn handle_confirm_ghost_lock_funding(
             }))
         }
     }
+}
+
+/// Register a BIP-352 scan public key for the authenticated wallet.
+///
+/// The scan key is public — it lets the GSP detect incoming silent payments
+/// addressed to this wallet, but cannot be used to spend. Spending still
+/// requires the matching scan_secret which never leaves the wallet.
+///
+/// Storage is keyed by the wallet's PERMANENT id (`SHA256(auth_pubkey)[..16]`)
+/// derived from the proof's pubkey, so the scan key persists across the
+/// session-rotating IDs that JWT tokens carry.
+async fn handle_register_scan_key(
+    state: &Arc<GspState>,
+    conn_state: &ConnectionState,
+    scan_pubkey_hex: &str,
+    proof: &WalletProof,
+) -> Result<Option<ServerMessage>, GspError> {
+    // Authenticated session required.
+    let _session_wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
+
+    // Validate proof structure + signature + extract the permanent wallet_id
+    // (= SHA256(auth_pubkey)[..16]). The session-rotating wallet_id check used
+    // by other sensitive WS handlers is skipped here — this op identifies
+    // the wallet by its permanent ID for storage.
+    let permanent_id = match crate::auth::verify_proof_and_extract_wallet_id(proof) {
+        Ok(id) => id,
+        Err(e) => {
+            return Ok(Some(ServerMessage::ScanKeyRegistered {
+                success: false,
+                error: Some(format!("proof: {e}")),
+            }));
+        }
+    };
+
+    // Action must match.
+    if proof.action() != Some("register_scan_key") {
+        return Ok(Some(ServerMessage::ScanKeyRegistered {
+            success: false,
+            error: Some("invalid proof action (expected 'register_scan_key')".into()),
+        }));
+    }
+
+    // Decode + validate scan_pubkey: 33 bytes SEC1 compressed, parses as a
+    // valid secp256k1 point.
+    let scan_bytes = match hex::decode(scan_pubkey_hex) {
+        Ok(b) if b.len() == 33 => b,
+        Ok(_) => {
+            return Ok(Some(ServerMessage::ScanKeyRegistered {
+                success: false,
+                error: Some("scan_pubkey must be 33 bytes (SEC1 compressed)".into()),
+            }));
+        }
+        Err(e) => {
+            return Ok(Some(ServerMessage::ScanKeyRegistered {
+                success: false,
+                error: Some(format!("scan_pubkey hex decode: {e}")),
+            }));
+        }
+    };
+    if let Err(e) = bitcoin::secp256k1::PublicKey::from_slice(&scan_bytes) {
+        return Ok(Some(ServerMessage::ScanKeyRegistered {
+            success: false,
+            error: Some(format!("invalid scan_pubkey: {e}")),
+        }));
+    }
+    let mut scan_arr = [0u8; 33];
+    scan_arr.copy_from_slice(&scan_bytes);
+
+    // Wallet must be registered first (so the foreign key constraint holds).
+    if !state.registry.is_registered(&permanent_id)? {
+        return Ok(Some(ServerMessage::ScanKeyRegistered {
+            success: false,
+            error: Some("wallet not registered — call /register first".into()),
+        }));
+    }
+
+    // Upsert.
+    if let Err(e) = state.registry.upsert_scan_key(&permanent_id, &scan_arr) {
+        warn!(
+            wallet_id = %permanent_id,
+            error = %e,
+            "Failed to upsert scan key"
+        );
+        return Ok(Some(ServerMessage::ScanKeyRegistered {
+            success: false,
+            error: Some(format!("storage: {e}")),
+        }));
+    }
+
+    info!(
+        wallet_id = %permanent_id,
+        "BIP-352 scan key registered"
+    );
+
+    Ok(Some(ServerMessage::ScanKeyRegistered {
+        success: true,
+        error: None,
+    }))
 }
 
 // =============================================================================
@@ -1858,7 +2199,7 @@ async fn handle_accept_instant_payment(
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
-    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+    if let Err(e) = verify_websocket_proof(state, proof, conn_state) {
         return Ok(Some(ServerMessage::Error {
             code: "PROOF_VERIFICATION_FAILED".to_string(),
             message: e,
@@ -2474,10 +2815,7 @@ async fn handle_get_recent_l2_transactions(
                         epoch: t.get("epoch")?.as_u64().unwrap_or(0),
                         nullifier: t.get("nullifier")?.as_str()?.to_string(),
                         change_commitment: t.get("change_commitment")?.as_str()?.to_string(),
-                        recipient_commitment: t
-                            .get("recipient_commitment")?
-                            .as_str()?
-                            .to_string(),
+                        recipient_commitment: t.get("recipient_commitment")?.as_str()?.to_string(),
                         encrypted_change: t
                             .get("encrypted_change")
                             .and_then(|v| v.as_str())

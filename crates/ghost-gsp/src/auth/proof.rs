@@ -41,7 +41,7 @@
 //!
 //! 2. **Schnorr Signature Is Proof of Key Ownership**: The WalletProof mechanism already
 //!    proves the user controls the private key corresponding to their wallet ID. This is
-//!    cryptographically binding - the wallet ID is SHA256(pubkey)[0:16], so only the key
+//!    cryptographically binding - the wallet ID is `SHA256(pubkey)[0:16]`, so only the key
 //!    holder can create valid proofs.
 //!
 //! 3. **Ghost Locks Handle L1 Security**: When users want to send funds that require L1
@@ -117,7 +117,7 @@ pub fn verify_schnorr_proof(proof: &WalletProof) -> GspResult<bool> {
 
 /// Verify that a public key derives to the expected wallet ID
 ///
-/// Wallet ID is computed as SHA256(pubkey)[0:16] encoded as hex (32 chars).
+/// Wallet ID is computed as `SHA256(pubkey)[0:16]` encoded as hex (32 chars).
 /// This prevents an attacker from providing a valid signature with a different
 /// key than the one associated with the claimed wallet.
 pub fn verify_wallet_ownership(proof: &WalletProof, claimed_wallet_id: &WalletId) -> GspResult<()> {

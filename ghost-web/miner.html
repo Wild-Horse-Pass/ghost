@@ -6,6 +6,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Miner · Bitcoin Ghost</title>
   <meta name="description" content="Per-miner stats and hashrate history on Ghost Pool.">
+  <meta property="og:site_name" content="Bitcoin Ghost">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Miner lookup · Bitcoin Ghost">
+  <meta property="og:description" content="Per-address worker dashboard for Ghost Pool miners. Live hashrate, shares, and payout history.">
+  <meta property="og:url" content="https://bitcoinghost.org/miner.html">
+  <meta property="og:image" content="https://bitcoinghost.org/logo.png">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:site" content="@defenwycke">
+  <meta name="twitter:creator" content="@defenwycke">
+  <meta name="twitter:title" content="Miner lookup · Bitcoin Ghost">
+  <meta name="twitter:description" content="Per-address worker dashboard for Ghost Pool miners. Live hashrate, shares, and payout history.">
+  <meta name="twitter:image" content="https://bitcoinghost.org/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -235,6 +247,48 @@
   ];
   var HASH_PER_WORK = Math.pow(2, 32);
 
+  // ─── Sliding-window smoothers ──────────────────────────────────────────
+  // Damp poll-cycle jitter on numeric metrics. Each `smooth(key, raw)` call
+  // appends `raw` to the named ring buffer (default 8 samples ≈ 4 min at
+  // 30s polls) and returns a smoothed value:
+  //   • mode 'ema' (default)    — exponential moving average, alpha=0.35
+  //   • mode 'median'           — middle of the buffer, ideal for discrete
+  //                               counts where fractional EMAs look silly
+  // Drop-in: replace `raw` with `smooth('hashrate', raw)` at render time.
+  // The buffers live only in-memory — page refresh resets them, which keeps
+  // the smoothing honest after a real outage.
+  var __smoothers = {};
+  function smooth(key, raw, opts) {
+    opts = opts || {};
+    var maxN = opts.window || 8;
+    var mode = opts.mode || 'ema';
+    var alpha = opts.alpha != null ? opts.alpha : 0.35;
+    var s = __smoothers[key] || (__smoothers[key] = []);
+    if (raw != null && isFinite(raw)) s.push(raw);
+    while (s.length > maxN) s.shift();
+    if (!s.length) return null;
+    if (mode === 'median') {
+      var sorted = s.slice().sort(function (a, b) { return a - b; });
+      var mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+    var v = s[0];
+    for (var i = 1; i < s.length; i++) v = alpha * s[i] + (1 - alpha) * v;
+    return v;
+  }
+  // Smooth a stored history series of [t, v] points into a new EMA series
+  // for charting. Same alpha as point-wise smoother so headline tile and
+  // chart line agree visually.
+  function smoothSeries(series, alpha) {
+    if (!series || !series.length) return [];
+    alpha = alpha != null ? alpha : 0.35;
+    var out = [series[0].slice()];
+    for (var i = 1; i < series.length; i++) {
+      out.push([series[i][0], alpha * series[i][1] + (1 - alpha) * out[i - 1][1]]);
+    }
+    return out;
+  }
+
   function formatHashrate(ths) {
     if (!isFinite(ths) || ths <= 0) return '0<span class="unit"> TH/s</span>';
     if (ths < 0.001) return (ths * 1e6).toFixed(1) + '<span class="unit"> MH/s</span>';
@@ -377,7 +431,8 @@
       document.getElementById('addr-chart-window').textContent = 'avg (' + window_name + ')';
 
       if (!workers.length) {
-        document.getElementById('addr-hashrate').innerHTML = formatHashrate(0);
+        var smZero = smooth('addr-hashrate', 0);
+        document.getElementById('addr-hashrate').innerHTML = formatHashrate(smZero != null ? smZero : 0);
         return;
       }
 
@@ -415,10 +470,13 @@
         var last = addrChartState.series.slice(-2);
         var recentWork = last.reduce(function (s, p) { return s + p.work; }, 0);
         var recentSecs = last.length * bucketSecs;
-        document.getElementById('addr-hashrate').innerHTML = formatHashrate(workToTHs(recentWork, recentSecs));
+        var addrRaw = workToTHs(recentWork, recentSecs);
+        var addrSm = smooth('addr-hashrate', addrRaw);
+        document.getElementById('addr-hashrate').innerHTML = formatHashrate(addrSm != null ? addrSm : addrRaw);
       } else {
         document.getElementById('addr-chart-avg').innerHTML = formatHashrate(0);
-        document.getElementById('addr-hashrate').innerHTML = formatHashrate(0);
+        var addrSmZ = smooth('addr-hashrate', 0);
+        document.getElementById('addr-hashrate').innerHTML = formatHashrate(addrSmZ != null ? addrSmZ : 0);
       }
       drawAddrChart();
     }
@@ -633,11 +691,14 @@
         var last = chartState.series.slice(-2);
         var recentWork = last.reduce(function (s, p) { return s + p.work; }, 0);
         var recentSecs = last.length * bucketSecs;
-        document.getElementById('mp-hashrate').innerHTML = formatHashrate(workToTHs(recentWork, recentSecs));
+        var mpRaw = workToTHs(recentWork, recentSecs);
+        var mpSm = smooth('mp-hashrate', mpRaw);
+        document.getElementById('mp-hashrate').innerHTML = formatHashrate(mpSm != null ? mpSm : mpRaw);
         document.getElementById('mp-hashrate-sub').textContent = 'last ' + Math.round(recentSecs / 60) + ' min';
       } else {
         document.getElementById('mp-chart-avg').innerHTML = formatHashrate(0);
-        document.getElementById('mp-hashrate').innerHTML = formatHashrate(0);
+        var mpSmZ = smooth('mp-hashrate', 0);
+        document.getElementById('mp-hashrate').innerHTML = formatHashrate(mpSmZ != null ? mpSmZ : 0);
       }
       drawChart();
     }

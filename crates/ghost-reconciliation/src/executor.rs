@@ -476,15 +476,13 @@ impl BatchExecutor {
 
         // H-6: Only now that sealing succeeded, remove from pending
         // Use drain to efficiently remove the first batch_size elements
-        let mut settlements: Vec<Settlement> = self.pending_settlements.drain(..batch_size).collect();
+        let mut settlements: Vec<Settlement> =
+            self.pending_settlements.drain(..batch_size).collect();
 
         // C-11: Update each settlement's batch_id now that they are assigned to a batch
         let batch_id = *batch.id();
         for (i, settlement) in settlements.iter_mut().enumerate() {
-            let merkle_proof = crate::batch::compute_merkle_proof(
-                batch.settlement_hashes(),
-                i,
-            );
+            let merkle_proof = crate::batch::compute_merkle_proof(batch.settlement_hashes(), i);
             if let Err(e) = settlement.mark_batched(batch_id, merkle_proof) {
                 tracing::warn!(
                     settlement_id = %hex::encode(settlement.id()),

@@ -1,6 +1,8 @@
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
-use ghost_tap_core::transaction::{FeePriority, TransactionBuilder, TransactionSigner, UnsignedTransaction};
+use ghost_tap_core::transaction::{
+    FeePriority, TransactionBuilder, TransactionSigner, UnsignedTransaction,
+};
 use serde::Serialize;
 use tauri::State;
 
@@ -77,9 +79,9 @@ pub async fn sign_and_broadcast(
 
         let signer = TransactionSigner::new();
         signer.sign(&unsigned, |change, idx| {
-            wallet
-                .get_private_key(change, idx)
-                .map_err(|e| ghost_tap_core::transaction::TransactionError::SigningFailed(e.to_string()))
+            wallet.get_private_key(change, idx).map_err(|e| {
+                ghost_tap_core::transaction::TransactionError::SigningFailed(e.to_string())
+            })
         })?
     };
 
@@ -112,10 +114,7 @@ pub async fn sign_and_broadcast(
 }
 
 #[tauri::command]
-pub async fn estimate_fee(
-    state: State<'_, AppState>,
-    conf_target: u32,
-) -> AppResult<Option<u64>> {
+pub async fn estimate_fee(state: State<'_, AppState>, conf_target: u32) -> AppResult<Option<u64>> {
     let fee = state.connection.estimate_fee(conf_target).await?;
     Ok(fee)
 }

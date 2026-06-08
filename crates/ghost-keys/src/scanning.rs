@@ -305,7 +305,7 @@ impl BatchScanner {
 
     /// Scan multiple transactions in parallel using rayon
     ///
-    /// Returns (tx_index, Vec<ScannedPayment>) for each transaction with found payments
+    /// Returns (tx_index, `Vec<ScannedPayment>`) for each transaction with found payments
     pub fn scan_batch(
         &self,
         keys: &GhostKeys,

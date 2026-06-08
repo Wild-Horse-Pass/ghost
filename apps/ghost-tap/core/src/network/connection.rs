@@ -138,9 +138,9 @@ impl ConnectionManager {
             ConnectionMode::DirectRpc => {
                 self.ensure_rpc_client().await?;
                 let mut guard = self.rpc_client.lock().await;
-                let client = guard
-                    .as_mut()
-                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let client = guard.as_mut().ok_or_else(|| {
+                    NetworkError::ConnectionFailed("RPC client not available".into())
+                })?;
 
                 let public = client.get_public_balance().await.unwrap_or(0.0);
                 let confirmed = (public * 100_000_000.0).round() as u64;
@@ -156,19 +156,16 @@ impl ConnectionManager {
     /// broadcasts a raw signed transaction hex.
     ///
     /// Returns the transaction ID on success.
-    pub async fn send_payment(
-        &self,
-        signed_tx: &str,
-    ) -> Result<String, NetworkError> {
+    pub async fn send_payment(&self, signed_tx: &str) -> Result<String, NetworkError> {
         let mode = *self.mode.lock();
         match mode {
             ConnectionMode::Gsp => self.gsp_client.submit_payment(signed_tx).await,
             ConnectionMode::DirectRpc => {
                 self.ensure_rpc_client().await?;
                 let mut guard = self.rpc_client.lock().await;
-                let client = guard
-                    .as_mut()
-                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let client = guard.as_mut().ok_or_else(|| {
+                    NetworkError::ConnectionFailed("RPC client not available".into())
+                })?;
 
                 client.send_raw_transaction(signed_tx).await
             }
@@ -189,9 +186,9 @@ impl ConnectionManager {
             ConnectionMode::DirectRpc => {
                 self.ensure_rpc_client().await?;
                 let mut guard = self.rpc_client.lock().await;
-                let client = guard
-                    .as_mut()
-                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let client = guard.as_mut().ok_or_else(|| {
+                    NetworkError::ConnectionFailed("RPC client not available".into())
+                })?;
 
                 match client.estimate_fee(conf_target).await {
                     Ok(estimate) => {
@@ -225,9 +222,9 @@ impl ConnectionManager {
             ConnectionMode::DirectRpc => {
                 self.ensure_rpc_client().await?;
                 let mut guard = self.rpc_client.lock().await;
-                let client = guard
-                    .as_mut()
-                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let client = guard.as_mut().ok_or_else(|| {
+                    NetworkError::ConnectionFailed("RPC client not available".into())
+                })?;
 
                 // Just ping the node and get block count to validate connectivity.
                 let _ = client.get_block_count().await?;
@@ -248,9 +245,9 @@ impl ConnectionManager {
             ConnectionMode::DirectRpc => {
                 self.ensure_rpc_client().await?;
                 let mut guard = self.rpc_client.lock().await;
-                let client = guard
-                    .as_mut()
-                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let client = guard.as_mut().ok_or_else(|| {
+                    NetworkError::ConnectionFailed("RPC client not available".into())
+                })?;
                 let stealth = client.get_stealth_address(None).await?;
                 Ok(stealth.address)
             }
@@ -271,11 +268,13 @@ impl ConnectionManager {
             ConnectionMode::DirectRpc => {
                 self.ensure_rpc_client().await?;
                 let mut guard = self.rpc_client.lock().await;
-                let client = guard
-                    .as_mut()
-                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let client = guard.as_mut().ok_or_else(|| {
+                    NetworkError::ConnectionFailed("RPC client not available".into())
+                })?;
                 let amount_ghost = amount_sats as f64 / 100_000_000.0;
-                client.send_public_to_private(stealth_address, amount_ghost).await
+                client
+                    .send_public_to_private(stealth_address, amount_ghost)
+                    .await
             }
         }
     }
@@ -294,11 +293,13 @@ impl ConnectionManager {
             ConnectionMode::DirectRpc => {
                 self.ensure_rpc_client().await?;
                 let mut guard = self.rpc_client.lock().await;
-                let client = guard
-                    .as_mut()
-                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let client = guard.as_mut().ok_or_else(|| {
+                    NetworkError::ConnectionFailed("RPC client not available".into())
+                })?;
                 let amount_ghost = amount_sats as f64 / 100_000_000.0;
-                client.send_private_to_public(to_address, amount_ghost).await
+                client
+                    .send_private_to_public(to_address, amount_ghost)
+                    .await
             }
         }
     }
@@ -328,9 +329,9 @@ impl ConnectionManager {
             return Ok(None);
         }
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         Ok(Some(client.get_blockchain_info().await?))
     }
 
@@ -340,9 +341,9 @@ impl ConnectionManager {
             return Ok(None);
         }
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         Ok(Some(client.get_network_info().await?))
     }
 
@@ -352,10 +353,12 @@ impl ConnectionManager {
             return Ok(None);
         }
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
-        Ok(Some(serde_json::Value::Array(client.get_peer_info().await?)))
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+        Ok(Some(serde_json::Value::Array(
+            client.get_peer_info().await?,
+        )))
     }
 
     /// Get wallet info. Returns `None` in GSP mode.
@@ -364,24 +367,20 @@ impl ConnectionManager {
             return Ok(None);
         }
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         Ok(Some(client.get_wallet_info().await?))
     }
 
     // --- L1 Wallet Operations (Full Node mode) ---
 
     /// Sign a message with an address's private key.
-    pub async fn sign_message(
-        &self,
-        address: &str,
-        message: &str,
-    ) -> Result<String, NetworkError> {
+    pub async fn sign_message(&self, address: &str, message: &str) -> Result<String, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.sign_message(address, message).await
     }
 
@@ -393,18 +392,18 @@ impl ConnectionManager {
         message: &str,
     ) -> Result<bool, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.verify_message(address, signature, message).await
     }
 
     /// List address labels.
     pub async fn list_labels(&self) -> Result<Vec<String>, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.list_labels().await
     }
 
@@ -414,18 +413,18 @@ impl ConnectionManager {
         label: &str,
     ) -> Result<serde_json::Value, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.get_addresses_by_label(label).await
     }
 
     /// Set label for an address.
     pub async fn set_label(&self, address: &str, label: &str) -> Result<(), NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.set_label(address, label).await
     }
 
@@ -436,21 +435,20 @@ impl ConnectionManager {
         include_empty: bool,
     ) -> Result<Vec<serde_json::Value>, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
-        client.list_received_by_address(min_conf, include_empty).await
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+        client
+            .list_received_by_address(min_conf, include_empty)
+            .await
     }
 
     /// Validate an address.
-    pub async fn validate_address(
-        &self,
-        address: &str,
-    ) -> Result<serde_json::Value, NetworkError> {
+    pub async fn validate_address(&self, address: &str) -> Result<serde_json::Value, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.validate_address(address).await
     }
 
@@ -463,9 +461,9 @@ impl ConnectionManager {
         max_conf: u32,
     ) -> Result<Vec<serde_json::Value>, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.list_unspent(min_conf, max_conf).await
     }
 
@@ -476,18 +474,18 @@ impl ConnectionManager {
         outputs: Vec<serde_json::Value>,
     ) -> Result<bool, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.lock_unspent(unlock, outputs).await
     }
 
     /// List locked unspent outputs.
     pub async fn list_lock_unspent(&self) -> Result<Vec<serde_json::Value>, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.list_lock_unspent().await
     }
 
@@ -499,9 +497,9 @@ impl ConnectionManager {
         fee_rate: Option<f64>,
     ) -> Result<serde_json::Value, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         let hex = client.create_raw_transaction(inputs, outputs).await?;
         let mut opts = serde_json::json!({});
         if let Some(rate) = fee_rate {
@@ -511,14 +509,11 @@ impl ConnectionManager {
     }
 
     /// Sign and broadcast a raw transaction.
-    pub async fn sign_and_send_raw(
-        &self,
-        hex: &str,
-    ) -> Result<String, NetworkError> {
+    pub async fn sign_and_send_raw(&self, hex: &str) -> Result<String, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         let signed = client.sign_raw_transaction_with_wallet(hex).await?;
         let signed_hex = signed
             .get("hex")
@@ -532,63 +527,54 @@ impl ConnectionManager {
     /// Decode a PSBT.
     pub async fn decode_psbt(&self, psbt: &str) -> Result<serde_json::Value, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.decode_psbt(psbt).await
     }
 
     /// Analyze a PSBT.
     pub async fn analyze_psbt(&self, psbt: &str) -> Result<serde_json::Value, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.analyze_psbt(psbt).await
     }
 
     /// Process (sign) a PSBT with wallet keys.
-    pub async fn wallet_process_psbt(
-        &self,
-        psbt: &str,
-    ) -> Result<serde_json::Value, NetworkError> {
+    pub async fn wallet_process_psbt(&self, psbt: &str) -> Result<serde_json::Value, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.wallet_process_psbt(psbt).await
     }
 
     /// Combine multiple PSBTs.
-    pub async fn combine_psbt(
-        &self,
-        psbts: Vec<String>,
-    ) -> Result<String, NetworkError> {
+    pub async fn combine_psbt(&self, psbts: Vec<String>) -> Result<String, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.combine_psbt(psbts).await
     }
 
     /// Finalize a PSBT.
-    pub async fn finalize_psbt(
-        &self,
-        psbt: &str,
-    ) -> Result<serde_json::Value, NetworkError> {
+    pub async fn finalize_psbt(&self, psbt: &str) -> Result<serde_json::Value, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.finalize_psbt(psbt).await
     }
 
     /// Finalize and broadcast a PSBT.
     pub async fn broadcast_psbt(&self, psbt: &str) -> Result<String, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         let finalized = client.finalize_psbt(psbt).await?;
         let complete = finalized
             .get("complete")
@@ -602,9 +588,7 @@ impl ConnectionManager {
         let hex = finalized
             .get("hex")
             .and_then(|h| h.as_str())
-            .ok_or_else(|| {
-                NetworkError::InvalidResponse("No hex in finalized PSBT".into())
-            })?;
+            .ok_or_else(|| NetworkError::InvalidResponse("No hex in finalized PSBT".into()))?;
         client.send_raw_transaction(hex).await
     }
 
@@ -613,9 +597,9 @@ impl ConnectionManager {
     /// Encrypt the wallet.
     pub async fn encrypt_wallet(&self, passphrase: &str) -> Result<(), NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.encrypt_wallet(passphrase).await
     }
 
@@ -626,10 +610,12 @@ impl ConnectionManager {
         timeout_seconds: u32,
     ) -> Result<(), NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
-        client.wallet_passphrase(passphrase, timeout_seconds, false).await
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+        client
+            .wallet_passphrase(passphrase, timeout_seconds, false)
+            .await
     }
 
     /// Change the wallet passphrase.
@@ -639,18 +625,20 @@ impl ConnectionManager {
         new_passphrase: &str,
     ) -> Result<(), NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
-        client.wallet_passphrase_change(old_passphrase, new_passphrase).await
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+        client
+            .wallet_passphrase_change(old_passphrase, new_passphrase)
+            .await
     }
 
     /// Lock the node wallet.
     pub async fn wallet_lock_node(&self) -> Result<(), NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         client.wallet_lock().await
     }
 
@@ -661,9 +649,9 @@ impl ConnectionManager {
         params: serde_json::Value,
     ) -> Result<serde_json::Value, NetworkError> {
         let mut guard = self.require_rpc().await?;
-        let client = guard.as_mut().ok_or_else(|| {
-            NetworkError::ConnectionFailed("RPC client not available".into())
-        })?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
         // Convert Value params to what call() expects
         client.call(method, params).await
     }
@@ -694,9 +682,9 @@ impl ConnectionManager {
             ConnectionMode::DirectRpc => {
                 self.ensure_rpc_client().await?;
                 let mut guard = self.rpc_client.lock().await;
-                let client = guard
-                    .as_mut()
-                    .ok_or_else(|| NetworkError::ConnectionFailed("RPC client not available".into()))?;
+                let client = guard.as_mut().ok_or_else(|| {
+                    NetworkError::ConnectionFailed("RPC client not available".into())
+                })?;
                 client.get_new_address(Some("wash")).await
             }
         }

@@ -581,12 +581,11 @@ impl BitcoinRpc {
             base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes()),
         );
 
-        let mut client_builder =
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(config.timeout_secs))
-                // Proactively close idle connections before ghostd's HTTP keep-alive
-                // expires, preventing "error sending request" on stale connections
-                .pool_idle_timeout(std::time::Duration::from_secs(15));
+        let mut client_builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            // Proactively close idle connections before ghostd's HTTP keep-alive
+            // expires, preventing "error sending request" on stale connections
+            .pool_idle_timeout(std::time::Duration::from_secs(15));
 
         // Add custom CA certificate if provided
         if let Some(ref cert_path) = config.tls_cert_path {
@@ -1137,6 +1136,27 @@ impl BitcoinRpc {
         .await
     }
 
+    /// Scan the chain UTXO set for outputs matching one or more
+    /// scan objects. Unlike `listunspent`, this does NOT require a
+    /// loaded bitcoind wallet — it walks the full UTXO set on each
+    /// call. Useful for wallets that derive their own addresses and
+    /// just need bitcoind for chain access.
+    ///
+    /// `scan_objects` is a list of descriptors, e.g. `addr(<addr>)`
+    /// or `tr(<xpub>/*)`. Bitcoin Core caps the count per call at
+    /// 10000 — callers above that should chunk.
+    ///
+    /// Bitcoin Core: a scantxoutset call with N=1000 addresses on
+    /// mainnet currently takes ~5-15s wall-clock; signet/regtest
+    /// finishes in well under 1s. Surface this latency in any UI.
+    pub async fn scan_tx_out_set(
+        &self,
+        scan_objects: Vec<&str>,
+    ) -> GhostResult<ScanTxOutSetResult> {
+        self.call("scantxoutset", vec![json!("start"), json!(scan_objects)])
+            .await
+    }
+
     /// Create raw transaction
     pub async fn create_raw_transaction(
         &self,
@@ -1168,11 +1188,7 @@ impl BitcoinRpc {
     }
 
     /// Call an arbitrary RPC method (for methods not wrapped with typed helpers)
-    pub async fn call_raw(
-        &self,
-        method: &str,
-        params: Vec<Value>,
-    ) -> GhostResult<Value> {
+    pub async fn call_raw(&self, method: &str, params: Vec<Value>) -> GhostResult<Value> {
         self.call(method, params).await
     }
 
@@ -1696,6 +1712,41 @@ pub fn detect_address_network(address: &str) -> BitcoinNetwork {
 
     // Default to Mainnet for unknown prefixes (will fail validation anyway)
     BitcoinNetwork::Mainnet
+}
+
+/// One row in `scantxoutset start` output. Field names match the
+/// Bitcoin Core JSON exactly so deserialisation is direct.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanTxOutEntry {
+    pub txid: String,
+    pub vout: u32,
+    /// Hex-encoded scriptPubKey of the output.
+    #[serde(rename = "scriptPubKey")]
+    pub script_pubkey: String,
+    /// Descriptor that matched this output (e.g. `addr(...)#chk`).
+    pub desc: String,
+    /// Amount in BTC (Bitcoin Core's wire format). Convert with
+    /// `(amount * 1e8).round() as u64` for sats — but be aware that
+    /// f64 round-tripping is lossy beyond 2099-09 worth of sats; use
+    /// the raw RPC string if you need consensus-exact values.
+    pub amount: f64,
+    /// Block height where the output was confirmed.
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanTxOutSetResult {
+    pub success: bool,
+    /// Block height at which the scan was taken — useful as a
+    /// cache key.
+    #[serde(default)]
+    pub height: u32,
+    #[serde(rename = "bestblock", default)]
+    pub best_block: String,
+    #[serde(default)]
+    pub unspents: Vec<ScanTxOutEntry>,
+    #[serde(default)]
+    pub total_amount: f64,
 }
 
 /// Unspent output

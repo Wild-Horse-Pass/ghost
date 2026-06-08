@@ -1,0 +1,261 @@
+"use client";
+
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Card } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { SkeletonCard } from "@/components/ui/Skeleton";
+import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { useNodeStatus } from "@/hooks/queries/useNodeQueries";
+import { useSetGhostMode } from "@/hooks/queries/useConfigQueries";
+import { useToast } from "@/components/ui/Toast";
+
+/**
+ * /network — observability for this node's network exposure.
+ *
+ * Read-only mostly: Tor mode is set at ghostd startup via -tor flag and
+ * can't be safely toggled mid-flight from a dashboard. The one interactive
+ * control is Ghost Mode (suppresses outbound transaction relay).
+ *
+ * For the *config* surface use /settings/privacy. This page is for
+ * "what's actually happening right now".
+ */
+
+interface ToggleRowProps {
+  label: string;
+  description: string;
+  enabled: boolean;
+  onChange?: (next: boolean) => void;
+  disabled?: boolean;
+  readOnly?: boolean;
+  badge?: string;
+}
+
+function ExposureRow({ label, description, enabled, onChange, disabled, readOnly, badge }: ToggleRowProps) {
+  return (
+    <div
+      className="flex items-start justify-between gap-6"
+      style={{
+        padding: "16px 0",
+        borderTop: "1px solid var(--rule)",
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="flex items-center gap-2 mb-1">
+          <span style={{ color: "var(--fg)", fontWeight: 500, fontSize: "15px" }}>{label}</span>
+          {badge && <Badge variant={enabled ? "success" : "info"}>{badge}</Badge>}
+          {readOnly && <Badge variant="info">read-only</Badge>}
+        </div>
+        <p style={{ color: "var(--dim)", fontSize: "13px", lineHeight: "1.5", maxWidth: "60ch" }}>
+          {description}
+        </p>
+      </div>
+      {!readOnly && onChange ? (
+        <button
+          onClick={() => onChange(!enabled)}
+          disabled={disabled}
+          className="flex-shrink-0"
+          style={{
+            width: "44px",
+            height: "24px",
+            borderRadius: "12px",
+            background: enabled ? "var(--accent)" : "var(--rule-strong)",
+            border: "none",
+            cursor: disabled ? "not-allowed" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            position: "relative",
+            transition: "background 120ms",
+          }}
+          aria-pressed={enabled}
+        >
+          <span
+            style={{
+              position: "absolute",
+              top: "3px",
+              left: enabled ? "23px" : "3px",
+              width: "18px",
+              height: "18px",
+              borderRadius: "50%",
+              background: "white",
+              transition: "left 120ms",
+            }}
+          />
+        </button>
+      ) : (
+        <span
+          className="flex-shrink-0"
+          style={{
+            color: enabled ? "var(--green)" : "var(--dim)",
+            fontFamily: "var(--font-mono)",
+            fontSize: "13px",
+            paddingTop: "2px",
+          }}
+        >
+          {enabled ? "active" : "inactive"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export default function NetworkPage() {
+  const { data: status, isLoading } = useNodeStatus();
+  const setGhostMode = useSetGhostMode();
+  const { success, error } = useToast();
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          eyebrow="network"
+          title="How this node is exposed."
+          subtitle="Live view of your node's outbound transport, onion address, and relay-suppression state."
+        />
+        <SkeletonCard />
+      </div>
+    );
+  }
+
+  const torActive = !!status?.tor_mode;
+  const onion = status?.onion_address;
+  const ghostMode = !!status?.ghost_mode;
+  const peerCount = status?.peer_count ?? 0;
+  const exposure = torActive ? (onion ? "tor" : "tor (no onion)") : "clearnet";
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="network"
+        title="How this node is exposed."
+        subtitle="Live view of your node's outbound transport, onion address, and relay-suppression state. Set the underlying flags in /settings/privacy or the ghostd CLI."
+        actions={
+          <Badge variant={torActive ? "success" : "info"}>
+            {exposure}
+          </Badge>
+        }
+      />
+
+      <SectionErrorBoundary section="Exposure summary">
+        <Card>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-6 mb-2">
+            <Stat label="outbound transport" value={torActive ? "Tor" : "clearnet"} />
+            <Stat label="connected peers" value={peerCount.toLocaleString()} />
+            <Stat
+              label="onion address"
+              value={onion ? "✓ present" : "—"}
+              accent={onion ? "var(--green)" : "var(--dim)"}
+            />
+          </div>
+
+          {onion && (
+            <div
+              className="flex items-center justify-between gap-3 mt-4"
+              style={{
+                background: "var(--bg)",
+                border: "1px solid var(--rule)",
+                borderRadius: "4px",
+                padding: "12px 16px",
+                fontFamily: "var(--font-mono)",
+                fontSize: "13px",
+                overflow: "auto",
+              }}
+            >
+              <code style={{ color: "var(--fg)", whiteSpace: "nowrap" }}>{onion}</code>
+              <CopyButton text={onion} />
+            </div>
+          )}
+        </Card>
+      </SectionErrorBoundary>
+
+      <SectionErrorBoundary section="Privacy modes">
+        <Card>
+          <h3 style={{ color: "var(--fg)", fontSize: "16px", fontWeight: 500, marginBottom: "4px" }}>
+            Privacy modes
+          </h3>
+          <p style={{ color: "var(--dim)", fontSize: "13px", marginBottom: "8px" }}>
+            Tor mode is set at startup via ghostd&apos;s <code>-tor</code> flag and surfaces here as read-only.
+            Ghost Mode is runtime-toggleable.
+          </p>
+
+          <div>
+            <ExposureRow
+              label="Tor mode"
+              description="When enabled, all P2P connections route through Tor and clearnet address gossip is suppressed. Set via ghostd's -tor and -onion flags before startup. Restart required to change."
+              enabled={torActive}
+              readOnly
+              badge={torActive ? "+anonymity" : undefined}
+            />
+            <ExposureRow
+              label="Ghost Mode"
+              description="When enabled, your node accepts and validates blocks but never relays unconfirmed transactions or answers getdata for them. Mempool becomes opaque to peers — useful for privacy-maximising operators. Block relay is unaffected."
+              enabled={ghostMode}
+              onChange={async (next) => {
+                try {
+                  await setGhostMode.mutateAsync(next);
+                  success(
+                    "Ghost Mode " + (next ? "enabled" : "disabled"),
+                    next
+                      ? "Outbound transaction relay suppressed"
+                      : "Standard relay resumed"
+                  );
+                } catch (e) {
+                  error(
+                    "Failed to update Ghost Mode",
+                    e instanceof Error ? e.message : "Unknown error"
+                  );
+                }
+              }}
+              disabled={setGhostMode.isPending}
+              badge={ghostMode ? "active" : undefined}
+            />
+          </div>
+        </Card>
+      </SectionErrorBoundary>
+
+      <p style={{ color: "var(--fainter)", fontSize: "13px" }}>
+        For the underlying config (ghostd flags, bridge configuration, etc.) see{" "}
+        <a
+          href="/settings/privacy"
+          className="bare"
+          style={{
+            color: "var(--dim)",
+            textDecoration: "underline",
+            textDecorationColor: "var(--rule-strong)",
+          }}
+        >
+          /settings/privacy
+        </a>
+        . For relay timing privacy see <a href="/shroud" className="bare" style={{ color: "var(--dim)", textDecoration: "underline", textDecorationColor: "var(--rule-strong)" }}>Shroud</a>.
+      </p>
+    </div>
+  );
+}
+
+function Stat({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: "11px",
+          fontFamily: "var(--font-mono)",
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+          color: "var(--dim)",
+          marginBottom: "4px",
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: "22px",
+          fontWeight: 500,
+          color: accent ?? "var(--fg)",
+          fontFamily: "var(--font-mono)",
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}

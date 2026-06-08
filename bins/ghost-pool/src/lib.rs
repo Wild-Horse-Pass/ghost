@@ -78,4 +78,16 @@ pub mod glyph_handler;
 /// Input validation utilities for security.
 pub mod validation;
 
+/// Capability self-check (Phase 3): per-capability prerequisite probes
+/// surfaced via `/health/self_check` for operator visibility.
+pub mod self_check;
+
+/// Hardware-derived miner capacity (CPU/RAM/FD limits → max miners).
+/// Operator's `network.max_miners` is a ceiling, not a floor.
+pub mod capacity;
+
+/// Cumulative Reaper stats — txs evaluated, reaped, accepted, dead-bytes
+/// total, plus per-DeadCodeType counters. Read by `/api/v1/reaper/status`.
+pub mod reaper_stats;
+
 // L2 uses NullifierRouteHandler from ghost-consensus (sender-side proofs).

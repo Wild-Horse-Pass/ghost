@@ -492,7 +492,11 @@ impl HealthPingHandler {
     /// Create a new health ping handler with default configuration
     ///
     /// L-6: ban_manager is required to ensure banned nodes are never silently accepted.
-    pub fn new(peers: Arc<PeerManager>, db: Option<Arc<Database>>, ban_manager: Arc<BanManager>) -> Self {
+    pub fn new(
+        peers: Arc<PeerManager>,
+        db: Option<Arc<Database>>,
+        ban_manager: Arc<BanManager>,
+    ) -> Self {
         Self::with_config(peers, db, HealthHandlerConfig::default(), ban_manager)
     }
 
@@ -851,14 +855,14 @@ impl HealthPingHandler {
 
         // Update miner_count and capabilities from the health ping on every tick,
         // even when the peer address hasn't changed — these are live metrics.
-        self.peers.update_health_metrics(
-            &envelope.sender,
-            ping.miner_count,
-            ping.capabilities,
-        );
+        self.peers
+            .update_health_metrics(&envelope.sender, ping.miner_count, ping.capabilities);
         // Active miner_id hashes used for mesh-wide deduplicated counting.
         self.peers
             .update_active_miner_hashes(&envelope.sender, ping.active_miner_id_hashes.clone());
+        // Hardware-derived capacity used by the LB for utilisation routing.
+        self.peers
+            .update_max_capacity(&envelope.sender, ping.max_capacity);
 
         // Persist to database if available
         if let Some(ref db) = self.db {
@@ -1051,7 +1055,8 @@ mod tests {
 
         let our_node_id = [0u8; 32];
         let peers = Arc::new(PeerManager::new(our_node_id, 100));
-        let handler = HealthPingHandler::with_config(peers, None, config, Arc::new(BanManager::new()));
+        let handler =
+            HealthPingHandler::with_config(peers, None, config, Arc::new(BanManager::new()));
 
         let node_id = [1u8; 32];
 

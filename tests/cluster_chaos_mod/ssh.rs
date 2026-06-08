@@ -68,7 +68,10 @@ impl SshController {
     /// Create (or flush) a dedicated iptables chain for chaos partitioning.
     /// Never touches port 22 (SSH) — only mesh ports 8080, 8555-8562.
     pub fn setup_partition_chain(node: &NodeInfo) -> Result<String, String> {
-        println!("  [SSH] Setting up GHOST_CHAOS iptables chain on {}", node.name);
+        println!(
+            "  [SSH] Setting up GHOST_CHAOS iptables chain on {}",
+            node.name
+        );
         // Create chain if it doesn't exist, flush it if it does
         Self::run(
             node,
@@ -81,10 +84,7 @@ impl SshController {
     /// Block traffic between this node and a peer on mesh ports (8080, 8555-8562).
     /// Never blocks port 22 — SSH access is always preserved.
     pub fn block_peer(node: &NodeInfo, peer_ip: &str) -> Result<String, String> {
-        println!(
-            "  [SSH] Blocking {} ↔ {} on mesh ports",
-            node.name, peer_ip
-        );
+        println!("  [SSH] Blocking {} ↔ {} on mesh ports", node.name, peer_ip);
         Self::run(
             node,
             &format!(
@@ -256,11 +256,7 @@ impl SshController {
     }
 
     /// Read a TOML field value from a specific section.
-    pub fn read_config_field(
-        node: &NodeInfo,
-        section: &str,
-        key: &str,
-    ) -> Result<String, String> {
+    pub fn read_config_field(node: &NodeInfo, section: &str, key: &str) -> Result<String, String> {
         let output = Self::run(
             node,
             &format!(
@@ -276,10 +272,7 @@ impl SshController {
     /// Restart the service (stop + start). Does NOT use genesis guard.
     pub fn restart_service(node: &NodeInfo, service: &str) -> Result<String, String> {
         println!("  [SSH] Restarting {} on {}", service, node.name);
-        Self::run(
-            node,
-            &format!("sudo systemctl restart {}", service),
-        )
+        Self::run(node, &format!("sudo systemctl restart {}", service))
     }
 
     /// Count log lines matching a pattern since a given time.
@@ -296,13 +289,10 @@ impl SshController {
                 service, since, pattern
             ),
         )?;
-        output.trim().parse::<u64>().map_err(|e| {
-            format!(
-                "failed to parse count from '{}': {}",
-                output.trim(),
-                e
-            )
-        })
+        output
+            .trim()
+            .parse::<u64>()
+            .map_err(|e| format!("failed to parse count from '{}': {}", output.trim(), e))
     }
 
     // --- Ghost Core (C++ daemon) management ---
@@ -368,15 +358,8 @@ impl SshController {
     ///
     /// Reads the effective ExecStart (from reaper.conf or main unit), appends
     /// the flag, and writes an updated reaper.conf. Requires daemon-reload + restart.
-    pub fn add_ghost_conf_flag(
-        node: &NodeInfo,
-        key: &str,
-        _value: &str,
-    ) -> Result<String, String> {
-        println!(
-            "  [SSH] Adding ghostd flag -{} on {}",
-            key, node.name
-        );
+    pub fn add_ghost_conf_flag(node: &NodeInfo, key: &str, _value: &str) -> Result<String, String> {
+        println!("  [SSH] Adding ghostd flag -{} on {}", key, node.name);
         // Read the effective ExecStart command, append the flag, update reaper.conf
         Self::run(
             node,
@@ -395,10 +378,7 @@ impl SshController {
     /// Remove a flag from ghostd by regenerating the drop-in without it.
     #[allow(dead_code)]
     pub fn remove_ghost_conf_flag(node: &NodeInfo, key: &str) -> Result<String, String> {
-        println!(
-            "  [SSH] Removing ghostd flag -{} on {}",
-            key, node.name
-        );
+        println!("  [SSH] Removing ghostd flag -{} on {}", key, node.name);
         Self::run(
             node,
             &format!(

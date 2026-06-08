@@ -191,10 +191,7 @@ mod tests {
         ]);
 
         assert_eq!(failover.endpoint_count(), 3);
-        assert_eq!(
-            failover.current_endpoint(),
-            "wss://gsp1.ghost.network/ws"
-        );
+        assert_eq!(failover.current_endpoint(), "wss://gsp1.ghost.network/ws");
         assert!(!failover.is_connected());
     }
 
@@ -206,10 +203,7 @@ mod tests {
             cycle: false,
         };
 
-        let failover = GspFailover::new(
-            vec!["wss://node.example.com/ws".into()],
-            config.clone(),
-        );
+        let failover = GspFailover::new(vec!["wss://node.example.com/ws".into()], config.clone());
 
         assert_eq!(failover.config.max_retries_per_endpoint, 5);
         assert!(!failover.config.cycle);
