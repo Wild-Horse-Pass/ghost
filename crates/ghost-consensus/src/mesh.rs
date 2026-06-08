@@ -132,6 +132,14 @@ pub struct MeshConfig {
     ///
     /// Default: false (gradual rollout mode)
     pub noise_required: bool,
+    /// Path to persist the outbound message sequence ceiling.
+    ///
+    /// The outbound sequence must never go backwards across a restart, or peers
+    /// reject our messages as replays. We persist a leased ceiling here and
+    /// resume above it on startup. `None` (the default, e.g. tests) starts the
+    /// counter at 0 with no persistence — only safe when peers also reset (a
+    /// coordinated full-fleet restart). Set this on every long-running node.
+    pub sequence_persist_path: Option<std::path::PathBuf>,
 }
 
 /// Default Noise port for encrypted TCP connections
@@ -158,6 +166,7 @@ impl Default for MeshConfig {
             // - Snooping on consensus votes, share submissions, and payouts
             // Fallback mode should ONLY be used during development/testing.
             noise_required: true,
+            sequence_persist_path: None,
         }
     }
 }
@@ -187,6 +196,14 @@ pub struct MeshNetwork {
     peers: Arc<PeerManager>,
     /// Message sequence counter
     sequence: AtomicU64,
+    /// Reserved (persisted) outbound-sequence ceiling. `next_sequence` never
+    /// exceeds this without first persisting a higher value, so a restart
+    /// resumes above every sequence we could have used. `u64::MAX` when
+    /// persistence is disabled.
+    sequence_ceiling: AtomicU64,
+    /// Serialises lease extensions (the rare on-disk ceiling write) so only one
+    /// thread persists at a time.
+    sequence_lease_lock: std::sync::Mutex<()>,
     /// Seen message cache for deduplication (P2P-L1: O(1) eviction)
     seen_messages: RwLock<SeenMessageCache>,
     /// Message handlers
@@ -346,6 +363,21 @@ const MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP: u64 = MAX_SEQUENCE_JUMP * 10;
 /// 2. The message deduplication cache still prevents exact duplicates
 /// 3. Timestamp validation provides additional replay protection
 const SEQUENCE_TOLERANCE_WINDOW: u64 = 10;
+
+/// Outbound sequence persistence — lease block size.
+///
+/// The outbound sequence counter must never go backwards across a restart, or
+/// peers reject our messages as replays (they keep our last-seen sequence as a
+/// per-sender baseline). To guarantee that without writing to disk on every
+/// message, we reserve a CEILING this many sequences ahead and persist it; on
+/// startup we resume at the persisted ceiling. Even an ungraceful crash is safe
+/// because the persisted value is always >= every sequence we could have used.
+const SEQUENCE_LEASE_BLOCK: u64 = 100_000;
+
+/// Lease a fresh block once the counter comes within this many of the ceiling.
+/// Must be < SEQUENCE_LEASE_BLOCK so the re-lease happens before the lease runs
+/// out. At ~1000 msgs/sec this persists roughly once every ~90 seconds.
+const SEQUENCE_LEASE_THRESHOLD: u64 = 10_000;
 
 /// M-2/H-P2P-5/H-7: Sequence state tracking with wrap-around protection
 /// Handles the case where sequence numbers wrap from MAX back to 1,
@@ -988,12 +1020,19 @@ impl MeshNetwork {
             None
         };
 
+        // Load the persisted outbound-sequence ceiling and reserve a fresh lease
+        // so we resume above every sequence used before the last restart.
+        let (init_sequence, init_ceiling) =
+            Self::load_and_reserve_sequence(config.sequence_persist_path.as_deref());
+
         Ok(Self {
             capabilities: RwLock::new(config.capabilities),
             identity,
             config: config.clone(),
             peers,
-            sequence: AtomicU64::new(0),
+            sequence: AtomicU64::new(init_sequence),
+            sequence_ceiling: AtomicU64::new(init_ceiling),
+            sequence_lease_lock: std::sync::Mutex::new(()),
             seen_messages: RwLock::new(SeenMessageCache::new(config.max_seen_messages)),
             handlers: RwLock::new(Vec::new()),
             running: AtomicBool::new(false),
@@ -1229,9 +1268,95 @@ impl MeshNetwork {
                 .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
+                self.maybe_extend_sequence_lease(next);
                 return next;
             }
             // Another thread modified sequence, retry
+        }
+    }
+
+    /// Load the persisted outbound-sequence ceiling and reserve the next lease.
+    ///
+    /// Returns `(start, ceiling)`: `start` is where the counter resumes — the
+    /// previously persisted ceiling, which is >= every sequence the prior
+    /// process could have issued, so the sequence never goes backwards across a
+    /// restart. `ceiling` is the freshly reserved upper bound, persisted before
+    /// return. With no path (tests) returns `(0, u64::MAX)` — no persistence. If
+    /// the path is set but the reservation can't be written, falls back to
+    /// `(0, u64::MAX)` and logs, degrading to old behaviour rather than
+    /// refusing to start.
+    fn load_and_reserve_sequence(path: Option<&std::path::Path>) -> (u64, u64) {
+        let Some(path) = path else {
+            return (0, u64::MAX);
+        };
+        let persisted = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        let ceiling = persisted.saturating_add(SEQUENCE_LEASE_BLOCK);
+        match Self::write_sequence_ceiling(path, ceiling) {
+            Ok(()) => {
+                info!(
+                    path = %path.display(),
+                    resume_at = persisted,
+                    ceiling = ceiling,
+                    "Mesh outbound sequence: resumed from persisted lease"
+                );
+                (persisted, ceiling)
+            }
+            Err(e) => {
+                error!(
+                    path = %path.display(),
+                    error = %e,
+                    "Mesh outbound sequence: could not reserve lease — starting at 0 without persistence (restart-replay risk)"
+                );
+                (0, u64::MAX)
+            }
+        }
+    }
+
+    /// Atomically persist the sequence ceiling (write-temp-then-rename).
+    fn write_sequence_ceiling(path: &std::path::Path, ceiling: u64) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, ceiling.to_string())?;
+        std::fs::rename(&tmp, path)
+    }
+
+    /// Reserve a fresh lease block once the counter nears the persisted ceiling.
+    /// Cheap in the common case (one atomic load); writes to disk only ~once per
+    /// `SEQUENCE_LEASE_BLOCK` messages. No-op when persistence is disabled.
+    fn maybe_extend_sequence_lease(&self, current: u64) {
+        let Some(path) = self.config.sequence_persist_path.as_deref() else {
+            return;
+        };
+        if current.saturating_add(SEQUENCE_LEASE_THRESHOLD)
+            < self.sequence_ceiling.load(Ordering::SeqCst)
+        {
+            return; // lease has plenty of headroom
+        }
+        // Serialise the (rare) on-disk extension; recover a poisoned lock since
+        // the only guarded action is a file write.
+        let _guard = self
+            .sequence_lease_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let ceiling = self.sequence_ceiling.load(Ordering::SeqCst);
+        if current.saturating_add(SEQUENCE_LEASE_THRESHOLD) < ceiling {
+            return; // another thread already extended
+        }
+        let new_ceiling = current.saturating_add(SEQUENCE_LEASE_BLOCK);
+        match Self::write_sequence_ceiling(path, new_ceiling) {
+            // Advance the in-memory ceiling only after the higher value is on
+            // disk, so we never issue a sequence we haven't persisted past.
+            Ok(()) => self.sequence_ceiling.store(new_ceiling, Ordering::SeqCst),
+            Err(e) => error!(
+                path = %path.display(),
+                error = %e,
+                "Mesh outbound sequence: failed to extend lease; will retry"
+            ),
         }
     }
 
@@ -2993,6 +3118,47 @@ mod tests {
 
         // Total should still be 5 (sender1: 3, sender2: 2)
         assert_eq!(cache.len(), 5);
+    }
+
+    #[test]
+    fn test_outbound_sequence_persists_across_restart() {
+        // The outbound sequence must resume ABOVE its prior value after a
+        // restart, or peers reject our messages as replays. We persist a leased
+        // ceiling and resume there.
+        let dir = std::env::temp_dir().join(format!("ghost_seq_persist_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mesh_sequence");
+        let _ = std::fs::remove_file(&path);
+
+        // First boot, no file: start at 0, reserve one block, persist the ceiling.
+        let (start0, ceiling0) = MeshNetwork::load_and_reserve_sequence(Some(path.as_path()));
+        assert_eq!(start0, 0);
+        assert_eq!(ceiling0, SEQUENCE_LEASE_BLOCK);
+        let on_disk = std::fs::read_to_string(&path)
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap();
+        assert_eq!(on_disk, SEQUENCE_LEASE_BLOCK);
+
+        // Simulate a restart: resume AT the persisted ceiling — strictly above
+        // anything usable before the restart — and reserve the next block.
+        let (start1, ceiling1) = MeshNetwork::load_and_reserve_sequence(Some(path.as_path()));
+        assert_eq!(start1, SEQUENCE_LEASE_BLOCK);
+        assert_eq!(ceiling1, SEQUENCE_LEASE_BLOCK * 2);
+        assert!(
+            start1 >= ceiling0,
+            "must resume at/above the prior reserved ceiling — sequence never goes backwards"
+        );
+
+        // No path => no persistence (start 0, effectively unbounded ceiling).
+        assert_eq!(
+            MeshNetwork::load_and_reserve_sequence(None),
+            (0, u64::MAX)
+        );
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
     }
 
     #[test]
