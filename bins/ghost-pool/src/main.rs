@@ -946,6 +946,9 @@ async fn main() -> Result<()> {
         noise_port: ghost_consensus::mesh::DEFAULT_NOISE_PORT,
         noise_keypair_path: Some(noise_keypair_path),
         noise_required: true,
+        // Persist the outbound mesh sequence so a restart resumes above its
+        // prior value instead of resetting to 0 (which peers reject as replays).
+        sequence_persist_path: Some(data_dir.join("mesh_sequence")),
         ..Default::default()
     };
     // M-2: Use try_new() to properly handle Noise initialization failures
