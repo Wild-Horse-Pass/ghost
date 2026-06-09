@@ -4630,15 +4630,21 @@ async fn api_config_template_profile_handler(
     }))
 }
 
-/// API v1 Config reaper handler
+/// API v1 Config reaper handler — returns the per-vector reaper configuration
+/// from the full node config (pool.toml `[reaper]`).
 async fn api_config_reaper_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
-    let config = state.dashboard_config.read();
+    let settings = state
+        .full_node_config
+        .as_ref()
+        .map(|c| c.read().reaper.clone())
+        .unwrap_or_default();
     Json(serde_json::json!({
-        "enabled": config.reaper,
-        "mode": if config.reaper { "strict" } else { "disabled" },
-        "message": "Reaper mode configuration"
+        "enabled": settings.enabled,
+        "mode": if settings.enabled { "strict" } else { "disabled" },
+        "settings": serde_json::to_value(&settings).unwrap_or_else(|_| serde_json::json!({})),
+        "message": "Reaper per-vector configuration",
     }))
 }
 
@@ -4776,17 +4782,47 @@ async fn api_config_public_mining_post_handler(
     }))
 }
 
-/// API v1 Config reaper POST handler
+/// API v1 Config reaper POST handler — accepts the full per-vector reaper
+/// settings, persists them to the node config (pool.toml `[reaper]`), and signals
+/// a ghost-pool restart so the pool template reaper picks them up. The node-level
+/// (ghostd) mempool reaper still needs `ghost-setup apply-reaper`, surfaced via
+/// `ghostd_restart_required`. A legacy `{ "enabled": bool }` body still works
+/// (the per-vector fields fall back to their serde defaults = all-on).
 async fn api_config_reaper_post_handler(
     State(state): State<Arc<VerificationState>>,
-    Json(payload): Json<ToggleRequest>,
+    Json(payload): Json<ghost_common::config::ReaperSettings>,
 ) -> impl IntoResponse {
-    let mut config = state.dashboard_config.write();
-    config.reaper = payload.enabled;
+    let mut persisted = false;
+    if let Some(ref full) = state.full_node_config {
+        let mut cfg = full.write();
+        cfg.reaper = payload.clone();
+        if let Some(ref path) = state.full_node_config_path {
+            match cfg.save_atomic(path) {
+                Ok(()) => persisted = true,
+                Err(e) => error!(error = %e, "Failed to persist reaper config"),
+            }
+        }
+    }
+    // Keep the dashboard master mirror in sync (capability / share displays).
+    {
+        let mut dc = state.dashboard_config.write();
+        dc.reaper = payload.enabled;
+    }
+    // The pool template reaper reads its config at startup; a restart applies it.
+    if persisted {
+        state.request_restart();
+    }
     Json(serde_json::json!({
         "success": true,
+        "persisted": persisted,
         "enabled": payload.enabled,
-        "message": "Reaper mode updated"
+        "settings": serde_json::to_value(&payload).unwrap_or_else(|_| serde_json::json!({})),
+        "ghostd_restart_required": true,
+        "message": if persisted {
+            "Pool reaper updated; ghost-pool will restart to apply. Run `ghost-setup apply-reaper` (or restart ghostd) to apply node-level mempool filtering."
+        } else {
+            "Reaper settings received but no node config path is configured — changes were not persisted."
+        },
     }))
 }
 

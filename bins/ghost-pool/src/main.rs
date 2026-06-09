@@ -41,7 +41,7 @@ use tokio::sync::{broadcast, Semaphore};
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use ghost_common::config::{MiningMode, NodeConfig};
+use ghost_common::config::{MiningMode, NodeConfig, ReaperSettings};
 use ghost_common::identity::NodeIdentity;
 use ghost_common::metrics::Metrics;
 use ghost_common::rpc::BitcoinRpc;
@@ -749,19 +749,22 @@ async fn main() -> Result<()> {
         policy.highest_allowed_tier().map(|t| t as u8).unwrap_or(0)
     );
 
-    // Setup reaper config for dead code detection
-    let reaper_config = if config.reaper.enabled {
-        ReaperConfig::default()
-    } else {
-        ReaperConfig::disabled()
-    };
+    // Setup reaper config for dead code detection, honouring the operator's
+    // per-vector detector selection (not just the master on/off).
+    let reaper_config = reaper_config_from_settings(&config.reaper);
+    if let Err(e) = reaper_config.validate() {
+        warn!("Reaper config invalid ({e}); falling back to all-on defaults");
+    }
     info!(
-        "Reaper: {}",
-        if reaper_config.enabled {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        "Reaper: {} (inscription={} dropstuffing={} fakepubkey={} annex={} unreachable={} excess_witness={} legacy={})",
+        if reaper_config.enabled { "enabled" } else { "disabled" },
+        reaper_config.reject_inscription_envelope,
+        reaper_config.reject_drop_stuffing,
+        reaper_config.reject_fake_pubkeys,
+        reaper_config.reject_annex,
+        reaper_config.reject_unreachable_code,
+        reaper_config.reject_excess_witness,
+        reaper_config.reject_legacy_data_stuffing,
     );
 
     // Determine effective public_mining from mining_mode
@@ -5323,6 +5326,34 @@ fn expand_path(path: &std::path::Path) -> Result<PathBuf> {
     }
 }
 
+/// Build the pool template-reaper config from the operator's per-vector
+/// settings. When the master switch is off, every detector is disabled.
+/// Otherwise each detector and threshold maps straight through to the
+/// `ghost_reaper::ReaperConfig` field that enforces it. Node-only vectors
+/// (`reject_opreturn`, `reject_runestone`) have no pool-side equivalent and are
+/// intentionally not mapped here — the Rust reaper bounds OP_RETURN via the
+/// `max_op_return_bytes` threshold and has no Runestone detector.
+fn reaper_config_from_settings(s: &ReaperSettings) -> ReaperConfig {
+    if !s.enabled {
+        return ReaperConfig::disabled();
+    }
+    ReaperConfig {
+        enabled: true,
+        reject_inscription_envelope: s.reject_inscription,
+        reject_drop_stuffing: s.reject_dropstuffing,
+        reject_fake_pubkeys: s.reject_fakepubkey,
+        reject_annex: s.reject_annex,
+        reject_unreachable_code: s.reject_unreachable_code,
+        max_op_return_bytes: s.max_op_return_bytes,
+        min_drop_data_size: s.min_drop_size,
+        reject_excess_witness: s.reject_excess_witness,
+        min_excess_witness_bytes: s.min_excess_witness_bytes,
+        reject_legacy_data_stuffing: s.reject_legacy_data_stuffing,
+        legacy_max_push_bytes: s.legacy_max_push_bytes,
+        validate_pubkey_curve_point: s.validate_pubkey_curve_point,
+    }
+}
+
 /// Load configuration from file
 fn load_config(path: &std::path::Path) -> Result<NodeConfig> {
     let config = if path.exists() {
@@ -5416,6 +5447,47 @@ fn resolve_signer_path(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    // ── reaper_config_from_settings ──────────────────────────────────
+
+    #[test]
+    fn test_reaper_config_master_off_disables_all() {
+        let s = ReaperSettings {
+            enabled: false,
+            ..Default::default()
+        };
+        let cfg = reaper_config_from_settings(&s);
+        assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn test_reaper_config_maps_per_vector() {
+        let s = ReaperSettings {
+            enabled: true,
+            reject_inscription: false,
+            reject_annex: false,
+            reject_legacy_data_stuffing: false,
+            max_op_return_bytes: 40,
+            min_drop_size: 64,
+            ..Default::default()
+        };
+        let cfg = reaper_config_from_settings(&s);
+        assert!(cfg.enabled);
+        // disabled vectors map through
+        assert!(!cfg.reject_inscription_envelope);
+        assert!(!cfg.reject_annex);
+        assert!(!cfg.reject_legacy_data_stuffing);
+        // untouched vectors stay on
+        assert!(cfg.reject_drop_stuffing);
+        assert!(cfg.reject_fake_pubkeys);
+        assert!(cfg.reject_unreachable_code);
+        assert!(cfg.reject_excess_witness);
+        // thresholds map (canonical min_drop_size -> min_drop_data_size)
+        assert_eq!(cfg.max_op_return_bytes, 40);
+        assert_eq!(cfg.min_drop_data_size, 64);
+        // valid for the analyzer
+        assert!(cfg.validate().is_ok());
+    }
 
     // ── expand_path ──────────────────────────────────────────────────
 

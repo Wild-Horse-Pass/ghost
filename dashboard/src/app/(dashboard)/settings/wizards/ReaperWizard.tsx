@@ -6,97 +6,104 @@ import { Toggle } from '@/components/ui/Toggle';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { useToast } from '@/components/ui/Toast';
-import { useSetReaper, useConfig } from '@/hooks/queries';
-
-interface ReaperData {
-  reaper: boolean;
-  filter_inscriptions: boolean;
-  filter_brc20: boolean;
-  filter_runes: boolean;
-  max_witness_size: number;
-  dust_limit: number;
-}
+import { useSetReaper, useReaperConfig } from '@/hooks/queries';
+import { type ReaperSettings, REAPER_DEFAULTS } from '@/lib/api/config';
 
 interface ReaperWizardProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+// Per-detector metadata, grouped by which enforcement layer honours it.
+type Vector = { key: keyof ReaperSettings; label: string; desc: string };
+
+const SHARED: Vector[] = [
+  { key: 'reject_inscription', label: 'Inscription envelopes', desc: 'OP_FALSE OP_IF … OP_ENDIF ordinal/inscription wrappers' },
+  { key: 'reject_dropstuffing', label: 'Drop stuffing', desc: 'A large data push immediately followed by OP_DROP / OP_2DROP' },
+  { key: 'reject_fakepubkey', label: 'Fake pubkeys', desc: 'Bare multisig outputs with invalid pubkey prefixes' },
+  { key: 'reject_annex', label: 'P2TR annex', desc: 'Taproot inputs carrying a witness annex' },
+];
+const NODE_ONLY: Vector[] = [
+  { key: 'reject_opreturn', label: 'Oversized OP_RETURN', desc: 'OP_RETURN payloads larger than the max below' },
+  { key: 'reject_runestone', label: 'Runestones', desc: 'Runestone protocol outputs (OP_RETURN OP_13)' },
+];
+const POOL_ONLY: Vector[] = [
+  { key: 'reject_unreachable_code', label: 'Unreachable code', desc: 'Witness code after an OP_RETURN opcode' },
+  { key: 'reject_excess_witness', label: 'Excess witness', desc: 'Witness data beyond what execution requires' },
+  { key: 'reject_legacy_data_stuffing', label: 'Legacy scriptSig stuffing', desc: 'Non-sig/non-pubkey data pushes in legacy scriptSig' },
+  { key: 'validate_pubkey_curve_point', label: 'Pubkey curve check', desc: 'Also verify bare-multisig pubkeys are on the secp256k1 curve' },
+];
+
 export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
-  const { data: config } = useConfig();
+  const { data: reaper } = useReaperConfig();
   const setReaper = useSetReaper();
   const toast = useToast();
 
-  const steps: WizardStep<ReaperData>[] = [
+  const steps: WizardStep<ReaperSettings>[] = [
+    { id: 'enable', title: 'Enable', description: 'Master switch for Ghost Reaper' },
+    { id: 'detectors', title: 'Detectors', description: 'Choose which vectors to reject' },
     {
-      id: 'enable',
-      title: 'Enable',
-      description: 'Enable or disable Ghost Reaper mode',
-    },
-    {
-      id: 'filters',
-      title: 'Filters',
-      description: 'Configure mempool filtering rules',
-      validate: (data) => {
-        if (data.reaper) {
-          if (data.max_witness_size < 100) {
-            return 'Maximum witness size must be at least 100 bytes';
-          }
-          if (data.max_witness_size > 1000000) {
-            return 'Maximum witness size cannot exceed 1,000,000 bytes';
-          }
-          if (data.dust_limit < 330) {
-            return 'Dust limit must be at least 330 satoshis';
-          }
-          if (data.dust_limit > 100000) {
-            return 'Dust limit cannot exceed 100,000 satoshis';
-          }
-        }
-        return null;
-      },
-    },
-    {
-      id: 'preview',
-      title: 'Preview',
-      description: 'Review your filtering configuration',
+      id: 'thresholds',
+      title: 'Thresholds',
+      description: 'Tune detector limits',
+      validate: (d) =>
+        d.max_op_return_bytes < 1 || d.min_drop_size < 1
+          ? 'Thresholds must be greater than zero'
+          : null,
     },
     {
       id: 'confirm',
       title: 'Confirm',
       description: 'Apply Ghost Reaper settings',
       onSubmit: async (data) => {
-        await setReaper.mutateAsync(data.reaper);
+        const res = await setReaper.mutateAsync(data);
         toast.success(
           'Ghost Reaper Updated',
-          data.reaper
-            ? 'Ghost Reaper enabled -- mempool filtering is now active'
-            : 'Ghost Reaper disabled -- filtering is now inactive'
+          res.ghostd_restart_required
+            ? 'Pool reaper applied. Run `ghost-setup apply-reaper` (or restart ghostd) to apply node-level mempool filtering.'
+            : 'Reaper settings saved.'
         );
         onClose();
       },
     },
   ];
 
-  const wizard = useWizard<ReaperData>({
+  const wizard = useWizard<ReaperSettings>({
     steps,
-    initialData: {
-      reaper: config?.reaper ?? false,
-      filter_inscriptions: true,
-      filter_brc20: true,
-      filter_runes: true,
-      max_witness_size: 400,
-      dust_limit: 546,
-    },
+    initialData: reaper?.settings ?? REAPER_DEFAULTS,
   });
 
+  const renderGroup = (
+    title: string,
+    note: string,
+    vectors: Vector[],
+    data: ReaperSettings,
+    setData: (patch: Partial<ReaperSettings>) => void
+  ) => (
+    <div className="p-4 rounded-lg bg-gray-800/50 space-y-4">
+      <div>
+        <h4 className="text-gray-100 font-medium">{title}</h4>
+        <p className="text-xs text-gray-500 mt-0.5">{note}</p>
+      </div>
+      {vectors.map((v) => (
+        <div key={v.key} className="flex items-center justify-between">
+          <div className="pr-4">
+            <span className="text-gray-100">{v.label}</span>
+            <p className="text-sm text-gray-400 mt-1">{v.desc}</p>
+          </div>
+          <Toggle
+            enabled={Boolean(data[v.key])}
+            onChange={(val) => setData({ [v.key]: val } as Partial<ReaperSettings>)}
+            label={v.label}
+            disabled={!data.enabled}
+          />
+        </div>
+      ))}
+    </div>
+  );
+
   return (
-    <WizardDialog
-      isOpen={isOpen}
-      onClose={onClose}
-      title="Ghost Reaper Setup"
-      wizard={wizard}
-      size="lg"
-    >
+    <WizardDialog isOpen={isOpen} onClose={onClose} title="Ghost Reaper Setup" wizard={wizard} size="lg">
       {(data, setData) => (
         <div className="space-y-6">
           {/* Step 1: Enable */}
@@ -104,193 +111,53 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
             <div className="space-y-4">
               <div className="p-4 rounded-lg bg-gray-800/50">
                 <div className="flex items-center justify-between">
-                  <div>
+                  <div className="pr-4">
                     <span className="text-gray-100 font-medium">Reaper Mode</span>
                     <p className="text-sm text-gray-400 mt-1">
-                      Reject transactions with dead code in witness scripts. Filters inscriptions,
-                      drop stuffing, and other non-financial data from your mempool.
+                      Master switch. When off, every detector is disabled on both the pool template
+                      reaper and the node mempool reaper. When on, the per-detector choices below apply.
                     </p>
                   </div>
-                  <Toggle
-                    enabled={data.reaper}
-                    onChange={(enabled) => setData({ reaper: enabled })}
-                    label="Reaper"
-                  />
+                  <Toggle enabled={data.enabled} onChange={(e) => setData({ enabled: e })} label="Reaper" />
                 </div>
               </div>
-              {data.reaper && (
+              {data.enabled && (
                 <div className="p-4 rounded-lg bg-green-900/20 border border-green-800">
                   <div className="flex items-center gap-2">
                     <Badge variant="success">+2 Shares</Badge>
-                    <span className="text-sm text-green-300">
-                      Enables Reaper capability verification for node rewards
-                    </span>
+                    <span className="text-sm text-green-300">Enables Reaper capability verification for node rewards</span>
                   </div>
                 </div>
               )}
-              <div className="p-4 rounded-lg bg-gray-800/50">
-                <h4 className="text-gray-100 font-medium mb-2">What Ghost Reaper filters</h4>
-                <ul className="space-y-2 text-sm text-gray-400">
-                  <li className="flex items-center gap-2">
-                    <span className="text-orange-300">--</span>
-                    Ordinal inscriptions embedded in witness data
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="text-orange-300">--</span>
-                    BRC-20 token operations (JSON in witness)
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="text-orange-300">--</span>
-                    Runes protocol metadata
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="text-orange-300">--</span>
-                    Oversized witness data (drop stuffing)
-                  </li>
-                </ul>
-              </div>
             </div>
           )}
 
-          {/* Step 2: Filters */}
+          {/* Step 2: Detectors */}
           {wizard.currentStep === 1 && (
             <div className="space-y-4">
-              {!data.reaper && (
+              {!data.enabled && (
                 <div className="p-4 rounded-lg bg-orange-900/20 border border-orange-800">
-                  <p className="text-sm text-orange-300">
-                    Reaper is disabled. These filters will not be active until you enable it.
-                  </p>
+                  <p className="text-sm text-orange-300">Reaper is disabled — these choices take effect once you enable it.</p>
                 </div>
               )}
-              <div className="p-4 rounded-lg bg-gray-800/50 space-y-4">
-                <h4 className="text-gray-100 font-medium">Transaction Type Filters</h4>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-gray-100">Filter Inscriptions</span>
-                    <p className="text-sm text-gray-400 mt-1">
-                      Reject ordinal inscription transactions
-                    </p>
-                  </div>
-                  <Toggle
-                    enabled={data.filter_inscriptions}
-                    onChange={(v) => setData({ filter_inscriptions: v })}
-                    label="Filter Inscriptions"
-                    disabled={!data.reaper}
-                  />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-gray-100">Filter BRC-20</span>
-                    <p className="text-sm text-gray-400 mt-1">
-                      Reject BRC-20 token operations
-                    </p>
-                  </div>
-                  <Toggle
-                    enabled={data.filter_brc20}
-                    onChange={(v) => setData({ filter_brc20: v })}
-                    label="Filter BRC-20"
-                    disabled={!data.reaper}
-                  />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-gray-100">Filter Runes</span>
-                    <p className="text-sm text-gray-400 mt-1">
-                      Reject Runes protocol transactions
-                    </p>
-                  </div>
-                  <Toggle
-                    enabled={data.filter_runes}
-                    onChange={(v) => setData({ filter_runes: v })}
-                    label="Filter Runes"
-                    disabled={!data.reaper}
-                  />
-                </div>
-              </div>
-              <div className="p-4 rounded-lg bg-gray-800/50 space-y-4">
-                <h4 className="text-gray-100 font-medium">Size Limits</h4>
-                <div>
-                  <Input
-                    label="Max Witness Size (bytes)"
-                    type="number"
-                    value={data.max_witness_size}
-                    onChange={(e) => setData({ max_witness_size: Number(e.target.value) })}
-                    disabled={!data.reaper}
-                  />
-                  <p className="text-sm text-gray-400 mt-1">
-                    Transactions with witness data exceeding this size will be rejected.
-                    Default: 400 bytes.
-                  </p>
-                </div>
-                <div>
-                  <Input
-                    label="Dust Limit (satoshis)"
-                    type="number"
-                    value={data.dust_limit}
-                    onChange={(e) => setData({ dust_limit: Number(e.target.value) })}
-                    disabled={!data.reaper}
-                  />
-                  <p className="text-sm text-gray-400 mt-1">
-                    Outputs below this value are considered dust and may be filtered.
-                    Default: 546 sats.
-                  </p>
-                </div>
-              </div>
+              {renderGroup('Shared detectors', 'Apply to both the pool (block templates) and the node (mempool relay).', SHARED, data, setData)}
+              {renderGroup('Node-level only', 'Apply to the ghostd mempool reaper. Needs `ghost-setup apply-reaper` to take effect.', NODE_ONLY, data, setData)}
+              {renderGroup('Pool-level only', 'Apply to the pool template reaper (what this node mines).', POOL_ONLY, data, setData)}
             </div>
           )}
 
-          {/* Step 3: Preview */}
+          {/* Step 3: Thresholds */}
           {wizard.currentStep === 2 && (
-            <div className="space-y-4">
-              <div className="p-4 rounded-lg bg-gray-800/50">
-                <h4 className="text-gray-100 font-medium mb-3">Configuration Summary</h4>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-400">Reaper Mode</span>
-                    <Badge variant={data.reaper ? 'success' : 'default'}>
-                      {data.reaper ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                  </div>
-                  <div className="border-t border-gray-700 pt-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-400">Inscriptions</span>
-                      <Badge variant={data.filter_inscriptions && data.reaper ? 'error' : 'default'}>
-                        {data.filter_inscriptions && data.reaper ? 'Filtered' : 'Allowed'}
-                      </Badge>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-400">BRC-20</span>
-                      <Badge variant={data.filter_brc20 && data.reaper ? 'error' : 'default'}>
-                        {data.filter_brc20 && data.reaper ? 'Filtered' : 'Allowed'}
-                      </Badge>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-400">Runes</span>
-                      <Badge variant={data.filter_runes && data.reaper ? 'error' : 'default'}>
-                        {data.filter_runes && data.reaper ? 'Filtered' : 'Allowed'}
-                      </Badge>
-                    </div>
-                  </div>
-                  <div className="border-t border-gray-700 pt-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-400">Max Witness Size</span>
-                      <span className="text-gray-100">{data.max_witness_size.toLocaleString()} bytes</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-400">Dust Limit</span>
-                      <span className="text-gray-100">{data.dust_limit.toLocaleString()} sats</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              {data.reaper && (
-                <div className="p-4 rounded-lg bg-green-900/20 border border-green-800">
-                  <p className="text-sm text-green-300">
-                    With these settings, your node will actively filter non-financial transactions
-                    from its mempool and earn +2 shares in the node reward pool.
-                  </p>
-                </div>
-              )}
+            <div className="p-4 rounded-lg bg-gray-800/50 space-y-4">
+              <h4 className="text-gray-100 font-medium">Thresholds</h4>
+              <Input label="Max OP_RETURN bytes (shared)" type="number" value={data.max_op_return_bytes}
+                onChange={(e) => setData({ max_op_return_bytes: Number(e.target.value) })} disabled={!data.enabled} />
+              <Input label="Min drop-stuffing push size (shared)" type="number" value={data.min_drop_size}
+                onChange={(e) => setData({ min_drop_size: Number(e.target.value) })} disabled={!data.enabled} />
+              <Input label="Min excess-witness bytes (pool)" type="number" value={data.min_excess_witness_bytes}
+                onChange={(e) => setData({ min_excess_witness_bytes: Number(e.target.value) })} disabled={!data.enabled} />
+              <Input label="Legacy max push bytes (pool)" type="number" value={data.legacy_max_push_bytes}
+                onChange={(e) => setData({ legacy_max_push_bytes: Number(e.target.value) })} disabled={!data.enabled} />
             </div>
           )}
 
@@ -298,24 +165,25 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
           {wizard.currentStep === 3 && (
             <div className="space-y-4">
               <div className="p-4 rounded-lg bg-gray-800/50">
-                <h4 className="text-gray-100 font-medium mb-3">Ready to Apply</h4>
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400">Ghost Reaper</span>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={config?.reaper ? 'success' : 'default'}>
-                      {config?.reaper ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                    <span className="text-gray-500">-&gt;</span>
-                    <Badge variant={data.reaper ? 'success' : 'default'}>
-                      {data.reaper ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                  </div>
+                  <span className="text-gray-400">Reaper Mode</span>
+                  <Badge variant={data.enabled ? 'success' : 'default'}>{data.enabled ? 'Enabled' : 'Disabled'}</Badge>
+                </div>
+                <div className="border-t border-gray-700 mt-3 pt-3 grid grid-cols-2 gap-2 text-sm">
+                  {[...SHARED, ...NODE_ONLY, ...POOL_ONLY].map((v) => (
+                    <div key={v.key} className="flex items-center justify-between">
+                      <span className="text-gray-400">{v.label}</span>
+                      <Badge variant={data.enabled && Boolean(data[v.key]) ? 'error' : 'default'}>
+                        {data.enabled && Boolean(data[v.key]) ? 'Reject' : 'Allow'}
+                      </Badge>
+                    </div>
+                  ))}
                 </div>
               </div>
               <div className="p-4 rounded-lg bg-orange-900/20 border border-orange-800">
                 <p className="text-sm text-orange-300">
-                  Click Finish to apply the Ghost Reaper configuration.
-                  Changes will take effect immediately on your node.
+                  Click Finish to save. The pool reaper applies on the next ghost-pool restart;
+                  node-level (mempool) changes require running <code>ghost-setup apply-reaper</code>.
                 </p>
               </div>
             </div>
