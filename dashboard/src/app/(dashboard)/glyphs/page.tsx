@@ -117,7 +117,8 @@ export default function GlyphsPage() {
   return (
     <div className="space-y-6" onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
       <PageHeader
-        title="Ghost Glyphs"
+        eyebrow="glyphs"
+        title="Visual identity."
         subtitle="Design and claim a unique 16x16 pixel glyph for your Ghost identity"
       />
 

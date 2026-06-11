@@ -5,8 +5,8 @@
 
 use super::receipt::LineItem;
 use super::util::{days_to_ymd, format_ghost_amount, html_escape};
-use serde::{Deserialize, Serialize};
 use crate::payment::qr::PaymentRequest;
+use serde::{Deserialize, Serialize};
 
 /// A single payment received against an invoice.
 #[derive(Debug, Clone, Serialize, Deserialize)]

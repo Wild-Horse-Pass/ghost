@@ -287,10 +287,7 @@ mod tests {
             let expected_miner_pool = subsidy - expected_pool_fee;
             assert_eq!(dist.miner_pool, expected_miner_pool);
 
-            assert_eq!(
-                dist.treasury_amount + dist.node_reward_pool,
-                dist.pool_fee,
-            );
+            assert_eq!(dist.treasury_amount + dist.node_reward_pool, dist.pool_fee,);
 
             assert_eq!(
                 dist.treasury_amount + dist.node_reward_pool + dist.miner_pool,
@@ -345,15 +342,9 @@ mod tests {
         for subsidy in test_subsidies {
             let dist = FeeDistribution::calculate(subsidy, 0, &state, now);
 
-            assert_eq!(
-                dist.treasury_amount + dist.node_reward_pool,
-                dist.pool_fee,
-            );
+            assert_eq!(dist.treasury_amount + dist.node_reward_pool, dist.pool_fee,);
 
-            assert_eq!(
-                dist.miner_pool + dist.pool_fee,
-                subsidy,
-            );
+            assert_eq!(dist.miner_pool + dist.pool_fee, subsidy,);
         }
     }
 

@@ -549,7 +549,7 @@ pub struct BlockWitnessV2 {
     /// Merkle tree depth
     pub tree_depth: usize,
     /// 2.3 HIGH: Intermediate merkle roots after each transition.
-    /// intermediate_roots[i] = root after transitions[i] is applied.
+    /// `intermediate_roots[i]` = root after `transitions[i]` is applied.
     /// This enables the circuit to verify the complete state transition chain.
     pub intermediate_roots: Vec<[u8; 32]>,
 }
@@ -581,7 +581,7 @@ impl BlockWitnessV2 {
     /// Create a block witness with explicit intermediate roots
     ///
     /// This is the preferred constructor for proper circuit verification.
-    /// intermediate_roots[i] should be the merkle root after transitions[i] is applied.
+    /// `intermediate_roots[i]` should be the merkle root after `transitions[i]` is applied.
     pub fn new_with_roots(
         height: u64,
         prev_state_root: [u8; 32],

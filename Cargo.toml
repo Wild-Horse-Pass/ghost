@@ -43,20 +43,16 @@ members = [
     "crates/ghost-mpc",
     # Visual Identity
     "crates/ghost-glyph",
-    # GSP & Light Wallet
+    # GSP
     "crates/ghost-gsp-proto",
     "crates/ghost-gsp",
-    "crates/ghost-light-wallet",
-    # Light Wallet Binaries (connect to GSP)
-    "bins/ghost-light-wallet-cli",
     # Node Binaries
     "bins/ghost-pool",
-    "bins/translator",
     "bins/ghost-pay",
     "bins/ghost-cli",
     "bins/ghost-gsp",
-    # Node Dashboard TUI
-    "bins/ghost-node-tui",
+    # Wraith coordinator (Wraith Lite v1, single-round atomic CoinJoin)
+    "bins/wraith-coordinator",
     # Registry service for load balancing
     "bins/ghost-registry",
     # Headless setup CLI
@@ -65,11 +61,22 @@ members = [
     "apps/ghost-tap/core",
     "apps/ghost-tap/tests/integration",
     "apps/ghost-tap/desktop/src-tauri",
+    # Wraith Wallet (desktop)
+    "apps/wraith-wallet/core",
+    "apps/wraith-wallet/ipc",
+    "apps/wraith-wallet/daemon",
+    "apps/wraith-wallet/cli",
+    "apps/wraith-wallet/gui/src-tauri",
+    # SV2 apps (amalgamated from the former sv2-apps submodule)
+    "bins/translator-sv2",
+    "bins/pool-sv2",
+    "bins/jd-client-sv2",
+    "bins/jd-server-sv2",
+    "crates/stratum-apps",
+    "crates/bitcoin-core-sv2",
+    "tests/integration-sv2",
 ]
-exclude = [
-    # sv2-apps has its own workspace structure
-    "sv2-apps",
-]
+exclude = []
 # NOTE: Full Node Wallets (ghost-wallet-cli, ghost-wallet-tui) are built from
 # the bitcoin-ghost repository since they require ghostd and ghost-crypto.
 # Use scripts/build-all-wallets.sh to build all wallet types.
@@ -77,7 +84,7 @@ exclude = [
 [workspace.package]
 version = "1.8.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.85"
 authors = ["Bitcoin Ghost Team"]
 license = "MIT"
 repository = "https://github.com/bitcoin-ghost/ghost"
@@ -102,12 +109,14 @@ ghost-reconciliation = { path = "crates/ghost-reconciliation" }
 ghost-zkp = { path = "crates/ghost-zkp" }
 ghost-mpc = { path = "crates/ghost-mpc" }
 ghost-glyph = { path = "crates/ghost-glyph" }
-# GSP & Light Wallet crates
+# GSP crates
 ghost-gsp-proto = { path = "crates/ghost-gsp-proto" }
 ghost-gsp = { path = "crates/ghost-gsp" }
-ghost-light-wallet = { path = "crates/ghost-light-wallet" }
 # Mobile Apps
 ghost-tap-core = { path = "apps/ghost-tap/core" }
+# Wraith Wallet
+wraith-wallet-core = { path = "apps/wraith-wallet/core" }
+wraith-wallet-ipc = { path = "apps/wraith-wallet/ipc" }
 # Async runtime
 tokio = { version = "1.36", features = ["full"] }
 

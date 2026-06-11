@@ -82,7 +82,11 @@ impl NoteStore {
             }
         }
         if invalidated > 0 {
-            tracing::warn!(new_epoch, invalidated, "Epoch transition: invalidated old-epoch notes");
+            tracing::warn!(
+                new_epoch,
+                invalidated,
+                "Epoch transition: invalidated old-epoch notes"
+            );
         }
         true
     }
@@ -110,7 +114,11 @@ impl NoteStore {
 
     /// Sum of unspent note values (L2 balance).
     pub fn l2_balance(&self) -> u64 {
-        self.notes.values().filter(|n| !n.spent).map(|n| n.value).sum()
+        self.notes
+            .values()
+            .filter(|n| !n.spent)
+            .map(|n| n.value)
+            .sum()
     }
 
     pub fn count(&self) -> usize {
@@ -236,8 +244,9 @@ impl NoteStore {
 
     /// Deserialize notes from JSON.
     pub fn from_json(json: &str, spending_key: [u8; 32]) -> Result<Self, WalletError> {
-        let notes: Vec<OwnedNote> = serde_json::from_str(json)
-            .map_err(|e| WalletError::KeyDerivation(format!("Failed to deserialize notes: {}", e)))?;
+        let notes: Vec<OwnedNote> = serde_json::from_str(json).map_err(|e| {
+            WalletError::KeyDerivation(format!("Failed to deserialize notes: {}", e))
+        })?;
         let mut store = Self::new(spending_key);
         for note in notes {
             store.notes.insert(note.index, note);

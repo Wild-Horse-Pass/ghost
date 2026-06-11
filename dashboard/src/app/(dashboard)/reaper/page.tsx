@@ -1,183 +1,269 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { useConfig } from "@/hooks/queries/useConfigQueries";
+
+interface ReaperStats {
+  txs_evaluated: number;
+  txs_reaped: number;
+  txs_accepted: number;
+  dead_bytes_total: number;
+  last_reaped_unix: number | null;
+  by_type: {
+    inscription_envelope: number;
+    drop_stuffing: number;
+    unreachable_code: number;
+    fake_pubkey: number;
+    fake_pubkey_curve_point: number;
+    annex_present: number;
+    oversized_op_return: number;
+    excess_witness_data: number;
+    excess_stack_items: number;
+    legacy_scriptsig_data: number;
+  };
+}
+
+async function fetchReaperStats(): Promise<ReaperStats | null> {
+  const res = await fetch("/api/v1/reaper/status", { credentials: "include" });
+  if (!res.ok) return null;
+  const data = await res.json();
+  // Endpoint returns null when ghost-pool hasn't wired the callback yet.
+  return data && typeof data === "object" && "txs_evaluated" in data ? data : null;
+}
 
 const DETECTION_VECTORS = [
   {
+    key: "inscription_envelope" as const,
     name: "Inscription Envelopes",
     desc: "Detects OP_FALSE OP_IF ... OP_ENDIF witness patterns used by Ordinal inscriptions to embed arbitrary data.",
   },
   {
+    key: "drop_stuffing" as const,
     name: "Drop Stuffing",
     desc: "Identifies unreachable OP_DROP sequences that push and immediately discard data, wasting block space.",
   },
   {
+    key: "unreachable_code" as const,
     name: "Unreachable Code",
     desc: "Finds dead code paths in witness scripts that can never execute but bloat transaction size.",
   },
   {
+    key: "fake_pubkey" as const,
     name: "Fake Pubkeys",
     desc: "Detects invalid or non-functional public keys used as data carriers in multisig outputs.",
   },
   {
+    key: "oversized_op_return" as const,
     name: "Oversized OP_RETURN",
     desc: "Flags OP_RETURN outputs exceeding standard relay limits, used for embedding large data payloads.",
   },
   {
+    key: "annex_present" as const,
     name: "Annex Bloat",
     desc: "Identifies taproot annex fields carrying non-consensus data, exploiting the annex discount.",
   },
   {
+    key: "excess_witness_data" as const,
     name: "Excess Witness Data",
     desc: "Catches witness items far exceeding what the script actually consumes during execution.",
   },
   {
+    key: "legacy_scriptsig_data" as const,
     name: "Legacy ScriptSig Data",
     desc: "Detects data-carrying patterns in legacy scriptSig fields that serve no signing purpose.",
   },
 ];
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatPercent(numerator: number, denominator: number): string {
+  if (denominator === 0) return "—";
+  const pct = (numerator / denominator) * 100;
+  return pct < 0.01 ? "<0.01%" : `${pct.toFixed(2)}%`;
+}
+
+function formatRelative(unixSecs: number | null): string {
+  if (!unixSecs) return "never";
+  const ago = Math.floor(Date.now() / 1000) - unixSecs;
+  if (ago < 60) return `${ago}s ago`;
+  if (ago < 3600) return `${Math.floor(ago / 60)}m ago`;
+  if (ago < 86400) return `${Math.floor(ago / 3600)}h ago`;
+  return `${Math.floor(ago / 86400)}d ago`;
+}
+
 export default function ReaperPage() {
+  const { data: config } = useConfig();
+  const { data: stats } = useQuery<ReaperStats | null>({
+    queryKey: ["reaper-status"],
+    queryFn: fetchReaperStats,
+    refetchInterval: 10_000,
+  });
+
+  const enabled = config?.reaper ?? false;
+  const reapRate = stats ? formatPercent(stats.txs_reaped, stats.txs_evaluated) : "—";
+
   return (
     <div className="space-y-6">
-      {/* 1. PageHeader */}
       <PageHeader
-        title="Ghost Reaper"
-        subtitle="Dead code detection and mempool filtering"
+        eyebrow="reaper"
+        title="Dead-code policy."
+        subtitle="Live counters from your node's template builder. Cumulative since last ghost-pool restart."
       />
 
-      {/* 2. StatCards row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Mode" value="--" sublabel="coming soon" />
-        <StatCard label="Dead TXs Filtered" value="--" sublabel="coming soon" />
-        <StatCard label="Dead Bytes Stripped" value="--" sublabel="coming soon" />
-        <StatCard label="False Positive Rate" value="--" sublabel="coming soon" />
+        <StatCard
+          label="Mode"
+          value={enabled ? "active" : "disabled"}
+          sublabel={enabled ? "filtering on" : "configure in /settings/capabilities"}
+        />
+        <StatCard
+          label="TXs evaluated"
+          value={stats?.txs_evaluated.toLocaleString() ?? "—"}
+          sublabel={stats ? `${stats.txs_accepted.toLocaleString()} accepted` : "no data"}
+        />
+        <StatCard
+          label="TXs reaped"
+          value={stats?.txs_reaped.toLocaleString() ?? "—"}
+          sublabel={stats ? `${reapRate} of evaluated` : "no data"}
+        />
+        <StatCard
+          label="Dead bytes saved"
+          value={stats ? formatBytes(stats.dead_bytes_total) : "—"}
+          sublabel={
+            stats
+              ? `last reap ${formatRelative(stats.last_reaped_unix)}`
+              : "no data"
+          }
+        />
       </div>
 
-      {/* 3. How It Works — collapsible, NOT wrapped in SectionErrorBoundary */}
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="How It Works"
           subtitle="Dead code detection and mempool filtering"
         />
         <div className="space-y-4">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-lg bg-orange-900/30 border border-orange-600/30 flex items-center justify-center flex-shrink-0">
-              <svg className="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-gray-300 text-sm leading-relaxed">
-                Ghost Reaper detects non-financial data embedded in transaction witnesses -- inscriptions,
-                drop stuffing, fake pubkeys, and other dead code patterns. When enabled, your mempool rejects
-                transactions carrying dead weight, keeping your node focused on real monetary transactions.
-              </p>
-            </div>
-          </div>
-          <div className="p-3 bg-green-900/10 rounded-lg border border-green-600/30 flex items-start gap-3">
-            <div className="w-8 h-8 rounded-lg bg-green-900/30 border border-green-600/30 flex items-center justify-center flex-shrink-0">
-              <span className="text-green-400 font-bold text-sm">+2</span>
-            </div>
-            <div>
-              <p className="text-gray-300 text-sm leading-relaxed">
-                Nodes running Ghost Reaper earn <span className="text-green-400 font-semibold">+2 shares</span> in
-                the node reward pool. This is part of the 5-4-3-2-1 capability system: Archive (+5), Ghost Pay (+4),
-                Public Mining (+3), <span className="text-orange-400 font-semibold">Ghost Reaper (+2)</span>, Elder (+1).
-              </p>
-            </div>
+          <p style={{ color: "var(--dim)", fontSize: "14px", lineHeight: "1.6" }}>
+            Ghost Reaper detects non-financial data embedded in transaction witnesses — inscriptions,
+            drop stuffing, fake pubkeys, and other dead code patterns. When enabled, your node's template
+            builder rejects transactions carrying dead weight before they enter your block, keeping your
+            mining capacity focused on real monetary transactions.
+          </p>
+          <div
+            style={{
+              padding: "12px",
+              background: "var(--accent-weak)",
+              border: "1px solid var(--accent)",
+              borderRadius: "4px",
+            }}
+          >
+            <p style={{ color: "var(--fg)", fontSize: "14px" }}>
+              Nodes running Reaper earn{" "}
+              <strong style={{ color: "var(--accent)" }}>+2 capability shares</strong> in the node
+              reward pool. Part of the 5-4-3-2-1 system: Archive (+5), Ghost Pay (+4), Public Mining (+3),
+              <strong style={{ color: "var(--accent)" }}> Reaper (+2)</strong>, Elder (+1).
+            </p>
           </div>
         </div>
       </Card>
 
-      {/* 4. Primary Content — Detection Vectors */}
       <SectionErrorBoundary section="Detection Vectors">
         <Card>
           <CardHeader
-            title="Detection Vectors"
-            subtitle="Patterns Ghost Reaper identifies and filters"
+            title="Detection vectors"
+            subtitle="Patterns Reaper identifies, with cumulative hit counts"
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {DETECTION_VECTORS.map((vector) => (
-              <div key={vector.name} className="p-3 bg-gray-800/50 rounded-lg border border-gray-700">
-                <div className="flex items-start gap-3">
-                  <div className="w-6 h-6 rounded-full bg-orange-900/30 border border-orange-600/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <svg className="w-3 h-3 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" />
-                    </svg>
+            {DETECTION_VECTORS.map((vector) => {
+              const hits = stats?.by_type[vector.key] ?? 0;
+              return (
+                <div
+                  key={vector.name}
+                  style={{
+                    padding: "14px",
+                    border: "1px solid var(--rule)",
+                    borderRadius: "4px",
+                    background: "var(--bg)",
+                  }}
+                >
+                  <div className="flex items-baseline justify-between mb-1">
+                    <div style={{ color: "var(--fg)", fontSize: "14px", fontWeight: 500 }}>
+                      {vector.name}
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: "13px",
+                        color: hits > 0 ? "var(--accent)" : "var(--fainter)",
+                      }}
+                    >
+                      {hits.toLocaleString()}
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-sm font-medium text-gray-100">{vector.name}</div>
-                    <div className="text-xs text-gray-400 mt-0.5">{vector.desc}</div>
+                  <div style={{ color: "var(--dim)", fontSize: "13px", lineHeight: "1.5" }}>
+                    {vector.desc}
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
       </SectionErrorBoundary>
 
-      {/* 5. Technical Details — collapsible, NOT wrapped in SectionErrorBoundary */}
       <Card collapsible defaultCollapsed>
         <CardHeader
-          title="Reaper vs Mempool Policy"
+          title="Reaper vs mempool policy"
           subtitle="Understanding the distinction"
         />
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="p-4 bg-orange-900/10 rounded-lg border border-orange-600/30">
-              <h4 className="text-sm font-medium text-orange-400 mb-2">Ghost Reaper</h4>
-              <ul className="space-y-2 text-xs text-gray-300">
-                <li className="flex items-start gap-2">
-                  <span className="text-orange-400 mt-0.5 flex-shrink-0">&bull;</span>
-                  Specifically targets <span className="text-orange-400 font-medium">dead code</span> in witness scripts
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-orange-400 mt-0.5 flex-shrink-0">&bull;</span>
-                  Detects inscriptions, drop stuffing, fake pubkeys, annex bloat
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-orange-400 mt-0.5 flex-shrink-0">&bull;</span>
-                  Works at the witness/script level, not transaction-level policy
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-orange-400 mt-0.5 flex-shrink-0">&bull;</span>
-                  Can run alongside any mempool policy
-                </li>
+            <div
+              style={{
+                padding: "16px",
+                background: "var(--accent-weak)",
+                border: "1px solid var(--accent)",
+                borderRadius: "4px",
+              }}
+            >
+              <h4 style={{ color: "var(--accent)", fontWeight: 500, marginBottom: "8px" }}>Reaper</h4>
+              <ul style={{ color: "var(--fg)", fontSize: "13px", lineHeight: "1.7", paddingLeft: "20px", listStyle: "disc" }}>
+                <li>Specifically targets <strong>dead code</strong> in witness scripts</li>
+                <li>Detects inscriptions, drop stuffing, fake pubkeys, annex bloat</li>
+                <li>Works at the witness / script level, not transaction-level policy</li>
+                <li>Can run alongside any mempool policy</li>
               </ul>
             </div>
-            <div className="p-4 bg-gray-800/50 rounded-lg border border-gray-700">
-              <h4 className="text-sm font-medium text-gray-400 mb-2">Mempool Policy</h4>
-              <ul className="space-y-2 text-xs text-gray-300">
-                <li className="flex items-start gap-2">
-                  <span className="text-gray-500 mt-0.5 flex-shrink-0">&bull;</span>
-                  Controls which transactions your node accepts based on <span className="text-gray-100 font-medium">fee rates, sizes, and standardness</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-gray-500 mt-0.5 flex-shrink-0">&bull;</span>
-                  Configurable profiles: standard, strict, clean, custom
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-gray-500 mt-0.5 flex-shrink-0">&bull;</span>
-                  Operates at the transaction level (size, fee, output type)
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-gray-500 mt-0.5 flex-shrink-0">&bull;</span>
-                  Independent of Ghost Reaper -- they complement each other
-                </li>
+            <div
+              style={{
+                padding: "16px",
+                background: "var(--surface)",
+                border: "1px solid var(--rule)",
+                borderRadius: "4px",
+              }}
+            >
+              <h4 style={{ color: "var(--dim)", fontWeight: 500, marginBottom: "8px" }}>Mempool policy</h4>
+              <ul style={{ color: "var(--fg)", fontSize: "13px", lineHeight: "1.7", paddingLeft: "20px", listStyle: "disc" }}>
+                <li>Controls accept/reject by <strong>fee rates, sizes, standardness</strong></li>
+                <li>Configurable profiles: standard, strict, clean, custom</li>
+                <li>Operates at transaction level (size, fee, output type)</li>
+                <li>Independent of Reaper — they complement each other</li>
               </ul>
             </div>
           </div>
-          <div className="p-3 bg-gray-800/50 rounded-lg border border-gray-700">
-            <p className="text-xs text-gray-400 leading-relaxed">
-              <span className="text-orange-400 font-medium">Key point:</span> Ghost Reaper is NOT a mempool policy.
-              You can run Ghost Reaper alongside any mempool policy (standard, strict, clean, etc.). Mempool policies
-              filter by economic rules; Ghost Reaper filters by content analysis of witness scripts.
-            </p>
-          </div>
+          <p style={{ color: "var(--dim)", fontSize: "13px" }}>
+            <strong style={{ color: "var(--accent)" }}>Key point:</strong> Reaper is NOT a mempool policy.
+            You can run Reaper alongside any mempool policy. Mempool policies filter by economic rules;
+            Reaper filters by content analysis of witness scripts.
+          </p>
         </div>
       </Card>
     </div>

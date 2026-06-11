@@ -61,13 +61,17 @@ impl ParamsCache {
         })?;
 
         if !response.status().is_success() {
-            warn!("Manifest endpoint unavailable (HTTP {}), skipping integrity check", response.status());
+            warn!(
+                "Manifest endpoint unavailable (HTTP {}), skipping integrity check",
+                response.status()
+            );
             return Ok(HashMap::new());
         }
 
-        let body: serde_json::Value = response.json().await.map_err(|e| {
-            NetworkError::RequestFailed(format!("Failed to parse manifest: {}", e))
-        })?;
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| NetworkError::RequestFailed(format!("Failed to parse manifest: {}", e)))?;
 
         let mut hashes = HashMap::new();
         for (_key, entry) in body.as_object().into_iter().flatten() {

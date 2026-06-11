@@ -27,7 +27,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use bellperson::groth16::Parameters;
 use blstrs::Bls12;
 use hmac::{Hmac, Mac};
-use secp256k1::{Secp256k1, SecretKey, PublicKey};
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha2::Sha256;
 
 use ghost_keys::NoteData;
@@ -53,22 +53,32 @@ fn main() {
     } else {
         println!(
             "Mode: {}",
-            if fast { "fast (depth 4)" } else { "production (depth 20)" }
+            if fast {
+                "fast (depth 4)"
+            } else {
+                "production (depth 20)"
+            }
         );
     }
     println!();
 
     // Generate sender and recipient keypairs
     let secp = Secp256k1::new();
-    let sender_sk = SecretKey::from_slice(&deterministic_blinding(100))
-        .expect("valid sender secret key");
+    let sender_sk =
+        SecretKey::from_slice(&deterministic_blinding(100)).expect("valid sender secret key");
     let sender_pk = PublicKey::from_secret_key(&secp, &sender_sk);
-    let recipient_sk = SecretKey::from_slice(&deterministic_blinding(200))
-        .expect("valid recipient secret key");
+    let recipient_sk =
+        SecretKey::from_slice(&deterministic_blinding(200)).expect("valid recipient secret key");
     let recipient_pk = PublicKey::from_secret_key(&secp, &recipient_sk);
 
-    println!("  Sender pubkey:    {}...", &hex::encode(sender_pk.serialize())[..16]);
-    println!("  Recipient pubkey: {}...", &hex::encode(recipient_pk.serialize())[..16]);
+    println!(
+        "  Sender pubkey:    {}...",
+        &hex::encode(sender_pk.serialize())[..16]
+    );
+    println!(
+        "  Recipient pubkey: {}...",
+        &hex::encode(recipient_pk.serialize())[..16]
+    );
     println!();
 
     // Step 1: Load or generate Groth16 params
@@ -86,8 +96,7 @@ fn main() {
     } else {
         println!("[1/10] Generating test Groth16 params...");
         let start = Instant::now();
-        let prover =
-            GhostNoteProver::new_with_setup(tree_depth).expect("Failed to setup prover");
+        let prover = GhostNoteProver::new_with_setup(tree_depth).expect("Failed to setup prover");
         let verifier = GhostNoteVerifier::for_prover(&prover);
         println!("  Setup complete in {:?}", start.elapsed());
         (prover, verifier)
@@ -142,7 +151,11 @@ fn main() {
         .as_u64()
         .expect("proof response should have tree_depth") as usize;
 
-    println!("  Got {} siblings (depth {})", server_siblings.len(), proof_depth);
+    println!(
+        "  Got {} siblings (depth {})",
+        server_siblings.len(),
+        proof_depth
+    );
     assert_eq!(proof_depth, tree_depth);
 
     // Step 4: Generate NoteSpend proof
@@ -171,7 +184,10 @@ fn main() {
     println!("  Proof generated in {:?}", prove_time);
 
     let local_valid = verifier.verify(&proof).expect("Local verification error");
-    println!("  Local verification: {}", if local_valid { "PASS" } else { "FAIL" });
+    println!(
+        "  Local verification: {}",
+        if local_valid { "PASS" } else { "FAIL" }
+    );
     assert!(local_valid, "Local proof verification failed!");
 
     // Step 5: Encrypt change note for sender
@@ -220,8 +236,7 @@ fn main() {
 
     // Step 7: Submit transfer with encrypted fields
     println!("[7/10] Submitting transfer with encrypted fields...");
-    let tree_state: serde_json::Value =
-        http_get(&format!("{}/api/v1/confidential/tree", api_url));
+    let tree_state: serde_json::Value = http_get(&format!("{}/api/v1/confidential/tree", api_url));
     let recipient_index = tree_state["next_index"]
         .as_u64()
         .expect("tree state should have next_index");
@@ -281,8 +296,8 @@ fn main() {
 
     // Step 10: Verify wrong keys CANNOT decrypt
     println!("[10/10] Verifying wrong keys cannot decrypt...");
-    let wrong_sk = SecretKey::from_slice(&deterministic_blinding(255))
-        .expect("valid wrong secret key");
+    let wrong_sk =
+        SecretKey::from_slice(&deterministic_blinding(255)).expect("valid wrong secret key");
 
     let wrong_change = NoteData::decrypt(&wrong_sk, &encrypted_change);
     assert!(
@@ -316,8 +331,16 @@ fn main() {
     println!();
     println!("=== RESULTS ===");
     println!("  Transfer ID: {}", transfer_id);
-    println!("  Change note:     {} sats (encrypted {} bytes)", change_value, encrypted_change.len());
-    println!("  Recipient note:  {} sats (encrypted {} bytes)", transfer_amount, encrypted_recipient.len());
+    println!(
+        "  Change note:     {} sats (encrypted {} bytes)",
+        change_value,
+        encrypted_change.len()
+    );
+    println!(
+        "  Recipient note:  {} sats (encrypted {} bytes)",
+        transfer_amount,
+        encrypted_recipient.len()
+    );
     println!("  Proof time: {:?}", prove_time);
     println!("  Tree depth: {}", tree_depth);
     println!("  Params: {}", if use_mpc { "MPC" } else { "test" });
@@ -371,9 +394,8 @@ fn http_get(url: &str) -> serde_json::Value {
         .args(["-s", url])
         .output()
         .expect("curl failed");
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
-        serde_json::json!({"error": "Failed to parse response"})
-    })
+    serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| serde_json::json!({"error": "Failed to parse response"}))
 }
 
 fn compute_hmac(secret: &str, timestamp: &str, body: &str) -> String {
@@ -393,11 +415,7 @@ fn http_post_authed(url: &str, secret: &str, body: &serde_json::Value) -> serde_
     })
 }
 
-fn http_post_authed_raw(
-    url: &str,
-    secret: &str,
-    body: &serde_json::Value,
-) -> (u16, String) {
+fn http_post_authed_raw(url: &str, secret: &str, body: &serde_json::Value) -> (u16, String) {
     let body_str = serde_json::to_string(body).unwrap();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -410,13 +428,20 @@ fn http_post_authed_raw(
     let output = std::process::Command::new("curl")
         .args([
             "-s",
-            "-o", "/dev/stderr",
-            "-w", "%{http_code}",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-H", &format!("X-Ghost-Timestamp: {}", timestamp),
-            "-H", &format!("X-Ghost-Signature: {}", signature),
-            "-d", &body_str,
+            "-o",
+            "/dev/stderr",
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            &format!("X-Ghost-Timestamp: {}", timestamp),
+            "-H",
+            &format!("X-Ghost-Signature: {}", signature),
+            "-d",
+            &body_str,
             url,
         ])
         .output()

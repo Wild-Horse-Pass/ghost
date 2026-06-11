@@ -982,7 +982,10 @@ impl VoteHandler {
         // Track the revocation proposal
         {
             let mut proposals = self.revocation_proposals.write();
-            proposals.insert(proposal_hash, (target_node_id_hex.to_string(), reason.clone()));
+            proposals.insert(
+                proposal_hash,
+                (target_node_id_hex.to_string(), reason.clone()),
+            );
         }
 
         // Create voting session if it doesn't already exist
@@ -1543,9 +1546,18 @@ impl VoteHandler {
         );
 
         // Execute if approved
-        if let ConsensusResult::Approved { approval_count, total_nodes, .. } = &result {
+        if let ConsensusResult::Approved {
+            approval_count,
+            total_nodes,
+            ..
+        } = &result
+        {
             // Check if this is a revocation vote
-            let revocation_info = self.revocation_proposals.read().get(&proposal_hash).cloned();
+            let revocation_info = self
+                .revocation_proposals
+                .read()
+                .get(&proposal_hash)
+                .cloned();
 
             if let Some((node_id_hex, reason)) = revocation_info {
                 // Elder revocation approved
@@ -2317,7 +2329,11 @@ mod tests {
         handler.add_elder([20u8; 32]);
         handler.add_elder([30u8; 32]);
 
-        assert_eq!(handler.elder_count(), 3, "Should have 3 elders after adding 3");
+        assert_eq!(
+            handler.elder_count(),
+            3,
+            "Should have 3 elders after adding 3"
+        );
 
         // Remove 1 elder
         handler.remove_elder(&[20u8; 32]);

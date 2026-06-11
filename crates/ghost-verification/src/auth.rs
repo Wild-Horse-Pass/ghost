@@ -483,7 +483,10 @@ mod tests {
 
         // Zeroize and verify the secret is zeroed
         auth.zeroize();
-        assert_eq!(auth.secret, [0u8; 32], "Secret must be zeroed after zeroize()");
+        assert_eq!(
+            auth.secret, [0u8; 32],
+            "Secret must be zeroed after zeroize()"
+        );
     }
 
     #[test]

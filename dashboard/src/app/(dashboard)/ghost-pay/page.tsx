@@ -102,7 +102,8 @@ export default function GhostPayPage() {
     <div className="space-y-6">
       {/* 1. PageHeader */}
       <PageHeader
-        title="Ghost Pay"
+        eyebrow="ghost pay"
+        title="L2 instant payments."
         subtitle="L2 instant payments and privacy toolkit"
       />
 

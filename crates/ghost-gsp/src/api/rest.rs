@@ -285,11 +285,14 @@ pub async fn create_session(
         .derive_wallet_id()
         .map_err(|e| GspError::BadRequest(format!("Session nonce error: {}", e)))?;
 
-    // CRIT-AUTH-3: Create session token bound to client IP
-    // Uses rotating session ID to prevent cross-session linking
+    // CRIT-AUTH-3: Create session token bound to client IP.
+    // `sub` is the rotating session ID (privacy-preserving on the
+    // wire); `static_wallet_id` is the permanent ID so per-action
+    // WalletProof checks can re-derive it without the wallet
+    // embedding the session nonce in every proof.
     let token = state
         .jwt
-        .create_token_with_ip(&session_id, client_ip.clone())?;
+        .create_token_full(&session_id, Some(&permanent_id), client_ip.clone())?;
 
     if let Some(ref ip) = client_ip {
         info!(wallet_id = %session_id, client_ip = %ip, "Session created with IP binding");
@@ -303,4 +306,76 @@ pub async fn create_session(
         expires_at: Some(token.expires_at),
         error: None,
     }))
+}
+
+/// Admin: inject a synthetic BIP-352 candidate transaction.
+///
+/// Pushes the body verbatim through the silent-payments broadcaster so every
+/// session that subscribed via `SubscribeSilentPayments` receives it. Useful
+/// for end-to-end testing the wallet's local-scan path without standing up
+/// a real chain-driven scanner.
+///
+/// **Dev-only:** refused on mainnet. Listens on the same surface as other
+/// admin endpoints — protect with network-level rules in deployment.
+#[derive(serde::Deserialize)]
+pub struct InjectCandidateTxRequest {
+    pub ephemeral_pubkey: String,
+    pub outputs: Vec<ghost_gsp_proto::CandidateOutput>,
+    pub txid: String,
+    pub block_height: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+pub struct InjectCandidateTxResponse {
+    pub success: bool,
+    pub subscribers_notified: usize,
+    pub error: Option<String>,
+}
+
+pub async fn admin_inject_candidate_tx(
+    State(state): State<Arc<GspState>>,
+    Json(req): Json<InjectCandidateTxRequest>,
+) -> Json<InjectCandidateTxResponse> {
+    if matches!(state.config.network, bitcoin::Network::Bitcoin) {
+        return Json(InjectCandidateTxResponse {
+            success: false,
+            subscribers_notified: 0,
+            error: Some("admin endpoint refused on mainnet".to_string()),
+        });
+    }
+
+    // Light validation: ephemeral_pubkey is 33 bytes hex, txid is 32 bytes hex.
+    if req.ephemeral_pubkey.len() != 66 {
+        return Json(InjectCandidateTxResponse {
+            success: false,
+            subscribers_notified: 0,
+            error: Some("ephemeral_pubkey must be 66 hex chars (33 bytes)".to_string()),
+        });
+    }
+    if req.txid.len() != 64 {
+        return Json(InjectCandidateTxResponse {
+            success: false,
+            subscribers_notified: 0,
+            error: Some("txid must be 64 hex chars (32 bytes)".to_string()),
+        });
+    }
+
+    let msg = ghost_gsp_proto::ServerMessage::CandidateTransaction {
+        ephemeral_pubkey: req.ephemeral_pubkey,
+        outputs: req.outputs,
+        txid: req.txid,
+        block_height: req.block_height,
+    };
+
+    let n = match state.silent_payments_tx.send(msg) {
+        Ok(n) => n,
+        // No subscribers yet — that's fine, just nobody to notify.
+        Err(_) => 0,
+    };
+    info!(subscribers = n, "admin: candidate-tx injected");
+    Json(InjectCandidateTxResponse {
+        success: true,
+        subscribers_notified: n,
+        error: None,
+    })
 }

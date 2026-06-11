@@ -30,10 +30,10 @@
 //! This module uses multiple RwLocks. To prevent deadlocks, always acquire
 //! locks in this order:
 //!
-//! 1. `approved_payout` (RwLock<Option<[u8; 32]>>) - Shortest hold time
-//! 2. `current_work` (RwLock<Option<WorkState>>)
-//! 3. `work_states` (RwLock<HashMap<...>>)
-//! 4. `payout_proposals` (RwLock<HashMap<...>>) - Longest hold time
+//! 1. `approved_payout` (`RwLock<Option<[u8; 32]>>`) - Shortest hold time
+//! 2. `current_work` (`RwLock<Option<WorkState>>`)
+//! 3. `work_states` (`RwLock<HashMap<...>>`)
+//! 4. `payout_proposals` (`RwLock<HashMap<...>>`) - Longest hold time
 //!
 //! Never acquire a lock that comes earlier in this list while holding
 //! a lock that comes later.
@@ -323,6 +323,10 @@ pub struct TemplateProcessor {
     classifier: BudsClassifier,
     /// Reaper config for dead code detection
     reaper_config: ReaperConfig,
+    /// Cumulative Reaper observability counters — incremented on every
+    /// analyze() call. Exposed via /api/v1/reaper/status; read-only from
+    /// outside this module.
+    reaper_stats: Arc<crate::reaper_stats::ReaperStats>,
     /// Current work state
     current_work: RwLock<Option<WorkState>>,
     /// Work states by template_id (for SubmitSolution lookup)
@@ -349,6 +353,12 @@ pub struct TemplateProcessor {
 }
 
 impl TemplateProcessor {
+    /// Clone the Reaper-stats Arc so the verification API can read counters
+    /// without taking any lock on the processor itself.
+    pub fn reaper_stats(&self) -> Arc<crate::reaper_stats::ReaperStats> {
+        Arc::clone(&self.reaper_stats)
+    }
+
     /// Create a new template processor
     pub fn new(
         config: TemplateConfig,
@@ -365,6 +375,7 @@ impl TemplateProcessor {
             policy,
             classifier: BudsClassifier::new(),
             reaper_config,
+            reaper_stats: crate::reaper_stats::ReaperStats::new(),
             current_work: RwLock::new(None),
             work_states: RwLock::new(HashMap::new()),
             job_counter: RwLock::new(0),
@@ -1915,6 +1926,7 @@ impl TemplateProcessor {
             // Reaper: detect dead code in witness scripts
             if self.reaper_config.enabled {
                 let reaper_verdict = ghost_reaper::analyze(&btc_tx, &self.reaper_config);
+                self.reaper_stats.record(&reaper_verdict);
                 if reaper_verdict.is_corpse() {
                     removed_fees += tx.fee;
                     reaped_count += 1;
@@ -2292,7 +2304,7 @@ impl TemplateProcessor {
     /// filtered set.
     ///
     /// Returns hex-encoded witness commitment script:
-    ///   OP_RETURN OP_PUSHBYTES_36 <aa21a9ed> <32-byte commitment>
+    ///   `OP_RETURN OP_PUSHBYTES_36 <aa21a9ed> <32-byte commitment>`
     fn compute_witness_commitment(&self, transactions: &[TemplateTransaction]) -> String {
         use sha2::{Digest, Sha256};
 
@@ -3606,8 +3618,7 @@ mod tests {
     #[test]
     fn test_validate_header_prev_hash_mismatch() {
         // Build an 80-byte header with a known prev_hash
-        let expected_rpc_hash =
-            "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72f8fc440";
+        let expected_rpc_hash = "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72f8fc440";
         let mut header = [0u8; 80];
 
         // Encode expected prev_hash into header bytes 4..36 (Bitcoin internal = reverse display)
@@ -3715,7 +3726,7 @@ mod tests {
         // SegWit marker and flag
         witness.push(0x00); // marker
         witness.push(0x01); // flag
-        // Rest of transaction (input_count through locktime)
+                            // Rest of transaction (input_count through locktime)
         witness.extend_from_slice(&non_witness[4..]);
         // Witness stack: 1 item, 32-byte nonce
         witness.push(0x01); // stack count
@@ -4869,12 +4880,10 @@ mod tests {
     #[test]
     fn test_treasury_p2wsh_multisig_encoding() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        let p2wsh_address =
-            "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3";
+        let p2wsh_address = "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3";
         let processor = TemplateProcessor::new(
             TemplateConfig {
-                pool_payout_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
-                    .to_string(),
+                pool_payout_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
                 ..Default::default()
             },
             rpc,
@@ -4929,10 +4938,7 @@ mod tests {
             "Coinbase weight {} should be under 4M WU",
             weight
         );
-        assert!(
-            non_witness_size > 0,
-            "Serialized size should be positive"
-        );
+        assert!(non_witness_size > 0, "Serialized size should be positive");
     }
 
     /// Test that treasury amount > 0 but empty address returns error
@@ -4941,12 +4947,9 @@ mod tests {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
         let processor = TemplateProcessor::new(
             TemplateConfig {
-                pool_payout_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
-                    .to_string(),
+                pool_payout_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
                 mining_mode: MiningMode::PrivateSolo,
-                solo_payout_address: Some(
-                    "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
-                ),
+                solo_payout_address: Some("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string()),
                 // treasury_address defaults to empty
                 ..Default::default()
             },
@@ -4964,10 +4967,7 @@ mod tests {
             "Empty treasury address should cause error, not silent fallback"
         );
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("address is empty"),
+            result.unwrap_err().to_string().contains("address is empty"),
             "Error should indicate empty address"
         );
     }
@@ -4981,8 +4981,7 @@ mod tests {
 
         // Use a valid-format P2TR address (bc1p...)
         let entries = vec![PayoutEntry {
-            address: b"bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
-                .to_vec(),
+            address: b"bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0".to_vec(),
             amount: 100_000,
             recipient_id: [1u8; 32],
             payout_type: PayoutType::Mining,

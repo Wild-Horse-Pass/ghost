@@ -1,71 +1,133 @@
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Bitcoin Ghost — design tokens shared with the public website.
+   Warm off-white / warm-dark palette, IBM Plex type, Bitcoin orange accent.
+   Source of truth: ghost-web/style.css (lines 5-37).
+   ───────────────────────────────────────────────────────────────────────── */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Website tokens — primary names */
+  --bg:            #faf9f6;
+  --surface:       #f3f1ec;
+  --fg:            #121212;
+  --dim:           #6b6b68;
+  --fainter:       #a6a59f;
+  --rule:          #e7e4dc;
+  --rule-strong:   #d0ccc2;
+  --accent:        #f7931a;
+  --accent-weak:   rgba(247, 147, 26, 0.12);
+  --green:         #3f8f5b;
+  --red:           #c0584c;
+
+  /* Aliases used by existing dashboard components (keep working) */
+  --background: var(--bg);
+  --foreground: var(--fg);
+
+  --container: 1160px;
 }
+
+:root[data-theme="dark"] {
+  --bg:            #0f1012;
+  --surface:       #16181b;
+  --fg:            #e6e4de;
+  --dim:           #8b8a84;
+  --fainter:       #55544f;
+  --rule:          #222528;
+  --rule-strong:   #2e3135;
+  --accent:        #f7931a;
+  --accent-weak:   rgba(247, 147, 26, 0.14);
+  --green:         #5cc77e;
+  --red:           #d8746a;
+}
+
+/* Default to dark when the user hasn't set a preference and the OS is dark.
+   We don't use @media (prefers-color-scheme: dark) on :root because that
+   would conflict with the explicit data-theme override; instead the layout
+   sets data-theme from localStorage on first paint with system-fallback. */
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Fonts — IBM Plex Sans/Mono loaded by next/font in layout.tsx */
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
 
-  /* Neutral gray palette (replaces Tailwind's blue-tinted grays) */
-  --color-gray-50: #f5f5f5;
-  --color-gray-100: #e0e0e0;
-  --color-gray-200: #bbbbbb;
-  --color-gray-300: #999999;
-  --color-gray-400: #777777;
-  --color-gray-500: #555555;
-  --color-gray-600: #3a3a3a;
-  --color-gray-700: #2a2a2a;
-  --color-gray-800: #1a1a1a;
-  --color-gray-900: #111111;
-  --color-gray-950: #0a0a0a;
+  /* Bridge Tailwind's color tokens into our website palette so existing
+     `bg-gray-900 text-gray-100` style classes don't shift visually.
+     Calibrated against website's warm-dark scale at light/dark theme. */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+
+  --color-gray-50:  #faf9f6;
+  --color-gray-100: #f3f1ec;
+  --color-gray-200: #e7e4dc;
+  --color-gray-300: #d0ccc2;
+  --color-gray-400: #a6a59f;
+  --color-gray-500: #6b6b68;
+  --color-gray-600: #4a4a48;
+  --color-gray-700: #2e3135;
+  --color-gray-800: #222528;
+  --color-gray-900: #16181b;
+  --color-gray-950: #0f1012;
+
+  /* Bitcoin orange scale. Pages use `bg-orange-900/30`, `border-orange-600/30`,
+     `text-orange-400` etc. — all need to resolve to real orange (not the
+     warm-gray scale we mapped above). 50 is the lightest tint, 950 the
+     deepest shade. Anchored at 500 = #f7931a (Bitcoin orange).
+     Tailwind v4's color/N alpha syntax becomes color-mix on these values. */
+  --color-orange-50:  #fff5e8;
+  --color-orange-100: #ffe4c2;
+  --color-orange-200: #ffce96;
+  --color-orange-300: #fbb168;
+  --color-orange-400: #f99c3b;
+  --color-orange-500: #f7931a;
+  --color-orange-600: #d97e0e;
+  --color-orange-700: #b46808;
+  --color-orange-800: #8a4f06;
+  --color-orange-900: #5e3604;
+  --color-orange-950: #3b2002;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+* { box-sizing: border-box; }
+
+html { color-scheme: light dark; -webkit-text-size-adjust: 100%; }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  font-feature-settings: "ss01", "cv02", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Toast slide-in animation */
+img, svg { display: block; }
+
+/* Anchor styling matches website: subtle bottom-rule underline, accent on hover.
+   Components using `class="bare"` or nav anchors opt out via .bare. */
+a:not(.bare):not([class*="text-"]):not(button) {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule-strong);
+  transition: border-color 120ms, color 120ms;
+}
+a:not(.bare):not([class*="text-"]):not(button):hover {
+  border-bottom-color: var(--accent);
+}
+
+/* ─── Animations ──────────────────────────────────────────────────────── */
+
 @keyframes slide-in {
-  from {
-    opacity: 0;
-    transform: translateX(100%);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+  from { opacity: 0; transform: translateX(100%); }
+  to   { opacity: 1; transform: translateX(0); }
 }
+.animate-slide-in { animation: slide-in 0.3s ease-out; }
 
-.animate-slide-in {
-  animation: slide-in 0.3s ease-out;
-}
-
-/* Connection status pulse */
 @keyframes pulse-ring {
-  0% {
-    transform: scale(0.8);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(2);
-    opacity: 0;
-  }
+  0%   { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(2);   opacity: 0; }
 }
-
 .animate-pulse-ring::before {
   content: '';
   position: absolute;
@@ -75,22 +137,9 @@ body {
   animation: pulse-ring 1.5s ease-out infinite;
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
+/* ─── Scrollbars (theme-aware) ────────────────────────────────────────── */
 
-::-webkit-scrollbar-track {
-  background: #1a1a1a;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #3a3a3a;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #555555;
-}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--surface); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: var(--rule-strong); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--dim); }

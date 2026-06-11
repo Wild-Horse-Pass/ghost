@@ -91,7 +91,11 @@ async fn multi_kill_02_survivors_serve_traffic() {
     // Per-node breakdown
     for ip in &survivor_ips {
         let node_rate = metrics.success_rate_excluding_429_for_node(ip);
-        println!("  {} success rate (excl 429): {:.1}%", ip, node_rate * 100.0);
+        println!(
+            "  {} success rate (excl 429): {:.1}%",
+            ip,
+            node_rate * 100.0
+        );
     }
 }
 
@@ -187,7 +191,10 @@ async fn multi_kill_05_restore_vm2() {
         }
         if tokio::time::Instant::now() > deadline {
             let peers = client.get_peer_count(vm2.ip).await.unwrap_or(0);
-            panic!("VM2 has only {} peers after {:?}", peers, config.recovery_timeout);
+            panic!(
+                "VM2 has only {} peers after {:?}",
+                peers, config.recovery_timeout
+            );
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -274,7 +281,10 @@ async fn multi_kill_07_restore_vm3() {
         }
         if tokio::time::Instant::now() > deadline {
             let peers = client.get_peer_count(vm3.ip).await.unwrap_or(0);
-            panic!("VM3 has only {} peers after {:?}", peers, config.recovery_timeout);
+            panic!(
+                "VM3 has only {} peers after {:?}",
+                peers, config.recovery_timeout
+            );
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -334,24 +344,16 @@ async fn multi_kill_08_full_cluster_consistent() {
     if mpc_counts.len() == config.nodes.len() {
         let first = mpc_counts[0];
         for c in &mpc_counts {
-            assert_eq!(
-                *c, first,
-                "Post multi-kill MPC mismatch: {:?}",
-                mpc_counts
-            );
+            assert_eq!(*c, first, "Post multi-kill MPC mismatch: {:?}", mpc_counts);
         }
         println!("  MPC contributions consistent: {}", first);
     }
 
     // Zero panics
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "15 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "15 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post multi-kill: {} had {} panics",

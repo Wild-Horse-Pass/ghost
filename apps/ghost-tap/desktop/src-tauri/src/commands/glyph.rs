@@ -103,9 +103,10 @@ pub async fn check_glyph_availability(
         )));
     }
 
-    let pixel_arr: [u8; GLYPH_SIZE] = pixels.as_slice().try_into().map_err(|_| {
-        AppError::from("Invalid pixel array")
-    })?;
+    let pixel_arr: [u8; GLYPH_SIZE] = pixels
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::from("Invalid pixel array"))?;
 
     let manager = make_manager(&state, &pay_url)?;
     manager
@@ -125,12 +126,12 @@ pub fn render_glyph(pixels: Vec<u8>, ghost_id: String, scale: u32) -> AppResult<
         )));
     }
 
-    let pixel_arr: [u8; GLYPH_SIZE] = pixels.as_slice().try_into().map_err(|_| {
-        AppError::from("Invalid pixel array")
-    })?;
+    let pixel_arr: [u8; GLYPH_SIZE] = pixels
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::from("Invalid pixel array"))?;
 
-    let glyph = GhostGlyph::new(pixel_arr, ghost_id)
-        .map_err(|e| AppError::from(e.to_string()))?;
+    let glyph = GhostGlyph::new(pixel_arr, ghost_id).map_err(|e| AppError::from(e.to_string()))?;
 
     GlyphManager::render(&glyph, scale).map_err(|e| AppError::from(e.to_string()))
 }

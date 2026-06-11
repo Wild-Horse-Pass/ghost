@@ -248,7 +248,10 @@ impl GhostNoteProver {
         })
     }
 
-    fn build_circuit(&self, witness: &GhostNoteSpendWitness) -> ZkResult<GhostNoteSpendCircuit<Fr>> {
+    fn build_circuit(
+        &self,
+        witness: &GhostNoteSpendWitness,
+    ) -> ZkResult<GhostNoteSpendCircuit<Fr>> {
         let spending_key: Fr = bytes_to_field(&witness.spending_key)?;
         let note_blinding: Fr = bytes_to_field(&witness.note_blinding)?;
         let change_blinding: Fr = bytes_to_field(&witness.change_blinding)?;
@@ -296,7 +299,10 @@ impl GhostNoteProver {
         })
     }
 
-    fn compute_public_inputs(&self, witness: &GhostNoteSpendWitness) -> ZkResult<GhostNoteSpendPublicInputs> {
+    fn compute_public_inputs(
+        &self,
+        witness: &GhostNoteSpendWitness,
+    ) -> ZkResult<GhostNoteSpendPublicInputs> {
         let spending_key: Fr = bytes_to_field(&witness.spending_key)?;
         let note_blinding: Fr = bytes_to_field(&witness.note_blinding)?;
         let change_blinding: Fr = bytes_to_field(&witness.change_blinding)?;

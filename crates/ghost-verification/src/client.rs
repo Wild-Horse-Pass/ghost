@@ -22,11 +22,13 @@
 
 //! Verification client for challenging other nodes
 
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use ghost_common::constants::VERIFICATION_TIMEOUT_SECS;
 use ghost_common::error::{GhostError, GhostResult};
+use ghost_common::tls::{IdentityPinningVerifier, PubkeyAllowList};
 
 use crate::challenge::*;
 
@@ -172,6 +174,47 @@ impl VerificationClient {
             timeout,
             ..Default::default()
         })
+    }
+
+    /// Create a verification client that pins TLS server certs against the
+    /// given Ed25519 public-key allow list (typically a closure that consults
+    /// the live peer registry). This is the mainnet-correct path: certs are
+    /// trusted iff their pubkey matches a registered peer's `node_id`, with
+    /// no CA chain or hostname validation.
+    ///
+    /// `config` controls timeout and HTTPS scheme; `is_mainnet` should match
+    /// the bitcoin network. The allow list itself is stable across calls (it
+    /// reads live state internally), so a single client can challenge any
+    /// peer that joins or leaves over time.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be built.
+    pub fn with_pinning(
+        config: VerificationClientConfig,
+        allow: PubkeyAllowList,
+    ) -> GhostResult<Self> {
+        // Install the rustls process-level crypto provider on first use so
+        // the constructor is self-sufficient (idempotent: a second install
+        // returns Err which we deliberately ignore).
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let verifier = Arc::new(IdentityPinningVerifier::new(allow));
+        let rustls_config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth();
+
+        let builder = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .use_preconfigured_tls(rustls_config);
+
+        let client = builder.build().map_err(|e| {
+            debug!("HTTP client (pinned) creation error: {}", e);
+            GhostError::Internal("Failed to create pinned HTTP client".to_string())
+        })?;
+
+        info!("Verification client built with identity-pinned TLS (cert pubkey == node_id)");
+        Ok(Self { client, config })
     }
 
     /// Create an insecure client for testing only

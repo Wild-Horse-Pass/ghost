@@ -1085,7 +1085,11 @@ mod tests {
             let s = v.as_str();
             let parsed = VerificationResult::parse(s)
                 .unwrap_or_else(|| panic!("Failed to parse VerificationResult from '{}'", s));
-            assert_eq!(*v, parsed, "Roundtrip failed for VerificationResult::{:?}", v);
+            assert_eq!(
+                *v, parsed,
+                "Roundtrip failed for VerificationResult::{:?}",
+                v
+            );
         }
     }
 
@@ -1207,7 +1211,11 @@ mod tests {
             let s = v.as_str();
             let parsed = ReconciliationStatus::parse(s)
                 .unwrap_or_else(|| panic!("Failed to parse ReconciliationStatus from '{}'", s));
-            assert_eq!(*v, parsed, "Roundtrip failed for ReconciliationStatus::{:?}", v);
+            assert_eq!(
+                *v, parsed,
+                "Roundtrip failed for ReconciliationStatus::{:?}",
+                v
+            );
         }
     }
 

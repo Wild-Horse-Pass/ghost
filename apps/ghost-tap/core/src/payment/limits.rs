@@ -124,7 +124,11 @@ mod tests {
     fn test_exceeded() {
         let limits = NfcLimits::with_cap(1_000_000);
         match limits.check(1_000_001) {
-            NfcLimitResult::Exceeded { amount, limit, suggestion } => {
+            NfcLimitResult::Exceeded {
+                amount,
+                limit,
+                suggestion,
+            } => {
                 assert_eq!(amount, 1_000_001);
                 assert_eq!(limit, 1_000_000);
                 assert!(suggestion.contains("QR code"));

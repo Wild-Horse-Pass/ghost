@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Wraith Wallet",
+  "version": "0.1.0",
+  "identifier": "org.bitcoinghost.wraith.wallet",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Wraith Wallet",
+        "width": 900,
+        "height": 700,
+        "minWidth": 720,
+        "minHeight": 500
+      }
+    ],
+    "withGlobalTauri": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "deb", "dmg", "msi"],
+    "icon": []
+  }
+}

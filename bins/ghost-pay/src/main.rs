@@ -78,11 +78,6 @@ use ghost_zkp::{
     GhostNoteSpendProof, GhostNoteSpendPublicInputs, GhostNoteVerifier, GhostUnshieldVerifier,
     UnshieldPublicInputs, MAX_CONSOLIDATION_INPUTS,
 };
-use wraith_protocol::{
-    BlindedChallenge, BlindingContext, FileSessionPersistence, ParticipantTier,
-    PersistentSessionRegistry, SessionType, UnblindedToken, WraithCoordinator,
-    WraithDenomination, WraithInput,
-};
 
 // H-PAY-2: Cryptography for encrypted key storage
 use aes_gcm::{
@@ -138,6 +133,13 @@ struct Args {
     #[arg(long, env = "GHOST_PAY_API_SECRET")]
     api_secret: Option<String>,
 
+    /// Shared bearer secret for trusted ghost-gsp callers. When set,
+    /// requests with a matching `X-Internal-Auth` header skip HMAC
+    /// — used by the operator's own GSP gateway. Leave unset on
+    /// hosts that don't run a co-located ghost-gsp.
+    #[arg(long, env = "GHOST_PAY_INTERNAL_SECRET")]
+    internal_secret: Option<String>,
+
     /// TLS certificate PEM file path (enables HTTPS)
     /// When provided, --tls-key is also required.
     #[arg(long)]
@@ -147,15 +149,27 @@ struct Args {
     #[arg(long)]
     tls_key: Option<std::path::PathBuf>,
 
+    /// Path to the node's Ed25519 identity key (`node.key`, same file
+    /// ghost-pool uses). When provided AND no operator PEM cert is given,
+    /// ghost-pay derives a self-signed TLS cert from this identity. Peers
+    /// pin against the registered `node_id` (cert pubkey == node_id), so
+    /// no CA / DNS / Let's Encrypt is required.
+    #[arg(long, env = "GHOST_PAY_IDENTITY_KEY")]
+    identity_key: Option<std::path::PathBuf>,
+
     /// MPC parameters directory (for loading Groth16 verification keys)
-    /// Defaults to <data-dir>/../mpc_params/ (sibling of data dir)
+    /// Defaults to `<data-dir>/../mpc_params/` (sibling of data dir)
     #[arg(long, env = "GHOST_MPC_PARAMS_DIR")]
     mpc_params_dir: Option<std::path::PathBuf>,
 
     /// Ghost-pool HTTP API URL for L2 transaction relay
     /// Ghost-pay forwards verified NoteSpend transactions to ghost-pool for consensus.
     /// Defaults to http://127.0.0.1:8080 (local ghost-pool)
-    #[arg(long, env = "GHOST_POOL_API_URL", default_value = "http://127.0.0.1:8080")]
+    #[arg(
+        long,
+        env = "GHOST_POOL_API_URL",
+        default_value = "http://127.0.0.1:8080"
+    )]
     pool_api_url: String,
 
     /// Bitcoin address for receiving this node's share of L2 fees.
@@ -701,12 +715,44 @@ use sha2::Sha256;
 #[derive(Clone)]
 struct ApiAuth {
     secret: Option<String>,
+    /// Shared bearer secret for trusted GSP-server callers. When set,
+    /// requests with a matching `X-Internal-Auth` header skip HMAC
+    /// verification — used by ghost-gsp's PayClient (a known operator-
+    /// run gateway). Validated in constant time. Distinct from
+    /// `secret` so operators can rotate them independently.
+    internal_secret: Option<String>,
     network: Network,
 }
 
 impl ApiAuth {
-    fn new(secret: Option<String>, network: Network) -> Self {
-        Self { secret, network }
+    fn new(secret: Option<String>, internal_secret: Option<String>, network: Network) -> Self {
+        Self {
+            secret,
+            internal_secret,
+            network,
+        }
+    }
+
+    /// Constant-time check for the `X-Internal-Auth` bearer header.
+    /// Returns true only when the configured internal secret is set
+    /// AND matches the supplied header value byte-for-byte.
+    fn internal_auth_matches(&self, headers: &HeaderMap) -> bool {
+        let configured = match &self.internal_secret {
+            Some(s) => s,
+            None => return false,
+        };
+        let provided = match headers.get("X-Internal-Auth").and_then(|h| h.to_str().ok()) {
+            Some(s) => s,
+            None => return false,
+        };
+        if provided.len() != configured.len() {
+            return false;
+        }
+        let mut diff = 0u8;
+        for (a, b) in provided.bytes().zip(configured.bytes()) {
+            diff |= a ^ b;
+        }
+        diff == 0
     }
 
     /// Verify HMAC signature from request headers
@@ -794,11 +840,18 @@ async fn require_api_auth(
         Err(_) => return Err(StatusCode::BAD_REQUEST),
     };
 
-    // Verify signature
-    if !auth.verify_signature(&parts.headers, &body_bytes) {
+    // Trusted GSP-server bypass: a configured `X-Internal-Auth`
+    // header that matches the operator's GSP-internal secret skips
+    // HMAC verification. This is the path ghost-gsp's PayClient
+    // takes — it sits behind the operator's perimeter and
+    // authenticates wallets itself via JWT WebSocket. External
+    // callers without the bearer fall through to HMAC.
+    let auth_ok = auth.internal_auth_matches(&parts.headers)
+        || auth.verify_signature(&parts.headers, &body_bytes);
+    if !auth_ok {
         warn!(
             path = %parts.uri.path(),
-            "H-2: Authentication failed - invalid signature"
+            "H-2: Authentication failed - no valid HMAC and no matching X-Internal-Auth"
         );
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -851,16 +904,6 @@ async fn security_headers_middleware(request: Request, next: Next) -> Response {
     response
 }
 
-/// Convert a session ID string (UUID) to [u8; 32] via SHA-256.
-/// The session registry uses fixed-size 32-byte keys; UUIDs are strings.
-fn session_id_to_bytes(session_id: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(session_id.as_bytes());
-    let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(&hash);
-    bytes
-}
-
 /// Application state
 struct AppState {
     /// Ghost keys for this node
@@ -873,12 +916,6 @@ struct AppState {
     ghost_locks: RwLock<Vec<GhostLock>>,
     /// Lock metadata for API responses - cached from DB
     locks: RwLock<Vec<LockInfo>>,
-    /// Active Wraith sessions
-    sessions: RwLock<Vec<SessionInfo>>,
-    /// Wraith coordinators for active sessions
-    coordinators: RwLock<std::collections::HashMap<String, WraithCoordinator>>,
-    /// Wraith session registry with persistent replay detection
-    session_registry: parking_lot::Mutex<PersistentSessionRegistry>,
     /// Pending payments to scan
     scanner_tx: mpsc::Sender<ScanRequest>,
     /// Configuration
@@ -921,27 +958,30 @@ struct LockInfo {
     timelock_tier: String,
     jump_risk: String,
     needs_jump: bool,
-    /// Taproot address for funding
+    /// P2WSH address for funding (note: no longer "Taproot" — Ghost
+    /// Locks are P2WSH for quantum safety per the lock spec).
     address: String,
-    /// Output public key (x-only, hex)
+    /// Output public key — this is the lock_pubkey (cooperative-path
+    /// key) the operator derived. 33-byte SEC1 compressed, hex.
     output_pubkey: String,
     /// Recovery height (block when recovery becomes available)
     recovery_height: u32,
     /// Blocks until jump needed (0 if not applicable)
     blocks_until_jump: u32,
-}
-
-/// Session information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SessionInfo {
-    id: String,
-    tier: String,
-    denomination: String,
-    state: String,
-    participants: usize,
-    fill_percentage: f64,
-    #[serde(default)]
-    auto_sign: bool,
+    /// Echo of the wallet-supplied recovery_pubkey (33-byte SEC1
+    /// compressed, hex). Wallet checks this to detect operator
+    /// substitution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_pubkey: Option<String>,
+    /// Echo of the wallet's recovery derivation index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_index: Option<u32>,
+    /// CSV blocks the recovery branch waits before becoming spendable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_blocks: Option<u32>,
+    /// Block height the lock was created at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creation_height: Option<u32>,
 }
 
 /// Scan request for background scanner
@@ -978,9 +1018,21 @@ fn pubkey_hex_to_p2tr_address(pubkey_hex: &str, network: Network) -> String {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Install the rustls process-level CryptoProvider exactly once before any
+    // ClientConfig::builder() / ServerConfig::builder() construction. Required
+    // when identity-derived TLS is used (mirrors the ghost-pool fix).
+    if rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .is_err()
+    {
+        // Already installed (test harness / re-init); nothing to do.
+    }
+
     // Extract TLS config before args is moved into AppState
     let tls_cert_path = args.tls_cert.clone();
     let tls_key_path = args.tls_key.clone();
+    let identity_key_path = args.identity_key.clone();
+    let public_address_for_tls = std::env::var("GHOST_PAY_PUBLIC_ADDRESS").ok();
 
     // Setup logging
     let level = match args.log_level.to_lowercase().as_str() {
@@ -1006,38 +1058,6 @@ async fn main() -> Result<()> {
 
     // Create data directory
     std::fs::create_dir_all(&args.data_dir)?;
-
-    // Initialize Wraith session persistence for replay detection
-    let session_registry = {
-        let sessions_path =
-            std::path::Path::new(&args.data_dir).join("wraith_sessions.json");
-        match FileSessionPersistence::new(sessions_path) {
-            Ok(persistence) => {
-                match PersistentSessionRegistry::with_persistence(std::sync::Arc::new(persistence))
-                {
-                    Ok(registry) => {
-                        info!(
-                            sessions = registry.session_count(),
-                            "Wraith session registry loaded with persistence"
-                        );
-                        registry
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to load persistent sessions, using in-memory mode");
-                        let mut registry = PersistentSessionRegistry::new();
-                        registry.acknowledge_in_memory_mode();
-                        registry
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to initialize session persistence, using in-memory mode");
-                let mut registry = PersistentSessionRegistry::new();
-                registry.acknowledge_in_memory_mode();
-                registry
-            }
-        }
-    };
 
     // Create scanner channel
     let (scanner_tx, scanner_rx) = mpsc::channel(1000);
@@ -1197,9 +1217,6 @@ async fn main() -> Result<()> {
         ghost_id: RwLock::new(None),
         ghost_locks: RwLock::new(Vec::new()),
         locks: RwLock::new(Vec::new()),
-        sessions: RwLock::new(Vec::new()),
-        coordinators: RwLock::new(std::collections::HashMap::new()),
-        session_registry: parking_lot::Mutex::new(session_registry),
         scanner_tx,
         config: args,
         network,
@@ -1385,6 +1402,13 @@ async fn main() -> Result<()> {
                                                 .next_jump_height
                                                 .unwrap_or(0)
                                                 .saturating_sub(r.creation_height),
+                                            recovery_pubkey: Some(r.recovery_pubkey.clone()),
+                                            recovery_index: None,
+                                            recovery_blocks: Some(
+                                                r.recovery_height
+                                                    .saturating_sub(r.creation_height),
+                                            ),
+                                            creation_height: Some(r.creation_height),
                                         })
                                         .collect();
 
@@ -1470,6 +1494,12 @@ async fn main() -> Result<()> {
                                     .next_jump_height
                                     .unwrap_or(0)
                                     .saturating_sub(r.creation_height),
+                                recovery_pubkey: Some(r.recovery_pubkey.clone()),
+                                recovery_index: None,
+                                recovery_blocks: Some(
+                                    r.recovery_height.saturating_sub(r.creation_height),
+                                ),
+                                creation_height: Some(r.creation_height),
                             })
                             .collect();
 
@@ -1503,18 +1533,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Spawn session coordinator
-    let state_clone = Arc::clone(&state);
-    let mut shutdown_rx = shutdown_tx.subscribe();
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = run_session_coordinator(state_clone) => {}
-            _ = shutdown_rx.recv() => {
-                info!("Session coordinator shutting down");
-            }
-        }
-    });
-
     // Spawn L1 settlement monitor (only if treasury address is configured)
     if treasury_configured {
         let state_clone = Arc::clone(&state);
@@ -1531,7 +1549,11 @@ async fn main() -> Result<()> {
     }
 
     // H-2: Create API authentication state
-    let api_auth = ApiAuth::new(state.config.api_secret.clone(), state.network);
+    let api_auth = ApiAuth::new(
+        state.config.api_secret.clone(),
+        state.config.internal_secret.clone(),
+        state.network,
+    );
 
     // HIGH-API-1: Fail startup if api_secret not configured on mainnet
     if api_auth.secret.is_none() {
@@ -1560,13 +1582,8 @@ async fn main() -> Result<()> {
         .route("/api/v1/keys/export", get(export_keys))
         // Lock management (SENSITIVE - controls funds)
         .route("/api/v1/locks/create", post(create_lock))
+        .route("/api/v1/locks/:id/confirm", post(confirm_lock_funding))
         .route("/api/v1/locks/:id/jump", post(initiate_jump))
-        // Wraith sessions (SENSITIVE - privacy operations)
-        .route("/api/v1/wraith/join", post(join_session))
-        .route("/api/v1/wraith/submit-input", post(wraith_submit_input))
-        .route("/api/v1/wraith/request-nonces", post(wraith_request_nonces))
-        .route("/api/v1/wraith/submit-blinded", post(wraith_submit_blinded))
-        .route("/api/v1/wraith/submit-anonymous", post(wraith_submit_anonymous))
         // Withdrawals (SENSITIVE - moves funds)
         .route("/api/v1/withdrawals/request", post(request_withdrawal))
         .route("/api/v1/withdrawals/:id/cancel", post(cancel_withdrawal))
@@ -1579,10 +1596,7 @@ async fn main() -> Result<()> {
             "/api/v1/confidential/consolidate",
             post(submit_consolidation),
         )
-        .route(
-            "/api/v1/confidential/unshield",
-            post(submit_unshield),
-        )
+        .route("/api/v1/confidential/unshield", post(submit_unshield))
         .route("/api/v1/confidential/shield", post(shield_balance))
         // Lock reconciliation (SENSITIVE - settles lock to L1)
         .route("/api/v1/locks/:id/reconcile", post(reconcile_lock))
@@ -1590,6 +1604,16 @@ async fn main() -> Result<()> {
         .route("/api/v1/payments/send", post(send_l2_payment))
         // GhostGlyph (SENSITIVE - binds identity permanently)
         .route("/api/v1/glyph/claim", post(claim_glyph))
+        // L1 UTXO scan via Bitcoin Core's scantxoutset. Authenticated
+        // because the call is expensive (5-15s on mainnet) and the
+        // response reveals UTXO state for the supplied addresses.
+        .route("/api/v1/utxos/scan", post(scan_utxos))
+        // L1 broadcast — thin passthrough to `sendrawtransaction`.
+        // wraithd builds + signs PSBTs locally and uses this to
+        // push the resulting tx through the operator's bitcoind.
+        // Authenticated so only callers with the internal-auth
+        // secret can submit raw transactions through this node.
+        .route("/api/v1/tx/broadcast", post(broadcast_tx))
         .layer(axum::middleware::from_fn_with_state(
             api_auth.clone(),
             require_api_auth,
@@ -1603,12 +1627,12 @@ async fn main() -> Result<()> {
         // Read-only lock info
         .route("/api/v1/locks", get(list_locks))
         .route("/api/v1/locks/:id", get(get_lock))
-        // Read-only session info
-        .route("/api/v1/wraith/sessions", get(list_sessions))
-        .route("/api/v1/wraith/sessions/:id", get(get_session))
         // Payments (derive address is safe, scan is read-only)
         .route("/api/v1/payments/address", post(derive_payment_address))
         .route("/api/v1/payments/scan", post(scan_transaction))
+        // L2 ledger history — surfaces sent + received instant payments
+        // for a given ghost_id. Used by `wraith light history`.
+        .route("/api/v1/transactions", get(list_transactions))
         // Read-only withdrawal info
         .route("/api/v1/withdrawals", get(list_withdrawals))
         .route("/api/v1/withdrawals/:id", get(get_withdrawal))
@@ -1632,13 +1656,13 @@ async fn main() -> Result<()> {
             get(get_confidential_notes),
         )
         // L2 transaction scanning for wallets
-        .route(
-            "/api/v1/l2/transactions",
-            get(get_recent_l2_transactions),
-        )
+        .route("/api/v1/l2/transactions", get(get_recent_l2_transactions))
         // GhostGlyph read-only endpoints
         .route("/api/v1/glyph/:ghost_id", get(get_glyph))
-        .route("/api/v1/glyph/check/:bitmap_hash_hex", get(check_glyph_availability))
+        .route(
+            "/api/v1/glyph/check/:bitmap_hash_hex",
+            get(check_glyph_availability),
+        )
         .with_state(state.clone());
 
     // MEDIUM-1: L2 block production endpoints are localhost-only.
@@ -1647,12 +1671,20 @@ async fn main() -> Result<()> {
         .route("/api/v1/l2/state", get(l2_state_handler))
         .route("/api/v1/l2/pending", get(l2_pending_handler))
         .route("/api/v1/l2/finalize", post(l2_finalize_handler))
-        .route("/api/v1/admin/verify-fee-pipeline", post(verify_fee_pipeline))
-        .route("/api/v1/admin/simulate-l2-activity", post(simulate_l2_activity))
+        .route(
+            "/api/v1/admin/verify-fee-pipeline",
+            post(verify_fee_pipeline),
+        )
+        .route(
+            "/api/v1/admin/simulate-l2-activity",
+            post(simulate_l2_activity),
+        )
         .route("/api/v1/admin/simulate-unshield", post(simulate_unshield))
-        .route("/api/v1/admin/simulate-wraith-session", post(simulate_wraith_session))
         .route("/api/v1/admin/test-withdrawal", post(test_withdrawal))
-        .route("/api/v1/admin/trigger-settlement", post(admin_trigger_settlement))
+        .route(
+            "/api/v1/admin/trigger-settlement",
+            post(admin_trigger_settlement),
+        )
         .route("/api/v1/admin/seed-test-balance", post(seed_test_balance))
         .layer(axum::middleware::from_fn(localhost_only))
         .with_state(state.clone());
@@ -1749,9 +1781,10 @@ async fn main() -> Result<()> {
     // Parse listen address
     let addr: SocketAddr = state.config.api_listen.parse()?;
 
-    // Build TLS config for HTTPS — only when operator provides explicit cert/key.
-    // Without explicit certs, serve plain HTTP so that the verification client
-    // (which uses HTTP on signet/testnet) can reach us without TLS issues.
+    // Build TLS config for HTTPS. Resolution order:
+    //   1. Operator PEM files (`--tls-cert` + `--tls-key`)
+    //   2. Identity-derived cert from `--identity-key` (cert pubkey == node_id)
+    //   3. Plain HTTP fallback (testnet / dev only)
     let tls_config = if let (Some(cert_path), Some(key_path)) = (tls_cert_path, tls_key_path) {
         let tls_cfg = ghost_common::config::TlsConfig {
             cert_path: Some(cert_path),
@@ -1766,8 +1799,54 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("Failed to build TLS config: {}", e));
             }
         }
+    } else if let Some(key_path) = identity_key_path {
+        // Read the 32-byte Ed25519 secret seed (LocalSigner format: 32 bytes
+        // optionally followed by a 12-byte PoW proof we ignore here).
+        match std::fs::read(&key_path) {
+            Ok(bytes) if bytes.len() >= 32 => {
+                let mut secret = [0u8; 32];
+                secret.copy_from_slice(&bytes[..32]);
+                match ghost_common::tls::build_server_config_with_identity(
+                    &ghost_common::config::TlsConfig::default(),
+                    &secret,
+                    public_address_for_tls.as_deref(),
+                ) {
+                    Ok(tls) => {
+                        info!(
+                            "Ghost Pay API starting on {} (HTTPS, identity-derived cert from {})",
+                            addr,
+                            key_path.display()
+                        );
+                        Some(tls)
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!(
+                            "Failed to derive TLS config from identity {}: {}",
+                            key_path.display(),
+                            e
+                        ));
+                    }
+                }
+            }
+            Ok(_) => {
+                return Err(anyhow::anyhow!(
+                    "Identity key {} is too short (need ≥32 bytes)",
+                    key_path.display()
+                ));
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to read identity key {}: {}",
+                    key_path.display(),
+                    e
+                ));
+            }
+        }
     } else {
-        info!("Ghost Pay API starting on {} (HTTP)", addr);
+        info!(
+            "Ghost Pay API starting on {} (HTTP — no operator cert and no --identity-key)",
+            addr
+        );
         None
     };
 
@@ -1928,6 +2007,10 @@ async fn generate_keys(
                     .next_jump_height
                     .unwrap_or(0)
                     .saturating_sub(r.creation_height),
+                recovery_pubkey: Some(r.recovery_pubkey.clone()),
+                recovery_index: None,
+                recovery_blocks: Some(r.recovery_height.saturating_sub(r.creation_height)),
+                creation_height: Some(r.creation_height),
             })
             .collect();
 
@@ -1994,6 +2077,33 @@ struct CreateLockRequest {
     source: Option<String>,
     /// Wraith service fee deducted at L2 (denomination - service_fee = shielded amount)
     wraith_fee_sats: Option<u64>,
+    /// User-derived recovery_pubkey (33-byte SEC1 compressed, hex).
+    /// Goes verbatim into the lock script's recovery branch — the
+    /// operator does NOT derive its own recovery key. This is what
+    /// makes the timelock recovery path a real unilateral exit:
+    /// after the timelock expires, the user can spend with their own
+    /// keystore, no operator cooperation needed.
+    ///
+    /// Optional only for backwards compatibility — when absent the
+    /// route logs a warning and falls back to operator-derived
+    /// recovery (legacy behaviour, broken trust model). Mainnet
+    /// callers MUST supply this.
+    #[serde(default)]
+    recovery_pubkey: Option<String>,
+    /// Wallet-side derivation index that produced `recovery_pubkey`.
+    /// Recorded for diagnostics + so the wallet's LocksRecover path
+    /// can look up which secret to sign with.
+    #[serde(default)]
+    recovery_index: Option<u32>,
+    /// Stable wallet identifier supplied by the GSP server (the
+    /// authenticated wallet's static_wallet_id). Used as the row's
+    /// `owner_ghost_id` so multi-tenant deployments don't bucket
+    /// every wallet's locks under the operator's identity. Optional
+    /// for backwards compatibility — when absent the route falls
+    /// back to `state.ghost_id` (operator's), which is the legacy
+    /// broken behaviour.
+    #[serde(default)]
+    owner_ghost_id: Option<String>,
 }
 
 /// Create a new ghost lock
@@ -2031,12 +2141,27 @@ async fn create_lock(
         _ => TimelockTier::Standard,
     };
 
-    // Get the ghost_id for database (needed for key index lookup)
-    let owner_ghost_id = state
-        .ghost_id
-        .read()
-        .clone()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Owner ID resolution. Prefer the wallet identifier the GSP
+    // server forwarded in the request — that's the authenticated
+    // wallet's stable ID, the only way multi-tenant ledgers work
+    // correctly. Fall back to the operator's own ghost_id when the
+    // request omits it (legacy callers); future commits will
+    // tighten this to a hard refusal once every caller has migrated.
+    let owner_ghost_id = match req.owner_ghost_id.as_deref() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            warn!(
+                "create_lock: no owner_ghost_id supplied — falling back to operator's \
+                 identity. Multi-tenant deployments need the GSP server to forward \
+                 the authenticated wallet's static_wallet_id."
+            );
+            state
+                .ghost_id
+                .read()
+                .clone()
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+        }
+    };
 
     // Get next lock key index from DB (stable across restarts)
     let lock_index = state
@@ -2047,25 +2172,84 @@ async fn create_lock(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    // Derive lock and recovery secrets
+    // Derive the OPERATOR's lock_secret (cooperative-path key — used
+    // to co-sign fast L2 settlements via reconciliation). The
+    // recovery key, by contrast, comes from the WALLET, so the
+    // recovery branch is genuinely unilateral.
     let lock_secret = keys
         .derive_lock_secret(lock_index)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let recovery_secret = keys
-        .derive_recovery_secret(lock_index)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    // Create the actual GhostLock
     let secp = Secp256k1::new();
-    let ghost_lock = GhostLock::new(
-        &secp,
-        &lock_secret,
-        &recovery_secret,
+    let lock_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
+
+    // Resolve the user-supplied recovery_pubkey. Refuse silently-
+    // legacy clients that omit it on a non-test network: a missing
+    // recovery_pubkey means the operator would have to derive one
+    // and own the recovery path, which breaks the unilateral-exit
+    // property. Better to fail visibly here than silently produce a
+    // federated-custody lock the user thinks is self-custodial.
+    let recovery_pubkey = match req.recovery_pubkey.as_deref() {
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str.trim()).map_err(|e| {
+                error!("Invalid recovery_pubkey hex: {e}");
+                StatusCode::BAD_REQUEST
+            })?;
+            if bytes.len() != 33 || !(bytes[0] == 0x02 || bytes[0] == 0x03) {
+                error!("recovery_pubkey must be SEC1-compressed (33 bytes, 0x02/0x03 prefix)");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            bitcoin::secp256k1::PublicKey::from_slice(&bytes).map_err(|e| {
+                error!("Invalid recovery_pubkey: {e}");
+                StatusCode::BAD_REQUEST
+            })?
+        }
+        None => {
+            error!(
+                "create_lock called without recovery_pubkey — refusing. Wallet \
+                 must derive its own recovery key and supply it; operator-derived \
+                 recovery breaks unilateral exit."
+            );
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    // Refuse keys that defeat the 2-of-2 model — same checks as
+    // GhostLock::new but raised here because we're using
+    // from_pubkeys directly.
+    if lock_pubkey == recovery_pubkey {
+        error!("lock_pubkey == recovery_pubkey — refused");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if lock_pubkey.combine(&recovery_pubkey).is_err() {
+        error!("lock_pubkey == -recovery_pubkey (key negation attack) — refused");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let recovery_index_logged = req.recovery_index.unwrap_or(0);
+    info!(
+        owner_ghost_id = %owner_ghost_id,
+        lock_index = lock_index,
+        recovery_index = recovery_index_logged,
+        creation_height = creation_height,
+        "create_lock with user-supplied recovery_pubkey"
+    );
+
+    // Build the GhostLock from pubkeys directly (no recovery secret
+    // available operator-side, by design). Network-aware: on regtest
+    // the CSV duration collapses so demos / e2e tests can mine past
+    // the timelock without production-scale block counts.
+    let ghost_lock = GhostLock::from_pubkeys_for_network(
+        lock_pubkey,
+        recovery_pubkey,
         denomination,
         timelock_tier,
         creation_height,
+        state.network,
     )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| {
+        error!("GhostLock::from_pubkeys failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // Generate P2WSH address from script pubkey (quantum-safe)
     let address = Address::from_script(ghost_lock.script_pubkey(), state.network)
@@ -2079,6 +2263,11 @@ async fn create_lock(
     // Determine jump risk based on amount
     let jump_risk = ghost_lock.jump_risk_tier();
 
+    // Use the SAME network-aware block count we baked into the
+    // witness script's CSV; otherwise the wallet's recovery TX
+    // would be either rejected (CSV under-fulfilled) or unable to
+    // build at all (mismatch with stored prepared_locks metadata).
+    let recovery_blocks_for_resp = timelock_tier.blocks_for_network(state.network);
     let lock_info = LockInfo {
         id: ghost_lock.lock_id_hex(),
         denomination: denomination.name().to_string(),
@@ -2092,6 +2281,10 @@ async fn create_lock(
         output_pubkey: hex::encode(ghost_lock.lock_pubkey().serialize()),
         recovery_height: ghost_lock.recovery_height(),
         blocks_until_jump: ghost_lock.blocks_until_jump(creation_height),
+        recovery_pubkey: Some(hex::encode(ghost_lock.recovery_pubkey().serialize())),
+        recovery_index: req.recovery_index,
+        recovery_blocks: Some(recovery_blocks_for_resp),
+        creation_height: Some(creation_height),
     };
 
     // Create database record
@@ -2158,6 +2351,126 @@ async fn get_lock(
     Ok(Json(lock))
 }
 
+/// `POST /api/v1/locks/:id/confirm` — record that the lock's funding
+/// transaction has been broadcast.
+///
+/// The wallet (via ghost-gsp) calls this once it has sent the
+/// funding output to the lock's P2WSH address. We update the lock's
+/// row with the funding txid + vout and flip its state from
+/// `pending` to `active`. Confirmation depth tracking happens
+/// elsewhere on a background scanner.
+#[derive(Debug, Deserialize)]
+struct ConfirmFundingRequest {
+    funding_txid: String,
+    funding_vout: u32,
+}
+
+async fn confirm_lock_funding(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<ConfirmFundingRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Validate the txid format up front so a typo from the wallet
+    // surfaces as a clean 400 rather than corrupting the row.
+    if hex::decode(&req.funding_txid).map(|b| b.len()).unwrap_or(0) != 32 {
+        warn!(
+            lock_id = %id,
+            txid = %req.funding_txid,
+            "confirm_lock_funding: malformed funding_txid (expected 32 bytes hex)"
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // The lock must already exist in the database — refuse confirms
+    // on locks we never created.
+    let existing = state.db.get_ghost_lock(&id).map_err(|e| {
+        error!(lock_id = %id, error = %e, "confirm_lock_funding: db lookup failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let existing = existing.ok_or_else(|| {
+        warn!(lock_id = %id, "confirm_lock_funding: unknown lock_id");
+        StatusCode::NOT_FOUND
+    })?;
+    if existing.state == ghost_storage::GhostLockState::Active
+        && existing.funding_txid.as_deref() == Some(req.funding_txid.as_str())
+    {
+        // Idempotent re-confirm — no-op success.
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "lock_id": id,
+            "state": "active",
+            "funding_txid": req.funding_txid,
+            "block_height": 0,
+            "message": "already confirmed"
+        })));
+    }
+
+    state
+        .db
+        .update_ghost_lock_funding(&id, &req.funding_txid, req.funding_vout)
+        .map_err(|e| {
+            error!(lock_id = %id, error = %e, "confirm_lock_funding: update failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Refresh the in-memory lock cache so subsequent /api/v1/locks
+    // listings reflect the new state without waiting for a restart.
+    if let Ok(db_locks) = state
+        .db
+        .get_ghost_locks_by_owner(state.ghost_id.read().clone().unwrap_or_default().as_str())
+    {
+        let network = state.network;
+        let lock_infos: Vec<LockInfo> = db_locks
+            .iter()
+            .filter(|r| {
+                r.state != ghost_storage::GhostLockState::Spent
+                    && r.state != ghost_storage::GhostLockState::PendingSettlement
+            })
+            .map(|r| LockInfo {
+                id: r.lock_id.clone(),
+                denomination: r.denomination.clone(),
+                amount_sats: r.amount_sats,
+                state: r.state.as_str().to_string(),
+                created_at: r.created_at as u64,
+                timelock_tier: r.timelock_tier.clone(),
+                jump_risk: r.jump_risk_tier.clone(),
+                needs_jump: r
+                    .next_jump_height
+                    .map(|h| h <= r.creation_height + 1000)
+                    .unwrap_or(false),
+                address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
+                output_pubkey: r.lock_pubkey.clone(),
+                recovery_height: r.recovery_height,
+                blocks_until_jump: r
+                    .next_jump_height
+                    .unwrap_or(0)
+                    .saturating_sub(r.creation_height),
+                recovery_pubkey: Some(r.recovery_pubkey.clone()),
+                recovery_index: None,
+                recovery_blocks: Some(r.recovery_height.saturating_sub(r.creation_height)),
+                creation_height: Some(r.creation_height),
+            })
+            .collect();
+        *state.locks.write() = lock_infos;
+    }
+
+    info!(
+        lock_id = %id,
+        funding_txid = %req.funding_txid,
+        funding_vout = req.funding_vout,
+        "Lock funding confirmed (state → active)"
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "lock_id": id,
+        "state": "active",
+        "funding_txid": req.funding_txid,
+        "funding_vout": req.funding_vout,
+        "block_height": 0
+    })))
+}
+
 /// Initiate jump for a lock
 async fn initiate_jump(
     State(state): State<Arc<AppState>>,
@@ -2193,124 +2506,6 @@ async fn initiate_jump(
         "success": true,
         "message": "Jump initiated - funds will be moved to new lock with fresh keys"
     })))
-}
-
-// ============================================================================
-// Wraith Session Handlers
-// ============================================================================
-
-/// List active sessions
-async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionInfo>> {
-    let sessions = state.sessions.read().clone();
-    Json(sessions)
-}
-
-/// Join session request
-#[derive(Debug, Deserialize)]
-struct JoinSessionRequest {
-    tier: String,
-    denomination: String,
-    /// Lock ID to use for this session (reserved for future lock validation)
-    #[allow(dead_code)]
-    lock_id: String,
-}
-
-/// Join a Wraith mixing session
-async fn join_session(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<JoinSessionRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    // Parse tier (based on participant balance range)
-    let tier = match req.tier.to_lowercase().as_str() {
-        "micro" | "express" | "quick" => ParticipantTier::Micro,
-        "small" => ParticipantTier::Small,
-        "medium" => ParticipantTier::Medium,
-        "standard" => ParticipantTier::Standard,
-        "large" => ParticipantTier::Large,
-        "whale" => ParticipantTier::Whale,
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-
-    // Parse denomination (will be used for session matching)
-    let _denomination = match req.denomination.to_lowercase().as_str() {
-        "micro" => WraithDenomination::Micro,
-        "small" => WraithDenomination::Small,
-        "medium" => WraithDenomination::Medium,
-        "large" => WraithDenomination::Large,
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-
-    // Create or join session
-    let mut sessions = state.sessions.write();
-
-    // Look for existing session
-    let session = sessions
-        .iter_mut()
-        .find(|s| s.tier == req.tier && s.denomination == req.denomination && s.state == "waiting");
-
-    match session {
-        Some(s) => {
-            s.participants += 1;
-            s.fill_percentage = (s.participants as f64 / tier.min_participants() as f64) * 100.0;
-
-            info!(id = %s.id, participants = s.participants, "Joined existing session");
-
-            Ok(Json(serde_json::json!({
-                "success": true,
-                "session_id": s.id,
-                "participants": s.participants,
-                "fill_percentage": s.fill_percentage
-            })))
-        }
-        None => {
-            // Create new session
-            let session_id = uuid::Uuid::new_v4().to_string();
-
-            // Register session ID for replay detection
-            if let Err(e) = state
-                .session_registry
-                .lock()
-                .check_and_register(session_id_to_bytes(&session_id))
-            {
-                warn!(session_id = %session_id, error = %e, "Session ID collision/replay detected");
-                return Err(StatusCode::CONFLICT);
-            }
-
-            let new_session = SessionInfo {
-                id: session_id.clone(),
-                tier: req.tier,
-                denomination: req.denomination,
-                state: "waiting".to_string(),
-                participants: 1,
-                fill_percentage: (1.0 / tier.min_participants() as f64) * 100.0,
-                auto_sign: false,
-            };
-            sessions.push(new_session);
-
-            info!(id = %session_id, "Created new Wraith session");
-
-            Ok(Json(serde_json::json!({
-                "success": true,
-                "session_id": session_id,
-                "participants": 1,
-                "fill_percentage": (1.0 / tier.min_participants() as f64) * 100.0
-            })))
-        }
-    }
-}
-
-/// Get session details
-async fn get_session(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Json<SessionInfo>, StatusCode> {
-    let sessions = state.sessions.read();
-    let session = sessions
-        .iter()
-        .find(|s| s.id == id)
-        .cloned()
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(session))
 }
 
 // ============================================================================
@@ -2362,6 +2557,236 @@ async fn scan_transaction(
         "success": true,
         "message": "Transaction queued for scanning"
     })))
+}
+
+/// Request body for `POST /api/v1/utxos/scan`.
+#[derive(Debug, Deserialize)]
+struct ScanUtxosRequest {
+    /// Addresses to scan. Each is wrapped in a Bitcoin Core
+    /// `addr(...)` descriptor for the underlying scantxoutset call.
+    /// Capped at 1024 per call — chunk above that on the caller.
+    addresses: Vec<String>,
+    /// Minimum confirmations for the UTXO to be included. 0 means
+    /// mempool/coinbase outputs are returned too. Default 0 to match
+    /// Bitcoin Core's listunspent default.
+    #[serde(default)]
+    min_confirmations: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct ScannedUtxo {
+    txid: String,
+    vout: u32,
+    amount_sats: u64,
+    /// Hex-encoded scriptPubKey of the output. Wallets need this
+    /// for sighash construction when signing the spend.
+    scriptpubkey_hex: String,
+    /// The user-supplied address that matched this output. Re-derived
+    /// from the scantxoutset result's `desc` field, so only set when
+    /// the descriptor was an `addr(...)` (which this endpoint always
+    /// emits internally).
+    address: Option<String>,
+    confirmations: u32,
+    /// Block height at which this output was confirmed. 0 for
+    /// mempool entries.
+    height: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct ScanUtxosResponse {
+    utxos: Vec<ScannedUtxo>,
+    total_sats: u64,
+    /// Block height at which the underlying scantxoutset was taken.
+    /// Useful for clients that want to attribute confirmations against
+    /// the same chain state.
+    chain_height: u32,
+}
+
+/// Scan the chain UTXO set for outputs at the supplied addresses.
+/// Backed by Bitcoin Core's `scantxoutset start [addr(...), ...]`,
+/// which walks the full UTXO set on each call (5-15s on mainnet,
+/// sub-second on signet/regtest). Authenticated because the call
+/// is expensive and the result reveals UTXO state of the supplied
+/// addresses.
+async fn scan_utxos(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ScanUtxosRequest>,
+) -> Result<Json<ScanUtxosResponse>, (StatusCode, String)> {
+    if req.addresses.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "addresses must be non-empty".to_string(),
+        ));
+    }
+    if req.addresses.len() > 1024 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "too many addresses (max 1024 per call — chunk client-side)".to_string(),
+        ));
+    }
+
+    // Validate each address against the configured network before
+    // hitting bitcoind. Saves a round-trip on bad input and gives a
+    // clear error.
+    let expected_network = match state.network {
+        Network::Bitcoin => ghost_common::config::BitcoinNetwork::Mainnet,
+        Network::Signet => ghost_common::config::BitcoinNetwork::Signet,
+        Network::Testnet => ghost_common::config::BitcoinNetwork::Testnet,
+        Network::Regtest => ghost_common::config::BitcoinNetwork::Regtest,
+        // bitcoin::Network is non-exhaustive in 0.32+; fall back to
+        // mainnet's stricter prefix check on any future variant.
+        _ => ghost_common::config::BitcoinNetwork::Mainnet,
+    };
+    for a in &req.addresses {
+        state
+            .rpc
+            .validate_address_for_network(a, expected_network)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("address {a}: {e}")))?;
+    }
+
+    let scan_objs: Vec<String> = req.addresses.iter().map(|a| format!("addr({a})")).collect();
+    let scan_refs: Vec<&str> = scan_objs.iter().map(String::as_str).collect();
+
+    let scan = state
+        .rpc
+        .scan_tx_out_set(scan_refs)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("scantxoutset failed: {e}")))?;
+    if !scan.success {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "scantxoutset returned success=false (bitcoind already scanning?)".to_string(),
+        ));
+    }
+
+    let chain_height = scan.height;
+    let mut utxos = Vec::with_capacity(scan.unspents.len());
+    let mut total_sats: u64 = 0;
+    for u in scan.unspents {
+        // scantxoutset's f64 amount field round-trips exactly for any
+        // value < 2^53 sats, which is well above 21M BTC. Multiply
+        // and round; this is the same pattern Bitcoin Core's own RPC
+        // wrappers use.
+        let amount_sats = (u.amount * SATS_PER_BTC_F64).round() as u64;
+        let confirmations = if u.height == 0 {
+            0
+        } else {
+            chain_height.saturating_sub(u.height).saturating_add(1)
+        };
+        if confirmations < req.min_confirmations {
+            continue;
+        }
+        let address = parse_addr_from_desc(&u.desc);
+        total_sats = total_sats.saturating_add(amount_sats);
+        utxos.push(ScannedUtxo {
+            txid: u.txid,
+            vout: u.vout,
+            amount_sats,
+            scriptpubkey_hex: u.script_pubkey,
+            address,
+            confirmations,
+            height: u.height,
+        });
+    }
+
+    Ok(Json(ScanUtxosResponse {
+        utxos,
+        total_sats,
+        chain_height,
+    }))
+}
+
+/// Pull the `<addr>` out of a scantxoutset desc field, which has the
+/// shape `addr(<addr>)#<checksum>`. Returns None on any other
+/// descriptor shape; callers that rely on the address being present
+/// must filter accordingly.
+fn parse_addr_from_desc(desc: &str) -> Option<String> {
+    let inner = desc.strip_prefix("addr(")?;
+    let close = inner.find(')')?;
+    Some(inner[..close].to_string())
+}
+
+// ============================================================================
+// Generic L1 Broadcast (Phase 2 PSBT support)
+// ============================================================================
+//
+// `wraithd` builds + signs PSBTs locally; ghost-pay's role for the
+// broadcast is "thin RPC-passthrough to bitcoind". Authenticated so
+// only callers with the internal-auth secret (or a valid HMAC
+// signature) can push raw transactions through this node.
+//
+// The endpoint deliberately does NOT validate the tx semantics —
+// the operator's bitcoind already does that via
+// `sendrawtransaction`. Any pre-flight rejection (e.g. min-fee
+// policy) propagates back as the error message verbatim so the
+// wallet can surface it without translation.
+
+#[derive(Debug, Deserialize)]
+struct BroadcastTxRequest {
+    /// Hex-encoded raw transaction (the output of
+    /// `psbt.extract_tx()` then `consensus::encode::serialize_hex`).
+    tx_hex: String,
+    /// Optional max fee rate (sats/vB). Forwarded as bitcoind's
+    /// `maxfeerate` argument. None → use bitcoind's default.
+    #[serde(default)]
+    max_fee_rate_sats_per_vb: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct BroadcastTxResponse {
+    /// txid of the accepted transaction.
+    txid: String,
+}
+
+/// Broadcast a fully-signed Bitcoin transaction. Thin wrapper over
+/// `bitcoind sendrawtransaction`. The operator's node still does
+/// the real work — relay rules, mempool admission, etc.
+async fn broadcast_tx(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BroadcastTxRequest>,
+) -> Result<Json<BroadcastTxResponse>, (StatusCode, String)> {
+    let trimmed = req.tx_hex.trim();
+    if trimmed.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "tx_hex must be non-empty".to_string(),
+        ));
+    }
+    // Deserialize once on our side so a malformed hex string fails
+    // fast with a 400, before round-tripping to bitcoind.
+    let bytes =
+        hex::decode(trimmed).map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid hex: {e}")))?;
+    let _: bitcoin::Transaction = bitcoin::consensus::encode::deserialize(&bytes)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid tx: {e}")))?;
+
+    match state.rpc.send_raw_transaction(trimmed).await {
+        Ok(txid) => {
+            // Soft-warn the operator if the requested max fee rate
+            // wasn't honoured — bitcoind's RPC accepts a
+            // `maxfeerate` arg we currently don't forward (the
+            // RpcClient wrapper doesn't expose it). Log so an
+            // operator chasing a fee-bump regression has a
+            // breadcrumb without breaking the call.
+            if let Some(rate) = req.max_fee_rate_sats_per_vb {
+                if rate == 0 {
+                    info!(
+                        txid = %txid,
+                        "broadcast_tx: caller requested maxfeerate=0 \
+                         (any fee), bitcoind default applies"
+                    );
+                }
+            }
+            Ok(Json(BroadcastTxResponse { txid }))
+        }
+        Err(e) => {
+            // bitcoind's error string already explains the rejection
+            // reason ("min relay fee not met", "non-final", "missing
+            // inputs", etc.). Pass it through unmodified — the
+            // wallet GUI surfaces it verbatim.
+            Err((StatusCode::BAD_GATEWAY, format!("sendrawtransaction: {e}")))
+        }
+    }
 }
 
 // ============================================================================
@@ -2447,8 +2872,8 @@ async fn request_withdrawal(
     }
 
     // Validate settlement class
-    let class = ghost_common::constants::SettlementClass::parse(&req.settlement_class)
-        .unwrap_or_default();
+    let class =
+        ghost_common::constants::SettlementClass::parse(&req.settlement_class).unwrap_or_default();
 
     // Validate amount — fee scaled by settlement class multiplier
     let fee_rate = estimate_fee_rate(&state).await;
@@ -2638,14 +3063,59 @@ async fn pay_stats_handler(State(state): State<Arc<AppState>>) -> Json<serde_jso
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let has_keys = state.keys.read().is_some();
     let lock_count = state.locks.read().len();
-    let session_count = state.sessions.read().len();
+    // Best-effort chain-tip surfacing for the wallet's sync indicator.
+    // Single getblockchaininfo call gives us blocks (verified tip),
+    // headers (latest seen), verification_progress (0..1), and the
+    // IBD flag — everything the wallet needs to render
+    // "synced" / "syncing N/M · X%". Caps at a 1.5s deadline so a
+    // hung bitcoind doesn't block the status endpoint.
+    let chain = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        state.rpc.get_blockchain_info(),
+    )
+    .await;
+    let (chain_height, chain_headers, chain_verification_progress, chain_initial_block_download) =
+        match chain {
+            Ok(Ok(info)) => (
+                Some(info.blocks),
+                Some(info.headers),
+                Some(info.verificationprogress),
+                Some(info.initialblockdownload),
+            ),
+            _ => (None, None, None, None),
+        };
+
+    // L2 sync: latest finalized L2 block + the derived epoch. Both
+    // come from ghost-pay's own DB (not bitcoind), so they're
+    // always available even if bitcoind is hiccuping.
+    use ghost_common::constants::L2_EPOCH_BLOCKS;
+    let l2_height: Option<u64> = state
+        .db
+        .with_connection(|conn| {
+            let result: Option<i64> = conn
+                .query_row(
+                    "SELECT height FROM blocks ORDER BY height DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            Ok(result.map(|h| h as u64))
+        })
+        .ok()
+        .flatten();
+    let l2_epoch: Option<u64> = l2_height.map(|h| h / L2_EPOCH_BLOCKS);
 
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "has_keys": has_keys,
         "lock_count": lock_count,
-        "active_sessions": session_count,
-        "network": state.config.network
+        "network": state.config.network,
+        "chain_height": chain_height,
+        "chain_headers": chain_headers,
+        "chain_verification_progress": chain_verification_progress,
+        "chain_initial_block_download": chain_initial_block_download,
+        "l2_height": l2_height,
+        "l2_epoch": l2_epoch,
     }))
 }
 
@@ -2802,7 +3272,7 @@ fn get_epoch_tx_count(epoch: u64) -> Result<u64, String> {
 /// Returns real L2 state from the database for verification challenges.
 /// This endpoint is used by the verification system to prove GhostPay capability.
 async fn verify_ghostpay(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Query(query): Query<GhostPayVerifyQuery>,
 ) -> impl axum::response::IntoResponse {
     // Get latest L2 state from ghost-pay's blocks table (separate L2 database)
@@ -2900,8 +3370,10 @@ async fn verify_ghostpay(
         None
     };
 
-    // Check if Wraith protocol is enabled (has active sessions)
-    let wraith_enabled = !state.sessions.read().is_empty();
+    // Wraith mixing moved to the wraith-coordinator binary; ghost-pay
+    // no longer hosts CoinJoin sessions. This flag stays in the
+    // response shape for verifier compatibility.
+    let wraith_enabled = false;
 
     // Get L2 block count for challenged epoch
     let epoch_tx_count = get_epoch_tx_count(challenge_epoch).unwrap_or(0);
@@ -3021,13 +3493,17 @@ async fn submit_confidential_transfer(
     if req.encrypted_change.len() < MIN_ENCRYPTED_HEX_LEN {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "encrypted_change is required (ECIES-encrypted NoteData, min 109 bytes)"})),
+            Json(
+                serde_json::json!({"error": "encrypted_change is required (ECIES-encrypted NoteData, min 109 bytes)"}),
+            ),
         ));
     }
     if req.encrypted_recipient.len() < MIN_ENCRYPTED_HEX_LEN {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "encrypted_recipient is required (ECIES-encrypted NoteData, min 109 bytes)"})),
+            Json(
+                serde_json::json!({"error": "encrypted_recipient is required (ECIES-encrypted NoteData, min 109 bytes)"}),
+            ),
         ));
     }
     // Verify they're valid hex
@@ -3334,7 +3810,9 @@ async fn submit_consolidation(
     if req.encrypted_output.len() < 218 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "encrypted_output too short (min 109 bytes hex-encoded)"})),
+            Json(
+                serde_json::json!({"error": "encrypted_output too short (min 109 bytes hex-encoded)"}),
+            ),
         ));
     }
     hex::decode(&req.encrypted_output).map_err(|_| {
@@ -3446,7 +3924,9 @@ async fn submit_consolidation(
         Ok(false) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Consolidation proof verification returned false"})),
+                Json(
+                    serde_json::json!({"error": "Consolidation proof verification returned false"}),
+                ),
             ));
         }
         Err(e) => {
@@ -3974,10 +4454,7 @@ async fn shield_balance(
         warn!(error = %e, "Failed to persist shielded note");
     }
 
-    info!(
-        note_index = note_index,
-        "Balance shielded into commitment"
-    );
+    info!(note_index = note_index, "Balance shielded into commitment");
 
     // Sync commitment to ghost-pool tree with retry (ghost-pool must have this root
     // before any transfer proof built against it can be relayed).
@@ -4295,19 +4772,26 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                     // Refresh in-memory lock cache
                                     {
                                         let mut locks_cache = state.locks.write();
-                                        if let Some(cached) = locks_cache.iter_mut().find(|l| l.id == lock.lock_id) {
+                                        if let Some(cached) =
+                                            locks_cache.iter_mut().find(|l| l.id == lock.lock_id)
+                                        {
                                             cached.state = "Active".to_string();
                                         }
                                     }
 
                                     // GhostGlyph: complete registration if pending claim exists
-                                    if let Ok(Some(glyph_record)) = state.db.get_glyph_by_ghost_id(gid) {
+                                    if let Ok(Some(glyph_record)) =
+                                        state.db.get_glyph_by_ghost_id(gid)
+                                    {
                                         if glyph_record.funding_txid.is_none() {
                                             let now = std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap_or_default()
                                                 .as_secs();
-                                            if let Err(e) = state.db.complete_glyph_registration(gid, &req.txid, now) {
+                                            if let Err(e) = state
+                                                .db
+                                                .complete_glyph_registration(gid, &req.txid, now)
+                                            {
                                                 error!(error = %e, ghost_id = %gid, "Failed to complete glyph registration");
                                             } else {
                                                 info!(ghost_id = %gid, txid = %req.txid, "GhostGlyph registered");
@@ -4319,14 +4803,24 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                                     "registered_at": now,
                                                 });
                                                 // L-8: Await relay instead of fire-and-forget so failures are visible
-                                                let relay_url = format!("{}/api/v1/glyph/relay-registered", state.pool_api_url);
-                                                match state.pool_http_client.post(&relay_url).json(&relay_body).send().await {
+                                                let relay_url = format!(
+                                                    "{}/api/v1/glyph/relay-registered",
+                                                    state.pool_api_url
+                                                );
+                                                match state
+                                                    .pool_http_client
+                                                    .post(&relay_url)
+                                                    .json(&relay_body)
+                                                    .send()
+                                                    .await
+                                                {
                                                     Ok(resp) if resp.status().is_success() => {
                                                         info!("Glyph registration relayed to ghost-pool");
                                                     }
                                                     Ok(resp) => {
                                                         let status = resp.status();
-                                                        let body = resp.text().await.unwrap_or_default();
+                                                        let body =
+                                                            resp.text().await.unwrap_or_default();
                                                         warn!(status = %status, body = %body, "Glyph registration relay failed");
                                                     }
                                                     Err(e) => {
@@ -4351,10 +4845,8 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
             let ghost_id = state.ghost_id.read().clone();
             if let Some(ref gid) = ghost_id {
                 if let Ok(locks) = state.db.get_ghost_locks_by_owner(gid) {
-                    let unfunded_locks: Vec<_> = locks
-                        .iter()
-                        .filter(|l| l.funding_txid.is_none())
-                        .collect();
+                    let unfunded_locks: Vec<_> =
+                        locks.iter().filter(|l| l.funding_txid.is_none()).collect();
 
                     if !unfunded_locks.is_empty() {
                         // Check each output against unfunded lock scripts
@@ -4364,11 +4856,14 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                 .and_then(|s| s.get("hex"))
                                 .and_then(|h| h.as_str())
                                 .unwrap_or("");
-                            let value_btc = vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let value_btc =
+                                vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let value_sats = (value_btc * SATS_PER_BTC_F64).round() as u64;
 
                             for lock in &unfunded_locks {
-                                if lock.output_script == script_hex && lock.amount_sats == value_sats {
+                                if lock.output_script == script_hex
+                                    && lock.amount_sats == value_sats
+                                {
                                     if let Err(e) = state.db.update_ghost_lock_funding(
                                         &lock.lock_id,
                                         &req.txid,
@@ -4385,7 +4880,9 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                         );
                                         // Refresh in-memory lock cache
                                         let mut locks_cache = state.locks.write();
-                                        if let Some(cached) = locks_cache.iter_mut().find(|l| l.id == lock.lock_id) {
+                                        if let Some(cached) =
+                                            locks_cache.iter_mut().find(|l| l.id == lock.lock_id)
+                                        {
                                             cached.state = "Active".to_string();
                                         }
                                     }
@@ -4401,492 +4898,6 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
     }
 }
 
-/// Wraith session coordinator
-///
-/// Manages the lifecycle of Wraith mixing sessions:
-/// 1. Waits for minimum participants
-/// 2. Executes Phase 1 (split transaction)
-/// 3. Waits for Phase 1 confirmation
-/// 4. Executes Phase 2 (merge transaction)
-/// 5. Completes the session
-async fn run_session_coordinator(state: Arc<AppState>) {
-    use tracing::{debug, error};
-
-    info!("Starting Wraith session coordinator");
-
-    let mut cleanup_counter: u64 = 0;
-
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-
-        // Periodic session registry cleanup (~1 hour = 360 iterations * 10s)
-        cleanup_counter += 1;
-        if cleanup_counter.is_multiple_of(360) {
-            match state.session_registry.lock().cleanup_expired() {
-                Ok(removed) if removed > 0 => {
-                    info!(removed, "Cleaned up expired Wraith sessions");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    warn!(error = %e, "Failed to cleanup expired sessions");
-                }
-            }
-        }
-
-        // Get session IDs and their current states to avoid holding lock during async work
-        let session_states: Vec<(String, String)> = {
-            let sessions = state.sessions.read();
-            sessions
-                .iter()
-                .map(|s| (s.id.clone(), s.state.clone()))
-                .collect()
-        };
-
-        for (session_id, session_state) in session_states {
-            match session_state.as_str() {
-                "waiting" => {
-                    // Check if we have enough participants
-                    let mut sessions = state.sessions.write();
-                    if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-                        let tier = match session.tier.as_str() {
-                            "micro" | "express" | "quick" => ParticipantTier::Micro,
-                            "small" => ParticipantTier::Small,
-                            "medium" => ParticipantTier::Medium,
-                            "standard" => ParticipantTier::Standard,
-                            "large" => ParticipantTier::Large,
-                            "whale" => ParticipantTier::Whale,
-                            _ => continue,
-                        };
-
-                        if session.participants >= tier.min_participants() {
-                            // Parse denomination
-                            let denom = match session.denomination.to_lowercase().as_str() {
-                                "micro" => WraithDenomination::Micro,
-                                "small" => WraithDenomination::Small,
-                                "medium" => WraithDenomination::Medium,
-                                "large" => WraithDenomination::Large,
-                                _ => continue,
-                            };
-
-                            // Create the WraithCoordinator for this session
-                            let sid = session.id.clone();
-                            let auto_sign = session.auto_sign;
-                            let rpc_for_broadcast = state.rpc.clone();
-                            match WraithCoordinator::new(tier, denom, state.network, SessionType::Mix) {
-                                Ok(mut coordinator) => {
-                                    if auto_sign {
-                                        // When auto_sign, the broadcast callback signs then broadcasts
-                                        let rpc = rpc_for_broadcast;
-                                        coordinator = coordinator.with_broadcaster(move |tx_hex: &str| {
-                                            let rt = tokio::runtime::Handle::try_current()
-                                                .map_err(|e| format!("No tokio runtime: {e}"))?;
-                                            let hex = tx_hex.to_string();
-                                            let rpc = rpc.clone();
-                                            rt.block_on(async move {
-                                                let signed = rpc.sign_raw_transaction_with_wallet(&hex)
-                                                    .await
-                                                    .map_err(|e| format!("sign failed: {e}"))?;
-                                                if !signed.complete {
-                                                    return Err("Transaction signing incomplete".to_string());
-                                                }
-                                                rpc.send_raw_transaction(&signed.hex)
-                                                    .await
-                                                    .map_err(|e| format!("broadcast failed: {e}"))
-                                            })
-                                        });
-                                    }
-
-                                    state.coordinators.write().insert(sid.clone(), coordinator);
-                                    session.state = "building_phase1".to_string();
-                                    info!(id = %sid, participants = session.participants, "Session ready, coordinator created, building Phase 1");
-                                }
-                                Err(e) => {
-                                    error!(id = %sid, error = %e, "Failed to create WraithCoordinator");
-                                    session.state = "failed".to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                "building_phase1" => {
-                    // Build Phase 1 - get tx_hex first, then release lock before broadcast
-                    let tx_hex = {
-                        let mut coordinators = state.coordinators.write();
-                        if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                            match coordinator.build_phase1() {
-                                Ok(split_tx) => {
-                                    let hex = bitcoin::consensus::encode::serialize_hex(
-                                        &split_tx.transaction,
-                                    );
-                                    info!(
-                                        session_id = %session_id,
-                                        outputs = split_tx.intermediate_count,
-                                        "Phase 1 transaction built"
-                                    );
-                                    Some(hex)
-                                }
-                                Err(e) => {
-                                    error!(
-                                        session_id = %session_id,
-                                        error = %e,
-                                        "Failed to build Phase 1"
-                                    );
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        }
-                    };
-
-                    // Broadcast Phase 1 (lock released)
-                    if let Some(tx_hex) = tx_hex {
-                        match state.rpc.send_raw_transaction(&tx_hex).await {
-                            Ok(txid) => {
-                                info!(
-                                    session_id = %session_id,
-                                    txid = %txid,
-                                    "Phase 1 broadcast successful"
-                                );
-
-                                // Reacquire lock to update coordinator
-                                let mut coordinators = state.coordinators.write();
-                                if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                                    if let Err(e) = coordinator.broadcast_phase1(&txid) {
-                                        error!(error = %e, "Failed to update coordinator after broadcast");
-                                    }
-                                }
-                                drop(coordinators);
-
-                                // Update session state
-                                let mut sessions = state.sessions.write();
-                                if let Some(session) =
-                                    sessions.iter_mut().find(|s| s.id == session_id)
-                                {
-                                    session.state = "confirming_phase1".to_string();
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    session_id = %session_id,
-                                    error = %e,
-                                    "Phase 1 broadcast failed"
-                                );
-                                // Mark session as failed
-                                let mut sessions = state.sessions.write();
-                                if let Some(session) =
-                                    sessions.iter_mut().find(|s| s.id == session_id)
-                                {
-                                    session.state = "failed".to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                "confirming_phase1" => {
-                    // Check if Phase 1 is confirmed on-chain
-                    // C-3: 3 confirmations on mainnet for mixing security, 1 elsewhere
-                    let required_confirmations: u32 = match state.network {
-                        Network::Bitcoin => 3,
-                        _ => 1,
-                    };
-
-                    // Get phase 1 txid
-                    let phase1_txid = {
-                        let coordinators = state.coordinators.read();
-                        coordinators.get(&session_id).and_then(|c| c.phase1_txid())
-                    };
-
-                    if let Some(txid) = phase1_txid {
-                        // Check transaction confirmations via RPC
-                        match state.rpc.get_raw_transaction(&txid.to_string(), true).await {
-                            Ok(tx_info) => {
-                                let confirmations = tx_info
-                                    .get("confirmations")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0);
-                                if confirmations >= required_confirmations as i64 {
-                                    // Get the block height where it was confirmed
-                                    // H-21: Safe block height conversion with bounds checking
-                                    let raw_height = tx_info
-                                        .get("blockheight")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0);
-                                    let confirm_height = match safe_block_height_u64(raw_height) {
-                                        Ok(h) => h,
-                                        Err(e) => {
-                                            warn!(error = %e, "Invalid block height, skipping confirmation");
-                                            continue;
-                                        }
-                                    };
-
-                                    // Confirm phase 1
-                                    let mut coordinators = state.coordinators.write();
-                                    if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                                        if let Err(e) = coordinator.confirm_phase1(confirm_height) {
-                                            warn!(error = %e, "Failed to confirm phase 1");
-                                        } else {
-                                            info!(
-                                                session_id = %session_id,
-                                                txid = %txid,
-                                                confirmations = confirmations,
-                                                "Phase 1 confirmed on-chain"
-                                            );
-
-                                            // Update session state
-                                            drop(coordinators);
-                                            let mut sessions = state.sessions.write();
-                                            if let Some(session) =
-                                                sessions.iter_mut().find(|s| s.id == session_id)
-                                            {
-                                                session.state = "building_phase2".to_string();
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    debug!(
-                                        session_id = %session_id,
-                                        txid = %txid,
-                                        confirmations = confirmations,
-                                        required = required_confirmations,
-                                        "Waiting for more confirmations"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                // Transaction might not be indexed yet
-                                debug!(
-                                    session_id = %session_id,
-                                    txid = %txid,
-                                    error = %e,
-                                    "Cannot get phase 1 tx info"
-                                );
-                            }
-                        }
-                    } else {
-                        // No txid yet, phase 1 not broadcast
-                        debug!(session_id = %session_id, "Phase 1 not yet broadcast");
-                    }
-                }
-
-                "building_phase2" => {
-                    // Build Phase 2 - get tx_hex first, then release lock
-                    let tx_hex = {
-                        let mut coordinators = state.coordinators.write();
-                        if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                            match coordinator.build_phase2() {
-                                Ok(merge_tx) => {
-                                    let hex = bitcoin::consensus::encode::serialize_hex(
-                                        &merge_tx.transaction,
-                                    );
-                                    info!(
-                                        session_id = %session_id,
-                                        participants = merge_tx.participant_count,
-                                        "Phase 2 transaction built"
-                                    );
-                                    Some(hex)
-                                }
-                                Err(e) => {
-                                    error!(
-                                        session_id = %session_id,
-                                        error = %e,
-                                        "Failed to build Phase 2"
-                                    );
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        }
-                    };
-
-                    // Broadcast Phase 2 (lock released)
-                    if let Some(tx_hex) = tx_hex {
-                        match state.rpc.send_raw_transaction(&tx_hex).await {
-                            Ok(txid) => {
-                                info!(
-                                    session_id = %session_id,
-                                    txid = %txid,
-                                    "Phase 2 broadcast successful"
-                                );
-
-                                // Reacquire lock to update coordinator
-                                let mut coordinators = state.coordinators.write();
-                                if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                                    if let Err(e) = coordinator.broadcast_phase2(&txid) {
-                                        error!(error = %e, "Failed to update coordinator after Phase 2 broadcast");
-                                    }
-                                }
-                                drop(coordinators);
-
-                                // Update session state
-                                let mut sessions = state.sessions.write();
-                                if let Some(session) =
-                                    sessions.iter_mut().find(|s| s.id == session_id)
-                                {
-                                    session.state = "confirming_phase2".to_string();
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    session_id = %session_id,
-                                    error = %e,
-                                    "Phase 2 broadcast failed"
-                                );
-                                let mut sessions = state.sessions.write();
-                                if let Some(session) =
-                                    sessions.iter_mut().find(|s| s.id == session_id)
-                                {
-                                    session.state = "failed".to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                "confirming_phase2" => {
-                    // Check if Phase 2 is already complete
-                    let is_complete = {
-                        let coordinators = state.coordinators.read();
-                        coordinators
-                            .get(&session_id)
-                            .map(|c| matches!(c.state(), wraith_protocol::SessionState::Completed))
-                            .unwrap_or(false)
-                    };
-
-                    if is_complete {
-                        // Track wraith service fee for L2 distribution (Mix sessions only)
-                        let session_snapshot = {
-                            let sessions = state.sessions.read();
-                            sessions.iter().find(|s| s.id == session_id).cloned()
-                        };
-                        if let Some(ref snap) = session_snapshot {
-                            let denomination_str = &snap.denomination;
-                            if let Some(denom) =
-                                wraith_protocol::WraithDenomination::from_short_code(denomination_str)
-                                    .or_else(|| match denomination_str.to_lowercase().as_str() {
-                                        "micro" => Some(wraith_protocol::WraithDenomination::Micro),
-                                        "small" => Some(wraith_protocol::WraithDenomination::Small),
-                                        "medium" => Some(wraith_protocol::WraithDenomination::Medium),
-                                        "large" => Some(wraith_protocol::WraithDenomination::Large),
-                                        _ => None,
-                                    })
-                            {
-                                let fee_per_participant = denom.service_fee();
-                                let total_fee = fee_per_participant * snap.participants as u64;
-                                let block_height = state.rpc.get_block_count().await.unwrap_or(0);
-                                let epoch = ghost_common::constants::l2_epoch_from_height(block_height);
-                                if let Err(e) = state.db.increment_wraith_fee(epoch, total_fee) {
-                                    warn!(error = %e, "Failed to track wraith fee");
-                                } else {
-                                    info!(
-                                        session_id = %session_id,
-                                        denomination = %denomination_str,
-                                        participants = snap.participants,
-                                        fee_per_participant,
-                                        total_fee,
-                                        epoch,
-                                        "Tracked wraith service fee for L2 distribution"
-                                    );
-                                }
-                            }
-                        }
-
-                        let mut sessions = state.sessions.write();
-                        if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-                            session.state = "complete".to_string();
-                            info!(id = %session_id, "Wraith session complete");
-                        }
-                    } else {
-                        // Get Phase 2 txid and check on-chain confirmations
-                        let phase2_txid = {
-                            let coordinators = state.coordinators.read();
-                            coordinators.get(&session_id).and_then(|c| c.phase2_txid())
-                        };
-
-                        if let Some(txid) = phase2_txid {
-                            // C-3: 3 confirmations on mainnet for mixing security, 1 elsewhere
-                            let required_confirmations: u32 = match state.network {
-                                Network::Bitcoin => 3,
-                                _ => 1,
-                            };
-
-                            match state.rpc.get_raw_transaction(&txid.to_string(), true).await {
-                                Ok(tx_info) => {
-                                    let confirmations = tx_info
-                                        .get("confirmations")
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or(0);
-
-                                    if confirmations >= required_confirmations as i64 {
-                                        // H-21: Safe block height conversion with bounds checking
-                                        let raw_height = tx_info
-                                            .get("blockheight")
-                                            .and_then(|v| v.as_u64())
-                                            .unwrap_or(0);
-                                        let confirm_height = match safe_block_height_u64(raw_height)
-                                        {
-                                            Ok(h) => h,
-                                            Err(e) => {
-                                                warn!(error = %e, "Invalid block height, skipping phase 2 confirmation");
-                                                continue;
-                                            }
-                                        };
-
-                                        let mut coordinators = state.coordinators.write();
-                                        if let Some(coordinator) = coordinators.get_mut(&session_id)
-                                        {
-                                            if let Err(e) =
-                                                coordinator.confirm_phase2(confirm_height)
-                                            {
-                                                warn!(error = %e, "Failed to confirm phase 2");
-                                            } else {
-                                                info!(
-                                                    session_id = %session_id,
-                                                    txid = %txid,
-                                                    confirmations = confirmations,
-                                                    "Phase 2 confirmed on-chain"
-                                                );
-                                            }
-                                        }
-                                    } else {
-                                        debug!(
-                                            session_id = %session_id,
-                                            txid = %txid,
-                                            confirmations = confirmations,
-                                            required = required_confirmations,
-                                            "Waiting for Phase 2 confirmations"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    debug!(
-                                        session_id = %session_id,
-                                        txid = %txid,
-                                        error = %e,
-                                        "Cannot get phase 2 tx info"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                "complete" | "failed" => {
-                    // Clean up completed/failed sessions after some time
-                    debug!(session_id = %session_id, state = %session_state, "Session finished");
-                }
-
-                _ => {
-                    debug!(session_id = %session_id, state = %session_state, "Unknown session state");
-                }
-            }
-        }
-    }
-}
-
 /// L1 Settlement loop - reconciles L2 balances to Bitcoin L1
 /// Fee distribution context returned by ghost-pool.
 struct FeeDistributionContext {
@@ -4897,17 +4908,12 @@ struct FeeDistributionContext {
 
 /// Query ghost-pool for treasury state and qualified Ghost Pay nodes.
 async fn query_fee_distribution_context(state: &AppState) -> Option<FeeDistributionContext> {
-    let url = format!(
-        "{}/api/v1/l2/fee-distribution-context",
-        state.pool_api_url
-    );
+    let url = format!("{}/api/v1/l2/fee-distribution-context", state.pool_api_url);
     let resp = state.pool_http_client.get(&url).send().await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
 
     let treasury_balance_sats = json.get("treasury_balance_sats")?.as_u64()?;
-    let threshold_reached_at = json
-        .get("threshold_reached_at")
-        .and_then(|v| v.as_i64());
+    let threshold_reached_at = json.get("threshold_reached_at").and_then(|v| v.as_i64());
 
     let nodes_array = json.get("ghost_pay_nodes")?.as_array()?;
     let ghost_pay_nodes: Vec<(String, String, i32)> = nodes_array
@@ -4934,10 +4940,7 @@ async fn query_treasury_state(
 ) -> Option<ghost_reconciliation::fee_distribution::TreasuryState> {
     use ghost_reconciliation::fee_distribution::TreasuryState;
 
-    let url = format!(
-        "{}/api/v1/l2/fee-distribution-context",
-        state.pool_api_url
-    );
+    let url = format!("{}/api/v1/l2/fee-distribution-context", state.pool_api_url);
     let resp = state.pool_http_client.get(&url).send().await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
 
@@ -4947,14 +4950,15 @@ async fn query_treasury_state(
         .and_then(|v| v.as_i64())
         .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
 
-    Some(TreasuryState::from_stored(treasury_balance_sats, threshold_ts))
+    Some(TreasuryState::from_stored(
+        treasury_balance_sats,
+        threshold_ts,
+    ))
 }
 
 /// Localhost-only diagnostic: exercises every component of the L2 fee pipeline
 /// with synthetic data but real DB/HTTP/node connections.
-async fn verify_fee_pipeline(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn verify_fee_pipeline(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use ghost_reconciliation::fee_distribution::{L2FeeDistribution, TreasuryState};
 
     let mut steps = serde_json::Map::new();
@@ -4976,7 +4980,10 @@ async fn verify_fee_pipeline(
         Ok(()) => serde_json::json!({ "pass": true, "epoch": test_epoch, "fee_sats": test_fee }),
         Err(e) => serde_json::json!({ "pass": false, "error": format!("{e}") }),
     };
-    let db_write_pass = db_write.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let db_write_pass = db_write
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("db_write".into(), db_write);
 
     // Step 2: DB Read — verify test epoch appears in undistributed fees
@@ -4995,7 +5002,10 @@ async fn verify_fee_pipeline(
     } else {
         serde_json::json!({ "pass": false, "error": "skipped (db_write failed)" })
     };
-    let db_read_pass = db_read.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let db_read_pass = db_read
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("db_read".into(), db_read);
 
     // Step 3: HTTP Call — query ghost-pool for fee distribution context
@@ -5014,7 +5024,10 @@ async fn verify_fee_pipeline(
             None,
         ),
     };
-    let http_pass = http_call.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let http_pass = http_call
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("http_call".into(), http_call);
 
     // Step 4: Fee Distribution — calculate with real treasury state + nodes + test fee pool
@@ -5059,7 +5072,10 @@ async fn verify_fee_pipeline(
     } else {
         serde_json::json!({ "pass": false, "error": "skipped (http_call failed)" })
     };
-    let fee_dist_pass = fee_dist.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let fee_dist_pass = fee_dist
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("fee_distribution".into(), fee_dist);
 
     // Step 5: Settlement Build — synthetic batch with L2 fee outputs
@@ -5092,9 +5108,10 @@ async fn verify_fee_pipeline(
         executor.set_block_height(800_000);
 
         let dest = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string();
-        let txid: bitcoin::Txid = "0000000000000000000000000000000000000000000000000000000000000001"
-            .parse()
-            .unwrap();
+        let txid: bitcoin::Txid =
+            "0000000000000000000000000000000000000000000000000000000000000001"
+                .parse()
+                .unwrap();
 
         let settlement_count = 10u32;
         let amount_per = 10_000u64;
@@ -5171,7 +5188,10 @@ async fn verify_fee_pipeline(
         Ok(()) => serde_json::json!({ "pass": true }),
         Err(e) => serde_json::json!({ "pass": false, "error": format!("{e}") }),
     };
-    let cleanup_pass = cleanup.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    let cleanup_pass = cleanup
+        .get("pass")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     steps.insert("cleanup".into(), cleanup);
 
     let all_pass = db_write_pass
@@ -5188,167 +5208,11 @@ async fn verify_fee_pipeline(
 }
 
 // =============================================================================
-// Wraith Participant API Endpoints (Part 2b)
-// =============================================================================
-
-#[derive(Debug, Deserialize)]
-struct WraithSubmitInputRequest {
-    session_id: String,
-    ghost_id: String,
-    txid: String,
-    vout: u32,
-    amount: u64,
-    script_pubkey: String,
-}
-
-async fn wraith_submit_input(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<WraithSubmitInputRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let txid: bitcoin::Txid = req.txid.parse().map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("Invalid txid: {e}")})),
-        )
-    })?;
-    let script_pubkey = bitcoin::ScriptBuf::from(hex::decode(&req.script_pubkey).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("Invalid script_pubkey hex: {e}")})),
-        )
-    })?);
-
-    let mut coordinators = state.coordinators.write();
-    let coordinator = coordinators.get_mut(&req.session_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-    })?;
-
-    // Look up participant_id from ghost_id
-    let participant_id = coordinator
-        .participant_count() as u32; // fallback
-    let input = WraithInput {
-        txid,
-        vout: req.vout,
-        amount: req.amount,
-        script_pubkey,
-        participant_id,
-    };
-
-    coordinator
-        .submit_input(&req.ghost_id, input)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({"status": "input_accepted"})))
-}
-
-#[derive(Debug, Deserialize)]
-struct WraithRequestNoncesRequest {
-    session_id: String,
-    ghost_id: String,
-}
-
-async fn wraith_request_nonces(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<WraithRequestNoncesRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut coordinators = state.coordinators.write();
-    let coordinator = coordinators.get_mut(&req.session_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-    })?;
-
-    let nonces = coordinator
-        .request_nonces(&req.ghost_id)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({"nonces": nonces})))
-}
-
-#[derive(Debug, Deserialize)]
-struct WraithSubmitBlindedRequest {
-    session_id: String,
-    ghost_id: String,
-    challenges: Vec<BlindedChallenge>,
-}
-
-async fn wraith_submit_blinded(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<WraithSubmitBlindedRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut coordinators = state.coordinators.write();
-    let coordinator = coordinators.get_mut(&req.session_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-    })?;
-
-    let responses = coordinator
-        .submit_blinded_challenges(&req.ghost_id, req.challenges)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({"responses": responses})))
-}
-
-#[derive(Debug, Deserialize)]
-struct WraithSubmitAnonymousRequest {
-    session_id: String,
-    tokens: Vec<UnblindedToken>,
-    final_address: String,
-}
-
-async fn wraith_submit_anonymous(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<WraithSubmitAnonymousRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut coordinators = state.coordinators.write();
-    let coordinator = coordinators.get_mut(&req.session_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-    })?;
-
-    coordinator
-        .submit_tokens_with_address_anonymous(req.tokens, req.final_address)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({"status": "anonymous_submission_accepted"})))
-}
-
-// =============================================================================
 // L2 + Wraith Simulation Endpoints (Part 1 & Part 3)
 // =============================================================================
 
 /// Simulate L2 activity: shield, ZK proof, transfer, fee injection, distribution
-async fn simulate_l2_activity(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn simulate_l2_activity(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use ghost_reconciliation::fee_distribution::{L2FeeDistribution, TreasuryState};
     use std::path::PathBuf;
 
@@ -5403,7 +5267,9 @@ async fn simulate_l2_activity(
     let spending_key: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5411,7 +5277,9 @@ async fn simulate_l2_activity(
     let blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5439,12 +5307,10 @@ async fn simulate_l2_activity(
 
     // Persist shield note
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
-    let _ = state.db.insert_confidential_note(
-        note_index,
-        &commitment,
-        &spending_key,
-        current_height,
-    );
+    let _ =
+        state
+            .db
+            .insert_confidential_note(note_index, &commitment, &spending_key, current_height);
 
     // Sync to ghost-pool with retry
     let sync_ok = sync_commitment_with_retry(
@@ -5495,7 +5361,9 @@ async fn simulate_l2_activity(
     let change_blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5503,7 +5371,9 @@ async fn simulate_l2_activity(
     let recipient_blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5705,9 +5575,7 @@ async fn simulate_l2_activity(
 
 /// Simulate unshield (L2 → L1 withdrawal): shield a note, generate unshield proof, verify it.
 /// Does NOT create an actual L1 transaction — validates the ZK pipeline only.
-async fn simulate_unshield(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn simulate_unshield(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use std::path::PathBuf;
 
     let mut steps = serde_json::Map::new();
@@ -5758,7 +5626,9 @@ async fn simulate_unshield(
     let spending_key: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5766,7 +5636,9 @@ async fn simulate_unshield(
     let blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5776,7 +5648,10 @@ async fn simulate_unshield(
     let commitment = match ghost_zkp::compute_commitment_bytes(note_value, &blinding) {
         Ok(c) => c,
         Err(e) => {
-            steps.insert("shield_note".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "shield_note".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
@@ -5790,7 +5665,10 @@ async fn simulate_unshield(
     };
 
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
-    let _ = state.db.insert_confidential_note(note_index, &commitment, &spending_key, current_height);
+    let _ =
+        state
+            .db
+            .insert_confidential_note(note_index, &commitment, &spending_key, current_height);
 
     // Sync to ghost-pool with retry
     let synced = sync_commitment_with_retry(
@@ -5802,12 +5680,15 @@ async fn simulate_unshield(
     )
     .await;
 
-    steps.insert("shield_note".into(), serde_json::json!({
-        "pass": true,
-        "note_index": note_index,
-        "note_value": note_value,
-        "synced_to_pool": synced,
-    }));
+    steps.insert(
+        "shield_note".into(),
+        serde_json::json!({
+            "pass": true,
+            "note_index": note_index,
+            "note_value": note_value,
+            "synced_to_pool": synced,
+        }),
+    );
 
     // Step 3: Get Merkle proof
     let merkle_siblings = {
@@ -5815,12 +5696,18 @@ async fn simulate_unshield(
         match tree.get_proof(note_index) {
             Ok(proof) => proof.siblings,
             Err(e) => {
-                steps.insert("merkle_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+                steps.insert(
+                    "merkle_proof".into(),
+                    serde_json::json!({"pass": false, "error": format!("{e}")}),
+                );
                 return Json(serde_json::json!({"success": false, "steps": steps}));
             }
         }
     };
-    steps.insert("merkle_proof".into(), serde_json::json!({"pass": true, "depth": merkle_siblings.len()}));
+    steps.insert(
+        "merkle_proof".into(),
+        serde_json::json!({"pass": true, "depth": merkle_siblings.len()}),
+    );
 
     // Step 4: Generate unshield proof (MPC slot 3 circuit)
     let epoch = ghost_common::constants::l2_epoch_from_height(current_height);
@@ -5836,17 +5723,23 @@ async fn simulate_unshield(
     let proof_start = std::time::Instant::now();
     let proof = match prover.prove(&witness) {
         Ok(p) => {
-            steps.insert("unshield_proof".into(), serde_json::json!({
-                "pass": true,
-                "proof_bytes": p.proof.len(),
-                "nullifier": hex::encode(p.public_inputs.nullifier),
-                "withdrawal_amount": p.public_inputs.withdrawal_amount,
-                "elapsed_ms": proof_start.elapsed().as_millis(),
-            }));
+            steps.insert(
+                "unshield_proof".into(),
+                serde_json::json!({
+                    "pass": true,
+                    "proof_bytes": p.proof.len(),
+                    "nullifier": hex::encode(p.public_inputs.nullifier),
+                    "withdrawal_amount": p.public_inputs.withdrawal_amount,
+                    "elapsed_ms": proof_start.elapsed().as_millis(),
+                }),
+            );
             p
         }
         Err(e) => {
-            steps.insert("unshield_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "unshield_proof".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
@@ -5855,31 +5748,45 @@ async fn simulate_unshield(
     let verifier = match state.unshield_verifier.read().as_ref().cloned() {
         Some(v) => v,
         None => {
-            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": "Unshield verifier not initialized"}));
+            steps.insert(
+                "verify_unshield".into(),
+                serde_json::json!({"pass": false, "error": "Unshield verifier not initialized"}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
 
     match verifier.verify(&proof) {
         Ok(true) => {
-            steps.insert("verify_unshield".into(), serde_json::json!({
-                "pass": true,
-                "verified_by_mpc_vk": true,
-                "nullifier": hex::encode(proof.public_inputs.nullifier),
-                "withdrawal_amount": proof.public_inputs.withdrawal_amount,
-            }));
+            steps.insert(
+                "verify_unshield".into(),
+                serde_json::json!({
+                    "pass": true,
+                    "verified_by_mpc_vk": true,
+                    "nullifier": hex::encode(proof.public_inputs.nullifier),
+                    "withdrawal_amount": proof.public_inputs.withdrawal_amount,
+                }),
+            );
         }
         Ok(false) => {
-            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": "Proof verification returned false"}));
+            steps.insert(
+                "verify_unshield".into(),
+                serde_json::json!({"pass": false, "error": "Proof verification returned false"}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
         Err(e) => {
-            steps.insert("verify_unshield".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "verify_unshield".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     }
 
-    let all_pass = steps.values().all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
+    let all_pass = steps
+        .values()
+        .all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
 
     Json(serde_json::json!({
         "success": all_pass,
@@ -5890,21 +5797,26 @@ async fn simulate_unshield(
 
 /// Test the full L1 withdrawal pipeline: shield → proof → submit_unshield → relay.
 /// POST /api/v1/admin/trigger-settlement — Force-trigger epoch settlement now
-async fn admin_trigger_settlement(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn admin_trigger_settlement(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use ghost_common::constants::{SettlementClass, L2_EPOCH_BLOCKS};
 
     // Use the current L2 epoch (or next one) to trigger settlement for all due classes
-    let current_epoch = state.db.with_connection(|conn| {
-        let h: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(height), 0) FROM blocks", [], |r| r.get(0)
-        ).unwrap_or(0);
-        Ok(h as u64 / L2_EPOCH_BLOCKS)
-    }).unwrap_or(1);
+    let current_epoch = state
+        .db
+        .with_connection(|conn| {
+            let h: i64 = conn
+                .query_row("SELECT COALESCE(MAX(height), 0) FROM blocks", [], |r| {
+                    r.get(0)
+                })
+                .unwrap_or(0);
+            Ok(h as u64 / L2_EPOCH_BLOCKS)
+        })
+        .unwrap_or(1);
 
     // Use a synthetic epoch that triggers all classes (divisible by 28)
-    let trigger_epoch = if current_epoch == 0 { 28 } else {
+    let trigger_epoch = if current_epoch == 0 {
+        28
+    } else {
         // Round up to next multiple of 28 to trigger all classes
         ((current_epoch / 28) + 1) * 28
     };
@@ -5923,9 +5835,7 @@ async fn admin_trigger_settlement(
 
 /// Does NOT broadcast to Bitcoin L1 (requires a funded Ghost Lock).
 /// Exercises: ZK proof generation, nullifier spending, and relay to ghost-pool.
-async fn test_withdrawal(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn test_withdrawal(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use std::path::PathBuf;
 
     let mut steps = serde_json::Map::new();
@@ -5948,8 +5858,13 @@ async fn test_withdrawal(
                 prover
             }
             Err(e) => {
-                steps.insert("load_prover".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
-                return Json(serde_json::json!({"success": false, "steps": steps, "error": "Prover params not available"}));
+                steps.insert(
+                    "load_prover".into(),
+                    serde_json::json!({"pass": false, "error": format!("{e}")}),
+                );
+                return Json(
+                    serde_json::json!({"success": false, "steps": steps, "error": "Prover params not available"}),
+                );
             }
         }
     };
@@ -5958,7 +5873,9 @@ async fn test_withdrawal(
     let spending_key: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5966,7 +5883,9 @@ async fn test_withdrawal(
     let blinding: [u8; 32] = {
         let mut buf = [0u8; 32];
         if getrandom::getrandom(&mut buf).is_err() {
-            return Json(serde_json::json!({"success": false, "error": "entropy source unavailable"}));
+            return Json(
+                serde_json::json!({"success": false, "error": "entropy source unavailable"}),
+            );
         }
         buf[24..].fill(0);
         buf
@@ -5976,7 +5895,10 @@ async fn test_withdrawal(
     let commitment = match ghost_zkp::compute_commitment_bytes(note_value, &blinding) {
         Ok(c) => c,
         Err(e) => {
-            steps.insert("shield_note".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "shield_note".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
@@ -5990,7 +5912,10 @@ async fn test_withdrawal(
     };
 
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
-    let _ = state.db.insert_confidential_note(note_index, &commitment, &spending_key, current_height);
+    let _ =
+        state
+            .db
+            .insert_confidential_note(note_index, &commitment, &spending_key, current_height);
 
     // Sync to ghost-pool
     let sync_url = format!("{}/api/v1/l2/sync-commitment", state.pool_api_url);
@@ -5999,15 +5924,23 @@ async fn test_withdrawal(
         "note_index": note_index,
         "block_height": current_height,
     });
-    let sync_result = state.pool_http_client.post(&sync_url).json(&sync_body).send().await;
+    let sync_result = state
+        .pool_http_client
+        .post(&sync_url)
+        .json(&sync_body)
+        .send()
+        .await;
     let synced = sync_result.is_ok();
 
-    steps.insert("shield_note".into(), serde_json::json!({
-        "pass": true,
-        "note_index": note_index,
-        "note_value": note_value,
-        "synced_to_pool": synced,
-    }));
+    steps.insert(
+        "shield_note".into(),
+        serde_json::json!({
+            "pass": true,
+            "note_index": note_index,
+            "note_value": note_value,
+            "synced_to_pool": synced,
+        }),
+    );
 
     // Step 3: Get Merkle proof
     let merkle_siblings = {
@@ -6015,12 +5948,18 @@ async fn test_withdrawal(
         match tree.get_proof(note_index) {
             Ok(proof) => proof.siblings,
             Err(e) => {
-                steps.insert("merkle_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+                steps.insert(
+                    "merkle_proof".into(),
+                    serde_json::json!({"pass": false, "error": format!("{e}")}),
+                );
                 return Json(serde_json::json!({"success": false, "steps": steps}));
             }
         }
     };
-    steps.insert("merkle_proof".into(), serde_json::json!({"pass": true, "depth": merkle_siblings.len()}));
+    steps.insert(
+        "merkle_proof".into(),
+        serde_json::json!({"pass": true, "depth": merkle_siblings.len()}),
+    );
 
     // Step 4: Generate unshield proof
     let epoch = ghost_common::constants::l2_epoch_from_height(current_height);
@@ -6036,17 +5975,23 @@ async fn test_withdrawal(
     let proof_start = std::time::Instant::now();
     let proof = match prover.prove(&witness) {
         Ok(p) => {
-            steps.insert("unshield_proof".into(), serde_json::json!({
-                "pass": true,
-                "proof_bytes": p.proof.len(),
-                "nullifier": hex::encode(p.public_inputs.nullifier),
-                "withdrawal_amount": p.public_inputs.withdrawal_amount,
-                "elapsed_ms": proof_start.elapsed().as_millis(),
-            }));
+            steps.insert(
+                "unshield_proof".into(),
+                serde_json::json!({
+                    "pass": true,
+                    "proof_bytes": p.proof.len(),
+                    "nullifier": hex::encode(p.public_inputs.nullifier),
+                    "withdrawal_amount": p.public_inputs.withdrawal_amount,
+                    "elapsed_ms": proof_start.elapsed().as_millis(),
+                }),
+            );
             p
         }
         Err(e) => {
-            steps.insert("unshield_proof".into(), serde_json::json!({"pass": false, "error": format!("{e}")}));
+            steps.insert(
+                "unshield_proof".into(),
+                serde_json::json!({"pass": false, "error": format!("{e}")}),
+            );
             return Json(serde_json::json!({"success": false, "steps": steps}));
         }
     };
@@ -6078,7 +6023,8 @@ async fn test_withdrawal(
         String::new()
     };
 
-    let submit_result = state.pool_http_client
+    let submit_result = state
+        .pool_http_client
         .post(&submit_url)
         .header("Content-Type", "application/json")
         .header("X-Ghost-Signature", &signature)
@@ -6092,7 +6038,8 @@ async fn test_withdrawal(
             let status = resp.status();
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             if status.is_success() {
-                let relayed = body.get("relayed_to_pool")
+                let relayed = body
+                    .get("relayed_to_pool")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 (true, relayed, body)
@@ -6100,19 +6047,22 @@ async fn test_withdrawal(
                 (false, false, body)
             }
         }
-        Err(e) => {
-            (false, false, serde_json::json!({"error": format!("{e}")}))
-        }
+        Err(e) => (false, false, serde_json::json!({"error": format!("{e}")})),
     };
 
-    steps.insert("submit_unshield".into(), serde_json::json!({
-        "pass": nullifier_spent,
-        "nullifier_spent": nullifier_spent,
-        "relayed_to_pool": relayed_to_pool,
-        "detail": submit_detail,
-    }));
+    steps.insert(
+        "submit_unshield".into(),
+        serde_json::json!({
+            "pass": nullifier_spent,
+            "nullifier_spent": nullifier_spent,
+            "relayed_to_pool": relayed_to_pool,
+            "detail": submit_detail,
+        }),
+    );
 
-    let all_pass = steps.values().all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
+    let all_pass = steps
+        .values()
+        .all(|v| v.get("pass").and_then(|p| p.as_bool()).unwrap_or(false));
 
     Json(serde_json::json!({
         "success": all_pass,
@@ -6130,7 +6080,8 @@ async fn seed_test_balance(
     State(state): State<Arc<AppState>>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let amount_sats = req.get("amount_sats")
+    let amount_sats = req
+        .get("amount_sats")
         .and_then(|v| v.as_u64())
         .unwrap_or(1_000_000); // default 0.01 BTC
 
@@ -6193,497 +6144,6 @@ async fn seed_test_balance(
             "success": false,
             "error": format!("{e}"),
         })),
-    }
-}
-
-/// Simulate a full wraith session with 10 virtual participants on signet
-async fn simulate_wraith_session(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    const NUM_PARTICIPANTS: usize = 10;
-    const SATS_PER_PARTICIPANT: u64 = 101_000; // denomination (100k) + service fee (500) + buffer
-
-    // Pre-check: wallet loaded and sufficient balance
-    let balance: u64 = match state.rpc.get_balance().await {
-        Ok(b) => b,
-        Err(e) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!("No wallet loaded or RPC error: {e}. Run: bitcoin-cli createwallet ghost-test")
-                })),
-            ));
-        }
-    };
-
-    let needed = SATS_PER_PARTICIPANT * NUM_PARTICIPANTS as u64 + 50_000; // extra for mining fees
-    if balance < needed {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!(
-                    "Insufficient balance: have {} sats, need {}. Fund via signet faucet.",
-                    balance, needed
-                )
-            })),
-        ));
-    }
-
-    // Create session ID
-    let session_id = uuid::Uuid::new_v4().to_string();
-
-    // Add to sessions list
-    {
-        let mut sessions = state.sessions.write();
-        sessions.push(SessionInfo {
-            id: session_id.clone(),
-            tier: "micro".to_string(),
-            denomination: "micro".to_string(),
-            state: "sim_funding".to_string(),
-            participants: NUM_PARTICIPANTS,
-            fill_percentage: 100.0,
-            auto_sign: true,
-        });
-    }
-
-    // Spawn background task
-    let state_clone = state.clone();
-    let sid = session_id.clone();
-    tokio::spawn(async move {
-        if let Err(e) = run_wraith_simulation(state_clone.clone(), sid.clone(), NUM_PARTICIPANTS).await {
-            error!(session_id = %sid, error = %e, "Wraith simulation failed");
-            let mut sessions = state_clone.sessions.write();
-            if let Some(session) = sessions.iter_mut().find(|s| s.id == sid) {
-                session.state = format!("failed: {e}");
-            }
-        }
-    });
-
-    Ok(Json(serde_json::json!({
-        "session_id": session_id,
-        "status": "started",
-        "participants": NUM_PARTICIPANTS,
-        "estimated_duration_minutes": 30,
-    })))
-}
-
-async fn run_wraith_simulation(
-    state: Arc<AppState>,
-    session_id: String,
-    num_participants: usize,
-) -> Result<(), String> {
-    let rpc = &state.rpc;
-
-    // Step 1: Create funded UTXOs — one per participant
-    info!(session_id = %session_id, "Step 1: Creating {} funded UTXOs", num_participants);
-    update_sim_state(&state, &session_id, "sim_creating_utxos");
-
-    let mut addresses = Vec::with_capacity(num_participants);
-    for _ in 0..num_participants {
-        let addr = rpc
-            .get_new_address()
-            .await
-            .map_err(|e| format!("getnewaddress failed: {e}"))?;
-        addresses.push(addr);
-    }
-
-    // Build sendmany destinations (amounts in BTC as floats)
-    // Each participant needs: output_sats + phase2_fee_share + phase1_fee_share + buffer
-    // Micro: 100,000 + ~1,612 + ~1,462 + buffer ≈ 110,000 sats each
-    let mut destinations = serde_json::Map::new();
-    let amount_btc = 110_000.0 / 100_000_000.0;
-    for addr in &addresses {
-        destinations.insert(addr.clone(), serde_json::json!(amount_btc));
-    }
-
-    let funding_txid_val: serde_json::Value = rpc
-        .call_raw(
-            "sendmany",
-            vec![
-                serde_json::json!(""),                          // dummy
-                serde_json::Value::Object(destinations),        // amounts
-                serde_json::json!(1),                           // minconf
-                serde_json::json!(""),                          // comment
-                serde_json::json!([]),                          // subtractfeefrom
-                serde_json::json!(true),                        // replaceable
-                serde_json::Value::Null,                        // conf_target (null to avoid conflict)
-                serde_json::json!("unset"),                     // estimate_mode
-                serde_json::json!(1),                           // fee_rate: 1 sat/vB
-            ],
-        )
-        .await
-        .map_err(|e| format!("sendmany failed: {e}"))?;
-    let funding_txid = funding_txid_val
-        .as_str()
-        .ok_or_else(|| format!("sendmany returned non-string: {funding_txid_val}"))?
-        .to_string();
-
-    info!(session_id = %session_id, txid = %funding_txid, "Funding tx sent");
-
-    // Step 2: Wait briefly for tx propagation (skip confirmation wait — blocks may not be mined)
-    info!(session_id = %session_id, "Step 2: Waiting for tx propagation");
-    update_sim_state(&state, &session_id, "sim_waiting_funding");
-
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    info!(session_id = %session_id, "Funding tx in mempool, proceeding without confirmation");
-
-    // Get the UTXO details for each participant
-    let funding_tx: serde_json::Value = rpc
-        .get_raw_transaction(&funding_txid, true)
-        .await
-        .map_err(|e| format!("getrawtransaction failed: {e}"))?;
-
-    let vouts = funding_tx
-        .get("vout")
-        .and_then(|v| v.as_array())
-        .ok_or("No vout array in funding tx")?;
-
-    // Map address -> (vout, amount, scriptPubKey)
-    let mut utxo_map: std::collections::HashMap<String, (u32, u64, String)> =
-        std::collections::HashMap::new();
-    for vout_obj in vouts {
-        let n = vout_obj.get("n").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let value_btc = vout_obj
-            .get("value")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let amount_sats = (value_btc * 100_000_000.0).round() as u64;
-        let script_hex = vout_obj
-            .get("scriptPubKey")
-            .and_then(|v| v.get("hex"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let addr = vout_obj
-            .get("scriptPubKey")
-            .and_then(|v| v.get("address"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !addr.is_empty() {
-            utxo_map.insert(
-                addr.to_string(),
-                (n, amount_sats, script_hex.to_string()),
-            );
-        }
-    }
-
-    // Step 3: Create coordinator
-    info!(session_id = %session_id, "Step 3: Creating WraithCoordinator");
-    update_sim_state(&state, &session_id, "sim_creating_coordinator");
-
-    // Shared state for the broadcaster (populated during simulation steps)
-    // Keys: WIF-encoded secret keys for intermediate outputs
-    // Prevtxs: (txid, vout, scriptPubKey_hex, amount_btc) for segwit signing
-    let intermediate_keys: std::sync::Arc<parking_lot::Mutex<Vec<String>>> =
-        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let intermediate_prevtxs: std::sync::Arc<parking_lot::Mutex<Vec<serde_json::Value>>> =
-        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let keys_for_broadcast = intermediate_keys.clone();
-    let prevtxs_for_broadcast = intermediate_prevtxs.clone();
-    let rpc_for_broadcast = state.rpc.clone();
-
-    let mut coordinator = WraithCoordinator::new(
-        ParticipantTier::Micro,
-        WraithDenomination::Micro,
-        state.network,
-        SessionType::Mix,
-    )
-    .map_err(|e| format!("WraithCoordinator::new failed: {e}"))?
-    .without_utxo_required_for_registration()
-    .with_broadcaster(move |tx_hex: &str| {
-        let rpc = rpc_for_broadcast.clone();
-        let hex = tx_hex.to_string();
-        let privkeys = keys_for_broadcast.lock().clone();
-        let prevtxs = prevtxs_for_broadcast.lock().clone();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                // Try wallet signing first (works for Phase 1 inputs)
-                let signed = rpc
-                    .sign_raw_transaction_with_wallet(&hex)
-                    .await
-                    .map_err(|e| format!("wallet sign failed: {e}"))?;
-                if signed.complete {
-                    return rpc
-                        .send_raw_transaction(&signed.hex)
-                        .await
-                        .map_err(|e| format!("broadcast failed: {e}"));
-                }
-                // Phase 2: wallet signing incomplete, use intermediate privkeys + prevtxs
-                if privkeys.is_empty() {
-                    return Err("Signing incomplete and no intermediate keys available".to_string());
-                }
-                // signrawtransactionwithkey(hex, [privkeys], [prevtxs])
-                let result: serde_json::Value = rpc
-                    .call_raw(
-                        "signrawtransactionwithkey",
-                        vec![
-                            serde_json::json!(signed.hex),
-                            serde_json::json!(privkeys),
-                            serde_json::json!(prevtxs),
-                        ],
-                    )
-                    .await
-                    .map_err(|e| format!("signrawtransactionwithkey failed: {e}"))?;
-                let final_hex = result
-                    .get("hex")
-                    .and_then(|v| v.as_str())
-                    .ok_or("No hex in signrawtransactionwithkey response")?;
-                let complete = result
-                    .get("complete")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if !complete {
-                    let errors = result.get("errors").cloned().unwrap_or_default();
-                    return Err(format!("Phase 2 signing incomplete: {errors}"));
-                }
-                rpc.send_raw_transaction(final_hex)
-                    .await
-                    .map_err(|e| format!("broadcast failed: {e}"))
-            })
-        })
-    });
-
-    let coordinator_pubkey = *coordinator.coordinator_public_key();
-    let coordinator_key_id = *coordinator.coordinator_key_id();
-
-    // Step 4: Register participants
-    info!(session_id = %session_id, "Step 4: Registering {} participants", num_participants);
-    update_sim_state(&state, &session_id, "sim_registering");
-
-    let mut ghost_ids = Vec::with_capacity(num_participants);
-    for i in 0..num_participants {
-        let ghost_id = format!("ghost1_sim_{i}");
-        coordinator
-            .register_participant(ghost_id.clone())
-            .map_err(|e| format!("register_participant failed: {e}"))?;
-        ghost_ids.push(ghost_id);
-    }
-
-    // Start collecting inputs
-    coordinator
-        .start_collecting()
-        .map_err(|e| format!("start_collecting failed: {e}"))?;
-
-    // Step 5: Submit inputs
-    info!(session_id = %session_id, "Step 5: Submitting inputs");
-    update_sim_state(&state, &session_id, "sim_submitting_inputs");
-
-    let funding_txid_parsed: bitcoin::Txid = funding_txid
-        .parse()
-        .map_err(|e| format!("parse txid: {e}"))?;
-
-    for (i, ghost_id) in ghost_ids.iter().enumerate() {
-        let addr = &addresses[i];
-        let (vout, amount, script_hex) = utxo_map
-            .get(addr)
-            .ok_or_else(|| format!("No UTXO found for address {addr}"))?;
-
-        let script_bytes =
-            hex::decode(script_hex).map_err(|e| format!("decode script: {e}"))?;
-
-        let input = WraithInput {
-            txid: funding_txid_parsed,
-            vout: *vout,
-            amount: *amount,
-            script_pubkey: bitcoin::ScriptBuf::from(script_bytes),
-            participant_id: i as u32,
-        };
-
-        coordinator
-            .submit_input(ghost_id, input)
-            .map_err(|e| format!("submit_input failed for {ghost_id}: {e}"))?;
-    }
-
-    // Step 6: Blind signature ceremony
-    info!(session_id = %session_id, "Step 6: Running blind signature ceremony");
-    update_sim_state(&state, &session_id, "sim_blind_signatures");
-
-    let outputs_per = coordinator.outputs_per_participant();
-
-    for (i, ghost_id) in ghost_ids.iter().enumerate() {
-        // Request all nonces at once (returns outputs_per_participant nonces)
-        let nonces = coordinator
-            .request_nonces(ghost_id)
-            .map_err(|e| format!("request_nonces failed: {e}"))?;
-
-        // Create blinding contexts and challenges for each nonce
-        let mut contexts = Vec::with_capacity(outputs_per);
-        let mut challenges = Vec::with_capacity(outputs_per);
-
-        for nonce in &nonces {
-            // Generate a valid x-only pubkey as the message (used as intermediate output key)
-            let secp = secp256k1::Secp256k1::new();
-            let mut key_bytes = [0u8; 32];
-            getrandom::getrandom(&mut key_bytes).map_err(|e| format!("getrandom failed: {e}"))?;
-            // Ensure valid secret key (non-zero, within curve order)
-            key_bytes[0] = key_bytes[0].max(1);
-            let mut sk = secp256k1::SecretKey::from_slice(&key_bytes)
-                .map_err(|e| format!("SecretKey generation failed: {e}"))?;
-            let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
-            let (xonly, parity) = pk.x_only_public_key();
-            // Coordinator uses 0x02 (even) prefix for P2WPKH addresses.
-            // Negate the key if parity is odd so signing matches.
-            if parity == bitcoin::secp256k1::Parity::Odd {
-                sk = sk.negate();
-            }
-            // Store WIF-encoded key for Phase 2 signing
-            let privkey = bitcoin::PrivateKey::new(sk, state.network);
-            intermediate_keys.lock().push(privkey.to_wif());
-            let message = xonly.serialize().to_vec();
-            let ctx = BlindingContext::new(message, &coordinator_pubkey, nonce)
-                .map_err(|e| format!("BlindingContext::new failed: {e}"))?;
-            let challenge = ctx
-                .create_blinded_challenge()
-                .map_err(|e| format!("create_blinded_challenge failed: {e}"))?;
-            challenges.push(challenge);
-            contexts.push(ctx);
-        }
-
-        // Submit all challenges at once
-        let responses = coordinator
-            .submit_blinded_challenges(ghost_id, challenges)
-            .map_err(|e| format!("submit_blinded_challenges failed: {e}"))?;
-
-        // Unblind all tokens
-        let mut tokens = Vec::with_capacity(outputs_per);
-        for (ctx, resp) in contexts.iter().zip(responses.iter()) {
-            let token = ctx
-                .unblind(resp, coordinator_key_id)
-                .map_err(|e| format!("unblind failed: {e}"))?;
-            tokens.push(token);
-        }
-
-        // Step 7: Submit anonymous tokens with fresh final address
-        let final_addr = rpc
-            .get_new_address()
-            .await
-            .map_err(|e| format!("getnewaddress for final: {e}"))?;
-
-        coordinator
-            .submit_tokens_with_address_anonymous(tokens, final_addr)
-            .map_err(|e| format!("submit_anonymous failed for participant {i}: {e}"))?;
-    }
-
-    // Step 8: Build Phase 1
-    info!(session_id = %session_id, "Step 8: Building Phase 1");
-    update_sim_state(&state, &session_id, "sim_building_phase1");
-
-    let phase1_tx = coordinator
-        .build_phase1()
-        .map_err(|e| format!("build_phase1 failed: {e}"))?;
-    let phase1_hex = bitcoin::consensus::encode::serialize_hex(&phase1_tx.transaction);
-    // Save Phase 1 output details for Phase 2 prevtxs (extract before borrow ends)
-    let phase1_outputs_for_prevtxs: Vec<(u32, u64, String)> = phase1_tx
-        .transaction
-        .output
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| o.value.to_sat() > 0) // Skip OP_RETURN
-        .map(|(vout, o)| {
-            (
-                vout as u32,
-                o.value.to_sat(),
-                hex::encode(o.script_pubkey.as_bytes()),
-            )
-        })
-        .collect();
-    info!(
-        session_id = %session_id,
-        outputs = phase1_tx.intermediate_count,
-        "Phase 1 transaction built"
-    );
-
-    // Step 9: Sign + Broadcast Phase 1 (via coordinator's broadcast callback)
-    info!(session_id = %session_id, "Step 9: Signing and broadcasting Phase 1");
-    update_sim_state(&state, &session_id, "sim_broadcasting_phase1");
-
-    let phase1_txid = coordinator
-        .broadcast_phase1(&phase1_hex)
-        .map_err(|e| format!("broadcast_phase1 failed: {e}"))?;
-    info!(session_id = %session_id, txid = %phase1_txid, "Phase 1 broadcast");
-
-    // Step 10: Skip confirmation wait (blocks may not be mining on signet)
-    info!(session_id = %session_id, "Step 10: Phase 1 in mempool, proceeding");
-    update_sim_state(&state, &session_id, "sim_confirming_phase1");
-
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    // Step 11: Confirm Phase 1 (using current block height)
-    let block_height = rpc.get_block_count().await.unwrap_or(0) as u32;
-    coordinator
-        .confirm_phase1(block_height)
-        .map_err(|e| format!("confirm_phase1 failed: {e}"))?;
-    info!(session_id = %session_id, "Phase 1 confirmed at height {}", block_height);
-
-    // Populate prevtxs from Phase 1 outputs for Phase 2 signing
-    {
-        let mut prevtxs = intermediate_prevtxs.lock();
-        for (vout, amount_sats, script_hex) in &phase1_outputs_for_prevtxs {
-            prevtxs.push(serde_json::json!({
-                "txid": phase1_txid,
-                "vout": vout,
-                "scriptPubKey": script_hex,
-                "amount": *amount_sats as f64 / 100_000_000.0
-            }));
-        }
-    }
-
-    // Step 12: Build Phase 2
-    info!(session_id = %session_id, "Step 12: Building Phase 2");
-    update_sim_state(&state, &session_id, "sim_building_phase2");
-
-    let phase2_tx = coordinator
-        .build_phase2()
-        .map_err(|e| format!("build_phase2 failed: {e}"))?;
-    let phase2_hex = bitcoin::consensus::encode::serialize_hex(&phase2_tx.transaction);
-    info!(session_id = %session_id, "Phase 2 transaction built");
-
-    // Step 13: Sign + Broadcast Phase 2 (via coordinator's broadcast callback)
-    info!(session_id = %session_id, "Step 13: Signing and broadcasting Phase 2");
-    update_sim_state(&state, &session_id, "sim_broadcasting_phase2");
-
-    let phase2_txid = coordinator
-        .broadcast_phase2(&phase2_hex)
-        .map_err(|e| format!("broadcast_phase2 failed: {e}"))?;
-    info!(session_id = %session_id, txid = %phase2_txid, "Phase 2 broadcast");
-
-    // Step 14: Skip confirmation wait (blocks may not be mining on signet)
-    info!(session_id = %session_id, "Step 14: Phase 2 in mempool, proceeding");
-    update_sim_state(&state, &session_id, "sim_confirming_phase2");
-
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    // Step 15: Confirm Phase 2 (using current block height)
-    let block_height2 = rpc.get_block_count().await.unwrap_or(0) as u32;
-    coordinator
-        .confirm_phase2(block_height2)
-        .map_err(|e| format!("confirm_phase2 failed: {e}"))?;
-    info!(session_id = %session_id, "Phase 2 confirmed — session complete");
-
-    // Step 16: Track wraith fee
-    let epoch = ghost_common::constants::l2_epoch_from_height(block_height2 as u64);
-    let total_fee = WraithDenomination::Micro.service_fee() * num_participants as u64;
-    if let Err(e) = state.db.increment_wraith_fee(epoch, total_fee) {
-        warn!(error = %e, "Failed to track wraith simulation fee");
-    } else {
-        info!(
-            session_id = %session_id,
-            total_fee,
-            epoch,
-            "Wraith simulation fee tracked"
-        );
-    }
-
-    // Step 17: Update session state to complete
-    update_sim_state(&state, &session_id, "complete");
-    info!(session_id = %session_id, "Wraith simulation complete");
-
-    Ok(())
-}
-
-fn update_sim_state(state: &AppState, session_id: &str, new_state: &str) {
-    let mut sessions = state.sessions.write();
-    if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-        session.state = new_state.to_string();
     }
 }
 
@@ -6801,9 +6261,10 @@ async fn execute_settlement_batch(
         {
             let keys_guard = state.keys.read();
             if let Some(keys) = keys_guard.as_ref() {
-                let lock_index = match state.db.get_lock_index_for_owner(
-                    &lock.owner_ghost_id, &lock.lock_id,
-                ) {
+                let lock_index = match state
+                    .db
+                    .get_lock_index_for_owner(&lock.owner_ghost_id, &lock.lock_id)
+                {
                     Ok(idx) => idx,
                     Err(e) => {
                         warn!(lock_id = %lock.lock_id, error = %e, "Cannot get lock index, skipping");
@@ -6818,9 +6279,12 @@ async fn execute_settlement_batch(
                     }
                 };
                 let secp = Secp256k1::new();
-                let derived_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
+                let derived_pubkey =
+                    bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
                 if let Ok(stored_bytes) = hex::decode(&lock.lock_pubkey) {
-                    if let Ok(stored_pubkey) = bitcoin::secp256k1::PublicKey::from_slice(&stored_bytes) {
+                    if let Ok(stored_pubkey) =
+                        bitcoin::secp256k1::PublicKey::from_slice(&stored_bytes)
+                    {
                         if derived_pubkey != stored_pubkey {
                             warn!(lock_id = %lock.lock_id, "Pubkey mismatch, skipping (stale lock)");
                             continue;
@@ -6919,8 +6383,7 @@ async fn execute_settlement_batch(
     if l2_fee_pool > 0 && !include_l2_fees {
         info!(
             l2_fee_pool,
-            available_for_l2,
-            "L2 fees exceed available batch capacity, deferring to larger batch"
+            available_for_l2, "L2 fees exceed available batch capacity, deferring to larger batch"
         );
     }
 
@@ -6972,8 +6435,7 @@ async fn execute_settlement_batch(
         executor.build_transaction(&batch, fee_rate)
     };
 
-    let batch_tx = build_result
-        .map_err(|e| format!("Failed to build batch transaction: {}", e))?;
+    let batch_tx = build_result.map_err(|e| format!("Failed to build batch transaction: {}", e))?;
 
     // Update withdrawal requests to batched status
     for withdrawal_id in &processed_withdrawal_ids {
@@ -6992,10 +6454,10 @@ async fn execute_settlement_batch(
     // H-PAY-1 FIX: Mark associated locks as PendingSettlement BEFORE broadcast
     for withdrawal in &withdrawals {
         if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
-            if let Err(e) = state.db.update_ghost_lock_state(
-                &withdrawal.lock_id,
-                DbLockState::PendingSettlement,
-            ) {
+            if let Err(e) = state
+                .db
+                .update_ghost_lock_state(&withdrawal.lock_id, DbLockState::PendingSettlement)
+            {
                 error!(
                     lock_id = %withdrawal.lock_id,
                     error = %e,
@@ -7038,14 +6500,12 @@ async fn execute_settlement_batch(
 
             let lock_pubkey_bytes = hex::decode(&lock.lock_pubkey)
                 .map_err(|e| format!("Invalid lock_pubkey hex: {}", e))?;
-            let lock_pubkey =
-                bitcoin::secp256k1::PublicKey::from_slice(&lock_pubkey_bytes)
-                    .map_err(|e| format!("Invalid lock_pubkey: {}", e))?;
+            let lock_pubkey = bitcoin::secp256k1::PublicKey::from_slice(&lock_pubkey_bytes)
+                .map_err(|e| format!("Invalid lock_pubkey: {}", e))?;
             let recovery_pubkey_bytes = hex::decode(&lock.recovery_pubkey)
                 .map_err(|e| format!("Invalid recovery_pubkey hex: {}", e))?;
-            let recovery_pubkey =
-                bitcoin::secp256k1::PublicKey::from_slice(&recovery_pubkey_bytes)
-                    .map_err(|e| format!("Invalid recovery_pubkey: {}", e))?;
+            let recovery_pubkey = bitcoin::secp256k1::PublicKey::from_slice(&recovery_pubkey_bytes)
+                .map_err(|e| format!("Invalid recovery_pubkey: {}", e))?;
 
             let derived_pubkey =
                 bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
@@ -7056,8 +6516,7 @@ async fn execute_settlement_batch(
                 ));
             }
 
-            let recovery_blocks =
-                lock.recovery_height.saturating_sub(lock.creation_height);
+            let recovery_blocks = lock.recovery_height.saturating_sub(lock.creation_height);
 
             let witness_script = ghost_locks::build_wsh_witness_script(
                 &lock_pubkey,
@@ -7087,10 +6546,8 @@ async fn execute_settlement_batch(
             let mut sig_bytes = sig.serialize_der().to_vec();
             sig_bytes.push(0x01); // SIGHASH_ALL
 
-            let witness_vec =
-                ghost_locks::build_normal_witness(&sig_bytes, &witness_script);
-            signed_tx.input[input_idx].witness =
-                bitcoin::Witness::from_slice(&witness_vec);
+            let witness_vec = ghost_locks::build_normal_witness(&sig_bytes, &witness_script);
+            signed_tx.input[input_idx].witness = bitcoin::Witness::from_slice(&witness_vec);
 
             input_idx += 1;
         }
@@ -7109,10 +6566,9 @@ async fn execute_settlement_batch(
             // Revert lock states on signing failure
             for withdrawal in &withdrawals {
                 if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
-                    let _ = state.db.update_ghost_lock_state(
-                        &withdrawal.lock_id,
-                        DbLockState::Active,
-                    );
+                    let _ = state
+                        .db
+                        .update_ghost_lock_state(&withdrawal.lock_id, DbLockState::Active);
                 }
             }
             return Err(format!("Signing failed: {}", e));
@@ -7134,10 +6590,10 @@ async fn execute_settlement_batch(
 
             // Update withdrawals to submitted status
             for withdrawal_id in &processed_withdrawal_ids {
-                if let Err(e) = state.db.update_withdrawal_submitted(
-                    *withdrawal_id,
-                    &broadcast_txid,
-                ) {
+                if let Err(e) = state
+                    .db
+                    .update_withdrawal_submitted(*withdrawal_id, &broadcast_txid)
+                {
                     error!(
                         withdrawal_id = withdrawal_id,
                         error = %e,
@@ -7159,8 +6615,7 @@ async fn execute_settlement_batch(
                 }
                 info!(
                     epochs = undistributed.len(),
-                    l2_fee_pool,
-                    "Marked L2 epoch fees as distributed"
+                    l2_fee_pool, "Marked L2 epoch fees as distributed"
                 );
             }
 
@@ -7219,10 +6674,10 @@ async fn execute_settlement_batch(
             // Revert lock states back to Active on broadcast failure
             for withdrawal in &withdrawals {
                 if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
-                    if let Err(revert_err) = state.db.update_ghost_lock_state(
-                        &withdrawal.lock_id,
-                        DbLockState::Active,
-                    ) {
+                    if let Err(revert_err) = state
+                        .db
+                        .update_ghost_lock_state(&withdrawal.lock_id, DbLockState::Active)
+                    {
                         error!(
                             lock_id = %withdrawal.lock_id,
                             error = %revert_err,
@@ -7251,7 +6706,10 @@ async fn execute_settlement_batch(
 async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
     use ghost_common::constants::SettlementClass;
 
-    info!(epoch, "Epoch boundary detected, checking settlement classes");
+    info!(
+        epoch,
+        "Epoch boundary detected, checking settlement classes"
+    );
 
     for class in SettlementClass::ALL {
         if !class.is_due_at_epoch(epoch) {
@@ -7265,8 +6723,7 @@ async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
                 if last >= epoch {
                     debug!(
                         class = class.as_str(),
-                        epoch,
-                        "Already settled this class at epoch, skipping"
+                        epoch, "Already settled this class at epoch, skipping"
                     );
                     continue;
                 }
@@ -7288,8 +6745,7 @@ async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
         if pending.is_empty() {
             debug!(
                 class = class.as_str(),
-                epoch,
-                "No pending withdrawals for class"
+                epoch, "No pending withdrawals for class"
             );
             continue;
         }
@@ -7317,8 +6773,7 @@ async fn try_epoch_settlement(state: Arc<AppState>, epoch: u64) {
             Ok(None) => {
                 debug!(
                     class = class.as_str(),
-                    epoch,
-                    "No batch formed (insufficient inputs)"
+                    epoch, "No batch formed (insufficient inputs)"
                 );
             }
             Err(e) => {
@@ -7771,11 +7226,16 @@ async fn reconcile_lock(
     // Mining: ~300 vbytes * fee_rate * class multiplier.
     // L2 headroom: reserve undistributed L2 fees so settlement batch can include them.
     let fee_rate = estimate_fee_rate(&state).await;
-    let class = ghost_common::constants::SettlementClass::parse(&req.settlement_class)
-        .unwrap_or_default();
+    let class =
+        ghost_common::constants::SettlementClass::parse(&req.settlement_class).unwrap_or_default();
     let mining_fee = ((300u64 * fee_rate) as f64 * class.fee_multiplier()).ceil() as u64;
-    let l2_fee_headroom: u64 = state.db.get_undistributed_fees().unwrap_or_default()
-        .iter().map(|(_, fee)| fee).sum();
+    let l2_fee_headroom: u64 = state
+        .db
+        .get_undistributed_fees()
+        .unwrap_or_default()
+        .iter()
+        .map(|(_, fee)| fee)
+        .sum();
     let settlement_fee = mining_fee.saturating_add(l2_fee_headroom).max(546);
     let settlement_amount = lock.amount_sats.saturating_sub(settlement_fee);
 
@@ -7840,6 +7300,16 @@ struct SendL2PaymentRequest {
     /// Optional memo (max 59 characters for OP_RETURN compatibility)
     #[serde(default)]
     memo: Option<String>,
+    /// SECURITY: the SENDER's ghost_id, supplied by the GSP server
+    /// from the authenticated WebSocket session's wallet_id. Trusted
+    /// because the X-Internal-Auth header verifies the request
+    /// originated from a known GSP server (the operator's own
+    /// trusted gateway). When absent (legacy / direct callers), the
+    /// route falls back to `state.ghost_id` — but that path is
+    /// honestly incorrect for multi-tenant L2 accounting and will
+    /// be removed once all callers migrate.
+    #[serde(default)]
+    sender_ghost_id: Option<String>,
 }
 
 /// POST /api/v1/payments/send — Send an L2 instant payment
@@ -7850,7 +7320,23 @@ async fn send_l2_payment(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SendL2PaymentRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
+    // The sender's ghost_id comes from the GSP server (which derived
+    // it from the authenticated WebSocket session). Operator-side
+    // identity is the wrong primitive here — every wallet's payment
+    // would otherwise be recorded as if the operator sent it. We
+    // still fall back to `state.ghost_id` for legacy callers, with
+    // a warning, until those are gone.
+    let ghost_id = match &req.sender_ghost_id {
+        Some(id) if !id.is_empty() => id.clone(),
+        _ => {
+            tracing::warn!(
+                "send_l2_payment: missing sender_ghost_id — falling back to operator's \
+                 identity. This is incorrect for multi-tenant accounting; the GSP \
+                 server should always supply the authenticated wallet's ghost_id."
+            );
+            state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?
+        }
+    };
 
     // Validate amount
     if req.amount_sats == 0 {
@@ -7960,8 +7446,9 @@ async fn send_l2_payment(
             conn.execute(
                 "INSERT INTO accepted_instant_payments \
                  (payment_id, sender_lock_id, merchant_wallet_id, amount_sats, \
-                  accepted_at, settlement_block, confidence, sender_pubkey, signature) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 0.0, ?6, X'00')",
+                  accepted_at, settlement_block, confidence, sender_pubkey, signature, \
+                  sender_ghost_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 0.0, ?6, X'00', ?7)",
                 rusqlite::params![
                     pid.as_bytes(),
                     gid,
@@ -7969,6 +7456,7 @@ async fn send_l2_payment(
                     amount as i64,
                     now,
                     pubkey_bytes,
+                    gid,
                 ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -7993,6 +7481,167 @@ async fn send_l2_payment(
             "L2 payment of {} sats recorded. Submit ZK proof via /api/v1/confidential/transfer to complete.",
             req.amount_sats
         )
+    })))
+}
+
+/// Query parameters for `GET /api/v1/transactions`.
+#[derive(Debug, Deserialize)]
+struct TransactionsQuery {
+    /// The wallet's *static* identifier (`SHA256(auth_xonly_pubkey)[0..16]`).
+    /// Matches `sender_ghost_id` rows where this wallet was the sender.
+    ghost_id: String,
+    /// Optional bech32 ghost-id (`<network>ghost1q...`) — matches
+    /// `merchant_wallet_id` rows where this wallet was the recipient.
+    /// At INSERT time we only have the recipient's public bech32 (it's
+    /// what the sender sent the payment to), so receive-side matches
+    /// must go through this column.
+    #[serde(default)]
+    bech32: Option<String>,
+    #[serde(default = "default_tx_limit")]
+    limit: u32,
+    #[serde(default)]
+    offset: u32,
+}
+
+fn default_tx_limit() -> u32 {
+    50
+}
+
+/// GET /api/v1/transactions — L2 ledger entries for a given ghost_id.
+///
+/// Returns both sent and received L2 instant payments, signed so the wallet
+/// can render them as a single time-ordered history. `block_height` is the
+/// L1 settlement block (None while pending); `confirmations` is computed
+/// against the bitcoin RPC tip. There is no on-chain tx for L2 transfers,
+/// so `txid` carries the L2 `payment_id`.
+async fn list_transactions(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<TransactionsQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if q.ghost_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let limit = q.limit.clamp(1, 500);
+    let offset = q.offset;
+
+    let tip_height = state.rpc.get_block_count().await.unwrap_or(0) as i64;
+
+    // Receive-side match goes against the bech32 ghost-id when
+    // supplied, falling back to the static ID for legacy callers
+    // that haven't started forwarding the bech32 yet. (The old code
+    // matched against the static ID on both sides — produced empty
+    // results for recipients because `merchant_wallet_id` is stored
+    // as bech32.)
+    let gid_recv = q.bech32.clone().unwrap_or_else(|| q.ghost_id.clone());
+    let gid_send = q.ghost_id.clone();
+    let rows: Vec<(String, i64, i64, i64, String, Option<String>)> = state
+        .db
+        .with_connection(|conn| {
+            // Two arms: receive (merchant_wallet_id matches the
+            // wallet's bech32) and send (sender_ghost_id matches the
+            // wallet's static id). UNION ALL preserves both sides
+            // of a self-payment, which is what the wallet wants.
+            let sql = "
+                SELECT
+                    hex(payment_id)        AS txid_hex,
+                    settlement_block       AS block_height,
+                    accepted_at            AS ts,
+                    amount_sats            AS amount_abs,
+                    'receive'              AS tx_type,
+                    NULL                   AS memo
+                FROM accepted_instant_payments
+                WHERE merchant_wallet_id = ?1
+                UNION ALL
+                SELECT
+                    hex(payment_id),
+                    settlement_block,
+                    accepted_at,
+                    amount_sats,
+                    'send',
+                    NULL
+                FROM accepted_instant_payments
+                WHERE sender_ghost_id = ?2
+                ORDER BY ts DESC
+                LIMIT ?3 OFFSET ?4
+            ";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            let mut out = Vec::new();
+            let mut q_rows = stmt
+                .query(rusqlite::params![
+                    gid_recv,
+                    gid_send,
+                    limit as i64,
+                    offset as i64,
+                ])
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            while let Some(row) = q_rows
+                .next()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+            {
+                let txid: String = row
+                    .get(0)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let block_height: i64 = row
+                    .get(1)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let ts: i64 = row
+                    .get(2)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let amount_abs: i64 = row
+                    .get(3)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let tx_type: String = row
+                    .get(4)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let memo: Option<String> = row
+                    .get(5)
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                out.push((txid, block_height, ts, amount_abs, tx_type, memo));
+            }
+            Ok(out)
+        })
+        .map_err(|e| {
+            error!("Failed to query L2 transactions: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let total = rows.len() as u32;
+    let transactions: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(txid, block_height, ts, amount_abs, tx_type, memo)| {
+            let signed_amount = if tx_type == "send" {
+                -amount_abs
+            } else {
+                amount_abs
+            };
+            let block_height_json = if block_height > 0 {
+                serde_json::json!(block_height as u32)
+            } else {
+                serde_json::Value::Null
+            };
+            let confirmations = if block_height > 0 && tip_height >= block_height {
+                (tip_height - block_height + 1) as u32
+            } else {
+                0
+            };
+            serde_json::json!({
+                "txid": txid.to_lowercase(),
+                "block_height": block_height_json,
+                "timestamp": ts,
+                "amount_sats": signed_amount,
+                "fee_sats": 0u64,
+                "tx_type": tx_type,
+                "confirmations": confirmations,
+                "memo": memo,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "transactions": transactions,
+        "total": total,
     })))
 }
 
@@ -8158,7 +7807,11 @@ async fn l2_finalize_handler(
     // MEDIUM-2: Parse included nullifiers (hex-encoded [u8; 32]) from finalization callback
     let included_nullifiers: Vec<String> = req["included_tx_ids"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     if !included_nullifiers.is_empty() {
@@ -8314,8 +7967,7 @@ async fn l2_finalize_handler(
         if new_epoch > prev_epoch && height > 0 {
             info!(
                 height,
-                new_epoch,
-                "Epoch boundary crossed, spawning settlement check"
+                new_epoch, "Epoch boundary crossed, spawning settlement check"
             );
             let settlement_state = state.clone();
             tokio::spawn(try_epoch_settlement(settlement_state, new_epoch));
@@ -8365,7 +8017,10 @@ fn validate_ghost_id(ghost_id: &str) -> Result<(), String> {
 }
 
 /// JSON error response for glyph endpoints (L-3: consistent error format)
-fn glyph_error(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
+fn glyph_error(
+    status: StatusCode,
+    msg: impl Into<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({"error": msg.into()})))
 }
 
@@ -8421,24 +8076,34 @@ async fn claim_glyph(
         .map_err(|e| glyph_error(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     // Convert to fixed array
-    let pixels: [u8; ghost_glyph::GLYPH_SIZE] = req.pixels.as_slice().try_into().map_err(|_| {
-        glyph_error(StatusCode::BAD_REQUEST, "Invalid pixel array")
-    })?;
+    let pixels: [u8; ghost_glyph::GLYPH_SIZE] = req
+        .pixels
+        .as_slice()
+        .try_into()
+        .map_err(|_| glyph_error(StatusCode::BAD_REQUEST, "Invalid pixel array"))?;
 
     // Compute hashes
     let commitment = ghost_glyph::GhostGlyph::compute_commitment(&pixels, req.ghost_id.as_bytes());
     let bitmap_hash = ghost_glyph::GhostGlyph::compute_bitmap_hash(&pixels);
 
     // Check availability
-    let available = state.db.is_bitmap_available(&bitmap_hash)
+    let available = state
+        .db
+        .is_bitmap_available(&bitmap_hash)
         .map_err(|e| glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if !available {
-        return Err(glyph_error(StatusCode::CONFLICT, "Bitmap already registered"));
+        return Err(glyph_error(
+            StatusCode::CONFLICT,
+            "Bitmap already registered",
+        ));
     }
 
     // Check ghost_id not already claimed
     if let Ok(Some(_)) = state.db.get_glyph_by_ghost_id(&req.ghost_id) {
-        return Err(glyph_error(StatusCode::CONFLICT, "Ghost ID already has a glyph"));
+        return Err(glyph_error(
+            StatusCode::CONFLICT,
+            "Ghost ID already has a glyph",
+        ));
     }
 
     let now = std::time::SystemTime::now()
@@ -8447,19 +8112,16 @@ async fn claim_glyph(
         .as_secs();
 
     // Insert pending claim
-    state.db.insert_glyph_claim(
-        &req.ghost_id,
-        &req.pixels,
-        &bitmap_hash,
-        &commitment,
-        now,
-    ).map_err(|e| {
-        if e.to_string().contains("already") || e.to_string().contains("UNIQUE") {
-            glyph_error(StatusCode::CONFLICT, e.to_string())
-        } else {
-            glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        }
-    })?;
+    state
+        .db
+        .insert_glyph_claim(&req.ghost_id, &req.pixels, &bitmap_hash, &commitment, now)
+        .map_err(|e| {
+            if e.to_string().contains("already") || e.to_string().contains("UNIQUE") {
+                glyph_error(StatusCode::CONFLICT, e.to_string())
+            } else {
+                glyph_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })?;
 
     info!(ghost_id = %req.ghost_id, "GhostGlyph claim submitted");
 
@@ -8472,7 +8134,13 @@ async fn claim_glyph(
         "timestamp": now,
     });
     let relay_url = format!("{}/api/v1/glyph/relay-claim", state.pool_api_url);
-    match state.pool_http_client.post(&relay_url).json(&relay_body).send().await {
+    match state
+        .pool_http_client
+        .post(&relay_url)
+        .json(&relay_body)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => {
             info!(ghost_id = %req.ghost_id, "Glyph claim relayed to mesh");
         }
@@ -8553,6 +8221,34 @@ async fn check_glyph_availability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // =========================================================================
+    // parse_addr_from_desc tests
+    // =========================================================================
+
+    #[test]
+    fn parse_addr_from_desc_extracts_inner_address() {
+        assert_eq!(
+            parse_addr_from_desc("addr(bcrt1qxyz123)#abcd1234").as_deref(),
+            Some("bcrt1qxyz123"),
+        );
+        assert_eq!(
+            parse_addr_from_desc("addr(tb1pqqqq)#deadbeef").as_deref(),
+            Some("tb1pqqqq"),
+        );
+    }
+
+    #[test]
+    fn parse_addr_from_desc_returns_none_for_other_descriptors() {
+        // tr() / wpkh() / pkh() etc are valid scantxoutset descriptors
+        // but not what scan_utxos emits. Returning None here means
+        // these rows get filtered out of the response (no
+        // attributable address), which is the conservative default.
+        assert!(parse_addr_from_desc("tr(xpub...)").is_none());
+        assert!(parse_addr_from_desc("wpkh([fingerprint/0]xpub.../0/*)").is_none());
+        assert!(parse_addr_from_desc("").is_none());
+        assert!(parse_addr_from_desc("addr(unterminated").is_none());
+    }
 
     // =========================================================================
     // derive_encryption_key tests
@@ -8847,7 +8543,7 @@ mod tests {
             serde_json::from_value(json).expect("Valid JSON should parse");
 
         assert_eq!(req.proof_hex.len(), 384); // 192 bytes * 2 hex chars
-        assert_eq!(req.nullifier.len(), 64);  // 32 bytes * 2 hex chars
+        assert_eq!(req.nullifier.len(), 64); // 32 bytes * 2 hex chars
         assert_eq!(req.commitment_root.len(), 64);
         assert_eq!(req.change_commitment.len(), 64);
         assert_eq!(req.recipient_commitment.len(), 64);

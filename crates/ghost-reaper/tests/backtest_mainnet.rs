@@ -89,9 +89,7 @@ fn backtest_recent_mainnet_blocks() {
     let start_height = tip_height - 9;
     let end_height = tip_height;
 
-    println!(
-        "\n============================================================"
-    );
+    println!("\n============================================================");
     println!("Ghost Reaper — Mainnet Backtest");
     println!(
         "Blocks {} to {} ({} blocks)",
@@ -99,9 +97,7 @@ fn backtest_recent_mainnet_blocks() {
         end_height,
         end_height - start_height + 1
     );
-    println!(
-        "============================================================\n"
-    );
+    println!("============================================================\n");
 
     let mut stats = BacktestStats::default();
 
@@ -192,7 +188,6 @@ fn backtest_recent_mainnet_blocks() {
                         ));
                     }
                 }
-                
             }
         }
 
@@ -208,13 +203,9 @@ fn backtest_recent_mainnet_blocks() {
     }
 
     // Print results
-    println!(
-        "\n============================================================"
-    );
+    println!("\n============================================================");
     println!("RESULTS");
-    println!(
-        "============================================================"
-    );
+    println!("============================================================");
     println!("Blocks analyzed:   {}", stats.total_blocks);
     println!("Total transactions: {}", stats.total_txs);
     println!("  Coinbase (skip):  {}", stats.total_coinbase);
@@ -287,13 +278,9 @@ fn backtest_inscription_heavy_blocks() {
     // Block 840000 — post-halving inscriptions
     let interesting_heights: Vec<u64> = vec![774628, 776000, 800000, 840000];
 
-    println!(
-        "\n============================================================"
-    );
+    println!("\n============================================================");
     println!("Ghost Reaper — Inscription-Heavy Block Backtest");
-    println!(
-        "============================================================\n"
-    );
+    println!("============================================================\n");
 
     let mut total_txs = 0;
     let mut total_corpse = 0;

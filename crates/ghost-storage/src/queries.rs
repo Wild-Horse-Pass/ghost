@@ -745,6 +745,155 @@ impl Database {
         })
     }
 
+    /// Address-grouped variant of [`Self::get_top_unpaid_miners`]. Sums
+    /// unpaid work across all of a payout address's workers so a user
+    /// running N rigs under one BTC address takes ONE coinbase slot
+    /// instead of N. Backs the post-`PAYOUT_ADDRESS_GROUPING_HEIGHT`
+    /// payout path; the legacy per-miner_id query stays around for the
+    /// pre-gate path so a mixed-version mesh keeps producing identical
+    /// proposals during the rollout window.
+    ///
+    /// Tie-break: lex order on the (decrypted) address. Deterministic
+    /// across every node so the BFT supermajority computes identical
+    /// proposal hashes.
+    ///
+    /// `payout_address` is encrypted at rest, so we can't `GROUP BY`
+    /// in SQL — fetch the unpaid set, decrypt addresses in-process, then
+    /// fold into a HashMap. At ledger sizes (low thousands of unpaid
+    /// miners) the decrypt loop is negligible; if it ever shows up in
+    /// flame graphs, add a `payout_address_hash` column + migration.
+    ///
+    /// Returns `Vec<(address, unpaid_work, miner_ids_in_group)>` ordered
+    /// by unpaid_work desc, address asc. The `miner_ids_in_group` field
+    /// lets the caller pass the flattened list straight to
+    /// [`Self::mark_miners_paid`] without a follow-up resolve query.
+    pub fn get_top_unpaid_addresses(
+        &self,
+        cutoff_ts: i64,
+        limit: u32,
+    ) -> GhostResult<Vec<(String, f64, Vec<String>)>> {
+        // 1. Pull every unpaid (miner_id, work, encrypted_address) row.
+        //    No GROUP BY in SQL because the address is encrypted.
+        let raw: Vec<(String, f64, String)> = self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.miner_id, SUM(s.work) AS unpaid_work, m.payout_address
+                     FROM shares s
+                     INNER JOIN miners m ON m.miner_id = s.miner_id
+                     WHERE s.paid_in_proposal_hash IS NULL
+                       AND s.timestamp <= ?1
+                       AND s.valid = 1
+                     GROUP BY s.miner_id",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![cutoff_ts], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })?;
+
+        // 2. Decrypt + group by plaintext address. Skip rows whose
+        //    payout_address is empty or fails to decrypt — they have no
+        //    valid output target and should be excluded from payout
+        //    rather than crashing the whole proposal.
+        use std::collections::HashMap;
+        let mut acc: HashMap<String, (f64, Vec<String>)> = HashMap::new();
+        for (miner_id, work, enc_addr) in raw {
+            if enc_addr.is_empty() {
+                continue;
+            }
+            let plain = match self.decrypt_address(&enc_addr) {
+                Ok(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            let entry = acc.entry(plain).or_insert((0.0, Vec::new()));
+            entry.0 += work;
+            entry.1.push(miner_id);
+        }
+
+        // 3. Sort by (unpaid_work desc, address asc) — deterministic
+        //    tie-break for cross-node BFT consensus.
+        let mut sorted: Vec<(String, f64, Vec<String>)> = acc
+            .into_iter()
+            .map(|(addr, (work, ids))| (addr, work, ids))
+            .collect();
+        sorted.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        sorted.truncate(limit as usize);
+
+        // 4. Each group's miner_ids list also gets a stable order so
+        //    downstream callers that hash / serialise it converge.
+        for entry in sorted.iter_mut() {
+            entry.2.sort();
+        }
+
+        Ok(sorted)
+    }
+
+    /// Resolve a list of decrypted payout addresses to every `miner_id`
+    /// currently bound to one of them. Used by the mark-paid handler
+    /// post-`PAYOUT_ADDRESS_GROUPING_HEIGHT`: the proposal lists hashed
+    /// ADDRESSES, but `mark_miners_paid` works on miner_ids, so we need
+    /// to fan out before the UPDATE.
+    ///
+    /// Decrypts every miner's stored address in-process and matches in
+    /// memory — same trade-off as [`Self::get_top_unpaid_addresses`].
+    /// The input set is bounded by `LEDGER_CAP` (1000) so the cost is
+    /// always trivially small.
+    pub fn miner_ids_for_addresses(&self, addresses: &[String]) -> GhostResult<Vec<String>> {
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+        use std::collections::HashSet;
+        let wanted: HashSet<&str> = addresses.iter().map(|s| s.as_str()).collect();
+
+        let pairs: Vec<(String, String)> = self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT miner_id, payout_address
+                     FROM miners
+                     WHERE payout_address IS NOT NULL AND payout_address != ''",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(rows)
+        })?;
+
+        let mut out: Vec<String> = Vec::new();
+        for (miner_id, enc_addr) in pairs {
+            let plain = match self.decrypt_address(&enc_addr) {
+                Ok(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            if wanted.contains(plain.as_str()) {
+                out.push(miner_id);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     /// Recent valid shares for live visualisation (quasar). Returns
     /// `(miner_id, share_hash, timestamp, work)` ordered by timestamp
     /// ascending, so the caller can append them to a render queue in
@@ -889,8 +1038,7 @@ impl Database {
                     .prepare(&sql)
                     .map_err(|e| GhostError::Database(e.to_string()))?;
 
-                let mut bind: Vec<Box<dyn rusqlite::ToSql>> =
-                    Vec::with_capacity(batch.len() + 2);
+                let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(batch.len() + 2);
                 bind.push(Box::new(proposal_hash.to_vec()));
                 bind.push(Box::new(cutoff_ts));
                 for id in batch {
@@ -1626,10 +1774,7 @@ impl Database {
     }
 
     /// P-4: Decrypt payout_address in an optional NodeRecord
-    fn decrypt_node_record(
-        &self,
-        node: Option<NodeRecord>,
-    ) -> GhostResult<Option<NodeRecord>> {
+    fn decrypt_node_record(&self, node: Option<NodeRecord>) -> GhostResult<Option<NodeRecord>> {
         match node {
             Some(mut n) => {
                 if let Some(ref addr) = n.payout_address {
@@ -1935,7 +2080,12 @@ impl Database {
     // =========================================================================
 
     /// Record a burned elder position after successful revocation vote
-    pub fn burn_elder_position(&self, position: u32, node_id: &str, reason: &str) -> GhostResult<()> {
+    pub fn burn_elder_position(
+        &self,
+        position: u32,
+        node_id: &str,
+        reason: &str,
+    ) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
             conn.execute(
@@ -2365,16 +2515,17 @@ impl Database {
     ///
     /// P-4: Decrypts the address if encryption is configured.
     pub fn get_node_payout_address(&self, node_id: &str) -> GhostResult<Option<String>> {
-        let stored: Option<String> = self.with_connection(|conn| {
-            conn.query_row(
-                "SELECT payout_address FROM nodes WHERE node_id = ?1",
-                [node_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| GhostError::Database(e.to_string()))
-        })?
-        .flatten();
+        let stored: Option<String> = self
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT payout_address FROM nodes WHERE node_id = ?1",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))
+            })?
+            .flatten();
         // P-4: Decrypt the address if present
         match stored {
             Some(addr) if !addr.is_empty() => Ok(Some(self.decrypt_address(&addr)?)),
@@ -4415,7 +4566,9 @@ fn withdrawal_from_row(row: &rusqlite::Row) -> rusqlite::Result<WithdrawalReques
         status: parse_withdrawal_status_strict(&status_str, "withdrawal_from_row")?,
         batch_id: row.get(7)?,
         l1_txid: row.get(8)?,
-        settlement_class: row.get::<_, String>(9).unwrap_or_else(|_| "standard".to_string()),
+        settlement_class: row
+            .get::<_, String>(9)
+            .unwrap_or_else(|_| "standard".to_string()),
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
     })
@@ -6923,9 +7076,8 @@ impl Database {
                 ) = row.map_err(|e| GhostError::Database(e.to_string()))?;
 
                 let to_32 = |v: Vec<u8>, name: &str| -> GhostResult<[u8; 32]> {
-                    v.try_into().map_err(|_| {
-                        GhostError::Database(format!("Invalid {} size in DB", name))
-                    })
+                    v.try_into()
+                        .map_err(|_| GhostError::Database(format!("Invalid {} size in DB", name)))
                 };
 
                 transfers.push(ConfidentialTransferRecord {
@@ -7333,9 +7485,7 @@ impl Database {
                 let (nullifier_vec, epoch, spent_at) =
                     row.map_err(|e| GhostError::Database(e.to_string()))?;
                 let nullifier: [u8; 32] = nullifier_vec.try_into().map_err(|_| {
-                    GhostError::Database(
-                        "Invalid nullifier size in pending_nullifiers".to_string(),
-                    )
+                    GhostError::Database("Invalid nullifier size in pending_nullifiers".to_string())
                 })?;
                 result.push((nullifier, epoch, spent_at));
             }
@@ -7348,11 +7498,9 @@ impl Database {
     pub fn confirm_pending_nullifiers(&self) -> GhostResult<u64> {
         self.with_connection(|conn| {
             let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM pending_nullifiers",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM pending_nullifiers", [], |row| {
+                    row.get(0)
+                })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             if count == 0 {
@@ -7440,8 +7588,7 @@ impl Database {
             return Ok(());
         }
         self.with_connection(|conn| {
-            let placeholders: Vec<String> =
-                note_indices.iter().map(|_| "?".to_string()).collect();
+            let placeholders: Vec<String> = note_indices.iter().map(|_| "?".to_string()).collect();
             let sql = format!(
                 "DELETE FROM pending_l2_shields WHERE note_index IN ({})",
                 placeholders.join(",")
@@ -7450,8 +7597,11 @@ impl Database {
                 .iter()
                 .map(|idx| Box::new(*idx as i64) as Box<dyn rusqlite::types::ToSql>)
                 .collect();
-            conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))
-                .map_err(|e| GhostError::Database(e.to_string()))?;
+            conn.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
         })
     }
@@ -7515,8 +7665,7 @@ impl Database {
             return Ok(());
         }
         self.with_connection(|conn| {
-            let placeholders: Vec<String> =
-                nullifiers.iter().map(|_| "?".to_string()).collect();
+            let placeholders: Vec<String> = nullifiers.iter().map(|_| "?".to_string()).collect();
             let sql = format!(
                 "DELETE FROM confirmed_pool_staging WHERE nullifier IN ({})",
                 placeholders.join(",")
@@ -7525,8 +7674,11 @@ impl Database {
                 .iter()
                 .map(|n| Box::new(n.to_vec()) as Box<dyn rusqlite::types::ToSql>)
                 .collect();
-            conn.execute(&sql, rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))
-                .map_err(|e| GhostError::Database(e.to_string()))?;
+            conn.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
         })
     }
@@ -8915,6 +9067,7 @@ mod tests {
             status: ReconciliationStatus::Pending,
             created_at: now,
             finalized_at: None,
+            l2_node_rewards_sats: 0,
         };
 
         db.insert_reconciliation_batch(&batch)
@@ -9472,7 +9625,10 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
 
-        // Insert old share (48 hours ago)
+        // Insert old share (48 hours ago) belonging to a miner that has
+        // been dark for >7 days. delete_old_shares only prunes unpaid
+        // shares of inactive miners, so the miner row is required for
+        // the inactive-cutoff JOIN to match.
         let old_share = ShareRecord {
             id: None,
             round_id: 1,
@@ -9484,6 +9640,19 @@ mod tests {
             received_by: "node1".to_string(),
             valid: true,
         };
+        db.upsert_miner(&MinerRecord {
+            miner_id: "miner_old".to_string(),
+            payout_address: String::new(),
+            first_seen: now_s - (10 * 24 * 3600),
+            last_seen: now_s - (8 * 24 * 3600),
+            connected_node: None,
+            total_shares: 1,
+            total_work: 1000.0,
+            blocks_won: 0,
+            total_payouts_sats: 0,
+            avg_hashrate_ths: 0.0,
+        })
+        .expect("Failed to insert inactive miner");
         db.insert_share(&old_share)
             .expect("Failed to insert old share");
 
@@ -9969,14 +10138,18 @@ mod tests {
             .expect("Insert should succeed");
 
         // Neither registered yet
-        let registered = db.list_registered_glyphs(0, 10).expect("Query should succeed");
+        let registered = db
+            .list_registered_glyphs(0, 10)
+            .expect("Query should succeed");
         assert_eq!(registered.len(), 0);
 
         // Register one
         db.complete_glyph_registration("ghost1alice", "txid123", 2000)
             .expect("Registration should succeed");
 
-        let registered = db.list_registered_glyphs(0, 10).expect("Query should succeed");
+        let registered = db
+            .list_registered_glyphs(0, 10)
+            .expect("Query should succeed");
         assert_eq!(registered.len(), 1);
         assert_eq!(registered[0].ghost_id, "ghost1alice");
     }
@@ -10043,13 +10216,21 @@ mod tests {
             .expect("Insert should succeed");
 
         // At t=90000: alice's claim expired (87400 < 90000), bob's hasn't (186400 > 90000)
-        let deleted = db.cleanup_expired_glyph_claims(90000).expect("Cleanup should succeed");
+        let deleted = db
+            .cleanup_expired_glyph_claims(90000)
+            .expect("Cleanup should succeed");
         assert_eq!(deleted, 1);
 
         // Alice should be gone
-        assert!(db.get_glyph_by_ghost_id("ghost1alice").expect("Query ok").is_none());
+        assert!(db
+            .get_glyph_by_ghost_id("ghost1alice")
+            .expect("Query ok")
+            .is_none());
         // Bob should still exist
-        assert!(db.get_glyph_by_ghost_id("ghost1bob").expect("Query ok").is_some());
+        assert!(db
+            .get_glyph_by_ghost_id("ghost1bob")
+            .expect("Query ok")
+            .is_some());
     }
 
     #[test]
@@ -10067,11 +10248,16 @@ mod tests {
             .expect("Registration should succeed");
 
         // Cleanup far in the future — should NOT delete registered claims
-        let deleted = db.cleanup_expired_glyph_claims(999999999).expect("Cleanup should succeed");
+        let deleted = db
+            .cleanup_expired_glyph_claims(999999999)
+            .expect("Cleanup should succeed");
         assert_eq!(deleted, 0);
 
         // Record should still exist
-        assert!(db.get_glyph_by_ghost_id("ghost1alice").expect("Query ok").is_some());
+        assert!(db
+            .get_glyph_by_ghost_id("ghost1alice")
+            .expect("Query ok")
+            .is_some());
     }
 
     #[test]
@@ -10089,7 +10275,8 @@ mod tests {
         assert!(!db.is_bitmap_available(&bh).expect("Query ok"));
 
         // Expire the claim (cleanup with time far in the future)
-        db.cleanup_expired_glyph_claims(now + 90000).expect("Cleanup should succeed");
+        db.cleanup_expired_glyph_claims(now + 90000)
+            .expect("Cleanup should succeed");
 
         // Bitmap should be available again (row deleted)
         assert!(db.is_bitmap_available(&bh).expect("Query ok"));

@@ -13,11 +13,7 @@ fn setup() -> Arc<ClusterClient> {
 }
 
 /// Helper: verify remaining nodes are healthy and have enough peers.
-async fn assert_remaining_healthy(
-    client: &ClusterClient,
-    killed_ip: &str,
-    min_peers: usize,
-) {
+async fn assert_remaining_healthy(client: &ClusterClient, killed_ip: &str, min_peers: usize) {
     let live_ips: Vec<&str> = client
         .config
         .all_ips()
@@ -71,10 +67,7 @@ async fn wait_for_rejoin(
         if let Ok(peers) = client.get_peer_count(ip).await {
             if peers >= expected_peers {
                 let total_time = start.elapsed();
-                println!(
-                    "  {} has {} peers after {:?}",
-                    ip, peers, total_time
-                );
+                println!("  {} has {} peers after {:?}", ip, peers, total_time);
                 return total_time;
             }
         }
@@ -238,7 +231,11 @@ async fn chaos_06_vm4_recovery_timing() {
         .await;
     let time_to_healthy = start.elapsed();
 
-    assert!(healthy, "VM4 did not become healthy within {:?}", config.recovery_timeout);
+    assert!(
+        healthy,
+        "VM4 did not become healthy within {:?}",
+        config.recovery_timeout
+    );
     println!("  VM4 time-to-healthy: {:?}", time_to_healthy);
 
     // Measure time to full mesh

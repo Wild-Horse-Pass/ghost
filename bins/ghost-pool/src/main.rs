@@ -41,7 +41,7 @@ use tokio::sync::{broadcast, Semaphore};
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use ghost_common::config::{MiningMode, NodeConfig};
+use ghost_common::config::{MiningMode, NodeConfig, ReaperSettings};
 use ghost_common::identity::NodeIdentity;
 use ghost_common::metrics::Metrics;
 use ghost_common::rpc::BitcoinRpc;
@@ -65,10 +65,12 @@ use ghost_verification::{
     VerifiablePeer, VerificationState, VerificationTask,
 };
 
+use ghost_pool::capacity;
 use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler, SoloBlockFoundData};
 use ghost_pool::registry::RegistryClient;
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
+use ghost_pool::self_check::SelfCheck;
 use ghost_pool::share_handler::ShareProofHandler;
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
 use ghost_pool::template_provider::{TdpConfig, TemplateDistributionServer};
@@ -77,6 +79,27 @@ use ghost_pool::treasury::TreasuryState;
 /// Exit code that signals systemd to restart the service
 /// Used when config is updated via API and requires restart to apply
 const EXIT_CODE_RESTART: i32 = 100;
+
+/// Block height at which the payout proposal switches from per-`miner_id`
+/// grouping to per-`payout_address` grouping.
+///
+/// Below this height: a user running N workers under one address takes
+/// N coinbase output slots. At/above this height: their unpaid work is
+/// summed across workers and they take ONE slot — freeing the rest for
+/// other miners.
+///
+/// This is a BFT-voted payout calculation. If any node uses a different
+/// algorithm than its peers, its proposal diverges and never reaches the
+/// 67 % supermajority. Baking the activation as a block-height gate (not
+/// a feature flag) means every node — old binary or new — makes the same
+/// decision at the same block. Mixed-version mesh stays compatible
+/// because both code paths exist in the new code; old binaries keep
+/// running their original logic until they're replaced.
+///
+/// Pick a value comfortably past the deploy window (≈24 h ≈ 144 blocks)
+/// so all 4 VMs cohort the new binary before the chain crosses the gate.
+/// See `tasks/plan_payout_address_grouping.md` for the full rollout.
+pub const PAYOUT_ADDRESS_GROUPING_HEIGHT: u64 = 946_743;
 
 /// H-8 SECURITY: Static storage for ZMQ subscriber to prevent memory leak.
 /// Previously used std::mem::forget which intentionally leaked memory.
@@ -512,6 +535,16 @@ async fn main() -> Result<()> {
         eprintln!("Note: Tracing subscriber already initialized, using existing configuration");
     }
 
+    // Install the rustls process-level CryptoProvider exactly once, before
+    // any code path constructs a `rustls::ClientConfig::builder()` or similar.
+    // The verification client's identity-pinned TLS path triggers this otherwise.
+    if rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .is_err()
+    {
+        // Already installed (test harness / re-init); nothing to do.
+    }
+
     // Expand data directory
     let data_dir = expand_path(&args.data_dir)?;
     std::fs::create_dir_all(&data_dir)?;
@@ -716,19 +749,22 @@ async fn main() -> Result<()> {
         policy.highest_allowed_tier().map(|t| t as u8).unwrap_or(0)
     );
 
-    // Setup reaper config for dead code detection
-    let reaper_config = if config.reaper.enabled {
-        ReaperConfig::default()
-    } else {
-        ReaperConfig::disabled()
-    };
+    // Setup reaper config for dead code detection, honouring the operator's
+    // per-vector detector selection (not just the master on/off).
+    let reaper_config = reaper_config_from_settings(&config.reaper);
+    if let Err(e) = reaper_config.validate() {
+        warn!("Reaper config invalid ({e}); falling back to all-on defaults");
+    }
     info!(
-        "Reaper: {}",
-        if reaper_config.enabled {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        "Reaper: {} (inscription={} dropstuffing={} fakepubkey={} annex={} unreachable={} excess_witness={} legacy={})",
+        if reaper_config.enabled { "enabled" } else { "disabled" },
+        reaper_config.reject_inscription_envelope,
+        reaper_config.reject_drop_stuffing,
+        reaper_config.reject_fake_pubkeys,
+        reaper_config.reject_annex,
+        reaper_config.reject_unreachable_code,
+        reaper_config.reject_excess_witness,
+        reaper_config.reject_legacy_data_stuffing,
     );
 
     // Determine effective public_mining from mining_mode
@@ -788,7 +824,7 @@ async fn main() -> Result<()> {
             );
         } else {
             let redacted = if addr.len() > 10 {
-                format!("{}...{}", &addr[..6], &addr[addr.len()-4..])
+                format!("{}...{}", &addr[..6], &addr[addr.len() - 4..])
             } else {
                 "***".to_string()
             };
@@ -913,6 +949,9 @@ async fn main() -> Result<()> {
         noise_port: ghost_consensus::mesh::DEFAULT_NOISE_PORT,
         noise_keypair_path: Some(noise_keypair_path),
         noise_required: true,
+        // Persist the outbound mesh sequence so a restart resumes above its
+        // prior value instead of resetting to 0 (which peers reject as replays).
+        sequence_persist_path: Some(data_dir.join("mesh_sequence")),
         ..Default::default()
     };
     // M-2: Use try_new() to properly handle Noise initialization failures
@@ -940,6 +979,14 @@ async fn main() -> Result<()> {
     }));
 
     let mesh = Arc::new(mesh_inner);
+
+    // Hardware-derived miner capacity. Operator's `network.max_miners` is the
+    // ceiling — `measure()` returns `min(calculated, declared)`. The mesh
+    // broadcasts this in health pings so peers' load balancers can route by
+    // utilisation % of declared capacity.
+    let cap_breakdown = capacity::measure(Some(config.network.max_miners));
+    mesh.set_max_capacity(cap_breakdown.effective_max);
+    let effective_max_capacity = cap_breakdown.effective_max;
 
     // Initialize consensus voting
     let voting_manager = Arc::new(VotingManager::new(100)); // 100 max sessions
@@ -1007,30 +1054,79 @@ async fn main() -> Result<()> {
                         .map(|e| e.recipient_id)
                         .collect();
                     let treasury_amount = proposal.treasury_amount;
+                    // Use the proposal's block height as the gate input so
+                    // every approving node makes the same pre/post-gate
+                    // decision regardless of when the consensus message
+                    // arrives. (We can't trust local tip height — it
+                    // races with mesh-relayed proposals.)
+                    let proposal_height = proposal.block_height;
                     tokio::spawn(async move {
                         // (a) Mark paid: reverse-resolve each PayoutEntry's
-                        // recipient_id hash back to our local miner_id
-                        // strings so the ledger entries update correctly.
-                        let distinct = match db_mark.get_distinct_unpaid_miner_ids(cutoff_ts) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::error!(error = %e, "Failed to list unpaid miners for mark-paid");
-                                return;
-                            }
-                        };
-                        let matched: Vec<String> = distinct
-                            .into_iter()
-                            .filter(|id| {
-                                let h = ghost_common::identity::hash_message(id.as_bytes());
+                        // recipient_id hash back to local miner_id strings.
+                        //
+                        // Pre-PAYOUT_ADDRESS_GROUPING_HEIGHT — recipient_id
+                        // is sha256(miner_id), one entry per worker. Match
+                        // unpaid miner_ids by hash and pass directly to
+                        // mark_miners_paid.
+                        //
+                        // Post-gate — recipient_id is sha256(payout_address),
+                        // one entry per address. We have to fan out: hash
+                        // every distinct unpaid miner's address, match
+                        // against the proposal's hash set, then resolve
+                        // those addresses back to ALL their miner_ids so
+                        // the per-share UPDATE catches every worker
+                        // belonging to a paid address.
+                        let matched: Vec<String> = if proposal_height
+                            >= PAYOUT_ADDRESS_GROUPING_HEIGHT
+                        {
+                            // Pull (addr, _, miner_ids) for every unpaid
+                            // address. u32::MAX limit because we want
+                            // the full unpaid set, not the top-1000 cut.
+                            let groups = match db_mark.get_top_unpaid_addresses(cutoff_ts, u32::MAX)
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::error!(error = %e, "Failed to list unpaid addresses for mark-paid");
+                                    return;
+                                }
+                            };
+                            let mut acc = Vec::new();
+                            for (addr, _work, miner_ids) in groups {
+                                let h = ghost_common::identity::hash_message(addr.as_bytes());
                                 let mut arr = [0u8; 32];
                                 arr.copy_from_slice(&h);
-                                wanted.contains(&arr)
-                            })
-                            .collect();
+                                if wanted.contains(&arr) {
+                                    acc.extend(miner_ids);
+                                }
+                            }
+                            acc
+                        } else {
+                            let distinct = match db_mark.get_distinct_unpaid_miner_ids(cutoff_ts) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::error!(error = %e, "Failed to list unpaid miners for mark-paid");
+                                    return;
+                                }
+                            };
+                            distinct
+                                .into_iter()
+                                .filter(|id| {
+                                    let h = ghost_common::identity::hash_message(id.as_bytes());
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&h);
+                                    wanted.contains(&arr)
+                                })
+                                .collect()
+                        };
                         match db_mark.mark_miners_paid(&proposal_hash, &matched, cutoff_ts) {
                             Ok(n) => tracing::info!(
                                 shares_marked = n,
                                 miners = matched.len(),
+                                grouping = if proposal_height >= PAYOUT_ADDRESS_GROUPING_HEIGHT {
+                                    "address"
+                                } else {
+                                    "miner_id"
+                                },
                                 "Ledger: marked paid shares for approved proposal"
                             ),
                             Err(e) => tracing::error!(error = %e, "Ledger mark-paid failed"),
@@ -1261,10 +1357,14 @@ async fn main() -> Result<()> {
         Arc::new(move |node_id| qp_for_verifier.get_qualified(node_id));
 
     let health_handler = Arc::new(
-        HealthPingHandler::new(Arc::clone(mesh.peers()), Some(Arc::clone(&db)), Arc::clone(&ban_manager))
-            .with_elder_callback(voter_callback)
-            .with_node_capabilities_callback(node_caps_callback)
-            .with_capability_verifier(capability_verifier),
+        HealthPingHandler::new(
+            Arc::clone(mesh.peers()),
+            Some(Arc::clone(&db)),
+            Arc::clone(&ban_manager),
+        )
+        .with_elder_callback(voter_callback)
+        .with_node_capabilities_callback(node_caps_callback)
+        .with_capability_verifier(capability_verifier),
     );
     mesh.register_handler(
         Arc::clone(&health_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
@@ -1321,8 +1421,9 @@ async fn main() -> Result<()> {
     let glyph_handler = Arc::new(ghost_pool::glyph_handler::GlyphRegistrationHandler::new(
         Arc::clone(&db),
     ));
-    mesh.register_handler(Arc::clone(&glyph_handler)
-        as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+    mesh.register_handler(
+        Arc::clone(&glyph_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
+    );
 
     // Create broadcast relay for GhostGlyph messages (Noise-encrypted)
     let (glyph_tx, mut glyph_rx) =
@@ -1510,14 +1611,20 @@ async fn main() -> Result<()> {
             })
         }));
 
-        // Wire finalization callback to notify ghost-pay when checkpoints are finalized
+        // Wire finalization callback to notify ghost-pay when checkpoints are finalized.
+        // ghost-pay serves identity-derived TLS on 8800 (cert pubkey == node_id).
+        // Both daemons run on the same VM under the same identity, so the loopback
+        // call doesn't need cert-chain validation — `danger_accept_invalid_certs`
+        // is appropriate for localhost-only IPC. (Not the same code path as the
+        // L-29-blocked verification client; that one talks to remote peers.)
         if config.ghost_pay.is_some() {
             let finalize_client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
+                .danger_accept_invalid_certs(true)
                 .build()
                 .expect("Failed to create HTTP client for ghost-pay finalize");
-            let finalize_fn: ghost_consensus::nullifier_route_handler::FinalizeFn =
-                Arc::new(move |height: u64, state_root: [u8; 32], nullifiers: Vec<[u8; 32]>| {
+            let finalize_fn: ghost_consensus::nullifier_route_handler::FinalizeFn = Arc::new(
+                move |height: u64, state_root: [u8; 32], nullifiers: Vec<[u8; 32]>| {
                     let client = finalize_client.clone();
                     tokio::spawn(async move {
                         let body = serde_json::json!({
@@ -1536,7 +1643,7 @@ async fn main() -> Result<()> {
                                 .await;
                             }
                             match client
-                                .post("http://127.0.0.1:8800/api/v1/l2/finalize")
+                                .post("https://127.0.0.1:8800/api/v1/l2/finalize")
                                 .json(&body)
                                 .send()
                                 .await
@@ -1567,7 +1674,8 @@ async fn main() -> Result<()> {
                             "Failed to notify ghost-pay of finalization after 3 attempts"
                         );
                     });
-                });
+                },
+            );
             nullifier_handler.set_finalize_fn(finalize_fn);
         }
 
@@ -1608,7 +1716,9 @@ async fn main() -> Result<()> {
                 interval.tick().await;
 
                 if !handler_for_proposals.has_verifier() {
-                    tracing::debug!("GhostNoteVerifier not ready yet, skipping checkpoint proposal");
+                    tracing::debug!(
+                        "GhostNoteVerifier not ready yet, skipping checkpoint proposal"
+                    );
                     continue;
                 }
 
@@ -1678,7 +1788,8 @@ async fn main() -> Result<()> {
                 Ok(note_prover) => {
                     // Extract prepared VK for the verifier
                     if let Some(pvk) = note_prover.prepared_verifying_key() {
-                        let verifier = Arc::new(GhostNoteVerifier::new(pvk, note_prover.prover_id()));
+                        let verifier =
+                            Arc::new(GhostNoteVerifier::new(pvk, note_prover.prover_id()));
                         nullifier_handler_for_init.set_verifier(verifier);
                         info!(
                             elapsed_secs = start.elapsed().as_secs(),
@@ -1727,8 +1838,7 @@ async fn main() -> Result<()> {
                 if unshield_vk_path.exists() {
                     match ghost_zkp::load_unshield_verifier(&unshield_vk_path, 20) {
                         Ok(verifier) => {
-                            nullifier_handler_for_init
-                                .set_unshield_verifier(Arc::new(verifier));
+                            nullifier_handler_for_init.set_unshield_verifier(Arc::new(verifier));
                             info!("L2 unshield verifier initialized");
                         }
                         Err(e) => {
@@ -1878,8 +1988,13 @@ async fn main() -> Result<()> {
                                                             continue;
                                                         }
                                                         // Save updated VK alongside params
-                                                        let vk_path = params_dir.join("note_spend_vk.bin");
-                                                        if let Err(e) = ghost_mpc::params::save_verifying_key(&vk_path, &params.vk) {
+                                                        let vk_path =
+                                                            params_dir.join("note_spend_vk.bin");
+                                                        if let Err(e) =
+                                                            ghost_mpc::params::save_verifying_key(
+                                                                &vk_path, &params.vk,
+                                                            )
+                                                        {
                                                             tracing::warn!(error = %e, "MPC params_callback: Failed to save VK");
                                                         }
                                                         if let Err(e) =
@@ -1896,19 +2011,37 @@ async fn main() -> Result<()> {
                                                         }
                                                         // Also fetch latest payout params from same peer (with VK extraction)
                                                         let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
-                                                        if let Ok(payout_resp) = reqwest::Client::new()
-                                                            .get(&payout_url)
-                                                            .timeout(std::time::Duration::from_secs(60))
-                                                            .send()
-                                                            .await
+                                                        if let Ok(payout_resp) =
+                                                            reqwest::Client::new()
+                                                                .get(&payout_url)
+                                                                .timeout(
+                                                                    std::time::Duration::from_secs(
+                                                                        60,
+                                                                    ),
+                                                                )
+                                                                .send()
+                                                                .await
                                                         {
                                                             if payout_resp.status().is_success() {
-                                                                if let Ok(payout_data) = payout_resp.bytes().await {
+                                                                if let Ok(payout_data) =
+                                                                    payout_resp.bytes().await
+                                                                {
                                                                     if payout_data.len() > 1000 {
                                                                         let payout_current = params_dir.join("payout_params_current.bin");
-                                                                        let payout_write = std::fs::read_link(&payout_current)
-                                                                            .unwrap_or(payout_current.clone());
-                                                                        if let Err(e) = std::fs::write(&payout_write, &payout_data) {
+                                                                        let payout_write =
+                                                                            std::fs::read_link(
+                                                                                &payout_current,
+                                                                            )
+                                                                            .unwrap_or(
+                                                                                payout_current
+                                                                                    .clone(),
+                                                                            );
+                                                                        if let Err(e) =
+                                                                            std::fs::write(
+                                                                                &payout_write,
+                                                                                &payout_data,
+                                                                            )
+                                                                        {
                                                                             tracing::warn!(error = %e, "MPC params_callback: Failed to save payout params");
                                                                         } else {
                                                                             // Extract and save payout VK
@@ -1930,19 +2063,37 @@ async fn main() -> Result<()> {
                                                         }
                                                         // Also fetch latest unshield params from same peer (with VK extraction)
                                                         let unshield_url = format!("http://{}:8080/api/v1/mpc/unshield-params", host);
-                                                        if let Ok(unshield_resp) = reqwest::Client::new()
-                                                            .get(&unshield_url)
-                                                            .timeout(std::time::Duration::from_secs(60))
-                                                            .send()
-                                                            .await
+                                                        if let Ok(unshield_resp) =
+                                                            reqwest::Client::new()
+                                                                .get(&unshield_url)
+                                                                .timeout(
+                                                                    std::time::Duration::from_secs(
+                                                                        60,
+                                                                    ),
+                                                                )
+                                                                .send()
+                                                                .await
                                                         {
                                                             if unshield_resp.status().is_success() {
-                                                                if let Ok(unshield_data) = unshield_resp.bytes().await {
+                                                                if let Ok(unshield_data) =
+                                                                    unshield_resp.bytes().await
+                                                                {
                                                                     if unshield_data.len() > 1000 {
                                                                         let unshield_current = params_dir.join("unshield_params_current.bin");
-                                                                        let unshield_write = std::fs::read_link(&unshield_current)
-                                                                            .unwrap_or(unshield_current.clone());
-                                                                        if let Err(e) = std::fs::write(&unshield_write, &unshield_data) {
+                                                                        let unshield_write =
+                                                                            std::fs::read_link(
+                                                                                &unshield_current,
+                                                                            )
+                                                                            .unwrap_or(
+                                                                                unshield_current
+                                                                                    .clone(),
+                                                                            );
+                                                                        if let Err(e) =
+                                                                            std::fs::write(
+                                                                                &unshield_write,
+                                                                                &unshield_data,
+                                                                            )
+                                                                        {
                                                                             tracing::warn!(error = %e, "MPC params_callback: Failed to save unshield params");
                                                                         } else {
                                                                             // Extract and save unshield VK
@@ -2160,8 +2311,8 @@ async fn main() -> Result<()> {
                                                 let _ = std::fs::create_dir_all(&params_dir);
                                                 let params_path =
                                                     params_dir.join("note_spend_params_v0.bin");
-                                                let current_path =
-                                                    params_dir.join("note_spend_params_current.bin");
+                                                let current_path = params_dir
+                                                    .join("note_spend_params_current.bin");
 
                                                 if let Err(e) = std::fs::write(&params_path, &data)
                                                 {
@@ -2179,9 +2330,17 @@ async fn main() -> Result<()> {
                                                 }
 
                                                 // Extract and save note_spend VK
-                                                if let Ok(ns_params) = ghost_mpc::params::load_parameters(&params_path) {
-                                                    let ns_vk_path = params_dir.join("note_spend_vk.bin");
-                                                    if let Err(e) = ghost_mpc::params::save_verifying_key(&ns_vk_path, &ns_params.vk) {
+                                                if let Ok(ns_params) =
+                                                    ghost_mpc::params::load_parameters(&params_path)
+                                                {
+                                                    let ns_vk_path =
+                                                        params_dir.join("note_spend_vk.bin");
+                                                    if let Err(e) =
+                                                        ghost_mpc::params::save_verifying_key(
+                                                            &ns_vk_path,
+                                                            &ns_params.vk,
+                                                        )
+                                                    {
                                                         warn!(error = %e, "MPC: Failed to save note_spend VK");
                                                     }
                                                 }
@@ -2189,7 +2348,10 @@ async fn main() -> Result<()> {
                                                 info!(size = data.len(), peer = %host, "MPC: Fetched genesis note_spend params from peer!");
 
                                                 // Also fetch payout params from same peer (with VK extraction)
-                                                let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
+                                                let payout_url = format!(
+                                                    "http://{}:8080/api/v1/mpc/payout-params",
+                                                    host
+                                                );
                                                 if let Ok(payout_resp) = reqwest::Client::new()
                                                     .get(&payout_url)
                                                     .timeout(std::time::Duration::from_secs(60))
@@ -2197,15 +2359,31 @@ async fn main() -> Result<()> {
                                                     .await
                                                 {
                                                     if payout_resp.status().is_success() {
-                                                        if let Ok(payout_data) = payout_resp.bytes().await {
+                                                        if let Ok(payout_data) =
+                                                            payout_resp.bytes().await
+                                                        {
                                                             if payout_data.len() > 1000 {
-                                                                let payout_path = params_dir.join("payout_params_v0.bin");
-                                                                let payout_current = params_dir.join("payout_params_current.bin");
-                                                                if let Err(e) = std::fs::write(&payout_path, &payout_data) {
+                                                                let payout_path = params_dir
+                                                                    .join("payout_params_v0.bin");
+                                                                let payout_current = params_dir
+                                                                    .join(
+                                                                        "payout_params_current.bin",
+                                                                    );
+                                                                if let Err(e) = std::fs::write(
+                                                                    &payout_path,
+                                                                    &payout_data,
+                                                                ) {
                                                                     warn!(error = %e, "MPC: Failed to save fetched payout params");
                                                                 } else {
-                                                                    let _ = std::fs::remove_file(&payout_current);
-                                                                    if let Err(e) = std::os::unix::fs::symlink(&payout_path, &payout_current) {
+                                                                    let _ = std::fs::remove_file(
+                                                                        &payout_current,
+                                                                    );
+                                                                    if let Err(e) =
+                                                                        std::os::unix::fs::symlink(
+                                                                            &payout_path,
+                                                                            &payout_current,
+                                                                        )
+                                                                    {
                                                                         warn!(error = %e, "MPC: Failed to create payout params symlink");
                                                                     }
                                                                     // Extract and save payout VK
@@ -2222,7 +2400,10 @@ async fn main() -> Result<()> {
                                                     }
                                                 }
                                                 // Also fetch unshield params from same peer (with VK extraction)
-                                                let unshield_url = format!("http://{}:8080/api/v1/mpc/unshield-params", host);
+                                                let unshield_url = format!(
+                                                    "http://{}:8080/api/v1/mpc/unshield-params",
+                                                    host
+                                                );
                                                 if let Ok(unshield_resp) = reqwest::Client::new()
                                                     .get(&unshield_url)
                                                     .timeout(std::time::Duration::from_secs(60))
@@ -2230,15 +2411,31 @@ async fn main() -> Result<()> {
                                                     .await
                                                 {
                                                     if unshield_resp.status().is_success() {
-                                                        if let Ok(unshield_data) = unshield_resp.bytes().await {
+                                                        if let Ok(unshield_data) =
+                                                            unshield_resp.bytes().await
+                                                        {
                                                             if unshield_data.len() > 1000 {
-                                                                let unshield_path = params_dir.join("unshield_params_v0.bin");
-                                                                let unshield_current = params_dir.join("unshield_params_current.bin");
-                                                                if let Err(e) = std::fs::write(&unshield_path, &unshield_data) {
+                                                                let unshield_path = params_dir
+                                                                    .join("unshield_params_v0.bin");
+                                                                let unshield_current = params_dir
+                                                                    .join(
+                                                                    "unshield_params_current.bin",
+                                                                );
+                                                                if let Err(e) = std::fs::write(
+                                                                    &unshield_path,
+                                                                    &unshield_data,
+                                                                ) {
                                                                     warn!(error = %e, "MPC: Failed to save fetched unshield params");
                                                                 } else {
-                                                                    let _ = std::fs::remove_file(&unshield_current);
-                                                                    if let Err(e) = std::os::unix::fs::symlink(&unshield_path, &unshield_current) {
+                                                                    let _ = std::fs::remove_file(
+                                                                        &unshield_current,
+                                                                    );
+                                                                    if let Err(e) =
+                                                                        std::os::unix::fs::symlink(
+                                                                            &unshield_path,
+                                                                            &unshield_current,
+                                                                        )
+                                                                    {
                                                                         warn!(error = %e, "MPC: Failed to create unshield params symlink");
                                                                     }
                                                                     // Extract and save unshield VK
@@ -2703,9 +2900,14 @@ async fn main() -> Result<()> {
                                             continue;
                                         }
                                         // Extract and save note_spend VK
-                                        if let Ok(ns_params) = ghost_mpc::params::load_parameters(&write_path) {
+                                        if let Ok(ns_params) =
+                                            ghost_mpc::params::load_parameters(&write_path)
+                                        {
                                             let ns_vk_path = params_dir.join("note_spend_vk.bin");
-                                            if let Err(e) = ghost_mpc::params::save_verifying_key(&ns_vk_path, &ns_params.vk) {
+                                            if let Err(e) = ghost_mpc::params::save_verifying_key(
+                                                &ns_vk_path,
+                                                &ns_params.vk,
+                                            ) {
                                                 warn!(error = %e, "MPC: Failed to save refreshed note_spend VK");
                                             }
                                         }
@@ -2720,7 +2922,10 @@ async fn main() -> Result<()> {
                                             cached_msg = None;
                                         }
                                         // Also refresh payout params from same peer (with VK extraction)
-                                        let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
+                                        let payout_url = format!(
+                                            "http://{}:8080/api/v1/mpc/payout-params",
+                                            host
+                                        );
                                         if let Ok(payout_resp) = reqwest::Client::new()
                                             .get(&payout_url)
                                             .timeout(std::time::Duration::from_secs(60))
@@ -2730,15 +2935,25 @@ async fn main() -> Result<()> {
                                             if payout_resp.status().is_success() {
                                                 if let Ok(payout_data) = payout_resp.bytes().await {
                                                     if payout_data.len() > 1000 {
-                                                        let payout_current = params_dir.join("payout_params_current.bin");
-                                                        let payout_write = std::fs::read_link(&payout_current)
-                                                            .unwrap_or(payout_current.clone());
-                                                        if let Err(e) = std::fs::write(&payout_write, &payout_data) {
+                                                        let payout_current = params_dir
+                                                            .join("payout_params_current.bin");
+                                                        let payout_write =
+                                                            std::fs::read_link(&payout_current)
+                                                                .unwrap_or(payout_current.clone());
+                                                        if let Err(e) = std::fs::write(
+                                                            &payout_write,
+                                                            &payout_data,
+                                                        ) {
                                                             warn!(error = %e, "MPC: Failed to save refreshed payout params");
                                                         } else {
                                                             // Extract and save payout VK
-                                                            if let Ok(payout_params) = ghost_mpc::params::load_parameters(&payout_write) {
-                                                                let payout_vk_path = params_dir.join("payout_vk.bin");
+                                                            if let Ok(payout_params) =
+                                                                ghost_mpc::params::load_parameters(
+                                                                    &payout_write,
+                                                                )
+                                                            {
+                                                                let payout_vk_path = params_dir
+                                                                    .join("payout_vk.bin");
                                                                 if let Err(e) = ghost_mpc::params::save_verifying_key(&payout_vk_path, &payout_params.vk) {
                                                                     warn!(error = %e, "MPC: Failed to save refreshed payout VK");
                                                                 }
@@ -2750,7 +2965,10 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                         // Also refresh unshield params from same peer (with VK extraction)
-                                        let unshield_url = format!("http://{}:8080/api/v1/mpc/unshield-params", host);
+                                        let unshield_url = format!(
+                                            "http://{}:8080/api/v1/mpc/unshield-params",
+                                            host
+                                        );
                                         if let Ok(unshield_resp) = reqwest::Client::new()
                                             .get(&unshield_url)
                                             .timeout(std::time::Duration::from_secs(60))
@@ -2758,17 +2976,31 @@ async fn main() -> Result<()> {
                                             .await
                                         {
                                             if unshield_resp.status().is_success() {
-                                                if let Ok(unshield_data) = unshield_resp.bytes().await {
+                                                if let Ok(unshield_data) =
+                                                    unshield_resp.bytes().await
+                                                {
                                                     if unshield_data.len() > 1000 {
-                                                        let unshield_current = params_dir.join("unshield_params_current.bin");
-                                                        let unshield_write = std::fs::read_link(&unshield_current)
-                                                            .unwrap_or(unshield_current.clone());
-                                                        if let Err(e) = std::fs::write(&unshield_write, &unshield_data) {
+                                                        let unshield_current = params_dir
+                                                            .join("unshield_params_current.bin");
+                                                        let unshield_write =
+                                                            std::fs::read_link(&unshield_current)
+                                                                .unwrap_or(
+                                                                    unshield_current.clone(),
+                                                                );
+                                                        if let Err(e) = std::fs::write(
+                                                            &unshield_write,
+                                                            &unshield_data,
+                                                        ) {
                                                             warn!(error = %e, "MPC: Failed to save refreshed unshield params");
                                                         } else {
                                                             // Extract and save unshield VK
-                                                            if let Ok(unshield_params) = ghost_mpc::params::load_parameters(&unshield_write) {
-                                                                let unshield_vk_path = params_dir.join("unshield_vk.bin");
+                                                            if let Ok(unshield_params) =
+                                                                ghost_mpc::params::load_parameters(
+                                                                    &unshield_write,
+                                                                )
+                                                            {
+                                                                let unshield_vk_path = params_dir
+                                                                    .join("unshield_vk.bin");
                                                                 if let Err(e) = ghost_mpc::params::save_verifying_key(&unshield_vk_path, &unshield_params.vk) {
                                                                     warn!(error = %e, "MPC: Failed to save refreshed unshield VK");
                                                                 }
@@ -2891,6 +3123,18 @@ async fn main() -> Result<()> {
         capabilities,
     );
 
+    // VER-6: When a peer challenges this node's stratum capability, our
+    // handler probes the stratum endpoint to confirm reachability. Without
+    // this, the handler falls back to 127.0.0.1, which only proves loopback
+    // listening (not external reachability) AND spams pool_sv2 with bogus
+    // Noise NK handshakes that get logged as ERROR. Wiring the configured
+    // public_address restores VER-6's intent.
+    if let Some(public_address) = config.network.public_address.clone() {
+        verification_state = verification_state.with_stratum_host(public_address);
+    }
+    verification_state =
+        verification_state.with_stratum_ports(config.network.sv2_port, config.network.sv1_port);
+
     // Configure callbacks for health/status endpoints
     // Miner count now comes from share notifications via SRI forwarder
     verification_state = verification_state.with_callbacks(
@@ -2919,6 +3163,7 @@ async fn main() -> Result<()> {
                 miner_count: p.miner_count,
                 public_mining: true,
                 last_seen: p.last_seen,
+                max_capacity: p.max_capacity,
             })
             .collect()
     });
@@ -2926,8 +3171,19 @@ async fn main() -> Result<()> {
     // Mesh-wide deduplicated active miner count. Unions local active miner_id
     // hashes with the most-recent set from each connected peer (60s freshness).
     let mesh_for_active = Arc::clone(&mesh);
-    verification_state = verification_state.with_mesh_active_miners(move || {
-        mesh_for_active.mesh_active_miner_count(60) as u32
+    verification_state = verification_state
+        .with_mesh_active_miners(move || mesh_for_active.mesh_active_miner_count(60) as u32);
+
+    // Advertise this node's hardware-derived capacity via /api/internal/pool-nodes
+    // so the colocated translator's load balancer routes by utilisation %.
+    verification_state.set_max_capacity(effective_max_capacity);
+
+    // Wire Reaper observability counters through to /api/v1/reaper/status.
+    // The processor owns the Arc<ReaperStats>; we hand the dashboard a closure
+    // that snapshots it on demand.
+    let reaper_stats_for_api = template_processor.reaper_stats();
+    verification_state = verification_state.with_reaper_stats(move || {
+        serde_json::to_value(reaper_stats_for_api.snapshot()).unwrap_or(serde_json::Value::Null)
     });
 
     // Configure archive handler if archive mode enabled
@@ -2994,7 +3250,8 @@ async fn main() -> Result<()> {
             Err(e) => {
                 // H-2: Malformed secret is always fatal — operator intended to configure auth
                 return Err(anyhow::anyhow!(
-                    "Invalid internal_api_secret: {} — fix or remove the config entry", e
+                    "Invalid internal_api_secret: {} — fix or remove the config entry",
+                    e
                 ));
             }
         }
@@ -3013,7 +3270,10 @@ async fn main() -> Result<()> {
         // Dev/test: on non-mainnet networks, allow the verification server to start
         // without an internal API secret so local rigs can POST to /api/internal/*.
         // Mainnet enforcement is still intact via the normal validator path.
-        if !matches!(config.bitcoin.network, ghost_common::config::BitcoinNetwork::Mainnet) {
+        if !matches!(
+            config.bitcoin.network,
+            ghost_common::config::BitcoinNetwork::Mainnet
+        ) {
             warn!(
                 "Dev mode: network != mainnet and no internal_api_secret — allowing insecure internal API for local development only"
             );
@@ -3323,9 +3583,29 @@ async fn main() -> Result<()> {
                     const LEDGER_CAP: u32 = 1000;
                     const DUST_SATS: u64 = 546;
 
-                    let raw = db_for_bf
-                        .get_top_unpaid_miners(cutoff_ts, LEDGER_CAP)
-                        .unwrap_or_default();
+                    // Below PAYOUT_ADDRESS_GROUPING_HEIGHT we group by
+                    // miner_id (per-worker, legacy). At/above the gate we
+                    // group by payout_address so a multi-rig user takes
+                    // one slot instead of N. Both paths feed the same
+                    // (String, f64) tuple list into the dust filter
+                    // below — the String is just a miner_id pre-gate or
+                    // an address post-gate. The downstream proposal
+                    // handler treats the string as the payout target
+                    // either way (a miner_id is `<addr>.<worker>`, the
+                    // address derives from there; an address is itself).
+                    let raw: Vec<(String, f64)> =
+                        if height >= PAYOUT_ADDRESS_GROUPING_HEIGHT {
+                            db_for_bf
+                                .get_top_unpaid_addresses(cutoff_ts, LEDGER_CAP)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|(addr, work, _ids)| (addr, work))
+                                .collect()
+                        } else {
+                            db_for_bf
+                                .get_top_unpaid_miners(cutoff_ts, LEDGER_CAP)
+                                .unwrap_or_default()
+                        };
 
                     if raw.is_empty() {
                         warn!(
@@ -3976,44 +4256,129 @@ async fn main() -> Result<()> {
     let _verification_state_for_ws = Arc::clone(&verification_state);
 
     let http_port = config.network.http_port;
-    // Build TLS config for HTTPS on the verification server.
-    // Only enable TLS when the operator explicitly provides cert/key paths OR on mainnet.
-    // On signet/testnet without explicit certs, use plain HTTP to match the verification
-    // client which uses HTTP for peer challenges (self-signed certs aren't trusted).
+    let verification_https_port = config.network.verification_https_port;
+    // Build TLS config for the verification HTTPS listener. Resolution order:
+    //   1. Operator-managed PEM files (`tls.cert_path` + `tls.key_path`)
+    //   2. Identity-derived cert (cert pubkey == node_id; mainnet-allowed)
+    //   3. Random self-signed (testnet/dev only)
+    //
+    // Plain HTTP on `http_port` is ALWAYS bound — it serves SRI's share
+    // webhook (loopback), nginx public-API upstream, and the local dashboard.
+    // TLS is added on a SEPARATE listener (`verification_https_port`) used
+    // only by cross-VM peer challenges, so SRI/nginx/dashboard never see TLS.
     let has_explicit_tls = config.network.tls.cert_path.is_some();
     let is_mainnet_tls = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
-    let tls_server_config = if has_explicit_tls || is_mainnet_tls {
+    // Identity-derived TLS works only with LocalSigner; HSM/KMS need operator PEMs.
+    let identity_secret_for_tls: Option<[u8; 32]> = identity
+        .signer()
+        .as_any()
+        .downcast_ref::<ghost_common::signer::LocalSigner>()
+        .map(|s| s.signing_key_bytes());
+
+    let tls_server_config = if has_explicit_tls {
         match ghost_common::tls::build_server_config_for_network(
             &config.network.tls,
             is_mainnet_tls,
         ) {
             Ok(tls) => {
                 info!(
-                    "TLS configured for verification server on port {}",
+                    "TLS configured (operator PEM) for verification server on port {}",
                     http_port
                 );
                 Some(tls)
             }
             Err(e) => {
-                warn!(
+                error!(
                     error = %e,
-                    "TLS configuration failed, verification server will use plain HTTP. \
-                     For production mainnet deployments, configure tls.cert_path and \
-                     tls.key_path in [network] section."
+                    "Operator PEM TLS load failed; verification mesh will not start cleanly"
+                );
+                None
+            }
+        }
+    } else if let Some(secret) = identity_secret_for_tls {
+        match ghost_common::tls::build_server_config_with_identity(
+            &config.network.tls,
+            &secret,
+            config.network.public_address.as_deref(),
+        ) {
+            Ok(tls) => {
+                info!(
+                    "TLS configured (identity-derived, cert pubkey = node_id) on port {}",
+                    http_port
+                );
+                Some(tls)
+            }
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "Identity-derived TLS build failed; falling back to plain HTTP"
+                );
+                None
+            }
+        }
+    } else if is_mainnet_tls {
+        // HSM/KMS without operator PEMs is a misconfiguration on mainnet.
+        match ghost_common::tls::build_server_config_for_network(
+            &config.network.tls,
+            is_mainnet_tls,
+        ) {
+            Ok(tls) => Some(tls),
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "Mainnet TLS unavailable: HSM/KMS signers must supply tls.cert_path + tls.key_path"
                 );
                 None
             }
         }
     } else {
-        info!("Verification server using plain HTTP (no TLS cert configured)");
+        info!("No TLS configured — verification HTTPS listener will not start");
         None
     };
+
+    // Always bind plain HTTP on `http_port`. Loopback-only consumers (SRI
+    // share webhook on 127.0.0.1, nginx public-API upstream, the local
+    // dashboard) all expect plain HTTP and have no TLS-skip-verify escape
+    // hatch. Cross-VM peer challenges use the HTTPS listener below instead.
+    let state_for_http = Arc::clone(&verification_state);
     tokio::spawn(async move {
-        if let Err(e) = start_server(verification_state, http_port, tls_server_config).await {
-            error!(error = %e, "Verification server error");
+        if let Err(e) = start_server(state_for_http, http_port, None).await {
+            error!(error = %e, "Verification HTTP server error (port {})", http_port);
         }
     });
-    info!("HTTP API listening on port {}", http_port);
+    info!("HTTP API listening on port {} (plain HTTP)", http_port);
+
+    // Additionally bind HTTPS on `verification_https_port` for the inter-peer
+    // verification mesh — only the verification client uses this port. Cert
+    // is identity-derived (pubkey == node_id), peers pin against the
+    // registered node_id, no CA / DNS / Let's Encrypt required.
+    let https_verification_listening = tls_server_config.is_some();
+    if let Some(tls) = tls_server_config {
+        let state_for_https = Arc::clone(&verification_state);
+        tokio::spawn(async move {
+            if let Err(e) = start_server(state_for_https, verification_https_port, Some(tls)).await
+            {
+                error!(
+                    error = %e,
+                    "Verification HTTPS server error (port {})",
+                    verification_https_port
+                );
+            }
+        });
+        info!(
+            "Verification HTTPS listening on port {} (identity-pinned TLS for peer mesh)",
+            verification_https_port
+        );
+    }
+
+    // Phase 3: capability self-check loop. Probes prerequisites for each
+    // claimed capability (stratum ports, disk space, ghost-pay daemon,
+    // reaper config) every 30s. Diagnostic only — surfaced via the dashboard
+    // and `/health/self_check`. Does not auto-demote claims; the verification
+    // mesh catches false claims at the consensus layer.
+    let self_check = SelfCheck::new();
+    self_check.clone().spawn_loop(Arc::new(config.clone()));
+    info!("Capability self-check loop started (30s interval)");
 
     // Subscribe to template events BEFORE starting the processor to avoid race condition
     // (the processor fires NewWork immediately on first refresh)
@@ -4334,10 +4699,21 @@ async fn main() -> Result<()> {
     });
 
     // Start periodic verification task (verifies peer capabilities every 5 minutes)
-    // This implements the spec: nodes verify each other, results stored in DB for payout calculation
+    // This implements the spec: nodes verify each other, results stored in DB for payout calculation.
+    //
+    // The peer_provider's `http_port` becomes the port the verification client
+    // connects to on each peer. When the local HTTPS listener bound, peers also
+    // expose the same HTTPS listener (per protocol), so we target their
+    // `verification_https_port`. Otherwise fall back to plain HTTP on
+    // `http_port`.
+    let peer_challenge_port = if https_verification_listening {
+        config.network.verification_https_port
+    } else {
+        config.network.http_port
+    };
     let peer_provider = Arc::new(PeerProviderAdapter::new(
         Arc::clone(mesh.peers()),
-        config.network.http_port,
+        peer_challenge_port,
     ));
 
     // Create broadcast channel for verification results
@@ -4345,13 +4721,21 @@ async fn main() -> Result<()> {
         ghost_verification::task::verification_broadcast_channel(100);
 
     // C-3: Handle Result from VerificationTask::new() instead of panicking
-    // Use HTTPS on mainnet, HTTP on signet/testnet (where TLS is typically not configured)
+    // Mainnet uses identity-pinned TLS (cert pubkey == node_id, no CA chain).
+    // Signet/testnet falls back to plain HTTP for ease of dev iteration.
     let is_mainnet = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
     let verification_result = if is_mainnet {
-        VerificationTask::new_with_identity(
+        // Build the pubkey allow list backed by the live peer registry. The
+        // closure clones the Arc<PeerManager> so it can be consulted at every
+        // TLS handshake without holding any lock outside the call.
+        let peer_mgr_for_pinning = Arc::clone(mesh.peers());
+        let pubkey_allow: ghost_common::tls::PubkeyAllowList =
+            Arc::new(move |pubkey: &[u8; 32]| peer_mgr_for_pinning.get_peer(pubkey).is_some());
+        VerificationTask::new_with_identity_pinned(
             Arc::clone(&db),
             &identity,
             peer_provider as Arc<dyn PeerProvider>,
+            pubkey_allow,
         )
     } else {
         // Signet/testnet: Use HTTP since TLS is typically not configured
@@ -4942,18 +5326,59 @@ fn expand_path(path: &std::path::Path) -> Result<PathBuf> {
     }
 }
 
+/// Build the pool template-reaper config from the operator's per-vector
+/// settings. When the master switch is off, every detector is disabled.
+/// Otherwise each detector and threshold maps straight through to the
+/// `ghost_reaper::ReaperConfig` field that enforces it. Node-only vectors
+/// (`reject_opreturn`, `reject_runestone`) have no pool-side equivalent and are
+/// intentionally not mapped here — the Rust reaper bounds OP_RETURN via the
+/// `max_op_return_bytes` threshold and has no Runestone detector.
+fn reaper_config_from_settings(s: &ReaperSettings) -> ReaperConfig {
+    if !s.enabled {
+        return ReaperConfig::disabled();
+    }
+    ReaperConfig {
+        enabled: true,
+        reject_inscription_envelope: s.reject_inscription,
+        reject_drop_stuffing: s.reject_dropstuffing,
+        reject_fake_pubkeys: s.reject_fakepubkey,
+        reject_annex: s.reject_annex,
+        reject_unreachable_code: s.reject_unreachable_code,
+        max_op_return_bytes: s.max_op_return_bytes,
+        min_drop_data_size: s.min_drop_size,
+        reject_excess_witness: s.reject_excess_witness,
+        min_excess_witness_bytes: s.min_excess_witness_bytes,
+        reject_legacy_data_stuffing: s.reject_legacy_data_stuffing,
+        legacy_max_push_bytes: s.legacy_max_push_bytes,
+        validate_pubkey_curve_point: s.validate_pubkey_curve_point,
+    }
+}
+
 /// Load configuration from file
 fn load_config(path: &std::path::Path) -> Result<NodeConfig> {
     let config = if path.exists() {
         let content = std::fs::read_to_string(path)?;
+
+        // One-shot deprecation check: the legacy `public_mining` bool was
+        // removed in favour of `mining_mode`. Old pool.toml files still parse
+        // (serde silently ignores unknown fields) but operators should clean
+        // up so the source of truth is unambiguous.
+        if content
+            .lines()
+            .any(|l| l.trim_start().starts_with("public_mining"))
+        {
+            warn!(
+                "DEPRECATED: `public_mining` in pool.toml is ignored. \
+                 Use `mining_mode = \"PublicPool\" | \"PrivatePool\" | \"PrivateSolo\"` instead. \
+                 Remove the `public_mining` line to silence this warning."
+            );
+        }
+
         let config: NodeConfig = toml::from_str(&content)?;
 
         // Check config file permissions — fails on mainnet if world-readable
-        ghost_common::config::validate_config_permissions(
-            path,
-            Some(&config.bitcoin.network),
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
+        ghost_common::config::validate_config_permissions(path, Some(&config.bitcoin.network))
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         config
     } else {
@@ -5023,6 +5448,47 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    // ── reaper_config_from_settings ──────────────────────────────────
+
+    #[test]
+    fn test_reaper_config_master_off_disables_all() {
+        let s = ReaperSettings {
+            enabled: false,
+            ..Default::default()
+        };
+        let cfg = reaper_config_from_settings(&s);
+        assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn test_reaper_config_maps_per_vector() {
+        let s = ReaperSettings {
+            enabled: true,
+            reject_inscription: false,
+            reject_annex: false,
+            reject_legacy_data_stuffing: false,
+            max_op_return_bytes: 40,
+            min_drop_size: 64,
+            ..Default::default()
+        };
+        let cfg = reaper_config_from_settings(&s);
+        assert!(cfg.enabled);
+        // disabled vectors map through
+        assert!(!cfg.reject_inscription_envelope);
+        assert!(!cfg.reject_annex);
+        assert!(!cfg.reject_legacy_data_stuffing);
+        // untouched vectors stay on
+        assert!(cfg.reject_drop_stuffing);
+        assert!(cfg.reject_fake_pubkeys);
+        assert!(cfg.reject_unreachable_code);
+        assert!(cfg.reject_excess_witness);
+        // thresholds map (canonical min_drop_size -> min_drop_data_size)
+        assert_eq!(cfg.max_op_return_bytes, 40);
+        assert_eq!(cfg.min_drop_data_size, 64);
+        // valid for the analyzer
+        assert!(cfg.validate().is_ok());
+    }
+
     // ── expand_path ──────────────────────────────────────────────────
 
     #[test]
@@ -5064,10 +5530,7 @@ mod tests {
     fn load_config_missing_file_returns_defaults() {
         let result = load_config(Path::new("/nonexistent/ghost.toml")).unwrap();
         let default = NodeConfig::default();
-        assert_eq!(
-            result.pool.min_payout_sats,
-            default.pool.min_payout_sats
-        );
+        assert_eq!(result.pool.min_payout_sats, default.pool.min_payout_sats);
     }
 
     #[test]

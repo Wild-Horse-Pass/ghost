@@ -795,7 +795,9 @@ fn test_891_submit_external_transfer_valid() {
     let broadcast_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let bc = broadcast_called.clone();
     nodes[validator_idx].2.set_broadcast_fn(Arc::new(
-        move |_msg_type: MessageType, _payload: Vec<u8>| -> Result<(), ghost_common::error::GhostError> {
+        move |_msg_type: MessageType,
+              _payload: Vec<u8>|
+              -> Result<(), ghost_common::error::GhostError> {
             bc.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         },
@@ -926,10 +928,7 @@ fn test_894_finalize_fn_called_on_checkpoint() {
     // Submit a transaction to the correct validator
     let nullifier = [0xDD; 32];
     let validator_id = nodes[0].1.validator_for_nullifier(&nullifier).unwrap();
-    let validator_idx = node_ids
-        .iter()
-        .position(|id| *id == validator_id)
-        .unwrap();
+    let validator_idx = node_ids.iter().position(|id| *id == validator_id).unwrap();
 
     let tx = make_test_tx(nullifier, genesis_root);
     let msg = L2ConfidentialTransferMessage {
@@ -951,17 +950,17 @@ fn test_894_finalize_fn_called_on_checkpoint() {
 
     // Proposer creates checkpoint
     let proposer_id = nodes[0].1.get_proposer(1).unwrap();
-    let proposer_idx = node_ids
-        .iter()
-        .position(|id| *id == proposer_id)
-        .unwrap();
+    let proposer_idx = node_ids.iter().position(|id| *id == proposer_id).unwrap();
 
     let proposal = nodes[proposer_idx]
         .2
         .propose_checkpoint()
         .unwrap()
         .expect("Should produce proposal");
-    assert!(!proposal.transactions.is_empty(), "Proposal should have transactions");
+    assert!(
+        !proposal.transactions.is_empty(),
+        "Proposal should have transactions"
+    );
 
     // Proposer stores its own proposal (mirrors propose_and_broadcast flow)
     let proposer_vote = nodes[proposer_idx]
@@ -987,11 +986,7 @@ fn test_894_finalize_fn_called_on_checkpoint() {
     // Feed votes to proposer
     let mut finalized = false;
     for vote in &votes {
-        if nodes[proposer_idx]
-            .2
-            .handle_checkpoint_vote(vote)
-            .unwrap()
-        {
+        if nodes[proposer_idx].2.handle_checkpoint_vote(vote).unwrap() {
             finalized = true;
         }
     }
@@ -1038,10 +1033,7 @@ fn test_895_external_submit_through_finalization() {
     // Step 1: External submit on the correct validator
     let nullifier = [0xEE; 32];
     let validator_id = nodes[0].1.validator_for_nullifier(&nullifier).unwrap();
-    let validator_idx = node_ids
-        .iter()
-        .position(|id| *id == validator_id)
-        .unwrap();
+    let validator_idx = node_ids.iter().position(|id| *id == validator_id).unwrap();
 
     let tx = make_test_tx(nullifier, genesis_root);
     let msg = L2ConfidentialTransferMessage {
@@ -1066,10 +1058,7 @@ fn test_895_external_submit_through_finalization() {
 
     // Step 3: Proposer creates checkpoint
     let proposer_id = nodes[0].1.get_proposer(1).unwrap();
-    let proposer_idx = node_ids
-        .iter()
-        .position(|id| *id == proposer_id)
-        .unwrap();
+    let proposer_idx = node_ids.iter().position(|id| *id == proposer_id).unwrap();
 
     let proposal = nodes[proposer_idx]
         .2
@@ -1099,11 +1088,7 @@ fn test_895_external_submit_through_finalization() {
     // Step 5: Feed votes to reach quorum
     let mut finalized = false;
     for vote in &votes {
-        if nodes[proposer_idx]
-            .2
-            .handle_checkpoint_vote(vote)
-            .unwrap()
-        {
+        if nodes[proposer_idx].2.handle_checkpoint_vote(vote).unwrap() {
             finalized = true;
         }
     }

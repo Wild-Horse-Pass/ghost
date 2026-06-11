@@ -177,7 +177,11 @@ async fn baseline_06_metrics_available() {
             "{} /metrics does not contain ghost_ prefixed metrics",
             ip
         );
-        println!("  {} /metrics OK ({} bytes, contains ghost_* metrics)", ip, body.len());
+        println!(
+            "  {} /metrics OK ({} bytes, contains ghost_* metrics)",
+            ip,
+            body.len()
+        );
     }
 }
 

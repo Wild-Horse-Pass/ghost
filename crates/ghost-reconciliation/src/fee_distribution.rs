@@ -187,8 +187,7 @@ impl L2FeeDistribution {
 
         // Same decay schedule as L1
         let (treasury_bps, _node_bps) = treasury_state.get_fee_split_bps(reference_time);
-        let treasury_amount =
-            (total_fee_pool as u128 * treasury_bps as u128 / 10000) as u64;
+        let treasury_amount = (total_fee_pool as u128 * treasury_bps as u128 / 10000) as u64;
         let node_pool = total_fee_pool.saturating_sub(treasury_amount);
 
         // Distribute node_pool among Ghost Pay nodes weighted by capability shares

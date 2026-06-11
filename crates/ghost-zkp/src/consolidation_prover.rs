@@ -133,7 +133,9 @@ impl GhostConsolidateProver {
     /// Create a prover with full Groth16 setup (TESTING ONLY)
     #[cfg(not(feature = "zk-production"))]
     pub fn new_with_setup(tree_depth: usize) -> ZkResult<Self> {
-        error!("SECURITY WARNING: Using random trusted setup for NoteConsolidateCircuit. INSECURE.");
+        error!(
+            "SECURITY WARNING: Using random trusted setup for NoteConsolidateCircuit. INSECURE."
+        );
         let dummy_circuit = NoteConsolidateCircuit::<Fr>::dummy(tree_depth);
         let params =
             generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::rngs::OsRng)
@@ -278,8 +280,7 @@ impl GhostConsolidateProver {
         // Fill in real inputs
         for (i, input) in witness.inputs.iter().enumerate() {
             let blinding_fr: Fr = bytes_to_field(&input.blinding)?;
-            let commitment =
-                pedersen_commit_native(Fr::from(input.value), blinding_fr);
+            let commitment = pedersen_commit_native(Fr::from(input.value), blinding_fr);
             let nullifier = compute_nullifier_with_epoch_native(
                 spending_key,
                 input.index,
@@ -306,8 +307,7 @@ impl GhostConsolidateProver {
         // Compute commitment root from the first real input
         let first_input = &witness.inputs[0];
         let first_blinding: Fr = bytes_to_field(&first_input.blinding)?;
-        let first_commitment =
-            pedersen_commit_native(Fr::from(first_input.value), first_blinding);
+        let first_commitment = pedersen_commit_native(Fr::from(first_input.value), first_blinding);
         let first_siblings: Vec<Fr> = first_input
             .merkle_siblings
             .iter()
@@ -347,8 +347,7 @@ impl GhostConsolidateProver {
         // Compute commitment root from first input
         let first_input = &witness.inputs[0];
         let first_blinding: Fr = bytes_to_field(&first_input.blinding)?;
-        let first_commitment =
-            pedersen_commit_native(Fr::from(first_input.value), first_blinding);
+        let first_commitment = pedersen_commit_native(Fr::from(first_input.value), first_blinding);
         let first_siblings: Vec<Fr> = first_input
             .merkle_siblings
             .iter()
@@ -361,8 +360,7 @@ impl GhostConsolidateProver {
         let mut nullifiers = [[0u8; 32]; MAX_CONSOLIDATION_INPUTS];
         for (i, input) in witness.inputs.iter().enumerate() {
             let blinding_fr: Fr = bytes_to_field(&input.blinding)?;
-            let commitment =
-                pedersen_commit_native(Fr::from(input.value), blinding_fr);
+            let commitment = pedersen_commit_native(Fr::from(input.value), blinding_fr);
             let nullifier = compute_nullifier_with_epoch_native(
                 spending_key,
                 input.index,
@@ -420,10 +418,7 @@ mod tests {
     use crate::circuit::mimc::mimc_hash_native;
 
     /// Build a tree from sparse leaves and return (root, per-leaf siblings)
-    fn build_tree(
-        depth: usize,
-        leaves: &[(u64, Fr)],
-    ) -> (Fr, Vec<Vec<[u8; 32]>>) {
+    fn build_tree(depth: usize, leaves: &[(u64, Fr)]) -> (Fr, Vec<Vec<[u8; 32]>>) {
         let leaf_map: std::collections::HashMap<u64, Fr> = leaves.iter().cloned().collect();
 
         fn compute_node(
@@ -568,8 +563,7 @@ mod tests {
     #[test]
     #[ignore] // Expensive ~10-30s
     fn test_groth16_prove_roundtrip() {
-        let prover =
-            GhostConsolidateProver::new_with_setup(4).expect("Setup should succeed");
+        let prover = GhostConsolidateProver::new_with_setup(4).expect("Setup should succeed");
         assert!(prover.has_groth16_params());
         let witness = create_test_witness(4, 2);
         let proof = prover.prove(&witness).expect("Proof should succeed");
