@@ -484,80 +484,6 @@ mod buds_classification {
 }
 
 // ============================================================================
-// Wraith Protocol E2E Tests
-// ============================================================================
-
-mod wraith_protocol {
-    use wraith_protocol::{
-        ParticipantTier, Phase, SessionState, WraithDenomination, WraithSession,
-    };
-
-    #[test]
-    fn test_session_creation() {
-        let session = WraithSession::new(ParticipantTier::Small, WraithDenomination::Small);
-
-        // Session ID should be valid (32 bytes = 64 hex chars)
-        let session_id_hex = session.session_id_hex();
-        assert_eq!(session_id_hex.len(), 64);
-        assert!(session_id_hex.chars().all(|c| c.is_ascii_hexdigit()));
-
-        // Initial state should be WaitingForParticipants
-        assert_eq!(session.state(), SessionState::WaitingForParticipants);
-    }
-
-    #[test]
-    fn test_session_id_uniqueness() {
-        let session1 = WraithSession::new(ParticipantTier::Small, WraithDenomination::Small);
-        let session2 = WraithSession::new(ParticipantTier::Small, WraithDenomination::Small);
-
-        assert_ne!(session1.session_id_hex(), session2.session_id_hex());
-    }
-
-    #[test]
-    fn test_session_denominations() {
-        for denom in WraithDenomination::all() {
-            let session = WraithSession::new(ParticipantTier::Small, *denom);
-            assert_eq!(session.denomination(), denom);
-        }
-    }
-
-    #[test]
-    fn test_phase_ordering() {
-        // Phases should proceed in order based on number
-        assert!(Phase::Split.number() < Phase::Merge.number());
-    }
-
-    #[test]
-    fn test_phase_display() {
-        assert!(!Phase::Split.to_string().is_empty());
-        assert!(!Phase::Merge.to_string().is_empty());
-    }
-
-    #[test]
-    fn test_phase_input_output_ratios() {
-        // Split: 1 input -> n outputs
-        assert_eq!(Phase::Split.input_ratio(), 1);
-        assert!(Phase::Split.output_ratio() > 1);
-
-        // Merge: n inputs -> 1 output
-        assert!(Phase::Merge.input_ratio() > 1);
-        assert_eq!(Phase::Merge.output_ratio(), 1);
-    }
-
-    #[test]
-    fn test_participant_tiers() {
-        // Smaller denomination tiers require MORE participants for anonymity
-        // (more users with small amounts means larger anonymity sets needed)
-        assert!(
-            ParticipantTier::Small.min_participants() > ParticipantTier::Medium.min_participants()
-        );
-        assert!(
-            ParticipantTier::Medium.min_participants() > ParticipantTier::Large.min_participants()
-        );
-    }
-}
-
-// ============================================================================
 // Consensus E2E Tests
 // ============================================================================
 
@@ -630,7 +556,6 @@ mod full_stack {
         use ::ghost_gsp_proto::ClientMessage;
         use ::ghost_keys::GhostKeys;
         use ::ghost_locks::TimelockTier;
-        use ::wraith_protocol::Phase;
 
         // If this compiles, all crates are compatible
         let _ = BudsTier::T0;
@@ -638,7 +563,6 @@ mod full_stack {
         let _ = ClientMessage::GetBalance { max_k: None };
         let _ = GhostKeys::generate();
         let _ = TimelockTier::Standard;
-        let _ = Phase::Split;
     }
 
     /// Test complete lock creation flow

@@ -269,7 +269,12 @@ mod tests {
 
     #[test]
     fn test_lock_status_serde() {
-        for status in [LockStatus::Active, LockStatus::Pending, LockStatus::Matured, LockStatus::Cancelled] {
+        for status in [
+            LockStatus::Active,
+            LockStatus::Pending,
+            LockStatus::Matured,
+            LockStatus::Cancelled,
+        ] {
             let json = serde_json::to_string(&status).unwrap();
             let restored: LockStatus = serde_json::from_str(&json).unwrap();
             assert_eq!(restored, status);

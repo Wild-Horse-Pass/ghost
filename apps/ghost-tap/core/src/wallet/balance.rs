@@ -145,8 +145,7 @@ impl UtxoSet {
             .utxos
             .iter()
             .filter(|u| {
-                u.confirmations > 0
-                    && !self.pending_spends.contains(&(u.txid.clone(), u.vout))
+                u.confirmations > 0 && !self.pending_spends.contains(&(u.txid.clone(), u.vout))
             })
             .collect();
 

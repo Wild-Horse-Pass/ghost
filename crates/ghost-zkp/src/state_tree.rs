@@ -261,7 +261,9 @@ impl BalanceTree {
 
     /// Get total balance across all accounts
     pub fn total_balance(&self) -> u64 {
-        self.leaves.values().fold(0u64, |acc, &v| acc.saturating_add(v))
+        self.leaves
+            .values()
+            .fold(0u64, |acc, &v| acc.saturating_add(v))
     }
 
     /// Clone the tree and apply a payment, returning the witness and new tree
@@ -623,10 +625,7 @@ mod tests {
         }
         let optimized = tree.root().unwrap();
         let reference = brute_force_root(&tree);
-        assert_eq!(
-            optimized, reference,
-            "50-leaf root mismatch at depth 8"
-        );
+        assert_eq!(optimized, reference, "50-leaf root mismatch at depth 8");
     }
 
     #[test]
@@ -692,7 +691,11 @@ mod tests {
         for i in (0u64..200).rev() {
             tree2.set_balance(i * 5000, (i + 1) * 1000);
         }
-        assert_eq!(root_200, tree2.root().unwrap(), "Insertion order shouldn't matter");
+        assert_eq!(
+            root_200,
+            tree2.root().unwrap(),
+            "Insertion order shouldn't matter"
+        );
 
         // Apply payments and verify root changes
         let mut prev_root = root_200;
@@ -701,7 +704,11 @@ mod tests {
             let recipient = ((i + 1) % 200) * 5000;
             tree.apply_payment(sender, recipient, 100).unwrap();
             let new_root = tree.root().unwrap();
-            assert_ne!(prev_root, new_root, "Root should change after payment {}", i);
+            assert_ne!(
+                prev_root, new_root,
+                "Root should change after payment {}",
+                i
+            );
             prev_root = new_root;
         }
     }

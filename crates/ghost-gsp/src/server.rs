@@ -603,6 +603,18 @@ pub struct GspState {
     /// M-12: Per-wallet rate limiter
     /// Limits operations per wallet across all connections to prevent abuse
     pub wallet_rate_limiter: Arc<WalletRateLimiter>,
+
+    /// BIP-352 silent-payment candidate-transaction broadcaster.
+    ///
+    /// The eventual block-scanner publishes here; every WS session that
+    /// has subscribed via `SubscribeSilentPayments` listens to a fresh
+    /// `subscribe()` of this channel and forwards events as
+    /// `ServerMessage::CandidateTransaction` to its connected wallet.
+    ///
+    /// Today the only producer is the admin REST endpoint
+    /// `POST /api/v1/admin/inject-candidate-tx` (dev-only synthetic injection).
+    /// Real chain-driven scanning lands as a follow-up.
+    pub silent_payments_tx: tokio::sync::broadcast::Sender<ghost_gsp_proto::ServerMessage>,
 }
 
 impl GspState {
@@ -627,6 +639,11 @@ impl GspState {
 
         // Initialize reorg notifier
         let reorg_notifier = ReorgNotifier::new();
+
+        // Silent-payment candidate-tx broadcaster. Capacity 1024: a session
+        // that lags more than this many pushes drops the laggard messages
+        // and reconnects via the standard reconnect/backoff path.
+        let (silent_payments_tx, _) = tokio::sync::broadcast::channel(1024);
 
         // C-6/H-11: Initialize UTXO reservation manager with persistence for crash recovery
         let reservations_db_path = config.data_dir.join("utxo_reservations.db");
@@ -653,6 +670,7 @@ impl GspState {
             connection_count: AtomicUsize::new(0),
             utxo_reservations,
             wallet_rate_limiter,
+            silent_payments_tx,
         })
     }
 
@@ -836,6 +854,13 @@ impl GspServer {
             .route("/api/v1/register", post(rest::register))
             // Session management
             .route("/api/v1/session", post(rest::create_session))
+            // Admin: synthetically inject a BIP-352 candidate transaction
+            // for end-to-end testing the silent-payment push path. **Dev-only**:
+            // refused on mainnet. Real chain-driven scanning is the next chunk.
+            .route(
+                "/api/v1/admin/inject-candidate-tx",
+                post(rest::admin_inject_candidate_tx),
+            )
             // WebSocket endpoint
             .route("/ws/v1", get(websocket::ws_handler))
             // LOW-API-1: Security headers for all responses

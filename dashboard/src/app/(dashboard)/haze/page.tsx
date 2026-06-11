@@ -79,7 +79,8 @@ export default function HazePage() {
     <div className="space-y-6">
       {/* 1. Page Header */}
       <PageHeader
-        title="Ghost Haze"
+        eyebrow="haze"
+        title="Block storage layer."
         subtitle="Storage privacy layer for your Bitcoin node"
         actions={
           haze && (

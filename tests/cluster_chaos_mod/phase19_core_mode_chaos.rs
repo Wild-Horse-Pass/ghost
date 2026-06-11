@@ -153,13 +153,19 @@ async fn core_chaos_03_restore_tor_node_core() {
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
-    assert!(active, "VM3 ghost-core not active after restore (90s timeout)");
+    assert!(
+        active,
+        "VM3 ghost-core not active after restore (90s timeout)"
+    );
 
     // Wait for ghost-pool to become healthy
     let healthy = client
         .wait_for_node_healthy(vm3.ip, Duration::from_secs(120))
         .await;
-    assert!(healthy, "VM3 ghost-pool not healthy after ghost-core restore");
+    assert!(
+        healthy,
+        "VM3 ghost-pool not healthy after ghost-core restore"
+    );
     println!("  VM3 ghost-core restored, ghost-pool reconnected");
 }
 
@@ -221,7 +227,10 @@ async fn core_chaos_04_kill_clearnet_node_core() {
     let healthy = client
         .wait_for_node_healthy(vm2.ip, Duration::from_secs(120))
         .await;
-    assert!(healthy, "VM2 ghost-pool not healthy after ghost-core restore");
+    assert!(
+        healthy,
+        "VM2 ghost-pool not healthy after ghost-core restore"
+    );
     println!("  VM2 ghost-core restored");
 }
 
@@ -245,10 +254,8 @@ async fn core_chaos_05_partition_tor_vs_clearnet() {
 
     // Set up partition chains
     for node in &config.nodes {
-        SshController::setup_partition_chain(node).expect(&format!(
-            "failed to setup chain on {}",
-            node.name
-        ));
+        SshController::setup_partition_chain(node)
+            .expect(&format!("failed to setup chain on {}", node.name));
     }
 
     // Block cross-group traffic on mesh ports
@@ -256,20 +263,16 @@ async fn core_chaos_05_partition_tor_vs_clearnet() {
         let a_node = config.node_by_name(a_name).unwrap();
         for b_name in &group_b {
             let b_node = config.node_by_name(b_name).unwrap();
-            SshController::block_peer(a_node, b_node.ip).expect(&format!(
-                "failed to block {} on {}",
-                b_name, a_name
-            ));
+            SshController::block_peer(a_node, b_node.ip)
+                .expect(&format!("failed to block {} on {}", b_name, a_name));
         }
     }
     for b_name in &group_b {
         let b_node = config.node_by_name(b_name).unwrap();
         for a_name in &group_a {
             let a_node = config.node_by_name(a_name).unwrap();
-            SshController::block_peer(b_node, a_node.ip).expect(&format!(
-                "failed to block {} on {}",
-                a_name, b_name
-            ));
+            SshController::block_peer(b_node, a_node.ip)
+                .expect(&format!("failed to block {} on {}", a_name, b_name));
         }
     }
 
@@ -310,8 +313,7 @@ async fn core_chaos_06_heal_partition() {
         assert!(
             rejoined,
             "{} did not regain 3 peers after partition heal (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
     println!("  Full mesh restored after Tor/clearnet partition");
@@ -392,13 +394,9 @@ async fn core_chaos_08_post_chaos_consistency() {
 
     // Zero panics in ghost-pool
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "30 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "30 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post-chaos: {} had {} ghost-pool panics",

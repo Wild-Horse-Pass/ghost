@@ -154,7 +154,7 @@ export default function RewardsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Rewards" subtitle="Earnings, share breakdown, and node balance accounts" />
+      <PageHeader eyebrow="rewards" title="Earnings, shares, balance." subtitle="Earnings, share breakdown, and node balance accounts" />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

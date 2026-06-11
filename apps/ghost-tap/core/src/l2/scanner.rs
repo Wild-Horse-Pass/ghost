@@ -84,9 +84,12 @@ impl NoteScanner {
             if let (Some(encrypted_hex), Some(commitment_hex)) =
                 (&tx.encrypted_change, &tx.change_commitment)
             {
-                if let Some(note) =
-                    self.try_decrypt(encrypted_hex, commitment_hex, tx.checkpoint_height, tx.epoch)
-                {
+                if let Some(note) = self.try_decrypt(
+                    encrypted_hex,
+                    commitment_hex,
+                    tx.checkpoint_height,
+                    tx.epoch,
+                ) {
                     discovered.push(DiscoveredNote {
                         note,
                         is_change: true,
@@ -99,9 +102,12 @@ impl NoteScanner {
             if let (Some(encrypted_hex), Some(commitment_hex)) =
                 (&tx.encrypted_recipient, &tx.recipient_commitment)
             {
-                if let Some(note) =
-                    self.try_decrypt(encrypted_hex, commitment_hex, tx.checkpoint_height, tx.epoch)
-                {
+                if let Some(note) = self.try_decrypt(
+                    encrypted_hex,
+                    commitment_hex,
+                    tx.checkpoint_height,
+                    tx.epoch,
+                ) {
                     discovered.push(DiscoveredNote {
                         note,
                         is_change: false,
@@ -114,9 +120,12 @@ impl NoteScanner {
             if let (Some(encrypted_hex), Some(commitment_hex)) =
                 (&tx.encrypted_output, &tx.output_commitment)
             {
-                if let Some(note) =
-                    self.try_decrypt(encrypted_hex, commitment_hex, tx.checkpoint_height, tx.epoch)
-                {
+                if let Some(note) = self.try_decrypt(
+                    encrypted_hex,
+                    commitment_hex,
+                    tx.checkpoint_height,
+                    tx.epoch,
+                ) {
                     discovered.push(DiscoveredNote {
                         note,
                         is_change: false,

@@ -128,13 +128,9 @@ async fn core_restore_03_verify_original_state() {
 
     // Zero panics
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "30 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "30 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Ghost-core test session: {} had {} panics",

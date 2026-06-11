@@ -14,7 +14,14 @@ export function Card({ children, className = '', collapsible, defaultCollapsed =
 
   if (!collapsible) {
     return (
-      <div className={`bg-gray-900 border border-gray-800 rounded-lg p-6 ${className}`}>
+      <div
+        className={`p-6 ${className}`}
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--rule)',
+          borderRadius: '4px',
+        }}
+      >
         {children}
       </div>
     );
@@ -59,8 +66,17 @@ export function CardHeader({ title, subtitle, action }: CardHeaderProps) {
   return (
     <div className="flex items-center justify-between mb-4">
       <div>
-        <h3 className="text-lg font-semibold text-gray-100">{title}</h3>
-        {subtitle && <p className="text-sm text-gray-400">{subtitle}</p>}
+        <h3
+          className="font-medium"
+          style={{ color: 'var(--fg)', fontSize: '16px' }}
+        >
+          {title}
+        </h3>
+        {subtitle && (
+          <p style={{ color: 'var(--dim)', fontSize: '13px', marginTop: '2px' }}>
+            {subtitle}
+          </p>
+        )}
       </div>
       {action && <div>{action}</div>}
     </div>

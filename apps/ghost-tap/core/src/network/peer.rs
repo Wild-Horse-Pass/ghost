@@ -90,7 +90,10 @@ impl PeerManager {
     ///
     /// Queries `getpeerinfo` and adds any new endpoints up to `max_peers`.
     /// Rejects loopback, private-network, and non-HTTP(S) addresses.
-    pub async fn discover_peers(&mut self, client: &mut super::NodeClient) -> Result<(), NetworkError> {
+    pub async fn discover_peers(
+        &mut self,
+        client: &mut super::NodeClient,
+    ) -> Result<(), NetworkError> {
         let peers_info = client.get_peer_info().await?;
 
         for info in peers_info {
@@ -121,7 +124,11 @@ impl PeerManager {
                     .unwrap_or("");
 
                 // Reject loopback addresses.
-                if host_part == "127.0.0.1" || host_part == "localhost" || host_part == "0.0.0.0" || host_part == "::1" {
+                if host_part == "127.0.0.1"
+                    || host_part == "localhost"
+                    || host_part == "0.0.0.0"
+                    || host_part == "::1"
+                {
                     continue;
                 }
 
@@ -209,7 +216,11 @@ mod tests {
         assert_eq!(manager.peers.len(), 2);
 
         // Added peer should not be a seed
-        let discovered = manager.peers.iter().find(|p| p.endpoint == "discovered1").unwrap();
+        let discovered = manager
+            .peers
+            .iter()
+            .find(|p| p.endpoint == "discovered1")
+            .unwrap();
         assert!(!discovered.is_seed);
     }
 
@@ -229,12 +240,20 @@ mod tests {
         manager.mark_failed("node1");
         manager.mark_failed("node1");
 
-        let peer = manager.peers.iter().find(|p| p.endpoint == "node1").unwrap();
+        let peer = manager
+            .peers
+            .iter()
+            .find(|p| p.endpoint == "node1")
+            .unwrap();
         assert_eq!(peer.failures, 2);
 
         manager.mark_success("node1", 1000);
 
-        let peer = manager.peers.iter().find(|p| p.endpoint == "node1").unwrap();
+        let peer = manager
+            .peers
+            .iter()
+            .find(|p| p.endpoint == "node1")
+            .unwrap();
         assert_eq!(peer.failures, 0);
         assert_eq!(peer.last_seen, Some(1000));
     }

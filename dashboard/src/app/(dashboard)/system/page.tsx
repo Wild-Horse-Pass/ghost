@@ -417,7 +417,8 @@ export default function SystemPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="System"
+        eyebrow="system"
+        title="Process health and resources."
         subtitle="Version, updates, storage, and backups"
       />
 

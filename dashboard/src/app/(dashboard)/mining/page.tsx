@@ -187,7 +187,7 @@ export default function MiningPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Mining" subtitle="Hashrate, miners, and mining configuration" />
+      <PageHeader eyebrow="mining" title="Hashrate, shares, miners." subtitle="Hashrate, miners, and mining configuration" />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">

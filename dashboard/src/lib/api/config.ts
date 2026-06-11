@@ -51,10 +51,75 @@ export async function setPublicMiningConfig(enabled: boolean): Promise<NodeConfi
   });
 }
 
-export async function setReaper(enabled: boolean): Promise<NodeConfig> {
-  return fetchApi<NodeConfig>('/api/v1/config/reaper', {
+// Per-vector Ghost Reaper configuration. Field names match pool.toml [reaper].
+export interface ReaperSettings {
+  enabled: boolean;
+  // Shared (pool template reaper + ghostd mempool reaper)
+  reject_inscription: boolean;
+  reject_dropstuffing: boolean;
+  reject_fakepubkey: boolean;
+  reject_annex: boolean;
+  // Node-only (ghostd mempool reaper)
+  reject_opreturn: boolean;
+  reject_runestone: boolean;
+  // Pool-only (template reaper)
+  reject_unreachable_code: boolean;
+  reject_excess_witness: boolean;
+  reject_legacy_data_stuffing: boolean;
+  validate_pubkey_curve_point: boolean;
+  // Thresholds
+  max_op_return_bytes: number;
+  min_drop_size: number;
+  min_excess_witness_bytes: number;
+  legacy_max_push_bytes: number;
+}
+
+export interface ReaperConfigResponse {
+  enabled: boolean;
+  mode: string;
+  settings: ReaperSettings;
+  message: string;
+}
+
+export interface ReaperUpdateResponse {
+  success: boolean;
+  persisted: boolean;
+  enabled: boolean;
+  ghostd_restart_required: boolean;
+  message: string;
+}
+
+export async function getReaper(): Promise<ReaperConfigResponse> {
+  return fetchApi<ReaperConfigResponse>('/api/v1/config/reaper');
+}
+
+// All-detectors-on defaults, matching pool.toml's [reaper] serde defaults.
+export const REAPER_DEFAULTS: ReaperSettings = {
+  enabled: true,
+  reject_inscription: true,
+  reject_dropstuffing: true,
+  reject_fakepubkey: true,
+  reject_annex: true,
+  reject_opreturn: true,
+  reject_runestone: true,
+  reject_unreachable_code: true,
+  reject_excess_witness: true,
+  reject_legacy_data_stuffing: true,
+  validate_pubkey_curve_point: true,
+  max_op_return_bytes: 82,
+  min_drop_size: 76,
+  min_excess_witness_bytes: 500,
+  legacy_max_push_bytes: 80,
+};
+
+// Accepts the full per-vector settings, or a bare boolean for a coarse
+// master on/off toggle (per-vector defaults to all-on).
+export async function setReaper(input: ReaperSettings | boolean): Promise<ReaperUpdateResponse> {
+  const settings: ReaperSettings =
+    typeof input === 'boolean' ? { ...REAPER_DEFAULTS, enabled: input } : input;
+  return fetchApi<ReaperUpdateResponse>('/api/v1/config/reaper', {
     method: 'POST',
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(settings),
   });
 }
 

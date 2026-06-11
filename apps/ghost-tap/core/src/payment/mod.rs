@@ -1,3 +1,3 @@
-pub mod qr;
-pub mod nfc;
 pub mod limits;
+pub mod nfc;
+pub mod qr;

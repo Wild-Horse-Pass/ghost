@@ -67,6 +67,8 @@ docs/RECOVERY_RUNBOOK.md
 
 # Audit and report files
 audit.toml
+# ...but DO commit the checked-in cargo-audit policy (auto-read by `cargo audit`)
+!.cargo/audit.toml
 OVERNIGHT_REPORT.md
 
 # Soak test logs (ephemeral run data)

@@ -29,7 +29,8 @@ export default function ShroudPage() {
     <div className="space-y-6">
       {/* 1. PageHeader */}
       <PageHeader
-        title="Ghost Shroud"
+        eyebrow="shroud"
+        title="Relay-timing privacy."
         subtitle="Transaction relay privacy"
         actions={
           status ? (

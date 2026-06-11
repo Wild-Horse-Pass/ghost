@@ -53,10 +53,7 @@ impl TreeSync {
     }
 
     /// Get a Merkle proof for a given note index.
-    pub fn get_merkle_proof(
-        &self,
-        index: u64,
-    ) -> Result<ghost_zkp::MerkleProof, NetworkError> {
+    pub fn get_merkle_proof(&self, index: u64) -> Result<ghost_zkp::MerkleProof, NetworkError> {
         self.tree
             .get_proof(index)
             .map_err(|e| NetworkError::SyncFailed(format!("Failed to get merkle proof: {}", e)))
@@ -66,7 +63,10 @@ impl TreeSync {
     ///
     /// Fetches the tree state and all notes, then rebuilds the local tree.
     /// Verifies the root matches after building.
-    pub async fn sync_from_server(&mut self, client: &GhostPayClient) -> Result<TreeStateResponse, NetworkError> {
+    pub async fn sync_from_server(
+        &mut self,
+        client: &GhostPayClient,
+    ) -> Result<TreeStateResponse, NetworkError> {
         let state = client.get_tree_state().await?;
 
         // Fetch all notes for the tree
@@ -129,8 +129,7 @@ impl TreeSync {
 }
 
 fn hex_to_32_bytes(hex_str: &str) -> Result<[u8; 32], String> {
-    let bytes =
-        hex::decode(hex_str).map_err(|e| format!("Invalid hex: {}", e))?;
+    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex: {}", e))?;
     if bytes.len() != 32 {
         return Err(format!("Expected 32 bytes, got {}", bytes.len()));
     }

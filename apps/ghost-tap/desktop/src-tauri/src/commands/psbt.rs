@@ -4,10 +4,7 @@ use tauri::State;
 
 /// Decode a PSBT and return its structure.
 #[tauri::command]
-pub async fn decode_psbt(
-    state: State<'_, AppState>,
-    psbt: String,
-) -> AppResult<serde_json::Value> {
+pub async fn decode_psbt(state: State<'_, AppState>, psbt: String) -> AppResult<serde_json::Value> {
     let decoded = state.connection.decode_psbt(&psbt).await?;
     Ok(decoded)
 }
@@ -24,20 +21,14 @@ pub async fn analyze_psbt(
 
 /// Sign a PSBT with wallet keys (walletprocesspsbt).
 #[tauri::command]
-pub async fn sign_psbt(
-    state: State<'_, AppState>,
-    psbt: String,
-) -> AppResult<serde_json::Value> {
+pub async fn sign_psbt(state: State<'_, AppState>, psbt: String) -> AppResult<serde_json::Value> {
     let signed = state.connection.wallet_process_psbt(&psbt).await?;
     Ok(signed)
 }
 
 /// Combine multiple partial PSBTs into one.
 #[tauri::command]
-pub async fn combine_psbts(
-    state: State<'_, AppState>,
-    psbts: Vec<String>,
-) -> AppResult<String> {
+pub async fn combine_psbts(state: State<'_, AppState>, psbts: Vec<String>) -> AppResult<String> {
     let combined = state.connection.combine_psbt(psbts).await?;
     Ok(combined)
 }
@@ -54,10 +45,7 @@ pub async fn finalize_psbt(
 
 /// Finalize and broadcast a PSBT, returning the txid.
 #[tauri::command]
-pub async fn broadcast_psbt(
-    state: State<'_, AppState>,
-    psbt: String,
-) -> AppResult<String> {
+pub async fn broadcast_psbt(state: State<'_, AppState>, psbt: String) -> AppResult<String> {
     let txid = state.connection.broadcast_psbt(&psbt).await?;
     Ok(txid)
 }

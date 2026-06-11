@@ -24,7 +24,7 @@ fn test_086_default_config_has_sensible_values() {
     // Network defaults
     assert_eq!(config.network.sv2_port, 34255);
     assert_eq!(config.network.sv1_port, 3333);
-    assert!(!config.network.public_mining);
+    assert!(matches!(config.network.mining_mode, MiningMode::PublicPool));
     assert!(config.network.signing_key.is_none());
 
     // Bitcoin defaults
@@ -129,7 +129,7 @@ fn test_093_valid_port_range_accepted() {
 #[test]
 fn test_094_public_mining_requires_signing_key() {
     let mut config = NodeConfig::default();
-    config.network.public_mining = true;
+    config.network.mining_mode = MiningMode::PublicPool;
     config.network.signing_key = None;
 
     let result = config.validate();
@@ -143,7 +143,7 @@ fn test_094_public_mining_requires_signing_key() {
 #[test]
 fn test_095_missing_signing_key_produces_error() {
     let mut config = NodeConfig::default();
-    config.network.public_mining = true;
+    config.network.mining_mode = MiningMode::PublicPool;
     config.network.signing_key = None;
 
     let result = config.validate();
@@ -156,7 +156,7 @@ fn test_095_missing_signing_key_produces_error() {
 #[test]
 fn test_096_invalid_signing_key_length_rejected() {
     let mut config = NodeConfig::default();
-    config.network.public_mining = true;
+    config.network.mining_mode = MiningMode::PublicPool;
     config.network.signing_key = Some("0123456789abcdef".to_string()); // Only 16 chars
 
     let result = config.validate();
@@ -170,7 +170,7 @@ fn test_096_invalid_signing_key_length_rejected() {
 #[test]
 fn test_097_invalid_signing_key_chars_rejected() {
     let mut config = NodeConfig::default();
-    config.network.public_mining = true;
+    config.network.mining_mode = MiningMode::PublicPool;
     // Contains 'g', 'h', 'i', 'j' which are not hex
     config.network.signing_key =
         Some("ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
@@ -186,7 +186,7 @@ fn test_097_invalid_signing_key_chars_rejected() {
 #[test]
 fn test_098_valid_signing_key_accepted() {
     let mut config = NodeConfig::default();
-    config.network.public_mining = true;
+    config.network.mining_mode = MiningMode::PublicPool;
     config.network.signing_key =
         Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
 
@@ -201,7 +201,7 @@ fn test_098_valid_signing_key_accepted() {
 #[test]
 fn test_099_private_mining_doesnt_require_signing_key() {
     let mut config = NodeConfig::default();
-    config.network.public_mining = false;
+    config.network.mining_mode = MiningMode::PrivatePool;
     config.network.signing_key = None;
 
     let result = config.validate();

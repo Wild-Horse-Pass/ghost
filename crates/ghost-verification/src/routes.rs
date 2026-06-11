@@ -207,21 +207,33 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Public per-window leaderboard: top miners by best-hash and by
         // total shares contributed in the requested window. Used by the
         // pool page gamification; same redaction rules as /records.
-        .route("/api/v1/pool/leaderboard", get(api_pool_leaderboard_handler))
+        .route(
+            "/api/v1/pool/leaderboard",
+            get(api_pool_leaderboard_handler),
+        )
         // "Next block payout" projection: current round's top miners,
         // their work share, and projected sats from the 99% miner pool.
         // Also reports the fee split (treasury + node reward pool) so the
         // website can render the full breakdown. DB-only, no mesh.
-        .route("/api/v1/pool/next_payout", get(api_pool_next_payout_handler))
+        .route(
+            "/api/v1/pool/next_payout",
+            get(api_pool_next_payout_handler),
+        )
         // Tail of recent shares for the live quasar visualisation. One
         // lightweight row per share — the caller polls with ?since=<ts>
         // and gets everything accepted since that watermark.
-        .route("/api/v1/pool/recent_shares", get(api_pool_recent_shares_handler))
+        .route(
+            "/api/v1/pool/recent_shares",
+            get(api_pool_recent_shares_handler),
+        )
         // Treasury + decentralisation-phase state for the Core page.
         // Exposes balance / 21-BTC threshold / decay year / fee split so
         // the website can render the Bootstrap → Decentralising →
         // Sovereign journey against live pool state.
-        .route("/api/v1/pool/treasury_state", get(api_pool_treasury_state_handler))
+        .route(
+            "/api/v1/pool/treasury_state",
+            get(api_pool_treasury_state_handler),
+        )
         // Aggregate node metrics for the Core page. Returns pool-wide
         // counts only — no per-node data, no clearnet/tor breakdown,
         // no identifiers. Tor operators are counted as part of the
@@ -261,6 +273,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/swarm/nodes", get(api_swarm_nodes_handler))
         .route("/api/v1/watchdog/status", get(api_watchdog_status_handler))
         .route("/api/v1/system/version", get(api_system_version_handler))
+        .route("/api/v1/system/mempool", get(api_system_mempool_handler))
+        .route("/api/v1/reaper/status", get(api_reaper_status_handler))
         .route("/api/v1/payments", get(api_payments_handler))
         .route("/api/v1/backup/history", get(api_backup_history_handler))
         .route("/api/v1/wraith/sessions", get(api_wraith_sessions_handler))
@@ -1917,9 +1931,8 @@ async fn api_miner_lookup_handler(
                 // Unpaid ledger side of the lookup: shares this miner has
                 // submitted that haven't been committed to a payout yet.
                 // Frontend sums across VMs (each node has its own ledger).
-                let (unpaid_shares, unpaid_work) = db
-                    .get_miner_unpaid_stats(&m.miner_id)
-                    .unwrap_or((0, 0.0));
+                let (unpaid_shares, unpaid_work) =
+                    db.get_miner_unpaid_stats(&m.miner_id).unwrap_or((0, 0.0));
                 serde_json::json!({
                     "found": true,
                     "miner_id": m.miner_id,
@@ -1975,9 +1988,9 @@ async fn api_pool_next_payout_handler(
     // Pool economics: 1% fee from subsidy only, split 50/50 today.
     // If this changes (post-21-BTC decay), it must also change in
     // bins/ghost-pool/src/treasury.rs — keep the two in sync.
-    const POOL_FEE_BPS: u64 = 100;          // 1.00%
-    const TREASURY_RATE_BPS: u64 = 5000;    // 50% of pool fee
-    const NODE_RATE_BPS: u64 = 5000;        // 50% of pool fee
+    const POOL_FEE_BPS: u64 = 100; // 1.00%
+    const TREASURY_RATE_BPS: u64 = 5000; // 50% of pool fee
+    const NODE_RATE_BPS: u64 = 5000; // 50% of pool fee
     const DUST_THRESHOLD_SATS: u64 = 546;
     const LEDGER_CAP: u32 = 1000;
 
@@ -2019,21 +2032,46 @@ async fn api_pool_next_payout_handler(
     // are excluded from the display only; if shares from a real miner
     // happen to be submitted under a system miner_id they'd still be
     // paid on-chain but the public view doesn't need to surface them.
-    let top_rows: Vec<(String, f64)> = db
-        .get_top_unpaid_miners(now_s, LEDGER_CAP.saturating_mul(2))
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(miner_id, _)| !is_system_miner(miner_id))
-        .take(LEDGER_CAP as usize)
-        .collect();
-    // Count distinct unpaid miners, excluding system accounts so the
-    // header tile matches what's actually shown in the table.
-    let total_unpaid_miners = db
-        .get_distinct_unpaid_miner_ids(now_s)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|id| !is_system_miner(id))
-        .count() as u64;
+    //
+    // Gate: post-PAYOUT_ADDRESS_GROUPING_HEIGHT we group by payout_address
+    // so the displayed top-N matches the post-gate coinbase behaviour
+    // (one slot per address, multi-rig users no longer monopolise).
+    // The constant is duplicated here rather than imported because
+    // ghost-verification doesn't depend on ghost-pool — keep the two
+    // in sync if the gate ever moves.
+    const PAYOUT_ADDRESS_GROUPING_HEIGHT: u64 = 946_743;
+
+    let top_rows: Vec<(String, f64)> = if block_height >= PAYOUT_ADDRESS_GROUPING_HEIGHT {
+        db.get_top_unpaid_addresses(now_s, LEDGER_CAP.saturating_mul(2))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(addr, _, _)| !is_system_miner(addr))
+            .take(LEDGER_CAP as usize)
+            .map(|(addr, work, _miner_ids)| (addr, work))
+            .collect()
+    } else {
+        db.get_top_unpaid_miners(now_s, LEDGER_CAP.saturating_mul(2))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(miner_id, _)| !is_system_miner(miner_id))
+            .take(LEDGER_CAP as usize)
+            .collect()
+    };
+    // Count distinct unpaid users (miners pre-gate, addresses post-gate)
+    // so the header tile matches what's actually shown in the table.
+    let total_unpaid_miners = if block_height >= PAYOUT_ADDRESS_GROUPING_HEIGHT {
+        db.get_top_unpaid_addresses(now_s, u32::MAX)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(addr, _, _)| !is_system_miner(addr))
+            .count() as u64
+    } else {
+        db.get_distinct_unpaid_miner_ids(now_s)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| !is_system_miner(id))
+            .count() as u64
+    };
 
     // Iterative dust filter: drop miners whose projected payout < 546 sats,
     // recompute total_work, repeat until stable. Converges quickly (each
@@ -2041,13 +2079,17 @@ async fn api_pool_next_payout_handler(
     let mut surviving: Vec<(String, f64)> = top_rows;
     loop {
         let total_work: f64 = surviving.iter().map(|(_, w)| *w).sum();
-        if total_work <= 0.0 { break; }
+        if total_work <= 0.0 {
+            break;
+        }
         let pre_len = surviving.len();
         surviving.retain(|(_, work)| {
             let projected = (miner_pool_sats as f64 * work / total_work) as u64;
             projected >= DUST_THRESHOLD_SATS
         });
-        if surviving.len() == pre_len { break; }
+        if surviving.len() == pre_len {
+            break;
+        }
     }
 
     let total_work: f64 = surviving.iter().map(|(_, w)| *w).sum();
@@ -2057,9 +2099,14 @@ async fn api_pool_next_payout_handler(
         .into_iter()
         .enumerate()
         .map(|(i, (miner_id, work))| {
-            let share_pct = if total_work > 0.0 { work / total_work * 100.0 } else { 0.0 };
+            let share_pct = if total_work > 0.0 {
+                work / total_work * 100.0
+            } else {
+                0.0
+            };
             let projected_sats = if total_work > 0.0 {
-                (miner_pool_sats as u128 * ((work * 1_000_000.0) as u128) / ((total_work * 1_000_000.0) as u128)) as u64
+                (miner_pool_sats as u128 * ((work * 1_000_000.0) as u128)
+                    / ((total_work * 1_000_000.0) as u128)) as u64
             } else {
                 0
             };
@@ -2113,8 +2160,7 @@ async fn api_mesh_node_stats_handler(
         }));
     };
 
-    let (total, active_7d, new_7d, median_uptime) =
-        db.get_node_stats().unwrap_or((0, 0, 0, None));
+    let (total, active_7d, new_7d, median_uptime) = db.get_node_stats().unwrap_or((0, 0, 0, None));
 
     Json(serde_json::json!({
         "total_nodes": total,
@@ -2144,8 +2190,8 @@ async fn api_pool_treasury_state_handler(
     // kept inline to avoid adding a new crate dependency for one endpoint.
     // If either side moves, both need to move together.
     const TREASURY_THRESHOLD_SATS: u64 = 21 * 100_000_000; // 21 BTC
-    // (treasury_bps, node_bps) for year 0 (pre-threshold, then year 1…5).
-    // Year 0 = pre-threshold initial split, same as the first decay row.
+                                                           // (treasury_bps, node_bps) for year 0 (pre-threshold, then year 1…5).
+                                                           // Year 0 = pre-threshold initial split, same as the first decay row.
     const DECAY_SCHEDULE_BPS: [(u64, u64); 6] = [
         (5000, 5000), // pre-threshold / year 0
         (4000, 6000), // year 1
@@ -2373,7 +2419,11 @@ async fn api_miner_history_handler(
         }));
     }
 
-    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let window_name = params
+        .window
+        .as_deref()
+        .unwrap_or("day")
+        .to_ascii_lowercase();
     let (window_secs, bucket_secs): (i64, i64) = match window_name.as_str() {
         "day" => (86_400, 300),
         "week" => (604_800, 1_800),
@@ -2442,7 +2492,11 @@ async fn api_pool_records_handler(
     State(state): State<Arc<VerificationState>>,
     Query(params): Query<PoolRecordsQuery>,
 ) -> impl IntoResponse {
-    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let window_name = params
+        .window
+        .as_deref()
+        .unwrap_or("day")
+        .to_ascii_lowercase();
     let window_secs: i64 = match window_name.as_str() {
         "block" => 600,
         "day" => 86_400,
@@ -2483,11 +2537,7 @@ async fn api_pool_records_handler(
             // Count leading '0' hex chars (each = 4 binary leading zeros).
             // This is a coarse signal; the hash itself is the definitive
             // record, but "47 zeros" reads better than a hex blob in tiles.
-            let leading_hex_zeros = best
-                .share_hash
-                .chars()
-                .take_while(|c| *c == '0')
-                .count();
+            let leading_hex_zeros = best.share_hash.chars().take_while(|c| *c == '0').count();
             let leading_zero_bits = leading_hex_zeros * 4;
             // Redact miner_id: `bc1q...tip.worker` keeps enough for the
             // miner themself to recognise while shedding most of the
@@ -2528,7 +2578,11 @@ async fn api_pool_leaderboard_handler(
     State(state): State<Arc<VerificationState>>,
     Query(params): Query<PoolLeaderboardQuery>,
 ) -> impl IntoResponse {
-    let window_name = params.window.as_deref().unwrap_or("day").to_ascii_lowercase();
+    let window_name = params
+        .window
+        .as_deref()
+        .unwrap_or("day")
+        .to_ascii_lowercase();
     let limit = params.limit.unwrap_or(10).min(50).max(1);
 
     // "lifetime" queries the `miners` table directly and ignores the
@@ -2810,16 +2864,20 @@ struct GhostPayLiveStatus {
     sync_state: &'static str,
 }
 
-/// Query ghost-pay L2 status — tries in-process handler first, then HTTP to localhost:8800.
+/// Query ghost-pay L2 status — tries in-process handler first, then HTTPS to localhost:8800.
 /// Returns a self-contained future (no borrows) so axum handlers stay Send.
+///
+/// ghost-pay serves identity-derived TLS on 8800 (cert pubkey == node_id).
+/// Loopback IPC under the same identity, so we skip cert-chain validation.
 async fn fetch_ghostpay_from_service() -> Option<GhostPayLiveStatus> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
+        .danger_accept_invalid_certs(true)
         .build()
         .ok()?;
 
     let resp = client
-        .get("http://127.0.0.1:8800/verify/ghostpay?unsigned=true")
+        .get("https://127.0.0.1:8800/verify/ghostpay?unsigned=true")
         .send()
         .await
         .ok()?;
@@ -3065,10 +3123,22 @@ async fn api_l2_fee_distribution_context_handler(
                     return None;
                 }
                 // Compute total shares from capabilities
-                let archive = if cap_map.get("archive").copied().unwrap_or(false) { 5i32 } else { 0 };
+                let archive = if cap_map.get("archive").copied().unwrap_or(false) {
+                    5i32
+                } else {
+                    0
+                };
                 let ghost_pay_shares = 4i32;
-                let public_mining = if cap_map.get("public_mining").copied().unwrap_or(false) { 3 } else { 0 };
-                let reaper = if cap_map.get("reaper").copied().unwrap_or(false) { 2 } else { 0 };
+                let public_mining = if cap_map.get("public_mining").copied().unwrap_or(false) {
+                    3
+                } else {
+                    0
+                };
+                let reaper = if cap_map.get("reaper").copied().unwrap_or(false) {
+                    2
+                } else {
+                    0
+                };
                 let elder = if node.is_elder { 1 } else { 0 };
                 let total_shares = archive + ghost_pay_shares + public_mining + reaper + elder;
 
@@ -4560,15 +4630,21 @@ async fn api_config_template_profile_handler(
     }))
 }
 
-/// API v1 Config reaper handler
+/// API v1 Config reaper handler — returns the per-vector reaper configuration
+/// from the full node config (pool.toml `[reaper]`).
 async fn api_config_reaper_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
-    let config = state.dashboard_config.read();
+    let settings = state
+        .full_node_config
+        .as_ref()
+        .map(|c| c.read().reaper.clone())
+        .unwrap_or_default();
     Json(serde_json::json!({
-        "enabled": config.reaper,
-        "mode": if config.reaper { "strict" } else { "disabled" },
-        "message": "Reaper mode configuration"
+        "enabled": settings.enabled,
+        "mode": if settings.enabled { "strict" } else { "disabled" },
+        "settings": serde_json::to_value(&settings).unwrap_or_else(|_| serde_json::json!({})),
+        "message": "Reaper per-vector configuration",
     }))
 }
 
@@ -4706,17 +4782,47 @@ async fn api_config_public_mining_post_handler(
     }))
 }
 
-/// API v1 Config reaper POST handler
+/// API v1 Config reaper POST handler — accepts the full per-vector reaper
+/// settings, persists them to the node config (pool.toml `[reaper]`), and signals
+/// a ghost-pool restart so the pool template reaper picks them up. The node-level
+/// (ghostd) mempool reaper still needs `ghost-setup apply-reaper`, surfaced via
+/// `ghostd_restart_required`. A legacy `{ "enabled": bool }` body still works
+/// (the per-vector fields fall back to their serde defaults = all-on).
 async fn api_config_reaper_post_handler(
     State(state): State<Arc<VerificationState>>,
-    Json(payload): Json<ToggleRequest>,
+    Json(payload): Json<ghost_common::config::ReaperSettings>,
 ) -> impl IntoResponse {
-    let mut config = state.dashboard_config.write();
-    config.reaper = payload.enabled;
+    let mut persisted = false;
+    if let Some(ref full) = state.full_node_config {
+        let mut cfg = full.write();
+        cfg.reaper = payload.clone();
+        if let Some(ref path) = state.full_node_config_path {
+            match cfg.save_atomic(path) {
+                Ok(()) => persisted = true,
+                Err(e) => error!(error = %e, "Failed to persist reaper config"),
+            }
+        }
+    }
+    // Keep the dashboard master mirror in sync (capability / share displays).
+    {
+        let mut dc = state.dashboard_config.write();
+        dc.reaper = payload.enabled;
+    }
+    // The pool template reaper reads its config at startup; a restart applies it.
+    if persisted {
+        state.request_restart();
+    }
     Json(serde_json::json!({
         "success": true,
+        "persisted": persisted,
         "enabled": payload.enabled,
-        "message": "Reaper mode updated"
+        "settings": serde_json::to_value(&payload).unwrap_or_else(|_| serde_json::json!({})),
+        "ghostd_restart_required": true,
+        "message": if persisted {
+            "Pool reaper updated; ghost-pool will restart to apply. Run `ghost-setup apply-reaper` (or restart ghostd) to apply node-level mempool filtering."
+        } else {
+            "Reaper settings received but no node config path is configured — changes were not persisted."
+        },
     }))
 }
 
@@ -5300,9 +5406,6 @@ async fn api_config_update_handler(
                 }
 
                 config.network.mining_mode = new_mode;
-                // Sync public_mining flag for backward compatibility
-                config.network.public_mining =
-                    matches!(new_mode, ghost_common::config::MiningMode::PublicPool);
                 updated_fields.push("mining_mode".to_string());
             }
             Err(e) => {
@@ -6850,14 +6953,80 @@ fn fxhash(s: &str) -> u32 {
 
 /// Returns peers with public_mining enabled and their miner counts.
 /// Used by the colocated translator for transparent TCP load balancing.
-async fn pool_nodes_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn pool_nodes_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     Json(serde_json::json!({
         "this_node": {
             "miner_count": state.miner_count(),
+            "max_capacity": state.max_capacity(),
         },
         "peers": state.pool_peers(),
+    }))
+}
+
+/// Return the Reaper observability snapshot (cumulative txs evaluated /
+/// reaped / accepted, dead bytes total, per-DeadCodeType counters). Read by
+/// the dashboard `/reaper` page. Counters are process-lived — they reset on
+/// ghost-pool restart, matching the rest of the operator metric surface.
+async fn api_reaper_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(state.reaper_stats())
+}
+
+/// Detect whether the operator has installed the per-node mempool.space stack
+/// on this VM. The stack is opt-in (extra ~2 GB RAM, ~50 GB disk), so most
+/// nodes won't have it — that's fine. Detection is deliberately cheap:
+///
+///   1. If `/etc/ghost/mempool-stack.enabled` exists, read the port from it
+///      (operator's bring-up script writes this marker).
+///   2. Otherwise default to checking port 8999.
+///   3. TCP-connect with a 250 ms timeout to that port on localhost.
+///
+/// Returns one of three states:
+///   - `running`             — port responds, frontend can iframe it
+///   - `installed_not_running` — marker exists but port is silent
+///   - `not_installed`       — no marker, port silent → show install panel
+async fn api_system_mempool_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    use std::time::Duration;
+    use tokio::net::TcpStream;
+
+    let marker_path = std::path::Path::new("/etc/ghost/mempool-stack.enabled");
+    let marker_present = marker_path.exists();
+    let port: u16 = if marker_present {
+        std::fs::read_to_string(marker_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(8999)
+    } else {
+        8999
+    };
+
+    let port_responds = tokio::time::timeout(
+        Duration::from_millis(250),
+        TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false);
+
+    let status = match (marker_present, port_responds) {
+        (_, true) => "running",
+        (true, false) => "installed_not_running",
+        (false, false) => "not_installed",
+    };
+
+    Json(serde_json::json!({
+        "enabled": port_responds,
+        "status": status,
+        "port": port,
+        "marker_path": marker_path.to_string_lossy(),
+        // Helpful UI hints — keep these stable, the dashboard reads them.
+        "install_command": "sudo /opt/ghost/bin/ghost-mempool install",
+        "uninstall_command": "sudo /opt/ghost/bin/ghost-mempool uninstall",
+        "min_ram_gb": 4,
+        "min_disk_gb": 50,
     }))
 }
 
@@ -7185,19 +7354,13 @@ mod tests {
 
     #[test]
     fn test_safe_proc_path_allowed() {
-        let allowed = vec![
-            "/proc/meminfo".to_string(),
-            "/proc/cpuinfo".to_string(),
-        ];
+        let allowed = vec!["/proc/meminfo".to_string(), "/proc/cpuinfo".to_string()];
         assert!(is_safe_proc_path("/proc/meminfo", &allowed));
     }
 
     #[test]
     fn test_safe_proc_path_traversal() {
-        let allowed = vec![
-            "/proc/meminfo".to_string(),
-            "/proc/cpuinfo".to_string(),
-        ];
+        let allowed = vec!["/proc/meminfo".to_string(), "/proc/cpuinfo".to_string()];
         assert!(!is_safe_proc_path("/proc/../etc/passwd", &allowed));
     }
 }

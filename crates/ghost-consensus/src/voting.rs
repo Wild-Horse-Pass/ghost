@@ -651,7 +651,7 @@ pub struct Vote {
     /// Approve or reject
     pub approve: bool,
     /// Signature over H(round_id || proposal_hash || voter_id || decision)
-    /// Note: Using Vec<u8> wrapper for serde compatibility
+    /// Note: Using `Vec<u8>` wrapper for serde compatibility
     #[serde(with = "signature_bytes")]
     pub signature: [u8; 64],
     /// Timestamp

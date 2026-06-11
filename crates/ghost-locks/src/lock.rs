@@ -58,7 +58,7 @@ pub struct GhostLock {
     witness_script: ScriptBuf,
     /// SHA256 hash of witness script (for P2WSH address)
     script_hash: WScriptHash,
-    /// The P2WSH scriptPubKey (OP_0 <hash>)
+    /// The P2WSH scriptPubKey (OP_0 `<hash>`)
     script_pubkey: ScriptBuf,
     /// Unique lock ID
     lock_id: [u8; 32],
@@ -127,6 +127,28 @@ impl GhostLock {
         timelock_tier: TimelockTier,
         creation_height: u32,
     ) -> Result<Self, GhostLockError> {
+        Self::from_pubkeys_for_network(
+            lock_pubkey,
+            recovery_pubkey,
+            denomination,
+            timelock_tier,
+            creation_height,
+            bitcoin::Network::Bitcoin,
+        )
+    }
+
+    /// Network-aware constructor. On regtest, the CSV durations
+    /// collapse to small constants (see `TimelockTier::blocks_for_network`)
+    /// so end-to-end tests can mine past the timelock without
+    /// production-scale block counts.
+    pub fn from_pubkeys_for_network(
+        lock_pubkey: PublicKey,
+        recovery_pubkey: PublicKey,
+        denomination: Denomination,
+        timelock_tier: TimelockTier,
+        creation_height: u32,
+        network: bitcoin::Network,
+    ) -> Result<Self, GhostLockError> {
         // Validate creation height to prevent overflow
         if creation_height > crate::timelock::MAX_CREATION_HEIGHT {
             return Err(GhostLockError::InvalidCreationHeight(format!(
@@ -136,12 +158,14 @@ impl GhostLock {
             )));
         }
 
-        // Build P2WSH script
-        let (witness_script, script_pubkey) = build_lock_script(
+        // Build P2WSH script (network-aware so regtest gets the
+        // shortened CSV without affecting other networks)
+        let (witness_script, script_pubkey) = crate::script::build_lock_script_for_network(
             &lock_pubkey,
             &recovery_pubkey,
             creation_height,
             timelock_tier,
+            network,
         )?;
 
         // Compute script hash

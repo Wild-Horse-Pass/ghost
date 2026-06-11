@@ -136,7 +136,10 @@ async fn process_one_wash(
     };
 
     // Step 2: Send public -> private
-    let wraith_in_txid = match connection.send_public_to_private(&stealth_addr, amount).await {
+    let wraith_in_txid = match connection
+        .send_public_to_private(&stealth_addr, amount)
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             tracing::warn!("Wash {txid}: public->private failed: {e}");
@@ -153,14 +156,18 @@ async fn process_one_wash(
     }
 
     // H-6: Estimate fees for exit leg
-    let estimated_fee = connection.estimate_fee(6).await
+    let estimated_fee = connection
+        .estimate_fee(6)
+        .await
         .ok()
         .flatten()
         .unwrap_or(1000); // conservative 1000 sat/kB fallback
-    // Account for both legs of the wash (in + out)
+                          // Account for both legs of the wash (in + out)
     let exit_amount = amount.saturating_sub(estimated_fee * 2);
     if exit_amount < DUST_THRESHOLD_SATS {
-        tracing::warn!("Wash {txid}: amount after fees ({exit_amount}) below dust threshold, marking failed");
+        tracing::warn!(
+            "Wash {txid}: amount after fees ({exit_amount}) below dust threshold, marking failed"
+        );
         if let Ok(mut w) = washer.lock() {
             w.mark_failed(txid, now_unix());
         }
@@ -178,7 +185,10 @@ async fn process_one_wash(
     };
 
     // Step 4: Send private -> public (fee-adjusted amount)
-    let wraith_out_txid = match connection.send_private_to_public(&exit_addr, exit_amount).await {
+    let wraith_out_txid = match connection
+        .send_private_to_public(&exit_addr, exit_amount)
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             tracing::warn!("Wash {txid}: private->public failed: {e}");
@@ -205,13 +215,17 @@ async fn recover_stuck_wash(
     tracing::info!("Wash {txid}: recovering stuck InProgress item");
 
     // Estimate fees for exit leg
-    let estimated_fee = connection.estimate_fee(6).await
+    let estimated_fee = connection
+        .estimate_fee(6)
+        .await
         .ok()
         .flatten()
         .unwrap_or(1000);
     let exit_amount = amount.saturating_sub(estimated_fee * 2);
     if exit_amount < DUST_THRESHOLD_SATS {
-        tracing::warn!("Wash {txid}: recovery amount after fees ({exit_amount}) below dust, marking failed");
+        tracing::warn!(
+            "Wash {txid}: recovery amount after fees ({exit_amount}) below dust, marking failed"
+        );
         if let Ok(mut w) = washer.lock() {
             w.mark_failed(txid, now_unix());
         }
@@ -229,7 +243,10 @@ async fn recover_stuck_wash(
         }
     };
 
-    match connection.send_private_to_public(&exit_addr, exit_amount).await {
+    match connection
+        .send_private_to_public(&exit_addr, exit_amount)
+        .await
+    {
         Ok(wraith_out_txid) => {
             if let Ok(mut w) = washer.lock() {
                 w.mark_completed(txid, &wraith_out_txid, now_unix());

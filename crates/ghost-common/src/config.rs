@@ -453,7 +453,9 @@ impl NodeConfig {
         }
 
         // Public mining without public address
-        if self.network.public_mining && self.network.public_address.is_none() {
+        if matches!(self.network.mining_mode, MiningMode::PublicPool)
+            && self.network.public_address.is_none()
+        {
             result.add_warning(
                 "network.public_address",
                 "Public mining enabled but no public address configured",
@@ -461,12 +463,12 @@ impl NodeConfig {
         }
 
         // MANDATORY: Signing key required for public mining
-        if self.network.public_mining {
+        if matches!(self.network.mining_mode, MiningMode::PublicPool) {
             match &self.network.signing_key {
                 None => {
                     result.add_error(
                         "network.signing_key",
-                        "signing_key is REQUIRED when public_mining is enabled. \
+                        "signing_key is REQUIRED when mining_mode = PublicPool. \
                          Generate with: ghostd --generate-signing-key",
                     );
                 }
@@ -576,15 +578,9 @@ impl NodeConfig {
         match self.network.mining_mode {
             MiningMode::PublicPool => {
                 // PublicPool requires signing_key for DNS registration
-                // (already validated above in public_mining check)
-                // Sync public_mining with mining_mode for backward compatibility
-                if !self.network.public_mining {
-                    result.add_warning(
-                        "network.mining_mode",
-                        "mining_mode is PublicPool but public_mining is false. \
-                         Consider setting public_mining = true for consistency.",
-                    );
-                }
+                // (already validated above in public_mining check).
+                // The legacy `public_mining` bool was removed — mining_mode is
+                // the single source of truth.
             }
             MiningMode::PrivatePool => {
                 // PrivatePool requires private_mining_password
@@ -740,6 +736,13 @@ impl NodeConfig {
     /// # Returns
     /// * `Ok(())` on success
     /// * `Err` if serialization, writing, or renaming fails
+    /// Load a `NodeConfig` from a TOML file.
+    pub fn load(path: &std::path::Path) -> Result<Self, String> {
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        toml::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))
+    }
+
     pub fn save_atomic(&self, path: &std::path::Path) -> std::io::Result<()> {
         use std::io::Write;
 
@@ -966,18 +969,24 @@ pub struct NetworkConfig {
     pub sv2_port: u16,
     /// SV1 Stratum port (translator)
     pub sv1_port: u16,
-    /// HTTP API port
+    /// HTTP API port (plain HTTP — SRI webhook, nginx upstream, dashboard).
     pub http_port: u16,
+    /// HTTPS port for the inter-peer verification mesh.
+    ///
+    /// When set (default 8443), ghost-pool also binds an HTTPS listener on
+    /// this port serving the same routes as `http_port` but with identity-
+    /// derived TLS + cert pinning. The verification client uses this port
+    /// for cross-VM peer challenges so the mesh traffic is encrypted while
+    /// SRI / nginx / dashboard keep talking plain HTTP on `http_port`.
+    #[serde(default = "default_verification_https_port")]
+    pub verification_https_port: u16,
     /// P2P consensus ports
     pub p2p: P2PPortConfig,
     /// Seed nodes for P2P discovery
     pub seed_nodes: Vec<String>,
     /// Maximum connected miners
     pub max_miners: u32,
-    /// Enable public mining (accept external miners)
-    /// DEPRECATED: Use mining_mode instead. This is kept for backward compatibility.
-    pub public_mining: bool,
-    /// Signing key for message authentication (REQUIRED for public_mining/PublicPool)
+    /// Signing key for message authentication (REQUIRED for mining_mode = PublicPool)
     /// Must be 64 hex characters (32 bytes). Generate with: ghostd --generate-signing-key
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_key: Option<String>,
@@ -1048,6 +1057,10 @@ fn default_noise_enabled() -> bool {
     true
 }
 
+fn default_verification_https_port() -> u16 {
+    crate::constants::VERIFICATION_HTTPS_PORT
+}
+
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
@@ -1055,10 +1068,10 @@ impl Default for NetworkConfig {
             sv2_port: SV2_STRATUM_PORT,
             sv1_port: SV1_STRATUM_PORT,
             http_port: HTTP_API_PORT,
+            verification_https_port: crate::constants::VERIFICATION_HTTPS_PORT,
             p2p: P2PPortConfig::default(),
             seed_nodes: Vec::new(),
             max_miners: 1000,
-            public_mining: false,
             signing_key: None,
             mining_mode: MiningMode::default(),
             private_mining_password: None,
@@ -1317,13 +1330,130 @@ impl Default for RegistryConfig {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReaperSettings {
-    /// Enable reaper filtering
+    /// Master switch. When false, every detector is off on both layers.
+    #[serde(default = "default_true")]
     pub enabled: bool,
+
+    // --- Shared detectors (pool template reaper AND ghostd mempool reaper) ---
+    /// Reject OP_FALSE OP_IF ... OP_ENDIF inscription envelopes.
+    #[serde(default = "default_true")]
+    pub reject_inscription: bool,
+    /// Reject a large data push immediately followed by OP_DROP/OP_2DROP.
+    #[serde(default = "default_true")]
+    pub reject_dropstuffing: bool,
+    /// Reject bare multisig outputs whose pubkey pushes have invalid prefixes.
+    #[serde(default = "default_true")]
+    pub reject_fakepubkey: bool,
+    /// Reject P2TR inputs carrying a witness annex.
+    #[serde(default = "default_true")]
+    pub reject_annex: bool,
+
+    // --- Node-only detectors (ghostd mempool reaper) ---
+    /// Reject outputs whose OP_RETURN payload exceeds `max_op_return_bytes`.
+    #[serde(default = "default_true")]
+    pub reject_opreturn: bool,
+    /// Reject Runestone protocol outputs (OP_RETURN OP_13).
+    #[serde(default = "default_true")]
+    pub reject_runestone: bool,
+
+    // --- Pool-only detectors (Rust template reaper) ---
+    /// Reject witness code after an OP_RETURN opcode.
+    #[serde(default = "default_true")]
+    pub reject_unreachable_code: bool,
+    /// Reject witness data beyond what execution requires.
+    #[serde(default = "default_true")]
+    pub reject_excess_witness: bool,
+    /// Reject non-signature/non-pubkey data stuffing in legacy scriptSig.
+    #[serde(default = "default_true")]
+    pub reject_legacy_data_stuffing: bool,
+    /// Also validate that bare-multisig pubkey pushes are on the secp256k1 curve.
+    #[serde(default = "default_true")]
+    pub validate_pubkey_curve_point: bool,
+
+    // --- Thresholds ---
+    /// Max OP_RETURN payload bytes (shared with ghostd).
+    #[serde(default = "default_max_op_return_bytes")]
+    pub max_op_return_bytes: usize,
+    /// Min push size (bytes) that triggers drop-stuffing detection (shared with ghostd).
+    #[serde(default = "default_min_drop_size")]
+    pub min_drop_size: usize,
+    /// Min excess-witness bytes that triggers rejection (pool-only).
+    #[serde(default = "default_min_excess_witness_bytes")]
+    pub min_excess_witness_bytes: usize,
+    /// Max legitimate scriptSig push bytes before legacy stuffing is flagged (pool-only).
+    #[serde(default = "default_legacy_max_push_bytes")]
+    pub legacy_max_push_bytes: usize,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_max_op_return_bytes() -> usize {
+    82
+}
+fn default_min_drop_size() -> usize {
+    76
+}
+fn default_min_excess_witness_bytes() -> usize {
+    500
+}
+fn default_legacy_max_push_bytes() -> usize {
+    80
 }
 
 impl Default for ReaperSettings {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            reject_inscription: true,
+            reject_dropstuffing: true,
+            reject_fakepubkey: true,
+            reject_annex: true,
+            reject_opreturn: true,
+            reject_runestone: true,
+            reject_unreachable_code: true,
+            reject_excess_witness: true,
+            reject_legacy_data_stuffing: true,
+            validate_pubkey_curve_point: true,
+            max_op_return_bytes: default_max_op_return_bytes(),
+            min_drop_size: default_min_drop_size(),
+            min_excess_witness_bytes: default_min_excess_witness_bytes(),
+            legacy_max_push_bytes: default_legacy_max_push_bytes(),
+        }
+    }
+}
+
+impl ReaperSettings {
+    /// The ghostd (Bitcoin Core) CLI flags that mirror these settings on the
+    /// node mempool reaper. Only the detectors ghostd implements are emitted —
+    /// pool-only vectors (`reject_unreachable_code`, `reject_excess_witness`,
+    /// `reject_legacy_data_stuffing`, `validate_pubkey_curve_point`) have no
+    /// ghostd equivalent and are omitted. Booleans use `1`/`0`; the master uses
+    /// `enabled`/`disabled`. When the master is off, every per-vector flag is
+    /// emitted as `0` so the node matches the all-off intent (master gate).
+    pub fn ghostd_flags(&self) -> Vec<String> {
+        let on = self.enabled;
+        let b = |x: bool| if on && x { "1" } else { "0" };
+        vec![
+            format!("-ghostreaper={}", if on { "enabled" } else { "disabled" }),
+            format!(
+                "-ghostreaper-rejectinscription={}",
+                b(self.reject_inscription)
+            ),
+            format!(
+                "-ghostreaper-rejectdropstuffing={}",
+                b(self.reject_dropstuffing)
+            ),
+            format!(
+                "-ghostreaper-rejectfakepubkey={}",
+                b(self.reject_fakepubkey)
+            ),
+            format!("-ghostreaper-rejectannex={}", b(self.reject_annex)),
+            format!("-ghostreaper-rejectopreturn={}", b(self.reject_opreturn)),
+            format!("-ghostreaper-rejectrunestone={}", b(self.reject_runestone)),
+            format!("-ghostreaper-maxopreturn={}", self.max_op_return_bytes),
+            format!("-ghostreaper-mindropsize={}", self.min_drop_size),
+        ]
     }
 }
 
@@ -1434,6 +1564,95 @@ mod tests {
     }
 
     #[test]
+    fn test_reaper_settings_backward_compat() {
+        // Legacy pool.toml with only the master switch must deserialise to
+        // all-detectors-on (today's behaviour) via the per-field serde defaults.
+        let legacy: ReaperSettings = toml::from_str("enabled = true").unwrap();
+        assert!(legacy.enabled);
+        assert!(legacy.reject_inscription);
+        assert!(legacy.reject_runestone);
+        assert!(legacy.reject_legacy_data_stuffing);
+        assert!(legacy.validate_pubkey_curve_point);
+        assert_eq!(legacy.max_op_return_bytes, 82);
+        assert_eq!(legacy.min_drop_size, 76);
+        assert_eq!(legacy.min_excess_witness_bytes, 500);
+        assert_eq!(legacy.legacy_max_push_bytes, 80);
+
+        // An entirely empty table is also all-on.
+        let empty: ReaperSettings = toml::from_str("").unwrap();
+        assert!(empty.enabled && empty.reject_annex && empty.reject_opreturn);
+
+        // enabled=false leaves the per-vector fields deserialising to their
+        // defaults; the master gate is what disables enforcement.
+        let off: ReaperSettings = toml::from_str("enabled = false").unwrap();
+        assert!(!off.enabled);
+        assert!(off.reject_inscription);
+    }
+
+    #[test]
+    fn test_reaper_settings_per_vector_roundtrip() {
+        // A partial per-vector config: only some detectors disabled.
+        let cfg: ReaperSettings = toml::from_str(
+            "enabled = true\nreject_runestone = false\nreject_annex = false\nmax_op_return_bytes = 40\n",
+        )
+        .unwrap();
+        assert!(cfg.enabled);
+        assert!(!cfg.reject_runestone);
+        assert!(!cfg.reject_annex);
+        assert!(cfg.reject_inscription); // untouched -> default true
+        assert_eq!(cfg.max_op_return_bytes, 40);
+
+        // Round-trips through serialisation unchanged.
+        let s = toml::to_string(&cfg).unwrap();
+        let back: ReaperSettings = toml::from_str(&s).unwrap();
+        assert!(!back.reject_runestone && !back.reject_annex && back.reject_inscription);
+        assert_eq!(back.max_op_return_bytes, 40);
+    }
+
+    #[test]
+    fn test_ghostd_flags_all_on() {
+        let flags = ReaperSettings::default().ghostd_flags();
+        assert!(flags.contains(&"-ghostreaper=enabled".to_string()));
+        assert!(flags.contains(&"-ghostreaper-rejectinscription=1".to_string()));
+        assert!(flags.contains(&"-ghostreaper-rejectannex=1".to_string()));
+        assert!(flags.contains(&"-ghostreaper-rejectopreturn=1".to_string()));
+        assert!(flags.contains(&"-ghostreaper-rejectrunestone=1".to_string()));
+        assert!(flags.contains(&"-ghostreaper-maxopreturn=82".to_string()));
+        assert!(flags.contains(&"-ghostreaper-mindropsize=76".to_string()));
+        // Pool-only vectors must NOT leak into ghostd flags.
+        assert!(!flags.iter().any(|f| f.contains("unreachable")));
+        assert!(!flags.iter().any(|f| f.contains("excess")));
+        assert!(!flags.iter().any(|f| f.contains("legacy")));
+    }
+
+    #[test]
+    fn test_ghostd_flags_master_off_zeroes_all() {
+        let s = ReaperSettings {
+            enabled: false,
+            ..Default::default()
+        };
+        let flags = s.ghostd_flags();
+        assert!(flags.contains(&"-ghostreaper=disabled".to_string()));
+        // every per-vector flag is 0 regardless of its individual setting
+        assert!(flags.iter().all(|f| !f.ends_with("=1")));
+        assert!(flags.contains(&"-ghostreaper-rejectannex=0".to_string()));
+    }
+
+    #[test]
+    fn test_ghostd_flags_mixed() {
+        let s = ReaperSettings {
+            enabled: true,
+            reject_runestone: false,
+            reject_opreturn: false,
+            ..Default::default()
+        };
+        let flags = s.ghostd_flags();
+        assert!(flags.contains(&"-ghostreaper-rejectrunestone=0".to_string()));
+        assert!(flags.contains(&"-ghostreaper-rejectopreturn=0".to_string()));
+        assert!(flags.contains(&"-ghostreaper-rejectinscription=1".to_string()));
+    }
+
+    #[test]
     fn test_network_ports() {
         assert_eq!(BitcoinNetwork::Mainnet.default_rpc_port(), 8332);
         assert_eq!(BitcoinNetwork::Signet.default_rpc_port(), 38332);
@@ -1451,7 +1670,7 @@ mod tests {
     #[test]
     fn test_signing_key_required_for_public_mining() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = true;
+        config.network.mining_mode = MiningMode::PublicPool;
         config.network.signing_key = None;
 
         let result = config.validate();
@@ -1465,7 +1684,7 @@ mod tests {
     #[test]
     fn test_signing_key_valid_format() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = true;
+        config.network.mining_mode = MiningMode::PublicPool;
         // 64 hex chars = valid 32-byte key
         config.network.signing_key =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
@@ -1481,7 +1700,7 @@ mod tests {
     #[test]
     fn test_signing_key_invalid_length() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = true;
+        config.network.mining_mode = MiningMode::PublicPool;
         // Too short
         config.network.signing_key = Some("0123456789abcdef".to_string());
 
@@ -1496,7 +1715,7 @@ mod tests {
     #[test]
     fn test_signing_key_invalid_chars() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = true;
+        config.network.mining_mode = MiningMode::PublicPool;
         // Contains non-hex chars (g, h, i, j)
         config.network.signing_key =
             Some("ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
@@ -1512,11 +1731,12 @@ mod tests {
     #[test]
     fn test_signing_key_not_required_private_mining() {
         let mut config = NodeConfig::default();
-        config.network.public_mining = false;
+        config.network.mining_mode = MiningMode::PrivatePool;
+        config.network.private_mining_password = Some("strong-password".to_string());
         config.network.signing_key = None;
 
         let result = config.validate();
-        // Should not have signing_key error when public_mining is disabled
+        // Should not have signing_key error when not in PublicPool mode
         assert!(!result
             .errors
             .iter()
@@ -1527,7 +1747,6 @@ mod tests {
     fn test_mining_mode_public_pool() {
         let mut config = NodeConfig::default();
         config.network.mining_mode = MiningMode::PublicPool;
-        config.network.public_mining = true;
         config.network.signing_key =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
 
@@ -1740,7 +1959,10 @@ mod tests {
     }
 
     #[test]
-    fn test_mainnet_requires_tls_cert() {
+    fn test_mainnet_without_tls_cert_warns_but_does_not_error() {
+        // Identity-derived TLS is the mainnet-allowed default — explicit
+        // cert_path is optional. The validator should emit a warning (so
+        // operators are aware of the cert source) but NOT a hard error.
         let mut config = NodeConfig::default();
         config.bitcoin.network = BitcoinNetwork::Mainnet;
         config.network.noise_enabled = true;
@@ -1751,17 +1973,22 @@ mod tests {
             "seed2.bitcoinghost.org:8559".to_string(),
             "seed3.bitcoinghost.org:8559".to_string(),
         ];
-        // No TLS cert configured
         config.network.tls = TlsConfig::default();
 
         let result = config.validate();
         assert!(
-            result
+            !result
                 .errors
                 .iter()
-                .any(|e| e.field == "network.tls.cert_path"
-                    && e.message.contains("MAINNET SECURITY")),
-            "Mainnet should require TLS cert_path"
+                .any(|e| e.field == "network.tls.cert_path"),
+            "Mainnet must NOT error on missing cert_path (identity-derived TLS is allowed)"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.field == "network.tls.cert_path"),
+            "Mainnet should warn when cert_path is unset so operators understand the source"
         );
     }
 

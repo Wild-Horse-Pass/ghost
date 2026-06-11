@@ -270,9 +270,12 @@ mod lock_messages {
     #[test]
     fn test_827_prepare_ghost_lock_roundtrip() {
         let owner_pubkey = hex::encode([0x03; 32]);
+        let recovery_pubkey = hex::encode([0x04; 32]);
         let msg = ClientMessage::PrepareGhostLock {
             owner_pubkey: owner_pubkey.clone(),
             capacity_sats: 1_000_000,
+            recovery_pubkey: recovery_pubkey.clone(),
+            recovery_index: 0,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -284,9 +287,13 @@ mod lock_messages {
             ClientMessage::PrepareGhostLock {
                 owner_pubkey: pk,
                 capacity_sats,
+                recovery_pubkey: rpk,
+                recovery_index,
             } => {
                 assert_eq!(pk, owner_pubkey);
                 assert_eq!(capacity_sats, 1_000_000);
+                assert_eq!(rpk, recovery_pubkey);
+                assert_eq!(recovery_index, 0);
             }
             _ => panic!("Expected PrepareGhostLock"),
         }
@@ -301,6 +308,11 @@ mod lock_messages {
             funding_address: Some("bc1qfundingaddr".to_string()),
             required_sats: Some(1_000_546),
             error: None,
+            lock_pubkey: Some(hex::encode([0x03; 32])),
+            recovery_pubkey: Some(hex::encode([0x04; 32])),
+            recovery_index: Some(0),
+            recovery_blocks: Some(2016),
+            creation_height: Some(800_000),
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -314,6 +326,7 @@ mod lock_messages {
                 funding_address,
                 required_sats,
                 error,
+                ..
             } => {
                 assert!(success);
                 assert_eq!(lock_id.unwrap(), "lock-001");
@@ -334,6 +347,11 @@ mod lock_messages {
             funding_address: None,
             required_sats: None,
             error: Some("Capacity below dust limit".to_string()),
+            lock_pubkey: None,
+            recovery_pubkey: None,
+            recovery_index: None,
+            recovery_blocks: None,
+            creation_height: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -1011,6 +1029,8 @@ mod flow_simulations {
         let prepare_lock = ClientMessage::PrepareGhostLock {
             owner_pubkey: owner_pubkey.clone(),
             capacity_sats: 500_000,
+            recovery_pubkey: hex::encode([0x04; 32]),
+            recovery_index: 0,
         };
         let prepare_json = serde_json::to_string(&prepare_lock).unwrap();
         assert!(prepare_json.contains("\"type\":\"prepare_ghost_lock\""));
@@ -1024,6 +1044,11 @@ mod flow_simulations {
             funding_address: Some("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string()),
             required_sats: Some(500_546),
             error: None,
+            lock_pubkey: Some(owner_pubkey.clone()),
+            recovery_pubkey: Some(hex::encode([0x04; 32])),
+            recovery_index: Some(0),
+            recovery_blocks: Some(2016),
+            creation_height: Some(800_000),
         };
         let prepared_json = serde_json::to_string(&prepared_msg).unwrap();
         let parsed_prepared: ServerMessage = serde_json::from_str(&prepared_json).unwrap();

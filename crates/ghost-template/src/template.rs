@@ -283,7 +283,11 @@ mod tests {
     #[test]
     fn test_fee_rate_zero_weight() {
         let tx = make_tx(5000, 0);
-        assert_eq!(tx.fee_rate(), 0.0, "zero weight must return 0.0 without div-by-zero");
+        assert_eq!(
+            tx.fee_rate(),
+            0.0,
+            "zero weight must return 0.0 without div-by-zero"
+        );
     }
 
     #[test]

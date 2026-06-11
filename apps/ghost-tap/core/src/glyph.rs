@@ -87,9 +87,8 @@ impl GlyphManager {
         ghost_id: &str,
         pixels: &[u8],
     ) -> Result<GlyphClaimResponse, NetworkError> {
-        GhostGlyph::validate_pixel_slice(pixels).map_err(|e| {
-            NetworkError::RequestFailed(format!("Invalid pixels: {}", e))
-        })?;
+        GhostGlyph::validate_pixel_slice(pixels)
+            .map_err(|e| NetworkError::RequestFailed(format!("Invalid pixels: {}", e)))?;
         self.client.claim_glyph(ghost_id, pixels).await
     }
 

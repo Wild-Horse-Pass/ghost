@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { ReactNode } from 'react';
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { ReactNode } from "react";
 
 interface SidebarItemProps {
   href: string;
@@ -11,25 +11,47 @@ interface SidebarItemProps {
   collapsed?: boolean;
 }
 
+/**
+ * Active state: 2px orange left-border + foreground color, no fill.
+ * Hover:       foreground color, no fill.
+ * Idle:        dim color.
+ *
+ * Borders carry the meaning — matches the website's "no card chrome,
+ * borders only where they signal something" rule.
+ */
 export function SidebarItem({ href, icon, label, collapsed = false }: SidebarItemProps) {
   const pathname = usePathname();
-  const isActive = pathname === href || (href !== '/' && pathname.startsWith(href));
+  const isActive = pathname === href || (href !== "/" && pathname.startsWith(href));
 
   return (
     <Link
       href={href}
-      className={`
-        flex items-center gap-3 px-3 py-2 rounded-lg transition-colors
-        ${isActive
-          ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
-          : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50'
-        }
-        ${collapsed ? 'justify-center' : ''}
-      `}
       title={collapsed ? label : undefined}
+      className="bare flex items-center gap-3 transition-colors"
+      style={{
+        color: isActive ? "var(--fg)" : "var(--dim)",
+        padding: collapsed ? "8px" : "8px 12px",
+        paddingLeft: collapsed ? "8px" : isActive ? "10px" : "12px",
+        borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
+        textDecoration: "none",
+        fontSize: "14px",
+        fontWeight: isActive ? 500 : 400,
+        justifyContent: collapsed ? "center" : "flex-start",
+      }}
+      onMouseEnter={(e) => {
+        if (!isActive) e.currentTarget.style.color = "var(--fg)";
+      }}
+      onMouseLeave={(e) => {
+        if (!isActive) e.currentTarget.style.color = "var(--dim)";
+      }}
     >
-      <span className="flex-shrink-0 w-5 h-5">{icon}</span>
-      {!collapsed && <span className="text-sm font-medium">{label}</span>}
+      <span
+        className="flex-shrink-0"
+        style={{ width: "16px", height: "16px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+      >
+        {icon}
+      </span>
+      {!collapsed && <span style={{ fontFamily: "var(--font-sans)" }}>{label}</span>}
     </Link>
   );
 }

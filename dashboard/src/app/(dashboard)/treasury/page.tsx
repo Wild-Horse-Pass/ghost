@@ -138,7 +138,8 @@ export default function TreasuryPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Treasury"
+        eyebrow="treasury"
+        title="Pool reward distribution."
         subtitle="Decentralization timeline and block reward distribution"
         actions={
           <Badge variant={phase === "ossified" ? "success" : phase === "decay" ? "warning" : "info"}>

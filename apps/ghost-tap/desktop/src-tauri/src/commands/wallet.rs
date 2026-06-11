@@ -7,7 +7,6 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 
-
 #[derive(Serialize)]
 pub struct BalanceResponse {
     pub confirmed: u64,
@@ -136,10 +135,7 @@ pub fn get_mnemonic(state: State<'_, AppState>) -> AppResult<String> {
 #[tauri::command]
 pub async fn get_balance(state: State<'_, AppState>) -> AppResult<BalanceResponse> {
     let (confirmed, pending) = state.connection.get_balance().await?;
-    Ok(BalanceResponse {
-        confirmed,
-        pending,
-    })
+    Ok(BalanceResponse { confirmed, pending })
 }
 
 #[tauri::command]
@@ -220,7 +216,9 @@ pub fn unlock_wallet(state: State<'_, AppState>) -> AppResult<()> {
         .wallet
         .lock()
         .map_err(|e| AppError::from(e.to_string()))?;
-    wallet.unlock_with_pin("").map_err(|e| AppError::from(e.to_string()))?;
+    wallet
+        .unlock_with_pin("")
+        .map_err(|e| AppError::from(e.to_string()))?;
     Ok(())
 }
 

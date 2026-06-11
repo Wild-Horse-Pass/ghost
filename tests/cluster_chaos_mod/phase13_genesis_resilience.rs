@@ -48,8 +48,7 @@ async fn genesis_01_force_stop_vm1() {
     println!("\n=== Genesis Resilience: Force-Stop VM1 ===");
 
     // Force-stop bypasses the is_genesis guard
-    SshController::force_stop_node(vm1, config.service_name)
-        .expect("failed to force-stop VM1");
+    SshController::force_stop_node(vm1, config.service_name).expect("failed to force-stop VM1");
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     // VM2+VM3+VM4 should be healthy with ≥2 peers
@@ -105,7 +104,10 @@ async fn genesis_02_survivors_serve_traffic() {
         "Survivor success rate {:.1}% below 95% without genesis",
         rate * 100.0
     );
-    println!("  Survivor traffic success rate (excl 429): {:.1}%", rate * 100.0);
+    println!(
+        "  Survivor traffic success rate (excl 429): {:.1}%",
+        rate * 100.0
+    );
 }
 
 #[tokio::test]
@@ -256,8 +258,7 @@ async fn genesis_06_dual_kill_vm1_vm2() {
     println!("\n=== Genesis Resilience: Dual Kill VM1 + VM2 (50% failure) ===");
 
     // Force-stop VM1 (genesis)
-    SshController::force_stop_node(vm1, config.service_name)
-        .expect("failed to force-stop VM1");
+    SshController::force_stop_node(vm1, config.service_name).expect("failed to force-stop VM1");
 
     // Stop VM2 (non-genesis)
     SshController::stop_node(vm2, config.service_name).expect("failed to stop VM2");
@@ -349,8 +350,7 @@ async fn genesis_08_full_restore_and_consistency() {
         assert!(
             rejoined,
             "{} did not regain 3 peers after full restore (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
 
@@ -388,24 +388,16 @@ async fn genesis_08_full_restore_and_consistency() {
     if mpc_counts.len() == config.nodes.len() {
         let first = mpc_counts[0];
         for c in &mpc_counts {
-            assert_eq!(
-                *c, first,
-                "Post dual-kill MPC mismatch: {:?}",
-                mpc_counts
-            );
+            assert_eq!(*c, first, "Post dual-kill MPC mismatch: {:?}", mpc_counts);
         }
         println!("  MPC contributions consistent: {}", first);
     }
 
     // Zero panics
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "25 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "25 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post dual-kill: {} had {} panics",

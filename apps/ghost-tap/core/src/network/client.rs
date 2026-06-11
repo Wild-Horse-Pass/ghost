@@ -31,9 +31,7 @@ pub struct NodeConfig {
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
-            endpoints: vec![
-                format!("http://127.0.0.1:{}", BITCOIN_RPC_PORT_MAINNET),
-            ],
+            endpoints: vec![format!("http://127.0.0.1:{}", BITCOIN_RPC_PORT_MAINNET)],
             rpc_user: None,
             rpc_password: None,
             timeout_ms: 30_000,
@@ -117,8 +115,8 @@ pub struct GhostClient {
 impl GhostClient {
     /// Create a new Ghost client
     pub fn new(config: NodeConfig) -> Result<Self, NetworkError> {
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_millis(config.timeout_ms));
+        let mut builder =
+            reqwest::Client::builder().timeout(Duration::from_millis(config.timeout_ms));
 
         if let Some(ref cert_der) = config.pinned_cert_der {
             let cert = reqwest::Certificate::from_der(cert_der)
@@ -249,12 +247,18 @@ impl GhostClient {
     // ========================================
 
     /// Get address balance
-    pub async fn get_address_balance(&mut self, address: &str) -> Result<AddressBalance, NetworkError> {
+    pub async fn get_address_balance(
+        &mut self,
+        address: &str,
+    ) -> Result<AddressBalance, NetworkError> {
         self.call("getaddressbalance", (address,)).await
     }
 
     /// Get UTXOs for an address
-    pub async fn get_address_utxos(&mut self, address: &str) -> Result<Vec<GhostUtxo>, NetworkError> {
+    pub async fn get_address_utxos(
+        &mut self,
+        address: &str,
+    ) -> Result<Vec<GhostUtxo>, NetworkError> {
         self.call("getaddressutxos", (address,)).await
     }
 
@@ -272,7 +276,10 @@ impl GhostClient {
     }
 
     /// Validate an address
-    pub async fn validate_address(&mut self, address: &str) -> Result<serde_json::Value, NetworkError> {
+    pub async fn validate_address(
+        &mut self,
+        address: &str,
+    ) -> Result<serde_json::Value, NetworkError> {
         self.call("validateaddress", (address,)).await
     }
 
@@ -286,7 +293,11 @@ impl GhostClient {
     }
 
     /// Get raw transaction
-    pub async fn get_raw_transaction(&mut self, txid: &str, verbose: bool) -> Result<serde_json::Value, NetworkError> {
+    pub async fn get_raw_transaction(
+        &mut self,
+        txid: &str,
+        verbose: bool,
+    ) -> Result<serde_json::Value, NetworkError> {
         self.call("getrawtransaction", (txid, verbose)).await
     }
 
@@ -371,7 +382,10 @@ impl GhostClient {
     }
 
     /// Generate a stealth address for receiving private payments
-    pub async fn get_stealth_address(&mut self, label: Option<&str>) -> Result<StealthAddress, NetworkError> {
+    pub async fn get_stealth_address(
+        &mut self,
+        label: Option<&str>,
+    ) -> Result<StealthAddress, NetworkError> {
         match label {
             Some(l) => self.call("getnewstealthaddress", (l,)).await,
             None => self.call("getnewstealthaddress", ()).await,
@@ -400,7 +414,8 @@ impl GhostClient {
             ringsize: ring,
         };
 
-        self.call("sendtypeto", ("anon", "anon", vec![params])).await
+        self.call("sendtypeto", ("anon", "anon", vec![params]))
+            .await
     }
 
     /// Send from private to public (exit Wraith)
@@ -420,7 +435,8 @@ impl GhostClient {
             amount,
         };
 
-        self.call("sendtypeto", ("anon", "ghost", vec![params])).await
+        self.call("sendtypeto", ("anon", "ghost", vec![params]))
+            .await
     }
 
     /// Send from public to private (enter Wraith)
@@ -440,7 +456,8 @@ impl GhostClient {
             amount,
         };
 
-        self.call("sendtypeto", ("ghost", "anon", vec![params])).await
+        self.call("sendtypeto", ("ghost", "anon", vec![params]))
+            .await
     }
 
     /// Get private (anon) balance
@@ -551,7 +568,8 @@ impl GhostClient {
         signature: &str,
         message: &str,
     ) -> Result<bool, NetworkError> {
-        self.call("verifymessage", (address, signature, message)).await
+        self.call("verifymessage", (address, signature, message))
+            .await
     }
 
     /// List address labels
@@ -579,7 +597,8 @@ impl GhostClient {
         min_conf: u32,
         include_empty: bool,
     ) -> Result<Vec<serde_json::Value>, NetworkError> {
-        self.call("listreceivedbyaddress", (min_conf, include_empty)).await
+        self.call("listreceivedbyaddress", (min_conf, include_empty))
+            .await
     }
 
     // ========================================
@@ -605,18 +624,12 @@ impl GhostClient {
     }
 
     /// Combine multiple PSBTs
-    pub async fn combine_psbt(
-        &mut self,
-        psbts: Vec<String>,
-    ) -> Result<String, NetworkError> {
+    pub async fn combine_psbt(&mut self, psbts: Vec<String>) -> Result<String, NetworkError> {
         self.call("combinepsbt", (psbts,)).await
     }
 
     /// Finalize a PSBT
-    pub async fn finalize_psbt(
-        &mut self,
-        psbt: &str,
-    ) -> Result<serde_json::Value, NetworkError> {
+    pub async fn finalize_psbt(&mut self, psbt: &str) -> Result<serde_json::Value, NetworkError> {
         self.call("finalizepsbt", (psbt,)).await
     }
 
@@ -642,7 +655,10 @@ impl GhostClient {
         options: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, NetworkError> {
         match options {
-            Some(opts) => self.call("walletcreatefundedpsbt", (inputs, outputs, 0, opts)).await,
+            Some(opts) => {
+                self.call("walletcreatefundedpsbt", (inputs, outputs, 0, opts))
+                    .await
+            }
             None => self.call("walletcreatefundedpsbt", (inputs, outputs)).await,
         }
     }
@@ -698,7 +714,10 @@ impl GhostClient {
         staking_only: bool,
     ) -> Result<(), NetworkError> {
         let _: serde_json::Value = self
-            .call("walletpassphrase", (passphrase, timeout_seconds, staking_only))
+            .call(
+                "walletpassphrase",
+                (passphrase, timeout_seconds, staking_only),
+            )
             .await?;
         Ok(())
     }

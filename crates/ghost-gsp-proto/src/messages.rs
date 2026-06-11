@@ -79,6 +79,15 @@ pub enum ClientMessage {
         limit: u32,
         /// Offset for pagination
         offset: u32,
+        /// Optional bech32 ghost-id of the requesting wallet, used so
+        /// ghost-pay can match L2 ledger rows where this wallet is the
+        /// recipient (`merchant_wallet_id` is stored as bech32 — the
+        /// only stable identifier the sender has at INSERT time). The
+        /// session-static wallet_id (which the GSP server forwards
+        /// separately) matches sender-side rows. Without this field,
+        /// recipients see only sent payments, never received ones.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wallet_bech32: Option<String>,
     },
 
     // =========================================================================
@@ -112,6 +121,26 @@ pub enum ClientMessage {
         public_key: String,
     },
 
+    /// One-shot L2 payment. Replaces the misshapen
+    /// `PreparePayment` → wallet-signs-sighash → `SubmitSignedPayment`
+    /// dance. L2 transfers don't produce a Bitcoin tx — they're
+    /// authenticated debits/credits against the operator's ledger.
+    /// The session auth proof is the right primitive; per-payment
+    /// sighash signing was a wire-format mismatch.
+    SendL2Payment {
+        /// Recipient Ghost ID or payment address.
+        recipient: String,
+        /// Amount in satoshis.
+        amount_sats: u64,
+        /// Authentication proof (per-call, prevents replay).
+        proof: WalletProof,
+        /// Optional memo (max 59 chars — OP_RETURN-compatible
+        /// length even though L2 transfers don't actually emit
+        /// OP_RETURN).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memo: Option<String>,
+    },
+
     /// Get payment status
     ///
     /// H-1: Requires wallet proof for authorization to prevent information leakage
@@ -133,12 +162,34 @@ pub enum ClientMessage {
     // =========================================================================
     // Ghost Locks
     // =========================================================================
-    /// Prepare a new ghost lock
+    /// Prepare a new ghost lock.
+    ///
+    /// The wallet supplies its own `recovery_pubkey` so the lock script's
+    /// recovery branch is spendable by the user — not by the operator.
+    /// This is what makes the timelock recovery path a real unilateral exit:
+    /// after the timelock expires, the user can spend their lock with just
+    /// their seed phrase, no operator cooperation needed.
+    ///
+    /// The operator still derives the `lock_pubkey` (cooperative-path key)
+    /// from its own keys, because fast L2 spends require operator-side
+    /// signing. The split is: lock_pubkey = operator (fast cooperative
+    /// path), recovery_pubkey = user (slow unilateral fallback).
     PrepareGhostLock {
-        /// Owner's public key (32 bytes hex)
+        /// Owner's public key (32 bytes x-only, hex). Wallet's GSP auth
+        /// identity — not used in the lock script, kept for accounting.
         owner_pubkey: String,
-        /// Lock capacity in satoshis
+        /// Lock capacity in satoshis.
         capacity_sats: u64,
+        /// User-derived recovery public key. 33-byte SEC1-compressed,
+        /// hex-encoded (66 chars). Goes into the lock script's recovery
+        /// branch. Wallet derives it from its own GhostKeys at
+        /// `recovery_index` and keeps the matching secret locally.
+        recovery_pubkey: String,
+        /// Wallet-side derivation index used to produce `recovery_pubkey`.
+        /// Recorded by the operator alongside the lock for diagnostics
+        /// and for the wallet to look up which secret to sign with at
+        /// recovery time. Independent of any operator-side index.
+        recovery_index: u32,
     },
 
     /// Confirm ghost lock funding
@@ -148,6 +199,17 @@ pub enum ClientMessage {
         /// Funding transaction ID
         funding_txid: String,
         /// Authentication proof
+        proof: WalletProof,
+    },
+
+    /// Register the wallet's BIP-352 scan public key with the GSP so the
+    /// server can detect incoming silent payments on the wallet's behalf.
+    /// The scan key is public (only used for detection, never for spending);
+    /// the wallet keeps the matching scan_secret.
+    RegisterScanKey {
+        /// 33-byte SEC1 compressed scan public key, hex-encoded.
+        scan_pubkey: String,
+        /// Authentication proof (action: "register_scan_key").
         proof: WalletProof,
     },
 
@@ -186,6 +248,15 @@ pub enum ClientMessage {
 
     /// Unsubscribe from chain reorganization notifications
     UnsubscribeReorgs,
+
+    /// Subscribe to BIP-352 silent-payment candidate transaction pushes.
+    /// Server pushes every taproot-output-bearing transaction with its
+    /// computed ephemeral pubkey; wallet runs scanner locally with its
+    /// scan secret. Server never learns the wallet's scan secret.
+    SubscribeSilentPayments,
+
+    /// Unsubscribe from silent-payment pushes.
+    UnsubscribeSilentPayments,
 
     // =========================================================================
     // Instant Payments
@@ -381,6 +452,25 @@ pub enum ServerMessage {
         error: Option<String>,
     },
 
+    /// Reply to [`ClientMessage::SendL2Payment`]. Carries the
+    /// operator-assigned `payment_id` on success so the wallet can
+    /// reference the L2 ledger entry later (e.g. for status polls
+    /// or settlement reconciliation).
+    PaymentSent {
+        success: bool,
+        /// Operator-assigned payment_id. None on failure.
+        payment_id: Option<String>,
+        /// Echoed amount and recipient for confirmation.
+        amount_sats: u64,
+        recipient: String,
+        /// Operator-side status string (e.g. "pending",
+        /// "settled"). Pending means the L2 entry was recorded
+        /// but the ZK proof / settlement step is still required.
+        status: Option<String>,
+        /// Error message if failed.
+        error: Option<String>,
+    },
+
     /// M-14 FIX: Payment cancellation result (distinct from PaymentSubmitted)
     PaymentCancelled {
         /// Whether cancellation succeeded
@@ -437,17 +527,38 @@ pub enum ServerMessage {
     // =========================================================================
     // Ghost Lock Responses & Notifications
     // =========================================================================
-    /// Lock preparation result
+    /// Lock preparation result.
+    ///
+    /// On success the operator echoes back the full lock-script details
+    /// so the wallet can (1) verify the operator built the lock with
+    /// the wallet's supplied `recovery_pubkey`, and (2) reconstruct the
+    /// witness script later for the recovery spend. The wallet pins
+    /// these locally keyed by `lock_id`; without them recovery is
+    /// impossible (P2WSH spends require revealing the script).
     LockPrepared {
-        /// Whether preparation succeeded
         success: bool,
-        /// Lock ID
         lock_id: Option<String>,
-        /// Funding address
+        /// P2WSH funding address (`bc1q...` / `tb1q...`).
         funding_address: Option<String>,
-        /// Required amount to fund
         required_sats: Option<u64>,
-        /// Error message if failed
+        /// Operator-derived lock public key (cooperative path).
+        /// 33-byte SEC1 compressed, hex.
+        lock_pubkey: Option<String>,
+        /// Echo of the wallet-supplied recovery public key. The wallet
+        /// MUST verify this matches the value it sent before
+        /// considering the lock prepared — otherwise an operator could
+        /// silently substitute its own key and steal the recovery path.
+        recovery_pubkey: Option<String>,
+        /// Echo of the wallet's `recovery_index`. Same diligence —
+        /// the wallet checks this matches what it sent.
+        recovery_index: Option<u32>,
+        /// CSV blocks the recovery branch waits before becoming
+        /// spendable.
+        recovery_blocks: Option<u32>,
+        /// Block height the lock was created at. Combined with
+        /// `recovery_blocks` gives the absolute height after which the
+        /// recovery path is spendable.
+        creation_height: Option<u32>,
         error: Option<String>,
     },
 
@@ -469,6 +580,29 @@ pub enum ServerMessage {
         lock_id: String,
         /// Jump transaction ID if broadcast
         jump_txid: Option<String>,
+        /// Error message if failed
+        error: Option<String>,
+    },
+
+    /// Push: a candidate transaction the wallet should scan locally for
+    /// silent-payment matches. Sent when the wallet has subscribed via
+    /// `SubscribeSilentPayments` and the server has chain-extracted the
+    /// transaction's ephemeral pubkey + taproot outputs.
+    CandidateTransaction {
+        /// 33-byte SEC1 compressed ephemeral input-set pubkey, hex.
+        ephemeral_pubkey: String,
+        /// All taproot outputs from the transaction.
+        outputs: Vec<CandidateOutput>,
+        /// Transaction id (32 bytes hex).
+        txid: String,
+        /// Block height the tx was confirmed at, or `None` for mempool.
+        block_height: Option<u32>,
+    },
+
+    /// BIP-352 scan-key registration result
+    ScanKeyRegistered {
+        /// Whether registration succeeded
+        success: bool,
         /// Error message if failed
         error: Option<String>,
     },
@@ -725,6 +859,17 @@ pub enum ServerMessage {
     },
 }
 
+/// One taproot output from a `CandidateTransaction`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateOutput {
+    /// 32-byte x-only output pubkey, hex.
+    pub output_pubkey: String,
+    /// Output value in satoshis, if known.
+    pub amount_sats: Option<u64>,
+    /// Output index in the transaction.
+    pub vout: u32,
+}
+
 /// UTXO information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UtxoInfo {
@@ -873,16 +1018,20 @@ impl ClientMessage {
                 | ClientMessage::GetTransactions { .. }
                 | ClientMessage::PreparePayment { .. }
                 | ClientMessage::SubmitSignedPayment { .. }
+                | ClientMessage::SendL2Payment { .. }
                 | ClientMessage::GetPaymentStatus { .. }
                 | ClientMessage::CancelPayment { .. }
                 | ClientMessage::PrepareGhostLock { .. }
                 | ClientMessage::ConfirmGhostLockFunding { .. }
+                | ClientMessage::RegisterScanKey { .. }
                 | ClientMessage::RequestJump { .. }
                 | ClientMessage::SubscribeBalance
                 | ClientMessage::SubscribePayments
                 | ClientMessage::SubscribeLocks
                 | ClientMessage::SubscribeReorgs
                 | ClientMessage::UnsubscribeReorgs
+                | ClientMessage::SubscribeSilentPayments
+                | ClientMessage::UnsubscribeSilentPayments
                 | ClientMessage::CheckInstantCapability { .. }
                 | ClientMessage::SubscribeLockState { .. }
                 | ClientMessage::UnsubscribeLockState { .. }
@@ -902,9 +1051,11 @@ impl ClientMessage {
             ClientMessage::PreparePayment { .. }
                 | ClientMessage::CancelPayment { .. }
                 | ClientMessage::ConfirmGhostLockFunding { .. }
+                | ClientMessage::RegisterScanKey { .. }
                 | ClientMessage::RequestJump { .. }
                 | ClientMessage::AcceptInstantPayment { .. }
                 | ClientMessage::ShieldBalance { .. }
+                | ClientMessage::SendL2Payment { .. }
         )
     }
 }
@@ -1044,9 +1195,7 @@ mod tests {
 
     #[test]
     fn test_get_recent_l2_transactions_requires_auth() {
-        assert!(
-            ClientMessage::GetRecentL2Transactions { since_height: 0 }.requires_auth()
-        );
+        assert!(ClientMessage::GetRecentL2Transactions { since_height: 0 }.requires_auth());
     }
 
     #[test]
