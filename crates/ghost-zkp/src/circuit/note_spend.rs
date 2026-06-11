@@ -190,7 +190,11 @@ impl<F: PrimeField> Circuit<F> for GhostNoteSpendCircuit<F> {
         }
 
         // Range proof on note_value (prevent field wrap-around on input note)
-        enforce_range(cs.namespace(|| "range_note_value"), &note_value, BALANCE_BITS)?;
+        enforce_range(
+            cs.namespace(|| "range_note_value"),
+            &note_value,
+            BALANCE_BITS,
+        )?;
 
         // ====================================================================
         // 3. Compute spent note commitment: C = MiMC(MiMC(value, blinding), COMT_DOMAIN)
@@ -286,7 +290,9 @@ impl<F: PrimeField> Circuit<F> for GhostNoteSpendCircuit<F> {
         let change_value = AllocatedNum::alloc(cs.namespace(|| "change_value"), || {
             let nv = self.note_value.ok_or(SynthesisError::AssignmentMissing)?;
             let a = self.amount.ok_or(SynthesisError::AssignmentMissing)?;
-            Ok(F::from(nv.saturating_sub(a).saturating_sub(L2_TRANSFER_FEE_SATS)))
+            Ok(F::from(
+                nv.saturating_sub(a).saturating_sub(L2_TRANSFER_FEE_SATS),
+            ))
         })?;
 
         cs.enforce(

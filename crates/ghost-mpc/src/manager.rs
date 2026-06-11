@@ -260,7 +260,9 @@ impl CeremonyManager {
         // Generate genesis parameters using GhostNoteSpendCircuit (sender-side proofs)
         use bellperson::groth16::generate_random_parameters;
         use blstrs::Scalar as Fr;
-        use ghost_zkp::circuit::{GhostNoteSpendCircuit, GhostUnshieldCircuit, NoteConsolidateCircuit};
+        use ghost_zkp::circuit::{
+            GhostNoteSpendCircuit, GhostUnshieldCircuit, NoteConsolidateCircuit,
+        };
         use rand::rngs::OsRng;
 
         tracing::info!("MPC: Generating genesis parameters for NoteSpend + NoteConsolidate + Unshield circuits...");
@@ -276,13 +278,15 @@ impl CeremonyManager {
 
         // Slot 2: NoteConsolidateCircuit (merges up to 4 notes into 1)
         let dummy_consolidate = NoteConsolidateCircuit::<Fr>::dummy(20);
-        let consolidate_params = generate_random_parameters::<Bls12, _, _>(dummy_consolidate, &mut OsRng)
-            .map_err(|e| {
-                MpcError::Internal(format!(
-                    "Failed to generate consolidation genesis params: {:?}",
-                    e
-                ))
-            })?;
+        let consolidate_params =
+            generate_random_parameters::<Bls12, _, _>(dummy_consolidate, &mut OsRng).map_err(
+                |e| {
+                    MpcError::Internal(format!(
+                        "Failed to generate consolidation genesis params: {:?}",
+                        e
+                    ))
+                },
+            )?;
 
         // Slot 3: Unshield circuit (L2 -> L1 withdrawal proofs)
         let dummy_unshield = GhostUnshieldCircuit::<Fr>::dummy(20);
@@ -295,7 +299,9 @@ impl CeremonyManager {
             })?;
 
         self.initialize_genesis_multi(note_params, consolidate_params, unshield_params)?;
-        tracing::info!("MPC: Genesis parameters initialized for NoteSpend + NoteConsolidate + Unshield");
+        tracing::info!(
+            "MPC: Genesis parameters initialized for NoteSpend + NoteConsolidate + Unshield"
+        );
         Ok(true)
     }
 
@@ -905,10 +911,7 @@ impl CeremonyManager {
         save_verifying_key(&self.files.payout_vk_path(), &payout_params.vk)?;
 
         // Save unshield params as v0
-        save_parameters(
-            &self.files.unshield_params_path(0),
-            &unshield_params,
-        )?;
+        save_parameters(&self.files.unshield_params_path(0), &unshield_params)?;
         save_verifying_key(&self.files.unshield_vk_path(), &unshield_params.vk)?;
 
         // Update current symlinks
@@ -1260,8 +1263,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // load_or_init with None should leave default (pre-genesis) state
-        let manager =
-            CeremonyManager::load_or_init(temp_dir.path().to_path_buf(), None).unwrap();
+        let manager = CeremonyManager::load_or_init(temp_dir.path().to_path_buf(), None).unwrap();
 
         let state = manager.state();
         assert_eq!(state.contribution_count, 0);
@@ -1302,7 +1304,10 @@ mod tests {
 
         // Verification should reject due to hash chain mismatch
         let result = manager.verify_contribution(&new_params, &contribution);
-        assert!(result.is_err(), "Tampered prev_params_hash should be rejected");
+        assert!(
+            result.is_err(),
+            "Tampered prev_params_hash should be rejected"
+        );
         let err = match result {
             Err(e) => e.to_string(),
             Ok(_) => panic!("Expected error"),

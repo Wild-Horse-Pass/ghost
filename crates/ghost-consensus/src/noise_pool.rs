@@ -429,7 +429,10 @@ mod tests {
     /// Pool config for tests — allows unknown peers since tests don't set up trusted peer lists
     fn test_pool_config() -> NoisePoolConfig {
         NoisePoolConfig {
-            noise: NoiseConfig { allow_unknown_peers: true, ..NoiseConfig::default() },
+            noise: NoiseConfig {
+                allow_unknown_peers: true,
+                ..NoiseConfig::default()
+            },
             ..NoisePoolConfig::default()
         }
     }
@@ -491,10 +494,8 @@ mod tests {
         let keypair1 = NoiseKeypair::generate();
         let keypair2 = NoiseKeypair::generate();
 
-        let pool1 =
-            Arc::new(NoiseConnectionPool::new(keypair1, test_pool_config()).unwrap());
-        let pool2 =
-            Arc::new(NoiseConnectionPool::new(keypair2, test_pool_config()).unwrap());
+        let pool1 = Arc::new(NoiseConnectionPool::new(keypair1, test_pool_config()).unwrap());
+        let pool2 = Arc::new(NoiseConnectionPool::new(keypair2, test_pool_config()).unwrap());
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

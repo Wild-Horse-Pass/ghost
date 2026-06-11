@@ -82,22 +82,16 @@ echo ""
 echo "To fund this lock, send 0.001 BTC to:"
 echo "  $LOCK_ADDRESS"
 
-# 5. Join Wraith session
-echo ""
-echo "[5/6] Joining Wraith Session..."
-SESSION_RESULT=$(curl -s -X POST "$BASE_URL/api/v1/wraith/join" \
-    -H "Content-Type: application/json" \
-    -d "{\"tier\": \"express\", \"denomination\": \"micro\", \"lock_id\": \"$LOCK_ID\"}")
-echo "$SESSION_RESULT" | json_pretty
-
-SESSION_ID=$(echo "$SESSION_RESULT" | python3 -c "import sys, json; print(json.load(sys.stdin).get('session_id', ''))" 2>/dev/null)
-echo "Session ID: $SESSION_ID"
-
-# 6. List sessions
-echo ""
-echo "[6/6] Listing Active Sessions..."
-SESSIONS=$(curl -s "$BASE_URL/api/v1/wraith/sessions")
-echo "$SESSIONS" | json_pretty
+# Wraith mixing moved out of ghost-pay into the wraith-coordinator
+# binary on its own port. The legacy `/api/v1/wraith/{join,sessions}`
+# endpoints on ghost-pay were removed when the protocol moved to
+# single-round atomic CoinJoin. To exercise the Wraith Lite v1 flow
+# end-to-end use:
+#   bash scripts/regtest-recovery-demo.sh        # unilateral exit
+#   bash scripts/regtest-l2-transfer-demo.sh     # alice → bob L2 send
+#
+# Or hit wraith-coordinator's `POST /api/v1/session/find_or_create`
+# directly — see `bins/wraith-coordinator/src/api/find_or_create.rs`.
 
 # Summary
 echo ""
@@ -107,9 +101,7 @@ echo "=========================================="
 echo ""
 echo "Next steps to complete the test:"
 echo "1. Fund the lock address: $LOCK_ADDRESS"
-echo "2. Wait for session to fill (need more participants)"
-echo "3. Wraith mixing will run automatically"
-echo "4. Request withdrawal when lock is funded"
+echo "2. Request withdrawal when lock is funded"
 echo ""
 echo "To request withdrawal after funding:"
 echo "curl -X POST $BASE_URL/api/v1/withdrawals/request \\"
@@ -119,4 +111,3 @@ echo ""
 echo "To check status:"
 echo "  curl $BASE_URL/api/v1/status"
 echo "  curl $BASE_URL/api/v1/locks"
-echo "  curl $BASE_URL/api/v1/wraith/sessions"

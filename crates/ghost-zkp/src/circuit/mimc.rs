@@ -53,7 +53,7 @@ pub fn mimc_round_constants<F: PrimeField>() -> [F; MIMC_ROUNDS] {
 
 /// MiMC hash in circuit: H(a, b) = MiMC(a + b)
 ///
-/// Uses x -> x^3 + c[i] over multiple rounds for collision resistance.
+/// Uses x -> x^3 + `c[i]` over multiple rounds for collision resistance.
 /// This is the constraint-generating version for use in ZK circuits.
 pub fn mimc_hash<F: PrimeField, CS: ConstraintSystem<F>>(
     mut cs: CS,
@@ -189,7 +189,10 @@ mod tests {
 
     #[test]
     fn test_mimc_rounds_count() {
-        assert_eq!(MIMC_ROUNDS, 82, "MiMC should use 82 rounds for 128-bit security");
+        assert_eq!(
+            MIMC_ROUNDS, 82,
+            "MiMC should use 82 rounds for 128-bit security"
+        );
     }
 
     #[test]

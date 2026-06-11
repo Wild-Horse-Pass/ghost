@@ -122,13 +122,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "fuzz_wraith_blind"
-path = "fuzz_targets/fuzz_wraith_blind.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "fuzz_l2_requests"
 path = "fuzz_targets/fuzz_l2_requests.rs"
 test = false

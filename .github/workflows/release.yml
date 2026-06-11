@@ -27,9 +27,7 @@ jobs:
             suffix: ""
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -42,11 +40,22 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev
+          sudo apt-get install -y libsqlite3-dev capnproto libcapnp-dev
 
-      # Build release binaries
+      # Install system dependencies (macOS) — capnproto for the SV2 stratum-core dep
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install capnp
+
+      # Build only the binaries this release ships (node + SV2). Building the
+      # whole workspace would pull in the desktop wallet/mobile apps (Tauri GUIs
+      # need webkit, and the wallet daemon may be mid-development) which are not
+      # release artifacts here.
       - name: Build
-        run: cargo build --release --workspace --target ${{ matrix.target }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p ghost-pool -p ghost-cli -p ghost-pay -p ghost-gsp-bin \
+            -p translator_sv2 -p pool_sv2 -p jd_client_sv2 -p jd_server_sv2
 
       # Package binaries
       - name: Package
@@ -55,7 +64,7 @@ jobs:
           mkdir -p dist
 
           # Copy binaries (check actual names from target directory)
-          for bin in ghost-pool ghost-cli ghost-pay translator ghost-gsp ghost-light-wallet ghost-light-wallet-tui; do
+          for bin in ghost-pool ghost-cli ghost-pay ghost-gsp translator_sv2 pool_sv2 jd_client_sv2 ghost-light-wallet ghost-light-wallet-tui; do
             if [ -f "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" ]; then
               cp "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" dist/
             fi
@@ -75,7 +84,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bitcoin-ghost-${{ matrix.target }}
           path: bitcoin-ghost-${{ github.ref_name }}-${{ matrix.target }}.*
@@ -87,27 +96,46 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       - name: Generate SHA256 checksums
         shell: bash
         run: |
+          # List basenames (not the nested download-artifact dirs) so the manifest
+          # matches the flat published asset names — `sha256sum -c SHA256SUMS.txt`
+          # then works wherever the assets are downloaded alongside it.
           cd artifacts
-          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec sha256sum {} \; | sort > ../SHA256SUMS.txt
+          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) | while read -r f; do
+            printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
+          done | sort > ../SHA256SUMS.txt
           cat ../SHA256SUMS.txt
 
+      # PGP-sign the checksum manifest so releases are verifiable against the
+      # maintainer key (fingerprint published in SECURITY.md). Requires repo
+      # secrets GPG_PRIVATE_KEY (armoured private key) and GPG_PASSPHRASE; when
+      # unset, the manifest is published unsigned.
+      - name: PGP-sign SHA256SUMS
+        if: ${{ env.GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "$GPG_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+            --armor --detach-sign --output SHA256SUMS.txt.asc SHA256SUMS.txt
+          gpg --verify SHA256SUMS.txt.asc SHA256SUMS.txt
+
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true
           files: |
             artifacts/**/*
             SHA256SUMS.txt
+            SHA256SUMS.txt.asc

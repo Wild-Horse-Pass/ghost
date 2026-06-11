@@ -144,7 +144,10 @@ impl RateLimiter {
         // refill_millis = elapsed_ms * refill_rate (tokens/sec) * 1000 (millis/token) / 1000 (ms→sec)
         // Simplifies to: elapsed_ms * refill_rate
         let refill_millis = elapsed_ms.saturating_mul(self.refill_rate as u64);
-        bucket.tokens_millis = bucket.tokens_millis.saturating_add(refill_millis).min(max_millis);
+        bucket.tokens_millis = bucket
+            .tokens_millis
+            .saturating_add(refill_millis)
+            .min(max_millis);
         bucket.last_update = now;
 
         if bucket.tokens_millis >= MPC_MILLIS_PER_TOKEN {

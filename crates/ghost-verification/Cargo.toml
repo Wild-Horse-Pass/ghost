@@ -74,3 +74,5 @@ tempfile = "3"
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 serial_test = "3"
+# Integration test for identity-derived TLS handshake
+ed25519-dalek = { workspace = true }

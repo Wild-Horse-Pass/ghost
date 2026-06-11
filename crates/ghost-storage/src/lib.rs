@@ -45,9 +45,9 @@ pub use audit_log::*;
 pub use database::*;
 pub use encryption::*;
 pub use models::*;
+pub use queries::GlyphRecord;
 pub use queries::L2StateInfo;
 pub use queries::{ConfidentialNoteRecord, ConfidentialTransferRecord};
-pub use queries::GlyphRecord;
 pub use queries::{
     L2CheckpointRecord, L2EpochRecord, L2NoteRecord, L2NullifierRecord, L2ValidRootRecord,
 };

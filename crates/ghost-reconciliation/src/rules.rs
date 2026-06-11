@@ -58,12 +58,14 @@ pub fn validate_settlement(
     // Legacy addresses have larger witness discount costs and weaker security properties.
     if destination_address.starts_with('1') {
         return Err(ReconciliationError::InvalidProof {
-            reason: "H-8: P2PKH addresses (1...) are not accepted. Use a SegWit address (bc1q...)".to_string(),
+            reason: "H-8: P2PKH addresses (1...) are not accepted. Use a SegWit address (bc1q...)"
+                .to_string(),
         });
     }
     if destination_address.starts_with('3') {
         return Err(ReconciliationError::InvalidProof {
-            reason: "H-8: P2SH addresses (3...) are not accepted. Use a SegWit address (bc1q...)".to_string(),
+            reason: "H-8: P2SH addresses (3...) are not accepted. Use a SegWit address (bc1q...)"
+                .to_string(),
         });
     }
     // Testnet legacy addresses
@@ -72,7 +74,9 @@ pub fn validate_settlement(
         || destination_address.starts_with('2')
     {
         return Err(ReconciliationError::InvalidProof {
-            reason: "H-8: Legacy testnet addresses are not accepted. Use a SegWit address (tb1q...)".to_string(),
+            reason:
+                "H-8: Legacy testnet addresses are not accepted. Use a SegWit address (tb1q...)"
+                    .to_string(),
         });
     }
 
@@ -92,7 +96,8 @@ pub fn validate_settlement(
 
     if !valid_prefix {
         return Err(ReconciliationError::InvalidProof {
-            reason: "Invalid Bitcoin address prefix — only SegWit (bc1q/tb1q/bcrt1q) accepted".to_string(),
+            reason: "Invalid Bitcoin address prefix — only SegWit (bc1q/tb1q/bcrt1q) accepted"
+                .to_string(),
         });
     }
 
@@ -263,5 +268,4 @@ mod tests {
         // High value forces batch
         assert!(rules.should_form_batch(1, 20_000_000_000, 0));
     }
-
 }

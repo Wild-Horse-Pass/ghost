@@ -94,6 +94,21 @@ struct LockInfoResponse {
     /// M-11: Owner wallet ID for explicit ownership verification
     /// If present, this field is used for ownership checks in fallback path
     owner_wallet_id: Option<String>,
+    /// User-supplied recovery_pubkey echoed back by ghost-pay so the
+    /// wallet can verify operator didn't substitute. 33-byte SEC1
+    /// compressed, hex-encoded. None on legacy ghost-pay nodes that
+    /// haven't adopted the recovery-key change.
+    #[serde(default)]
+    recovery_pubkey: Option<String>,
+    /// Wallet's recovery derivation index, echoed.
+    #[serde(default)]
+    recovery_index: Option<u32>,
+    /// CSV blocks the recovery branch waits on.
+    #[serde(default)]
+    recovery_blocks: Option<u32>,
+    /// Block height the lock was created at.
+    #[serde(default)]
+    creation_height: Option<u32>,
 }
 
 /// Status response from pay node
@@ -127,6 +142,18 @@ struct CreateLockRequest {
     amount_sats: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     timelock_tier: Option<String>,
+    /// User-supplied recovery_pubkey (33-byte SEC1 compressed hex).
+    /// ghost-pay uses this verbatim in the lock script's recovery
+    /// branch instead of deriving its own. Required for unilateral
+    /// exit to be a real property.
+    recovery_pubkey: String,
+    /// Wallet-side derivation index that produced `recovery_pubkey`.
+    /// Operator records but does not use for keys.
+    recovery_index: u32,
+    /// Authenticated wallet's static identifier — the GSP server
+    /// forwards this so multi-tenant ghost-pay can record the lock
+    /// under the requesting wallet's ID rather than the operator's.
+    owner_ghost_id: String,
 }
 
 /// Jump request
@@ -141,6 +168,18 @@ struct JumpRequest {
 struct ConfirmFundingRequest {
     funding_txid: String,
     funding_vout: u32,
+}
+
+/// Result from a one-shot `send_l2_payment` call. Mirrors the
+/// useful subset of ghost-pay's `/api/v1/payments/send` response.
+#[derive(Debug, Clone)]
+pub struct SendL2PaymentResult {
+    pub payment_id: String,
+    /// Operator-side status — typically "pending" until the
+    /// confidential-transfer ZK proof step completes.
+    pub status: String,
+    pub recipient: String,
+    pub amount_sats: u64,
 }
 
 /// M-15 FIX: Internal authentication header name
@@ -477,13 +516,17 @@ impl PayNodeProxy {
                 funding_address: l.address,
                 funding_txid: None,
                 funding_vout: None,
-                creation_height: 0,
+                creation_height: l.creation_height.unwrap_or(0),
                 recovery_height: l.recovery_height.unwrap_or(0) as u32,
                 next_jump_height: None,
                 needs_jump: l.needs_jump,
                 blocks_until_jump: l.blocks_until_jump.unwrap_or(0) as u32,
                 created_at: l.created_at as i64,
                 updated_at: l.created_at as i64,
+                lock_pubkey: l.output_pubkey.clone(),
+                recovery_pubkey: l.recovery_pubkey.clone().unwrap_or_default(),
+                recovery_index: l.recovery_index.unwrap_or(0),
+                recovery_blocks: l.recovery_blocks.unwrap_or(0),
             })
             .collect())
     }
@@ -614,13 +657,17 @@ impl PayNodeProxy {
             funding_address: lock.address,
             funding_txid: None,
             funding_vout: None,
-            creation_height: 0,
+            creation_height: lock.creation_height.unwrap_or(0),
             recovery_height: lock.recovery_height.unwrap_or(0) as u32,
             next_jump_height: None,
             needs_jump: lock.needs_jump,
             blocks_until_jump: lock.blocks_until_jump.unwrap_or(0) as u32,
             created_at: lock.created_at as i64,
             updated_at: lock.created_at as i64,
+            lock_pubkey: lock.output_pubkey.clone(),
+            recovery_pubkey: lock.recovery_pubkey.unwrap_or_default(),
+            recovery_index: lock.recovery_index.unwrap_or(0),
+            recovery_blocks: lock.recovery_blocks.unwrap_or(0),
         })
     }
 
@@ -750,17 +797,30 @@ impl PayNodeProxy {
         Ok(result.is_owner)
     }
 
-    /// Get transaction history
+    /// Get transaction history.
+    ///
+    /// `ghost_id` is the wallet's static identifier — matches
+    /// `sender_ghost_id` rows where this wallet is the sender.
+    /// `bech32` is the wallet's public bech32 ghost-id — matches
+    /// `merchant_wallet_id` rows where this wallet is the recipient.
+    /// Both are forwarded to ghost-pay; the route ORs them.
     pub async fn get_transactions(
         &self,
         ghost_id: &str,
+        bech32: Option<&str>,
         limit: u32,
         offset: u32,
     ) -> GspResult<(Vec<TransactionInfo>, u32)> {
-        let url = format!(
+        let mut url = format!(
             "{}/api/v1/transactions?ghost_id={}&limit={}&offset={}",
             self.base_url, ghost_id, limit, offset
         );
+        if let Some(b32) = bech32 {
+            // Manual encoding — bech32 ghost-ids are URL-safe (lower
+            // alphanumerics + `1` separator), no escaping needed.
+            url.push_str("&bech32=");
+            url.push_str(b32);
+        }
         debug!(url = %url, "Getting transactions");
 
         // M-15: Add internal auth header
@@ -830,6 +890,88 @@ impl PayNodeProxy {
             .map_err(|e| GspError::PayNodeError(e.to_string()))
     }
 
+    /// One-shot L2 payment. Forwards to ghost-pay's
+    /// `POST /api/v1/payments/send` and returns the recorded
+    /// payment intent (operator-assigned `payment_id`, status,
+    /// recipient/amount echo). Replaces the
+    /// prepare/sign/submit dance for the new client path —
+    /// L2 transfers don't produce on-chain txs and don't need
+    /// per-payment sighash signatures.
+    ///
+    /// `sender_ghost_id` MUST be the authenticated wallet_id from
+    /// the WebSocket session (caller's job — handler reads it from
+    /// `conn_state.wallet_id`). Forwarded verbatim; ghost-pay
+    /// records the L2 ledger entry against this identity, not the
+    /// operator's.
+    pub async fn send_l2_payment(
+        &self,
+        sender_ghost_id: &str,
+        recipient: &str,
+        amount_sats: u64,
+        memo: Option<&str>,
+    ) -> GspResult<SendL2PaymentResult> {
+        let url = format!("{}/api/v1/payments/send", self.base_url);
+        debug!(
+            url = %url,
+            sender_ghost_id = %sender_ghost_id,
+            recipient = %recipient,
+            amount = amount_sats,
+            "Sending L2 payment",
+        );
+
+        let request = serde_json::json!({
+            "sender_ghost_id": sender_ghost_id,
+            "recipient": recipient,
+            "amount_sats": amount_sats,
+            "memo": memo,
+        });
+
+        let response = self
+            .add_internal_auth(self.client.post(&url).json(&request))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(format!("send_l2_payment parse: {e}")))?;
+
+        // ghost-pay's /payments/send returns either:
+        //   { success:true, payment_id, sender, recipient, amount_sats, memo, status, ... }
+        //   { success:false, error, ... }
+        // Both are 200 OK at the HTTP layer (the failure is in the body).
+        let success = body
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !status.is_success() || !success {
+            let err_msg = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("send_l2_payment failed")
+                .to_string();
+            return Err(GspError::PayNodeError(err_msg));
+        }
+        let payment_id = body
+            .get("payment_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GspError::PayNodeError("send_l2_payment: missing payment_id".into()))?
+            .to_string();
+        let pay_status = body
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pending")
+            .to_string();
+        Ok(SendL2PaymentResult {
+            payment_id,
+            status: pay_status,
+            recipient: recipient.to_string(),
+            amount_sats,
+        })
+    }
+
     /// Submit a signed payment
     pub async fn submit_payment(
         &self,
@@ -873,13 +1015,24 @@ impl PayNodeProxy {
         ghost_id: &str,
         amount_sats: u64,
         timelock_tier: Option<&str>,
+        recovery_pubkey: &str,
+        recovery_index: u32,
     ) -> GspResult<GhostLockInfo> {
         let url = format!("{}/api/v1/locks/create", self.base_url);
-        debug!(url = %url, ghost_id = %ghost_id, amount = amount_sats, "Creating lock");
+        debug!(
+            url = %url,
+            ghost_id = %ghost_id,
+            amount = amount_sats,
+            recovery_index = recovery_index,
+            "Creating lock with user-supplied recovery_pubkey",
+        );
 
         let request = CreateLockRequest {
             amount_sats,
             timelock_tier: timelock_tier.map(|s| s.to_string()),
+            recovery_pubkey: recovery_pubkey.to_string(),
+            recovery_index,
+            owner_ghost_id: ghost_id.to_string(),
         };
 
         // M-15: Add internal auth header
@@ -921,13 +1074,17 @@ impl PayNodeProxy {
             funding_address: lock.address,
             funding_txid: None,
             funding_vout: None,
-            creation_height: 0,
+            creation_height: lock.creation_height.unwrap_or(0),
             recovery_height: lock.recovery_height.unwrap_or(0) as u32,
             next_jump_height: None,
             needs_jump: lock.needs_jump,
             blocks_until_jump: lock.blocks_until_jump.unwrap_or(0) as u32,
             created_at: lock.created_at as i64,
             updated_at: lock.created_at as i64,
+            lock_pubkey: lock.output_pubkey.clone(),
+            recovery_pubkey: lock.recovery_pubkey.unwrap_or_default(),
+            recovery_index: lock.recovery_index.unwrap_or(0),
+            recovery_blocks: lock.recovery_blocks.unwrap_or(0),
         })
     }
 

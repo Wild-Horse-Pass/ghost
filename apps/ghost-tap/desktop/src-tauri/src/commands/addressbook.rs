@@ -56,9 +56,7 @@ pub async fn validate_address_info(
 
 /// List all addresses that have received funds, with amounts and confirmations.
 #[tauri::command]
-pub async fn list_received_addresses(
-    state: State<'_, AppState>,
-) -> AppResult<Vec<AddressEntry>> {
+pub async fn list_received_addresses(state: State<'_, AppState>) -> AppResult<Vec<AddressEntry>> {
     let received = state.connection.list_received_by_address(0, true).await?;
     let entries = received
         .into_iter()
@@ -73,14 +71,8 @@ pub async fn list_received_addresses(
                 .and_then(|l| l.as_str())
                 .unwrap_or("")
                 .to_string(),
-            amount: v
-                .get("amount")
-                .and_then(|a| a.as_f64())
-                .unwrap_or(0.0),
-            confirmations: v
-                .get("confirmations")
-                .and_then(|c| c.as_u64())
-                .unwrap_or(0),
+            amount: v.get("amount").and_then(|a| a.as_f64()).unwrap_or(0.0),
+            confirmations: v.get("confirmations").and_then(|c| c.as_u64()).unwrap_or(0),
         })
         .collect();
     Ok(entries)

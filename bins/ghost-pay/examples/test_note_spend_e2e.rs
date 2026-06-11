@@ -78,8 +78,7 @@ fn main() {
     } else {
         println!("[1/8] Generating test Groth16 params (GhostNoteProver)...");
         let start = Instant::now();
-        let prover =
-            GhostNoteProver::new_with_setup(tree_depth).expect("Failed to setup prover");
+        let prover = GhostNoteProver::new_with_setup(tree_depth).expect("Failed to setup prover");
         let verifier = GhostNoteVerifier::for_prover(&prover);
         println!(
             "  Setup complete in {:?} (has_params={}, prover_id={}...)",
@@ -208,8 +207,7 @@ fn main() {
     let recipient_owner = [0x02u8; 32];
 
     // Get next_index for recipient note placement
-    let tree_state: serde_json::Value =
-        http_get(&format!("{}/api/v1/confidential/tree", api_url));
+    let tree_state: serde_json::Value = http_get(&format!("{}/api/v1/confidential/tree", api_url));
     let recipient_index = tree_state["next_index"]
         .as_u64()
         .expect("tree state should have next_index");
@@ -217,11 +215,11 @@ fn main() {
 
     // Encrypt note data for sender (change) and recipient
     let secp = Secp256k1::new();
-    let sender_sk = SecretKey::from_slice(&deterministic_blinding(100))
-        .expect("valid sender secret key");
+    let sender_sk =
+        SecretKey::from_slice(&deterministic_blinding(100)).expect("valid sender secret key");
     let sender_pk = PublicKey::from_secret_key(&secp, &sender_sk);
-    let recipient_sk = SecretKey::from_slice(&deterministic_blinding(101))
-        .expect("valid recipient secret key");
+    let recipient_sk =
+        SecretKey::from_slice(&deterministic_blinding(101)).expect("valid recipient secret key");
     let recipient_pk = PublicKey::from_secret_key(&secp, &recipient_sk);
 
     let change_note = NoteData {
@@ -234,14 +232,17 @@ fn main() {
         blinding: recipient_new_blinding,
         note_index: recipient_index,
     };
-    let encrypted_change = hex::encode(
-        change_note.encrypt(&sender_pk).expect("change encryption"),
-    );
+    let encrypted_change = hex::encode(change_note.encrypt(&sender_pk).expect("change encryption"));
     let encrypted_recipient = hex::encode(
-        recipient_note.encrypt(&recipient_pk).expect("recipient encryption"),
+        recipient_note
+            .encrypt(&recipient_pk)
+            .expect("recipient encryption"),
     );
     println!("  Encrypted change: {} bytes", encrypted_change.len() / 2);
-    println!("  Encrypted recipient: {} bytes", encrypted_recipient.len() / 2);
+    println!(
+        "  Encrypted recipient: {} bytes",
+        encrypted_recipient.len() / 2
+    );
 
     let body = serde_json::json!({
         "proof_hex": hex::encode(&proof.proof),
@@ -294,8 +295,7 @@ fn main() {
 
     // Step 8: Query tree state and verify consistency
     println!("[8/8] Verifying final tree state...");
-    let final_state: serde_json::Value =
-        http_get(&format!("{}/api/v1/confidential/tree", api_url));
+    let final_state: serde_json::Value = http_get(&format!("{}/api/v1/confidential/tree", api_url));
     let final_root = final_state["root"].as_str().unwrap_or("unknown");
     let final_note_count = final_state["note_count"].as_u64().unwrap_or(0);
     let final_nullifier_count = final_state["nullifier_count"].as_u64().unwrap_or(0);
@@ -362,9 +362,8 @@ fn http_get(url: &str) -> serde_json::Value {
         .args(["-s", url])
         .output()
         .expect("curl failed");
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
-        serde_json::json!({"error": "Failed to parse response"})
-    })
+    serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| serde_json::json!({"error": "Failed to parse response"}))
 }
 
 fn compute_hmac(secret: &str, timestamp: &str, body: &str) -> String {
@@ -385,11 +384,7 @@ fn http_post_authed(url: &str, secret: &str, body: &serde_json::Value) -> serde_
 }
 
 /// Returns (status_code, body_string)
-fn http_post_authed_raw(
-    url: &str,
-    secret: &str,
-    body: &serde_json::Value,
-) -> (u16, String) {
+fn http_post_authed_raw(url: &str, secret: &str, body: &serde_json::Value) -> (u16, String) {
     let body_str = serde_json::to_string(body).unwrap();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -402,13 +397,20 @@ fn http_post_authed_raw(
     let output = std::process::Command::new("curl")
         .args([
             "-s",
-            "-o", "/dev/stderr",
-            "-w", "%{http_code}",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-H", &format!("X-Ghost-Timestamp: {}", timestamp),
-            "-H", &format!("X-Ghost-Signature: {}", signature),
-            "-d", &body_str,
+            "-o",
+            "/dev/stderr",
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            &format!("X-Ghost-Timestamp: {}", timestamp),
+            "-H",
+            &format!("X-Ghost-Signature: {}", signature),
+            "-d",
+            &body_str,
             url,
         ])
         .output()

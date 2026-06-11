@@ -57,10 +57,7 @@ pub struct NfcPaymentResponse {
 #[derive(Debug, Clone, PartialEq)]
 pub enum NfcProtocolError {
     /// The buffer is shorter than expected.
-    BufferTooShort {
-        expected: usize,
-        actual: usize,
-    },
+    BufferTooShort { expected: usize, actual: usize },
     /// An unsupported protocol version was encountered.
     UnsupportedVersion(u8),
     /// An unknown message type was encountered.
@@ -79,7 +76,10 @@ impl fmt::Display for NfcProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             NfcProtocolError::BufferTooShort { expected, actual } => {
-                write!(f, "buffer too short: expected at least {expected} bytes, got {actual}")
+                write!(
+                    f,
+                    "buffer too short: expected at least {expected} bytes, got {actual}"
+                )
             }
             NfcProtocolError::UnsupportedVersion(v) => {
                 write!(f, "unsupported protocol version: {v}")
@@ -87,7 +87,11 @@ impl fmt::Display for NfcProtocolError {
             NfcProtocolError::UnknownMessageType(t) => {
                 write!(f, "unknown message type: 0x{t:02X}")
             }
-            NfcProtocolError::LengthOverflow { field, declared, remaining } => {
+            NfcProtocolError::LengthOverflow {
+                field,
+                declared,
+                remaining,
+            } => {
                 write!(
                     f,
                     "length overflow in '{field}': declared {declared} bytes, only {remaining} remaining"
@@ -111,17 +115,19 @@ pub fn encode_nfc_payment_request(req: &NfcPaymentRequest) -> Result<Vec<u8>, Nf
     let addr_bytes = req.address.as_bytes();
     let memo_bytes = req.memo.as_deref().unwrap_or("").as_bytes();
 
-    let addr_len = u16::try_from(addr_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
-        field: "address",
-        declared: addr_bytes.len(),
-        remaining: u16::MAX as usize,
-    })?;
+    let addr_len =
+        u16::try_from(addr_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
+            field: "address",
+            declared: addr_bytes.len(),
+            remaining: u16::MAX as usize,
+        })?;
 
-    let memo_len = u16::try_from(memo_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
-        field: "memo",
-        declared: memo_bytes.len(),
-        remaining: u16::MAX as usize,
-    })?;
+    let memo_len =
+        u16::try_from(memo_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
+            field: "memo",
+            declared: memo_bytes.len(),
+            remaining: u16::MAX as usize,
+        })?;
 
     // version(1) + msg_type(1) + amount(8) + addr_len(2) + addr(N) + memo_len(2) + memo(N)
     let capacity = 1 + 1 + 8 + 2 + addr_bytes.len() + 2 + memo_bytes.len();
@@ -223,11 +229,12 @@ pub fn decode_nfc_payment_request(buf: &[u8]) -> Result<NfcPaymentRequest, NfcPr
 pub fn encode_nfc_payment_response(resp: &NfcPaymentResponse) -> Result<Vec<u8>, NfcProtocolError> {
     let txid_bytes = resp.txid.as_bytes();
 
-    let txid_len = u16::try_from(txid_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
-        field: "txid",
-        declared: txid_bytes.len(),
-        remaining: u16::MAX as usize,
-    })?;
+    let txid_len =
+        u16::try_from(txid_bytes.len()).map_err(|_| NfcProtocolError::LengthOverflow {
+            field: "txid",
+            declared: txid_bytes.len(),
+            remaining: u16::MAX as usize,
+        })?;
 
     let mut buf = Vec::with_capacity(1 + 2 + txid_bytes.len());
 
@@ -300,8 +307,7 @@ mod tests {
 
     fn sample_response() -> NfcPaymentResponse {
         NfcPaymentResponse {
-            txid: "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
-                .to_string(),
+            txid: "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344".to_string(),
             status: 0x00,
         }
     }
@@ -399,7 +405,10 @@ mod tests {
         let result = decode_nfc_payment_request(&buf);
         assert!(matches!(
             result,
-            Err(NfcProtocolError::LengthOverflow { field: "address", .. })
+            Err(NfcProtocolError::LengthOverflow {
+                field: "address",
+                ..
+            })
         ));
     }
 

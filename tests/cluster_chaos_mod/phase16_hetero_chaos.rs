@@ -79,7 +79,11 @@ async fn hetero_chaos_01_mixed_load() {
     // Per-node breakdown
     for node in &config.nodes {
         let node_rate = metrics.success_rate_excluding_429_for_node(node.ip);
-        println!("  {} success rate (excl 429): {:.1}%", node.name, node_rate * 100.0);
+        println!(
+            "  {} success rate (excl 429): {:.1}%",
+            node.name,
+            node_rate * 100.0
+        );
     }
 }
 
@@ -202,10 +206,8 @@ async fn hetero_chaos_04_partition_by_reaper() {
 
     // Set up partition chains
     for node in &config.nodes {
-        SshController::setup_partition_chain(node).expect(&format!(
-            "failed to setup chain on {}",
-            node.name
-        ));
+        SshController::setup_partition_chain(node)
+            .expect(&format!("failed to setup chain on {}", node.name));
     }
 
     // Block cross-group traffic
@@ -213,20 +215,16 @@ async fn hetero_chaos_04_partition_by_reaper() {
         let a_node = config.node_by_name(a_name).unwrap();
         for b_name in &group_b {
             let b_node = config.node_by_name(b_name).unwrap();
-            SshController::block_peer(a_node, b_node.ip).expect(&format!(
-                "failed to block {} on {}",
-                b_name, a_name
-            ));
+            SshController::block_peer(a_node, b_node.ip)
+                .expect(&format!("failed to block {} on {}", b_name, a_name));
         }
     }
     for b_name in &group_b {
         let b_node = config.node_by_name(b_name).unwrap();
         for a_name in &group_a {
             let a_node = config.node_by_name(a_name).unwrap();
-            SshController::block_peer(b_node, a_node.ip).expect(&format!(
-                "failed to block {} on {}",
-                a_name, b_name
-            ));
+            SshController::block_peer(b_node, a_node.ip)
+                .expect(&format!("failed to block {} on {}", a_name, b_name));
         }
     }
 
@@ -238,7 +236,11 @@ async fn hetero_chaos_04_partition_by_reaper() {
         let r = client.get_with_retry(node.ip, "/health").await;
         let status = r.status.unwrap_or(0);
         println!("  {} /health → {}", node.name, status);
-        assert_ne!(status, 0, "{} unreachable during reaper partition", node.name);
+        assert_ne!(
+            status, 0,
+            "{} unreachable during reaper partition",
+            node.name
+        );
     }
     println!("  Both groups serve API during reaper-based partition");
 }
@@ -263,8 +265,7 @@ async fn hetero_chaos_05_heal_partition() {
         assert!(
             rejoined,
             "{} did not regain 3 peers after partition heal (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
     println!("  Full mesh restored after reaper-based partition");
@@ -335,12 +336,7 @@ async fn hetero_chaos_07_full_recovery() {
         let rejoined = wait_for_peers(&client, ip, 3, config.recovery_timeout).await;
         let peers = client.get_peer_count(ip).await.unwrap_or(0);
         println!("  {} peers: {}", ip, peers);
-        assert!(
-            rejoined,
-            "{} did not regain 3 peers (got {})",
-            ip,
-            peers
-        );
+        assert!(rejoined, "{} did not regain 3 peers (got {})", ip, peers);
     }
 
     // All nodes healthy
@@ -410,13 +406,9 @@ async fn hetero_chaos_08_post_chaos_consistency() {
 
     // Zero panics
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "20 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "20 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post-chaos: {} had {} panics with heterogeneous config",

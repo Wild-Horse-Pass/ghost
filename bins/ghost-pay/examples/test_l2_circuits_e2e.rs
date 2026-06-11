@@ -27,9 +27,9 @@ use sha2::Sha256;
 
 use ghost_keys::NoteData;
 use ghost_zkp::{
-    ConsolidationInputNote, ConsolidationWitness, GhostConsolidateProver,
-    GhostConsolidateVerifier, GhostNoteProver, GhostNoteSpendWitness, GhostNoteVerifier,
-    GhostUnshieldProver, GhostUnshieldVerifier, UnshieldWitness,
+    ConsolidationInputNote, ConsolidationWitness, GhostConsolidateProver, GhostConsolidateVerifier,
+    GhostNoteProver, GhostNoteSpendWitness, GhostNoteVerifier, GhostUnshieldProver,
+    GhostUnshieldVerifier, UnshieldWitness,
 };
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
@@ -70,18 +70,11 @@ fn main() {
     println!("[setup] Loading/generating params for 3 circuits...");
     let setup_start = Instant::now();
 
-    let (consolidate_prover, consolidate_verifier) = load_consolidation_params(
-        params_dir.as_deref(),
-        tree_depth,
-    );
-    let (unshield_prover, unshield_verifier) = load_unshield_params(
-        params_dir.as_deref(),
-        tree_depth,
-    );
-    let (note_prover, note_verifier) = load_note_spend_params(
-        params_dir.as_deref(),
-        tree_depth,
-    );
+    let (consolidate_prover, consolidate_verifier) =
+        load_consolidation_params(params_dir.as_deref(), tree_depth);
+    let (unshield_prover, unshield_verifier) =
+        load_unshield_params(params_dir.as_deref(), tree_depth);
+    let (note_prover, note_verifier) = load_note_spend_params(params_dir.as_deref(), tree_depth);
 
     println!(
         "[setup] All 3 circuits ready in {:?}",
@@ -180,7 +173,10 @@ fn main() {
         "  Local verification: {}",
         if local_valid_1 { "PASS" } else { "FAIL" }
     );
-    assert!(local_valid_1, "Local consolidation proof verification failed!");
+    assert!(
+        local_valid_1,
+        "Local consolidation proof verification failed!"
+    );
 
     // [5/7] Capture tree state baseline, then submit
     let (_, note_count_before_1, null_count_before_1) = get_tree_state(&api_url);
@@ -250,11 +246,20 @@ fn main() {
         "  nullifier_count: {} → {} (delta: {}, expected: 4)",
         null_count_before_1, null_count_after_1, null_delta_1
     );
-    assert_eq!(note_delta_1, 1, "Consolidation should add exactly 1 output note");
-    assert_eq!(null_delta_1, 4, "Consolidation should spend exactly 4 nullifiers");
+    assert_eq!(
+        note_delta_1, 1,
+        "Consolidation should add exactly 1 output note"
+    );
+    assert_eq!(
+        null_delta_1, 4,
+        "Consolidation should spend exactly 4 nullifiers"
+    );
 
     println!();
-    println!("  ✓ Test 1: Consolidation E2E PASSED (prove: {:?})", prove_time_1);
+    println!(
+        "  ✓ Test 1: Consolidation E2E PASSED (prove: {:?})",
+        prove_time_1
+    );
     println!();
 
     // ========================================================================
@@ -386,7 +391,10 @@ fn main() {
     assert_eq!(null_delta_2, 1, "Unshield should spend exactly 1 nullifier");
 
     println!();
-    println!("  ✓ Test 2: Unshield E2E PASSED (prove: {:?})", prove_time_2);
+    println!(
+        "  ✓ Test 2: Unshield E2E PASSED (prove: {:?})",
+        prove_time_2
+    );
     println!();
 
     // ========================================================================
@@ -454,21 +462,19 @@ fn main() {
     println!("[3/5] Submitting NoteSpend transfer...");
     let recipient_owner_3 = [0x31u8; 32];
 
-    let tree_state_3: serde_json::Value = http_get(&format!(
-        "{}/api/v1/confidential/tree",
-        api_url
-    ));
+    let tree_state_3: serde_json::Value =
+        http_get(&format!("{}/api/v1/confidential/tree", api_url));
     let recipient_index_3 = tree_state_3["next_index"]
         .as_u64()
         .expect("tree state should have next_index");
 
     // Encrypt note data for sender (change) and recipient
     let secp = Secp256k1::new();
-    let sender_sk_3 = SecretKey::from_slice(&deterministic_blinding(130))
-        .expect("valid sender secret key");
+    let sender_sk_3 =
+        SecretKey::from_slice(&deterministic_blinding(130)).expect("valid sender secret key");
     let sender_pk_3 = PublicKey::from_secret_key(&secp, &sender_sk_3);
-    let recipient_sk_3 = SecretKey::from_slice(&deterministic_blinding(131))
-        .expect("valid recipient secret key");
+    let recipient_sk_3 =
+        SecretKey::from_slice(&deterministic_blinding(131)).expect("valid recipient secret key");
     let recipient_pk_3 = PublicKey::from_secret_key(&secp, &recipient_sk_3);
 
     let change_note_3 = NoteData {
@@ -482,10 +488,14 @@ fn main() {
         note_index: recipient_index_3,
     };
     let encrypted_change_3 = hex::encode(
-        change_note_3.encrypt(&sender_pk_3).expect("change encryption"),
+        change_note_3
+            .encrypt(&sender_pk_3)
+            .expect("change encryption"),
     );
     let encrypted_recipient_3 = hex::encode(
-        recipient_note_3.encrypt(&recipient_pk_3).expect("recipient encryption"),
+        recipient_note_3
+            .encrypt(&recipient_pk_3)
+            .expect("recipient encryption"),
     );
 
     let body_3 = serde_json::json!({
@@ -513,8 +523,8 @@ fn main() {
             status_ns, body_ns
         );
     }
-    let result_ns: serde_json::Value = serde_json::from_str(&body_ns)
-        .expect("NoteSpend response should be valid JSON");
+    let result_ns: serde_json::Value =
+        serde_json::from_str(&body_ns).expect("NoteSpend response should be valid JSON");
     let transfer_id = result_ns
         .get("transfer_id")
         .and_then(|v| v.as_str())
@@ -545,7 +555,9 @@ fn main() {
         &body_cross_consolidate,
     );
     if status_xc == 409 {
-        println!("  Consolidation correctly rejected (409) — cross-circuit nullifier protection works");
+        println!(
+            "  Consolidation correctly rejected (409) — cross-circuit nullifier protection works"
+        );
     } else {
         panic!(
             "Expected 409 for cross-circuit consolidation, got {}: {}",
@@ -570,9 +582,7 @@ fn main() {
         &body_cross_unshield,
     );
     if status_xu == 409 {
-        println!(
-            "  Unshield correctly rejected (409) — cross-circuit nullifier protection works"
-        );
+        println!("  Unshield correctly rejected (409) — cross-circuit nullifier protection works");
     } else {
         panic!(
             "Expected 409 for cross-circuit unshield, got {}: {}",
@@ -616,8 +626,8 @@ fn load_consolidation_params(
         let start = Instant::now();
         let file = std::fs::File::open(&path).expect("Failed to open consolidation params");
         let reader = BufReader::new(file);
-        let params =
-            Parameters::<Bls12>::read(reader, false).expect("Failed to deserialize consolidation params");
+        let params = Parameters::<Bls12>::read(reader, false)
+            .expect("Failed to deserialize consolidation params");
         let prover = GhostConsolidateProver::new_with_params(Arc::new(params), tree_depth);
         let verifier = GhostConsolidateVerifier::for_prover(&prover);
         println!(
@@ -627,7 +637,10 @@ fn load_consolidation_params(
         );
         (prover, verifier)
     } else {
-        println!("  [consolidation] Generating test params (depth {})...", tree_depth);
+        println!(
+            "  [consolidation] Generating test params (depth {})...",
+            tree_depth
+        );
         let start = Instant::now();
         let prover = GhostConsolidateProver::new_with_setup(tree_depth)
             .expect("Failed to setup consolidation prover");
@@ -647,8 +660,8 @@ fn load_unshield_params(
         let start = Instant::now();
         let file = std::fs::File::open(&path).expect("Failed to open unshield params");
         let reader = BufReader::new(file);
-        let params =
-            Parameters::<Bls12>::read(reader, false).expect("Failed to deserialize unshield params");
+        let params = Parameters::<Bls12>::read(reader, false)
+            .expect("Failed to deserialize unshield params");
         let prover = GhostUnshieldProver::new_with_params(Arc::new(params), tree_depth);
         let verifier = GhostUnshieldVerifier::for_prover(&prover);
         println!(
@@ -658,7 +671,10 @@ fn load_unshield_params(
         );
         (prover, verifier)
     } else {
-        println!("  [unshield] Generating test params (depth {})...", tree_depth);
+        println!(
+            "  [unshield] Generating test params (depth {})...",
+            tree_depth
+        );
         let start = Instant::now();
         let prover = GhostUnshieldProver::new_with_setup(tree_depth)
             .expect("Failed to setup unshield prover");
@@ -678,8 +694,8 @@ fn load_note_spend_params(
         let start = Instant::now();
         let file = std::fs::File::open(&path).expect("Failed to open note_spend params");
         let reader = BufReader::new(file);
-        let params =
-            Parameters::<Bls12>::read(reader, false).expect("Failed to deserialize note_spend params");
+        let params = Parameters::<Bls12>::read(reader, false)
+            .expect("Failed to deserialize note_spend params");
         let prover = GhostNoteProver::new_with_params(Arc::new(params), tree_depth);
         let verifier = GhostNoteVerifier::for_prover(&prover);
         println!(
@@ -689,10 +705,13 @@ fn load_note_spend_params(
         );
         (prover, verifier)
     } else {
-        println!("  [note_spend] Generating test params (depth {})...", tree_depth);
+        println!(
+            "  [note_spend] Generating test params (depth {})...",
+            tree_depth
+        );
         let start = Instant::now();
-        let prover = GhostNoteProver::new_with_setup(tree_depth)
-            .expect("Failed to setup note_spend prover");
+        let prover =
+            GhostNoteProver::new_with_setup(tree_depth).expect("Failed to setup note_spend prover");
         let verifier = GhostNoteVerifier::for_prover(&prover);
         println!("  [note_spend] Setup in {:?}", start.elapsed());
         (prover, verifier)
@@ -798,11 +817,17 @@ fn http_get(url: &str) -> serde_json::Value {
             .expect("curl failed");
         let raw = String::from_utf8_lossy(&output.stdout);
         if raw.contains("Too Many Requests") {
-            eprintln!("  [retry {}/5] GET rate limited, waiting 2s...", attempt + 1);
+            eprintln!(
+                "  [retry {}/5] GET rate limited, waiting 2s...",
+                attempt + 1
+            );
             continue;
         }
         return serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-            eprintln!("  [http_get] JSON parse error for {}: {} — raw: '{}'", url, e, raw);
+            eprintln!(
+                "  [http_get] JSON parse error for {}: {} — raw: '{}'",
+                url, e, raw
+            );
             serde_json::json!({"error": "Failed to parse response"})
         });
     }
@@ -810,11 +835,7 @@ fn http_get(url: &str) -> serde_json::Value {
 }
 
 /// POST with retry on 429 (rate limiting). Waits 2s between retries, up to 5 attempts.
-fn http_post_authed_with_retry(
-    url: &str,
-    secret: &str,
-    body: &serde_json::Value,
-) -> (u16, String) {
+fn http_post_authed_with_retry(url: &str, secret: &str, body: &serde_json::Value) -> (u16, String) {
     for attempt in 0..5 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -823,7 +844,10 @@ fn http_post_authed_with_retry(
         if status != 429 {
             return (status, response);
         }
-        eprintln!("  [retry {}/5] Rate limited (429), waiting 2s...", attempt + 1);
+        eprintln!(
+            "  [retry {}/5] Rate limited (429), waiting 2s...",
+            attempt + 1
+        );
     }
     panic!("Still rate-limited after 5 retries on {}", url);
 }
@@ -846,11 +870,7 @@ fn http_post_authed(url: &str, secret: &str, body: &serde_json::Value) -> serde_
 }
 
 /// Returns (status_code, body_string)
-fn http_post_authed_raw(
-    url: &str,
-    secret: &str,
-    body: &serde_json::Value,
-) -> (u16, String) {
+fn http_post_authed_raw(url: &str, secret: &str, body: &serde_json::Value) -> (u16, String) {
     let body_str = serde_json::to_string(body).unwrap();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -863,13 +883,20 @@ fn http_post_authed_raw(
     let output = std::process::Command::new("curl")
         .args([
             "-s",
-            "-o", "/dev/stderr",
-            "-w", "%{http_code}",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-H", &format!("X-Ghost-Timestamp: {}", timestamp),
-            "-H", &format!("X-Ghost-Signature: {}", signature),
-            "-d", &body_str,
+            "-o",
+            "/dev/stderr",
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            &format!("X-Ghost-Timestamp: {}", timestamp),
+            "-H",
+            &format!("X-Ghost-Signature: {}", signature),
+            "-d",
+            &body_str,
             url,
         ])
         .output()

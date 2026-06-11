@@ -38,36 +38,26 @@ async fn wait_for_peers(
 }
 
 /// Set up a bidirectional split-brain partition: group A cannot talk to group B.
-fn setup_split_brain(
-    config: &ClusterConfig,
-    group_a: &[&str],
-    group_b: &[&str],
-) {
+fn setup_split_brain(config: &ClusterConfig, group_a: &[&str], group_b: &[&str]) {
     for node in &config.nodes {
-        SshController::setup_partition_chain(node).expect(&format!(
-            "failed to setup chain on {}",
-            node.name
-        ));
+        SshController::setup_partition_chain(node)
+            .expect(&format!("failed to setup chain on {}", node.name));
     }
 
     for a_name in group_a {
         let a_node = config.node_by_name(a_name).unwrap();
         for b_name in group_b {
             let b_node = config.node_by_name(b_name).unwrap();
-            SshController::block_peer(a_node, b_node.ip).expect(&format!(
-                "failed to block {} on {}",
-                b_name, a_name
-            ));
+            SshController::block_peer(a_node, b_node.ip)
+                .expect(&format!("failed to block {} on {}", b_name, a_name));
         }
     }
     for b_name in group_b {
         let b_node = config.node_by_name(b_name).unwrap();
         for a_name in group_a {
             let a_node = config.node_by_name(a_name).unwrap();
-            SshController::block_peer(b_node, a_node.ip).expect(&format!(
-                "failed to block {} on {}",
-                a_name, b_name
-            ));
+            SshController::block_peer(b_node, a_node.ip)
+                .expect(&format!("failed to block {} on {}", a_name, b_name));
         }
     }
 }
@@ -174,8 +164,7 @@ async fn compound_03_heal_split_restore_vm3() {
         assert!(
             rejoined,
             "{} did not regain 3 peers after compound heal (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
 
@@ -224,10 +213,8 @@ async fn compound_04_kill_then_partition() {
 
     // Step 2: Partition VM3 from VM1 and VM4 (bidirectional)
     for node in [vm1, vm3, vm4] {
-        SshController::setup_partition_chain(node).expect(&format!(
-            "failed to setup chain on {}",
-            node.name
-        ));
+        SshController::setup_partition_chain(node)
+            .expect(&format!("failed to setup chain on {}", node.name));
     }
     SshController::block_peer(vm3, vm1.ip).expect("failed to block VM1 on VM3");
     SshController::block_peer(vm3, vm4.ip).expect("failed to block VM4 on VM3");
@@ -280,7 +267,10 @@ async fn compound_05_survivors_serve_under_compound() {
         "Survivor success rate {:.1}% below 90%",
         rate * 100.0
     );
-    println!("  Survivor traffic success rate (excl 429): {:.1}%", rate * 100.0);
+    println!(
+        "  Survivor traffic success rate (excl 429): {:.1}%",
+        rate * 100.0
+    );
 }
 
 #[tokio::test]
@@ -305,8 +295,7 @@ async fn compound_06_progressive_heal() {
         assert!(
             rejoined,
             "{} did not reach 2 peers in 3-node mesh (got {})",
-            name,
-            peers
+            name, peers
         );
     }
 
@@ -326,20 +315,15 @@ async fn compound_06_progressive_heal() {
         assert!(
             rejoined,
             "{} did not regain 3 peers after full restore (got {})",
-            ip,
-            peers
+            ip, peers
         );
     }
 
     // Zero panics
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "15 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "15 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post compound heal: {} had {} panics",
@@ -486,24 +470,16 @@ async fn compound_08_post_compound_consistency() {
     if mpc_counts.len() == config.nodes.len() {
         let first = mpc_counts[0];
         for c in &mpc_counts {
-            assert_eq!(
-                *c, first,
-                "Post-compound MPC mismatch: {:?}",
-                mpc_counts
-            );
+            assert_eq!(*c, first, "Post-compound MPC mismatch: {:?}", mpc_counts);
         }
         println!("  MPC contributions consistent: {}", first);
     }
 
     // Zero panics (25 min window)
     for node in &config.nodes {
-        let panics = SshController::count_log_matches(
-            node,
-            config.service_name,
-            "panic",
-            "25 min ago",
-        )
-        .unwrap_or(0);
+        let panics =
+            SshController::count_log_matches(node, config.service_name, "panic", "25 min ago")
+                .unwrap_or(0);
         assert_eq!(
             panics, 0,
             "Post-compound: {} had {} panics in last 25 min",

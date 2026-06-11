@@ -5,6 +5,8 @@ import {
   setGhostMode,
   setArchiveMode,
   setReaper,
+  getReaper,
+  type ReaperSettings,
   setMempoolProfile,
   setTemplateProfile,
   getMempoolProfiles,
@@ -77,11 +79,18 @@ export function useSetArchiveMode() {
   });
 }
 
+export function useReaperConfig() {
+  return useQuery({
+    queryKey: [...configKeys.all, 'reaper'] as const,
+    queryFn: getReaper,
+  });
+}
+
 export function useSetReaper() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (enabled: boolean) => setReaper(enabled),
+    mutationFn: (input: ReaperSettings | boolean) => setReaper(input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: configKeys.all });
     },

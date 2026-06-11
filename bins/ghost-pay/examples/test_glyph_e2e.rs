@@ -33,8 +33,8 @@ fn main() {
         get_arg(&args, "--ghost-pay-url").unwrap_or_else(|| "http://127.0.0.1:8800".to_string());
     let api_secret = get_arg(&args, "--api-secret").expect("--api-secret required");
     let db_path = get_arg(&args, "--db-path");
-    let ghost_id = get_arg(&args, "--ghost-id")
-        .unwrap_or_else(|| format!("ghost1e2etest_{}", rand_hex(8)));
+    let ghost_id =
+        get_arg(&args, "--ghost-id").unwrap_or_else(|| format!("ghost1e2etest_{}", rand_hex(8)));
 
     let total_steps = if db_path.is_some() { 9 } else { 7 };
 
@@ -58,7 +58,11 @@ fn main() {
     let bitmap_hash = GhostGlyph::compute_bitmap_hash(&pixels);
     let commitment = GhostGlyph::compute_commitment(&pixels, ghost_id.as_bytes());
     let bitmap_hash_hex = hex::encode(bitmap_hash);
-    println!("  Pixels: {} bytes (palette range 0..{})", GLYPH_SIZE, PALETTE_SIZE - 1);
+    println!(
+        "  Pixels: {} bytes (palette range 0..{})",
+        GLYPH_SIZE,
+        PALETTE_SIZE - 1
+    );
     println!("  Bitmap hash: {}...", &bitmap_hash_hex[..16]);
     println!("  Commitment: {}...", &hex::encode(commitment)[..16]);
 
@@ -109,10 +113,7 @@ fn main() {
 
     // Step 4: Verify pending via GET
     println!("[4/{}] Verifying glyph is pending...", total_steps);
-    let info_resp: serde_json::Value = http_get(&format!(
-        "{}/api/v1/glyph/{}",
-        api_url, ghost_id
-    ));
+    let info_resp: serde_json::Value = http_get(&format!("{}/api/v1/glyph/{}", api_url, ghost_id));
     let info_status = info_resp["status"]
         .as_str()
         .expect("info response should have 'status'");
@@ -138,7 +139,10 @@ fn main() {
     assert!(!available2, "Bitmap should no longer be available");
 
     // Step 6: Duplicate bitmap rejected
-    println!("[6/{}] Claiming same bitmap with different ghost_id (expect rejection)...", total_steps);
+    println!(
+        "[6/{}] Claiming same bitmap with different ghost_id (expect rejection)...",
+        total_steps
+    );
     let alt_ghost_id = format!("ghost1alt_{}", rand_hex(8));
     let dup_bitmap_body = serde_json::json!({
         "ghost_id": alt_ghost_id,
@@ -156,7 +160,10 @@ fn main() {
     );
 
     // Step 7: Duplicate ghost_id rejected
-    println!("[7/{}] Claiming different bitmap with same ghost_id (expect rejection)...", total_steps);
+    println!(
+        "[7/{}] Claiming different bitmap with same ghost_id (expect rejection)...",
+        total_steps
+    );
     let mut alt_pixels = [0u8; GLYPH_SIZE];
     for i in 0..GLYPH_SIZE {
         alt_pixels[i] = ((pixels[i] as usize + 1) % PALETTE_SIZE) as u8;
@@ -178,7 +185,10 @@ fn main() {
 
     if let Some(ref path) = db_path {
         // Step 8: Simulate registration via direct DB
-        println!("[8/{}] Simulating registration via direct DB...", total_steps);
+        println!(
+            "[8/{}] Simulating registration via direct DB...",
+            total_steps
+        );
         let db = ghost_storage::Database::open(path).expect("Failed to open database");
         let fake_txid = format!("e2e_test_{}", rand_hex(16));
         let now = SystemTime::now()
@@ -192,10 +202,8 @@ fn main() {
 
         // Step 9: Verify registered via GET
         println!("[9/{}] Verifying glyph is registered...", total_steps);
-        let reg_resp: serde_json::Value = http_get(&format!(
-            "{}/api/v1/glyph/{}",
-            api_url, ghost_id
-        ));
+        let reg_resp: serde_json::Value =
+            http_get(&format!("{}/api/v1/glyph/{}", api_url, ghost_id));
         let reg_status = reg_resp["status"]
             .as_str()
             .expect("info response should have 'status'");
@@ -283,11 +291,7 @@ fn http_post_authed(url: &str, secret: &str, body: &serde_json::Value) -> serde_
 }
 
 /// Returns (status_code, body_string)
-fn http_post_authed_raw(
-    url: &str,
-    secret: &str,
-    body: &serde_json::Value,
-) -> (u16, String) {
+fn http_post_authed_raw(url: &str, secret: &str, body: &serde_json::Value) -> (u16, String) {
     let body_str = serde_json::to_string(body).unwrap();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -300,13 +304,20 @@ fn http_post_authed_raw(
     let output = std::process::Command::new("curl")
         .args([
             "-s",
-            "-o", "/dev/stderr",
-            "-w", "%{http_code}",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-H", &format!("X-Ghost-Timestamp: {}", timestamp),
-            "-H", &format!("X-Ghost-Signature: {}", signature),
-            "-d", &body_str,
+            "-o",
+            "/dev/stderr",
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            &format!("X-Ghost-Timestamp: {}", timestamp),
+            "-H",
+            &format!("X-Ghost-Signature: {}", signature),
+            "-d",
+            &body_str,
             url,
         ])
         .output()

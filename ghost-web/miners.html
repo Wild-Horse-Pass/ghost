@@ -6,6 +6,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Miners · Bitcoin Ghost</title>
   <meta name="description" content="Point your ASIC at Ghost Pool. 1% fee, ledger-style payouts, no registration, Stratum V1 and V2 supported.">
+  <meta property="og:site_name" content="Bitcoin Ghost">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Point your hashrate · Bitcoin Ghost">
+  <meta property="og:description" content="Mine to Ghost Pool. Sovereign payouts straight to your address, BFT-voted coinbase, zero custody, zero pool fee.">
+  <meta property="og:url" content="https://bitcoinghost.org/miners.html">
+  <meta property="og:image" content="https://bitcoinghost.org/logo.png">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:site" content="@defenwycke">
+  <meta name="twitter:creator" content="@defenwycke">
+  <meta name="twitter:title" content="Point your hashrate · Bitcoin Ghost">
+  <meta name="twitter:description" content="Mine to Ghost Pool. Sovereign payouts straight to your address, BFT-voted coinbase, zero custody, zero pool fee.">
+  <meta name="twitter:image" content="https://bitcoinghost.org/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -110,7 +122,7 @@
         <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
         <div>
           <div class="fl-name">Stratum V1 and V2</div>
-          <div class="fl-desc">Run what your ASIC already speaks. SV1 on port 3333 for legacy hardware, SV2 on 34255 for miners that want template selection and per-miner channels.</div>
+          <div class="fl-desc">Run what your ASIC already speaks. SV1 on port 3333 for legacy hardware, SV2 on 34255 for encrypted transport and per-miner channels. Miners hash against the node's template — Ghost doesn't run job declaration, so transaction selection stays with the node operator.</div>
         </div>
       </li>
       <li>
@@ -131,7 +143,7 @@
         <svg class="gh-bullet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
         <div>
           <div class="fl-name">Solo or pooled, your call</div>
-          <div class="fl-desc">Run your own node and mine directly against your own templates — or point at someone else's public-mining node and pool up. Same protocol, same payouts either way.</div>
+          <div class="fl-desc">Run your own node and mine against the templates your node builds — or point at someone else's public-mining node and pool up. Same protocol, same payouts either way.</div>
         </div>
       </li>
     </ul>
@@ -215,16 +227,16 @@
             <td>Standard pool config. Use SV2 endpoint if firmware supports it; SV1 as a drop-in otherwise.</td>
           </tr>
           <tr>
-            <td><strong>SV2 template declarator</strong></td>
+            <td><strong>SV2 native miners</strong></td>
             <td>SV2</td>
             <td>any</td>
-            <td>Run your own job declarator for template selection and per-worker attribution via the TLV worker-hashrate extension.</td>
+            <td>Encrypted Stratum transport with per-miner channels. Worker name flows through the TLV ext 0x0002 attribution extension so each ASIC's shares track to its own <code>address.worker</code>.</td>
           </tr>
           <tr>
             <td><strong>Solo / custom</strong></td>
             <td>SV1 or SV2</td>
             <td>any</td>
-            <td>Run ghost-pool on your own node and point local hashers at it. You get 100% of any block you find; pool fee still applies to the subsidy.</td>
+            <td>Run ghost-pool on your own node and point local hashers at it. Your node builds the template, your miners hash it. You get 100% of any block you find; pool fee still applies to the subsidy.</td>
           </tr>
         </tbody>
       </table>

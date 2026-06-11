@@ -83,11 +83,6 @@ pub fn run() {
             commands::locks::create_lock,
             commands::locks::jump_lock,
             commands::locks::reconcile_lock,
-            // Wraith Sessions
-            commands::locks::list_wraith_sessions,
-            commands::locks::get_wraith_session,
-            commands::locks::join_wraith_session,
-            commands::locks::submit_wraith_input,
             // Ghost ID
             commands::locks::get_ghost_id,
             commands::locks::generate_ghost_id,

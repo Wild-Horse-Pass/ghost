@@ -194,8 +194,9 @@ impl TransactionSigner {
         // Inputs
         for (i, input) in tx.inputs.iter().enumerate() {
             // Previous txid (32 bytes, internal byte order)
-            let txid_bytes = hex::decode(&input.txid)
-                .map_err(|e| TransactionError::InvalidTransaction(format!("Invalid txid: {}", e)))?;
+            let txid_bytes = hex::decode(&input.txid).map_err(|e| {
+                TransactionError::InvalidTransaction(format!("Invalid txid: {}", e))
+            })?;
             data.extend_from_slice(&txid_bytes);
 
             // Previous output index (4 bytes LE)
@@ -262,8 +263,9 @@ impl TransactionSigner {
         // Inputs with signatures + pubkeys
         for ((input, sig), pubkey) in tx.inputs.iter().zip(signatures.iter()).zip(pubkeys.iter()) {
             // Previous txid
-            let txid_bytes = hex::decode(&input.txid)
-                .map_err(|e| TransactionError::InvalidTransaction(format!("Invalid txid: {}", e)))?;
+            let txid_bytes = hex::decode(&input.txid).map_err(|e| {
+                TransactionError::InvalidTransaction(format!("Invalid txid: {}", e))
+            })?;
             raw_tx.extend_from_slice(&txid_bytes);
 
             // Previous output index
@@ -278,7 +280,7 @@ impl TransactionSigner {
             raw_tx.push((sig_der.len() + 1) as u8); // +1 for SIGHASH_ALL byte
             raw_tx.extend_from_slice(&sig_der);
             raw_tx.push(0x01); // SIGHASH_ALL
-            // Push pubkey
+                               // Push pubkey
             raw_tx.push(pk_bytes.len() as u8);
             raw_tx.extend_from_slice(&pk_bytes);
 
@@ -414,7 +416,9 @@ pub fn verify_transaction(
     let mut scan_pos = pos;
     for _ in 0..num_inputs {
         if scan_pos + 36 >= raw.len() {
-            return Err(TransactionError::InvalidTransaction("Truncated input".into()));
+            return Err(TransactionError::InvalidTransaction(
+                "Truncated input".into(),
+            ));
         }
         let input_start = scan_pos;
         scan_pos += 36; // txid (32) + vout (4)
@@ -422,7 +426,9 @@ pub fn verify_transaction(
         let script_sig_len = raw[scan_pos] as usize;
         scan_pos += 1;
         if scan_pos + script_sig_len > raw.len() {
-            return Err(TransactionError::InvalidTransaction("Truncated scriptSig".into()));
+            return Err(TransactionError::InvalidTransaction(
+                "Truncated scriptSig".into(),
+            ));
         }
 
         let script_start = scan_pos;
@@ -440,18 +446,24 @@ pub fn verify_transaction(
         let pk_push_len = raw[scan_pos] as usize;
         scan_pos += 1;
         if pk_push_len != 33 || scan_pos + pk_push_len > raw.len() {
-            return Err(TransactionError::InvalidTransaction("Bad pubkey push".into()));
+            return Err(TransactionError::InvalidTransaction(
+                "Bad pubkey push".into(),
+            ));
         }
         let pk_bytes = &raw[scan_pos..scan_pos + pk_push_len];
         scan_pos += pk_push_len;
 
         if scan_pos != script_start + script_sig_len {
-            return Err(TransactionError::InvalidTransaction("scriptSig length mismatch".into()));
+            return Err(TransactionError::InvalidTransaction(
+                "scriptSig length mismatch".into(),
+            ));
         }
 
         // Skip sequence (4 bytes)
         if scan_pos + 4 > raw.len() {
-            return Err(TransactionError::InvalidTransaction("Truncated sequence".into()));
+            return Err(TransactionError::InvalidTransaction(
+                "Truncated sequence".into(),
+            ));
         }
         scan_pos += 4;
 
@@ -466,17 +478,17 @@ pub fn verify_transaction(
     }
 
     // Build subscripts from extracted public keys
-    let subscripts: Vec<Vec<u8>> = extracted_pks
-        .iter()
-        .map(pubkey_to_p2pkh_script)
-        .collect();
+    let subscripts: Vec<Vec<u8>> = extracted_pks.iter().map(pubkey_to_p2pkh_script).collect();
 
     // Verify each input's signature against its per-input sighash
     for i in 0..num_inputs {
         let sighash = signer.compute_tx_hash(unsigned, i, &subscripts)?;
         let message = Message::from_digest(sighash);
 
-        if secp.verify_ecdsa(&message, &extracted_sigs[i], &extracted_pks[i]).is_err() {
+        if secp
+            .verify_ecdsa(&message, &extracted_sigs[i], &extracted_pks[i])
+            .is_err()
+        {
             return Ok(false);
         }
     }
@@ -657,8 +669,14 @@ mod tests {
                 },
             ],
             outputs: vec![
-                TxOutput { address: test_address(), amount: 80000 },
-                TxOutput { address: test_address(), amount: 20000 },
+                TxOutput {
+                    address: test_address(),
+                    amount: 80000,
+                },
+                TxOutput {
+                    address: test_address(),
+                    amount: 20000,
+                },
             ],
             fee: 10000,
         };
@@ -857,8 +875,14 @@ mod tests {
                 },
             ],
             outputs: vec![
-                TxOutput { address: test_address(), amount: 80000 },
-                TxOutput { address: test_address(), amount: 20000 },
+                TxOutput {
+                    address: test_address(),
+                    amount: 80000,
+                },
+                TxOutput {
+                    address: test_address(),
+                    amount: 20000,
+                },
             ],
             fee: 10000,
         };

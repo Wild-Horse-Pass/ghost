@@ -66,7 +66,10 @@ fn validate_timestamp(ts: u64) -> Result<(), String> {
         .unwrap_or_default()
         .as_secs();
     if ts > now + MAX_TIMESTAMP_SKEW_SECS {
-        return Err(format!("timestamp {} is too far in the future (now={})", ts, now));
+        return Err(format!(
+            "timestamp {} is too far in the future (now={})",
+            ts, now
+        ));
     }
     // Allow timestamps up to 24h in the past (claim may have been delayed in transit)
     if now > ts + 86400 {
@@ -108,14 +111,12 @@ impl GlyphRegistrationHandler {
         })?;
 
         // H-1: Validate ghost_id format
-        validate_ghost_id(&msg.ghost_id).map_err(|e| {
-            GhostError::Internal(format!("Invalid ghost_id: {}", e))
-        })?;
+        validate_ghost_id(&msg.ghost_id)
+            .map_err(|e| GhostError::Internal(format!("Invalid ghost_id: {}", e)))?;
 
         // M-1: Validate timestamp
-        validate_timestamp(msg.timestamp).map_err(|e| {
-            GhostError::Internal(format!("Invalid claim timestamp: {}", e))
-        })?;
+        validate_timestamp(msg.timestamp)
+            .map_err(|e| GhostError::Internal(format!("Invalid claim timestamp: {}", e)))?;
 
         // Validate pixel array
         if msg.pixels.len() != GLYPH_SIZE {
@@ -126,9 +127,11 @@ impl GlyphRegistrationHandler {
             )));
         }
 
-        let pixels: [u8; GLYPH_SIZE] = msg.pixels.as_slice().try_into().map_err(|_| {
-            GhostError::Internal("Invalid pixel array".to_string())
-        })?;
+        let pixels: [u8; GLYPH_SIZE] = msg
+            .pixels
+            .as_slice()
+            .try_into()
+            .map_err(|_| GhostError::Internal("Invalid pixel array".to_string()))?;
 
         if GhostGlyph::validate_pixels(&pixels).is_err() {
             return Err(GhostError::Internal(
@@ -137,8 +140,7 @@ impl GlyphRegistrationHandler {
         }
 
         // Verify commitment
-        let expected_commitment =
-            GhostGlyph::compute_commitment(&pixels, msg.ghost_id.as_bytes());
+        let expected_commitment = GhostGlyph::compute_commitment(&pixels, msg.ghost_id.as_bytes());
         if msg.commitment != expected_commitment {
             return Err(GhostError::Internal("Commitment mismatch".to_string()));
         }
@@ -185,19 +187,16 @@ impl GlyphRegistrationHandler {
         })?;
 
         // H-1: Validate ghost_id format
-        validate_ghost_id(&msg.ghost_id).map_err(|e| {
-            GhostError::Internal(format!("Invalid ghost_id: {}", e))
-        })?;
+        validate_ghost_id(&msg.ghost_id)
+            .map_err(|e| GhostError::Internal(format!("Invalid ghost_id: {}", e)))?;
 
         // H-2: Validate funding_txid format
-        validate_funding_txid(&msg.funding_txid).map_err(|e| {
-            GhostError::Internal(format!("Invalid funding_txid: {}", e))
-        })?;
+        validate_funding_txid(&msg.funding_txid)
+            .map_err(|e| GhostError::Internal(format!("Invalid funding_txid: {}", e)))?;
 
         // M-1: Validate registration timestamp
-        validate_timestamp(msg.registered_at).map_err(|e| {
-            GhostError::Internal(format!("Invalid registration timestamp: {}", e))
-        })?;
+        validate_timestamp(msg.registered_at)
+            .map_err(|e| GhostError::Internal(format!("Invalid registration timestamp: {}", e)))?;
 
         // Validate that a pending claim exists before completing
         let record = match self.db.get_glyph_by_ghost_id(&msg.ghost_id) {
@@ -283,9 +282,11 @@ impl GlyphRegistrationHandler {
         }
 
         // Validate pixel values (all 0..25)
-        let pixels: [u8; GLYPH_SIZE] = msg.pixels.as_slice().try_into().map_err(|_| {
-            GhostError::P2PMessage("Invalid pixel array".to_string())
-        })?;
+        let pixels: [u8; GLYPH_SIZE] = msg
+            .pixels
+            .as_slice()
+            .try_into()
+            .map_err(|_| GhostError::P2PMessage("Invalid pixel array".to_string()))?;
 
         if GhostGlyph::validate_pixels(&pixels).is_err() {
             warn!(ghost_id = %msg.ghost_id, "Rejecting glyph claim: pixel values out of range");
@@ -293,8 +294,7 @@ impl GlyphRegistrationHandler {
         }
 
         // Verify commitment matches
-        let expected_commitment =
-            GhostGlyph::compute_commitment(&pixels, msg.ghost_id.as_bytes());
+        let expected_commitment = GhostGlyph::compute_commitment(&pixels, msg.ghost_id.as_bytes());
         if msg.commitment != expected_commitment {
             warn!(ghost_id = %msg.ghost_id, "Rejecting glyph claim: commitment mismatch");
             return Ok(());

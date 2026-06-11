@@ -22,21 +22,13 @@ use super::NetworkError;
 #[serde(tag = "type", content = "payload")]
 pub enum GspRequest {
     /// Authenticate with the GSP using a wallet ID and session token.
-    Authenticate {
-        wallet_id: String,
-        token: String,
-    },
+    Authenticate { wallet_id: String, token: String },
     /// Request the current balance.
     GetBalance,
     /// Prepare a payment (returns an unsigned transaction for client signing).
-    PreparePayment {
-        to: String,
-        amount: u64,
-    },
+    PreparePayment { to: String, amount: u64 },
     /// Submit a signed payment for broadcast.
-    SubmitSignedPayment {
-        signed_tx: String,
-    },
+    SubmitSignedPayment { signed_tx: String },
     /// Subscribe to real-time balance change notifications.
     SubscribeBalance,
     /// Subscribe to real-time payment notifications.
@@ -48,28 +40,15 @@ pub enum GspRequest {
 #[serde(tag = "type", content = "payload")]
 pub enum GspResponse {
     /// Authentication succeeded.
-    Authenticated {
-        session_id: String,
-    },
+    Authenticated { session_id: String },
     /// Current balance snapshot.
-    Balance {
-        confirmed: u64,
-        pending: u64,
-    },
+    Balance { confirmed: u64, pending: u64 },
     /// An unsigned payment has been prepared server-side.
-    PaymentPrepared {
-        unsigned_tx: String,
-        fee: u64,
-    },
+    PaymentPrepared { unsigned_tx: String, fee: u64 },
     /// A signed payment was accepted and broadcast.
-    PaymentSubmitted {
-        txid: String,
-    },
+    PaymentSubmitted { txid: String },
     /// Push notification: balance changed.
-    BalanceUpdate {
-        confirmed: u64,
-        pending: u64,
-    },
+    BalanceUpdate { confirmed: u64, pending: u64 },
     /// Push notification: payment state changed.
     PaymentUpdate {
         txid: String,
@@ -77,34 +56,20 @@ pub enum GspResponse {
         confirmations: u32,
     },
     /// An error occurred processing a request.
-    Error {
-        code: u32,
-        message: String,
-    },
+    Error { code: u32, message: String },
 }
 
 /// Push events delivered to the application layer via the event channel.
 #[derive(Debug, Clone)]
 pub enum GspEvent {
     /// Wallet balance has changed.
-    BalanceChanged {
-        confirmed: u64,
-        pending: u64,
-    },
+    BalanceChanged { confirmed: u64, pending: u64 },
     /// An incoming payment was detected.
-    PaymentReceived {
-        txid: String,
-        amount: u64,
-    },
+    PaymentReceived { txid: String, amount: u64 },
     /// A payment reached the required confirmation depth.
-    PaymentConfirmed {
-        txid: String,
-        confirmations: u32,
-    },
+    PaymentConfirmed { txid: String, confirmations: u32 },
     /// The connection lock state changed (connected / disconnected).
-    LockStateChanged {
-        connected: bool,
-    },
+    LockStateChanged { connected: bool },
 }
 
 /// Internal connection state.
@@ -304,11 +269,7 @@ impl MobileGspClient {
     }
 
     /// Authenticate with the GSP.
-    pub async fn authenticate(
-        &self,
-        wallet_id: &str,
-        token: &str,
-    ) -> Result<String, NetworkError> {
+    pub async fn authenticate(&self, wallet_id: &str, token: &str) -> Result<String, NetworkError> {
         let _lock = self.rpc_lock.lock().await;
         self.send_request(&GspRequest::Authenticate {
             wallet_id: wallet_id.to_string(),
@@ -338,13 +299,11 @@ impl MobileGspClient {
         self.send_request(&GspRequest::GetBalance).await?;
 
         match self.recv_response().await? {
-            GspResponse::Balance {
-                confirmed,
-                pending,
-            } => Ok((confirmed, pending)),
-            GspResponse::Error { code, message } => {
-                Err(NetworkError::RequestFailed(format!("code {}: {}", code, message)))
-            }
+            GspResponse::Balance { confirmed, pending } => Ok((confirmed, pending)),
+            GspResponse::Error { code, message } => Err(NetworkError::RequestFailed(format!(
+                "code {}: {}",
+                code, message
+            ))),
             other => Err(NetworkError::InvalidResponse(format!(
                 "expected Balance, got {:?}",
                 other
@@ -368,9 +327,10 @@ impl MobileGspClient {
 
         match self.recv_response().await? {
             GspResponse::PaymentPrepared { unsigned_tx, fee } => Ok((unsigned_tx, fee)),
-            GspResponse::Error { code, message } => {
-                Err(NetworkError::RequestFailed(format!("code {}: {}", code, message)))
-            }
+            GspResponse::Error { code, message } => Err(NetworkError::RequestFailed(format!(
+                "code {}: {}",
+                code, message
+            ))),
             other => Err(NetworkError::InvalidResponse(format!(
                 "expected PaymentPrepared, got {:?}",
                 other
@@ -379,10 +339,7 @@ impl MobileGspClient {
     }
 
     /// Submit a signed transaction for broadcast.
-    pub async fn submit_payment(
-        &self,
-        signed_tx: &str,
-    ) -> Result<String, NetworkError> {
+    pub async fn submit_payment(&self, signed_tx: &str) -> Result<String, NetworkError> {
         self.require_authenticated()?;
         let _lock = self.rpc_lock.lock().await;
         self.send_request(&GspRequest::SubmitSignedPayment {
@@ -392,9 +349,10 @@ impl MobileGspClient {
 
         match self.recv_response().await? {
             GspResponse::PaymentSubmitted { txid } => Ok(txid),
-            GspResponse::Error { code, message } => {
-                Err(NetworkError::RequestFailed(format!("code {}: {}", code, message)))
-            }
+            GspResponse::Error { code, message } => Err(NetworkError::RequestFailed(format!(
+                "code {}: {}",
+                code, message
+            ))),
             other => Err(NetworkError::InvalidResponse(format!(
                 "expected PaymentSubmitted, got {:?}",
                 other
@@ -496,10 +454,7 @@ mod tests {
         let json = r#"{"type":"Balance","payload":{"confirmed":100000000,"pending":50000}}"#;
         let resp: GspResponse = serde_json::from_str(json).unwrap();
         match resp {
-            GspResponse::Balance {
-                confirmed,
-                pending,
-            } => {
+            GspResponse::Balance { confirmed, pending } => {
                 assert_eq!(confirmed, 100_000_000);
                 assert_eq!(pending, 50_000);
             }
@@ -546,10 +501,7 @@ mod tests {
             pending: 50,
         };
         match evt {
-            GspEvent::BalanceChanged {
-                confirmed,
-                pending,
-            } => {
+            GspEvent::BalanceChanged { confirmed, pending } => {
                 assert_eq!(confirmed, 100);
                 assert_eq!(pending, 50);
             }

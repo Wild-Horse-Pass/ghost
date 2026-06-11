@@ -753,7 +753,9 @@ impl DiscoveryHandler {
     /// Handle a discovery message
     async fn handle_discovery(&self, envelope: &MessageEnvelope) -> GhostResult<()> {
         // Periodic rate limiter cleanup to prevent memory growth
-        let count = self.message_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let count = self
+            .message_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count.is_multiple_of(100) {
             self.rate_limiter.cleanup(Duration::from_secs(600));
         }
@@ -882,7 +884,8 @@ impl DiscoveryHandler {
                 // addresses (health pings no longer carry public_address in cleartext).
                 // Fires on both new and re-announce, but NOT on hijack rejection.
                 if accepted {
-                    let mut peer = crate::peer::Peer::new(envelope.sender, normalized_address.clone());
+                    let mut peer =
+                        crate::peer::Peer::new(envelope.sender, normalized_address.clone());
                     peer.state = crate::peer::PeerState::Connected;
                     self.peers.upsert_peer(peer);
                 }

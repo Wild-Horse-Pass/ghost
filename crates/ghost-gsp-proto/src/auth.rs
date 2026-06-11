@@ -27,7 +27,7 @@
 //! # Authentication Flow
 //!
 //! 1. Wallet generates auth keypair at derivation path `m/352'/0'/0'/0/0`
-//! 2. `wallet_id` = SHA256(auth_pubkey)[0:16]
+//! 2. `wallet_id` = `SHA256(auth_pubkey)[0:16]`
 //! 3. Registration: POST /register with signed proof
 //! 4. Session: POST /session returns JWT (24h expiry)
 //! 5. WebSocket: Send JWT in `authenticate` message
@@ -41,7 +41,7 @@ use crate::PROOF_TIMESTAMP_TOLERANCE_SECS;
 
 /// Wallet identifier derived from public key
 ///
-/// Computed as SHA256(auth_pubkey)[0:16] (first 16 bytes as hex = 32 chars)
+/// Computed as `SHA256(auth_pubkey)[0:16]` (first 16 bytes as hex = 32 chars)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WalletId(pub String);
 

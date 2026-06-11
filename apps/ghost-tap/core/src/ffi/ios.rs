@@ -146,7 +146,7 @@ pub extern "C" fn ghost_biometric_available() -> bool {
 
 #[cfg(target_os = "ios")]
 fn keychain_store_impl(service: &str, key: &str, data: &[u8]) -> bool {
-    use security_framework::passwords::{set_generic_password, delete_generic_password};
+    use security_framework::passwords::{delete_generic_password, set_generic_password};
 
     // Delete any existing entry first to avoid errSecDuplicateItem.
     let _ = delete_generic_password(service, key);
@@ -180,8 +180,8 @@ fn biometric_available_impl() -> bool {
     // ```
     #[cfg(target_os = "ios")]
     {
-        use objc::{class, msg_send, sel, sel_impl};
         use objc::runtime::Object;
+        use objc::{class, msg_send, sel, sel_impl};
 
         unsafe {
             let la_context_class = class!(LAContext);

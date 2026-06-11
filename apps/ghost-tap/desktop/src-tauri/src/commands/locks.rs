@@ -1,8 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use ghost_tap_core::network::ghost_pay::{
-    CreateLockRequest, GhostPayClient, JoinWraithRequest, PayConfig, ReconcileRequest,
-    SendL2PaymentRequest, WraithSubmitInputRequest,
+    CreateLockRequest, GhostPayClient, PayConfig, ReconcileRequest, SendL2PaymentRequest,
 };
 use tauri::State;
 
@@ -20,7 +19,10 @@ fn ghost_pay_client(state: &AppState) -> AppResult<GhostPayClient> {
         timeout_ms: 30_000,
         api_secret: state.ghost_pay_secret.lock().clone(),
     };
-    Ok(GhostPayClient::with_client(config, state.http_client.clone()))
+    Ok(GhostPayClient::with_client(
+        config,
+        state.http_client.clone(),
+    ))
 }
 
 // =============================================================================
@@ -40,10 +42,7 @@ pub async fn list_locks(state: State<'_, AppState>) -> AppResult<serde_json::Val
 
 /// Get details for a specific lock.
 #[tauri::command]
-pub async fn get_lock(
-    state: State<'_, AppState>,
-    lock_id: String,
-) -> AppResult<serde_json::Value> {
+pub async fn get_lock(state: State<'_, AppState>, lock_id: String) -> AppResult<serde_json::Value> {
     let client = ghost_pay_client(&state)?;
     let lock = client
         .get_lock(&lock_id)
@@ -101,85 +100,6 @@ pub async fn reconcile_lock(
     };
     let resp = client
         .reconcile_lock(&lock_id, &req)
-        .await
-        .map_err(|e| AppError::from(e.to_string()))?;
-    serde_json::to_value(resp).map_err(|e| AppError::from(e.to_string()))
-}
-
-// =============================================================================
-// Wraith Session Commands
-// =============================================================================
-
-/// List all wraith mixing sessions.
-#[tauri::command]
-pub async fn list_wraith_sessions(
-    state: State<'_, AppState>,
-) -> AppResult<serde_json::Value> {
-    let client = ghost_pay_client(&state)?;
-    let sessions = client
-        .list_wraith_sessions()
-        .await
-        .map_err(|e| AppError::from(e.to_string()))?;
-    serde_json::to_value(sessions).map_err(|e| AppError::from(e.to_string()))
-}
-
-/// Get details for a specific wraith session.
-#[tauri::command]
-pub async fn get_wraith_session(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> AppResult<serde_json::Value> {
-    let client = ghost_pay_client(&state)?;
-    let session = client
-        .get_wraith_session(&session_id)
-        .await
-        .map_err(|e| AppError::from(e.to_string()))?;
-    serde_json::to_value(session).map_err(|e| AppError::from(e.to_string()))
-}
-
-/// Join a wraith mixing session.
-#[tauri::command]
-pub async fn join_wraith_session(
-    state: State<'_, AppState>,
-    tier: String,
-    denomination: String,
-    lock_id: Option<String>,
-) -> AppResult<serde_json::Value> {
-    let client = ghost_pay_client(&state)?;
-    let req = JoinWraithRequest {
-        tier,
-        denomination,
-        lock_id,
-    };
-    let resp = client
-        .join_wraith(&req)
-        .await
-        .map_err(|e| AppError::from(e.to_string()))?;
-    serde_json::to_value(resp).map_err(|e| AppError::from(e.to_string()))
-}
-
-/// Submit an input to a wraith session.
-#[tauri::command]
-pub async fn submit_wraith_input(
-    state: State<'_, AppState>,
-    session_id: String,
-    ghost_id: String,
-    txid: String,
-    vout: u32,
-    amount: u64,
-    script_pubkey: String,
-) -> AppResult<serde_json::Value> {
-    let client = ghost_pay_client(&state)?;
-    let req = WraithSubmitInputRequest {
-        session_id,
-        ghost_id,
-        txid,
-        vout,
-        amount,
-        script_pubkey,
-    };
-    let resp = client
-        .submit_wraith_input(&req)
         .await
         .map_err(|e| AppError::from(e.to_string()))?;
     serde_json::to_value(resp).map_err(|e| AppError::from(e.to_string()))
@@ -253,10 +173,7 @@ pub async fn list_withdrawals(state: State<'_, AppState>) -> AppResult<serde_jso
 
 /// Get details for a specific withdrawal.
 #[tauri::command]
-pub async fn get_withdrawal(
-    state: State<'_, AppState>,
-    id: u64,
-) -> AppResult<serde_json::Value> {
+pub async fn get_withdrawal(state: State<'_, AppState>, id: u64) -> AppResult<serde_json::Value> {
     let client = ghost_pay_client(&state)?;
     let withdrawal = client
         .get_withdrawal(id)

@@ -71,11 +71,7 @@ impl TestMetrics {
 
     /// Success rate excluding 429 for a specific node IP.
     pub fn success_rate_excluding_429_for_node(&self, ip: &str) -> f64 {
-        let node_results: Vec<_> = self
-            .results
-            .iter()
-            .filter(|r| r.node_ip == ip)
-            .collect();
+        let node_results: Vec<_> = self.results.iter().filter(|r| r.node_ip == ip).collect();
         let non_429: Vec<_> = node_results
             .iter()
             .filter(|r| r.status != Some(429))
@@ -176,11 +172,7 @@ impl TestMetrics {
         }
 
         // Show connection errors
-        let conn_errors: Vec<_> = self
-            .results
-            .iter()
-            .filter(|r| r.error.is_some())
-            .collect();
+        let conn_errors: Vec<_> = self.results.iter().filter(|r| r.error.is_some()).collect();
         if !conn_errors.is_empty() {
             println!(
                 "  Connection errors: {} (first: {})",

@@ -1,0 +1,69 @@
+# cargo-audit policy for bitcoin-ghost.
+#
+# Default posture: vulnerabilities AND unsound advisories FAIL the audit.
+# The IDs below are explicitly reviewed exceptions, each with a justification.
+# Classes allowed here:
+#   1. Unmaintained transitive crates with no available fix (informational).
+#   2. Unsound advisories that are confirmed unreachable in ghost's usage and
+#      whose fix is gated on a larger upstream migration (capnp / Bitcoin Core IPC).
+#
+# All actual vulnerabilities have been fixed in the lockfile (aws-lc-sys,
+# quinn-proto, protobuf, rustls-webpki) and rand RUSTSEC-2026-0097 was patched +
+# its residual reviewed. With the capnp entry below, the audit is 0/0.
+
+[advisories]
+ignore = [
+    # --- Unmaintained: gtk3 / webkit desktop-GUI stack (Tauri on Linux). ---
+    # Upstream gtk-rs abandoned gtk3 for gtk4; webkit2gtk/Tauri still require
+    # gtk3, so there is no maintained replacement. GUI crates only — not in any
+    # shipped node binary (ghost-pool / translator_sv2 / pool_sv2 / ghost-pay / …).
+    "RUSTSEC-2024-0413",  # atk
+    "RUSTSEC-2024-0416",  # atk-sys
+    "RUSTSEC-2024-0412",  # gdk
+    "RUSTSEC-2024-0418",  # gdk-sys
+    "RUSTSEC-2024-0411",  # gdkwayland-sys
+    "RUSTSEC-2024-0417",  # gdkx11
+    "RUSTSEC-2024-0414",  # gdkx11-sys
+    "RUSTSEC-2024-0415",  # gtk
+    "RUSTSEC-2024-0420",  # gtk-sys
+    "RUSTSEC-2024-0419",  # gtk3-macros
+    "RUSTSEC-2024-0429",  # glib (unsound) — gtk3 stack, GUI-only, upstream-abandoned
+    # --- Unmaintained: pulled by GUI/web (urlpattern, selectors) — GUI-only. ---
+    "RUSTSEC-2025-0081",  # unic-char-property  (via urlpattern)
+    "RUSTSEC-2025-0075",  # unic-char-range
+    "RUSTSEC-2025-0080",  # unic-common
+    "RUSTSEC-2025-0100",  # unic-ucd-ident
+    "RUSTSEC-2025-0098",  # unic-ucd-version
+    "RUSTSEC-2025-0057",  # fxhash (via selectors)
+    # --- Unmaintained: ubiquitous transitive utils / FFI / ZK / bench. ---
+    # No maintained drop-in; pulled by uniffi (mobile FFI), bellperson (ZK),
+    # criterion (benches), and widely across the ecosystem.
+    "RUSTSEC-2024-0436",  # paste            (uniffi)
+    "RUSTSEC-2025-0141",  # bincode          (bellperson/uniffi)
+    "RUSTSEC-2024-0384",  # instant          (fastrand 1.9 transitive)
+    "RUSTSEC-2024-0370",  # proc-macro-error (gtk3/glib macros)
+    "RUSTSEC-2025-0052",  # async-std        (criterion benches)
+    # --- rand unsound (RUSTSEC-2026-0097): reviewed, not exposed. ---
+    # The UB requires calling rand::rng()/thread_rng() from INSIDE a custom
+    # `log::Log` implementation during a ThreadRng reseed. Ghost defines no
+    # custom logger (it uses `tracing`/`tracing-subscriber`), so the precondition
+    # is unreachable. The patchable copies were already bumped (rand 0.8.5->0.8.6,
+    # 0.9.2->0.9.3, the fixed versions); the only remaining affected copy is
+    # rand 0.7.3, a deep ZK transitive (bellperson 0.26 / fixed-hash) with no fix
+    # in the 0.7 line and no path to trigger the UB. Re-evaluate if a custom
+    # logger is ever added or bellperson is bumped.
+    "RUSTSEC-2026-0097",  # rand (unsound) — unreachable; maintained copies patched, residual is 0.7.3 ZK transitive
+    # --- capnp unsound (RUSTSEC-2025-0143): reviewed, unreachable + migration-gated. ---
+    # The unsound APIs are capnp's `constant::Reader::get` / `StructSchema::new`
+    # (reading capnp CONSTANTS and dynamic SCHEMA reflection). Ghost uses them 0
+    # times — the Bitcoin Core IPC path (bitcoin-core-sv2) reads generated message
+    # readers (get_block / get_result), never constants or schema reflection.
+    # The fix (capnp >=0.24 via bitcoin-capnp-types 0.2) is NOT a standalone bump:
+    # bitcoin-capnp-types mirrors Bitcoin Core's libmultiprocess `.capnp` schemas,
+    # and 0.2 reflects a newer Bitcoin Core mining IPC (getCoinbaseTx returns a
+    # structured CoinbaseTx instead of serialized Data). Adopting it requires the
+    # node on the other end of the IPC to speak the new schema AND reworking the
+    # TDP coinbase construction — i.e. it is gated on a deliberate Bitcoin Core
+    # version migration. Re-evaluate when that migration happens.
+    "RUSTSEC-2025-0143",  # capnp (unsound) — unreachable; fix gated on a Bitcoin Core IPC version migration
+]

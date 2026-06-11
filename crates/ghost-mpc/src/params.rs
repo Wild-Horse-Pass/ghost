@@ -36,7 +36,7 @@ use tracing::{debug, info};
 
 /// Container for note spend, payout, and unshield parameters
 /// Note: Not Clone because PreparedVerifyingKey doesn't implement Clone.
-/// Use Arc<MpcParameters> for shared ownership.
+/// Use `Arc<MpcParameters>` for shared ownership.
 #[derive(Default)]
 pub struct MpcParameters {
     /// Parameters for note spend proofs (GhostNoteSpendCircuit)

@@ -191,10 +191,7 @@ pub fn generate_receipt(
     merchant_name: Option<String>,
     memo: Option<String>,
 ) -> AppResult<ReceiptResponse> {
-    let receipt_id = format!(
-        "R-{}",
-        uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
-    );
+    let receipt_id = format!("R-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase());
     let biz_name = merchant_name.unwrap_or_else(|| "Merchant".to_string());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

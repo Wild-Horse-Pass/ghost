@@ -240,10 +240,7 @@ impl GhostUnshieldProver {
         })
     }
 
-    fn build_circuit(
-        &self,
-        witness: &UnshieldWitness,
-    ) -> ZkResult<GhostUnshieldCircuit<Fr>> {
+    fn build_circuit(&self, witness: &UnshieldWitness) -> ZkResult<GhostUnshieldCircuit<Fr>> {
         let spending_key: Fr = bytes_to_field(&witness.spending_key)?;
         let note_blinding: Fr = bytes_to_field(&witness.note_blinding)?;
         let note_value_fr = Fr::from(witness.note_value);
@@ -287,10 +284,7 @@ impl GhostUnshieldProver {
         })
     }
 
-    fn compute_public_inputs(
-        &self,
-        witness: &UnshieldWitness,
-    ) -> ZkResult<UnshieldPublicInputs> {
+    fn compute_public_inputs(&self, witness: &UnshieldWitness) -> ZkResult<UnshieldPublicInputs> {
         let spending_key: Fr = bytes_to_field(&witness.spending_key)?;
         let note_blinding: Fr = bytes_to_field(&witness.note_blinding)?;
         let note_value_fr = Fr::from(witness.note_value);
@@ -358,10 +352,7 @@ mod tests {
     use crate::circuit::mimc::mimc_hash_native;
 
     /// Build a tree from sparse leaves and return (root, per-leaf siblings)
-    fn build_tree(
-        depth: usize,
-        leaves: &[(u64, Fr)],
-    ) -> (Fr, Vec<Vec<[u8; 32]>>) {
+    fn build_tree(depth: usize, leaves: &[(u64, Fr)]) -> (Fr, Vec<Vec<[u8; 32]>>) {
         let leaf_map: std::collections::HashMap<u64, Fr> = leaves.iter().cloned().collect();
 
         fn compute_node(
@@ -465,8 +456,7 @@ mod tests {
     #[test]
     #[ignore] // Expensive ~10-30s
     fn test_groth16_prove_roundtrip() {
-        let prover =
-            GhostUnshieldProver::new_with_setup(4).expect("Setup should succeed");
+        let prover = GhostUnshieldProver::new_with_setup(4).expect("Setup should succeed");
         assert!(prover.has_groth16_params());
         let witness = create_test_witness(4);
         let proof = prover.prove(&witness).expect("Proof should succeed");

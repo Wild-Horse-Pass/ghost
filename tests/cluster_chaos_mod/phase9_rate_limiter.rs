@@ -23,7 +23,10 @@ async fn rate_limiter_01_burst_size() {
     let endpoint = "/health";
 
     println!("\n=== Rate Limiter: Burst Size ===");
-    println!("  Sending sequential requests to {} {} until first 429...", ip, endpoint);
+    println!(
+        "  Sending sequential requests to {} {} until first 429...",
+        ip, endpoint
+    );
 
     let mut count = 0u32;
     loop {
@@ -34,11 +37,17 @@ async fn rate_limiter_01_burst_size() {
             break;
         }
         if count >= 500 {
-            println!("  No 429 after 500 requests — rate limiter may not be active on {}", endpoint);
+            println!(
+                "  No 429 after 500 requests — rate limiter may not be active on {}",
+                endpoint
+            );
             break;
         }
     }
-    println!("  Burst allowance: {} requests before rate limit", count - 1);
+    println!(
+        "  Burst allowance: {} requests before rate limit",
+        count - 1
+    );
     println!("===================\n");
 }
 
@@ -65,9 +74,14 @@ async fn rate_limiter_02_per_node_budget() {
     println!("  VM2 rate-limited after {} requests", vm2_burst);
 
     // Immediately test VM3
-    let vm3_results = client.timed_sequential_requests(vm3_ip, endpoint, 5, Duration::ZERO).await;
+    let vm3_results = client
+        .timed_sequential_requests(vm3_ip, endpoint, 5, Duration::ZERO)
+        .await;
     let vm3_successes = vm3_results.iter().filter(|r| r.status == Some(200)).count();
-    println!("  VM3 immediately after VM2 limit: {}/5 succeeded", vm3_successes);
+    println!(
+        "  VM3 immediately after VM2 limit: {}/5 succeeded",
+        vm3_successes
+    );
 
     if vm3_successes >= 4 {
         println!("  Conclusion: Rate limiting is PER-NODE (VM3 unaffected)");
@@ -212,8 +226,14 @@ async fn rate_limiter_05_sustained_rate() {
         }
     }
 
-    println!("  Max sustained rate with zero 429s: {:.2} req/s", best_rate);
-    println!("  Recommended interval: {:.0}ms", 1000.0 / best_rate.max(0.01));
+    println!(
+        "  Max sustained rate with zero 429s: {:.2} req/s",
+        best_rate
+    );
+    println!(
+        "  Recommended interval: {:.0}ms",
+        1000.0 / best_rate.max(0.01)
+    );
     println!("===================\n");
 }
 

@@ -23,7 +23,9 @@ use ghost_common::identity;
 use ghost_common::metrics::Metrics;
 use ghost_common::types::NodeId;
 use ghost_storage::Database;
-use ghost_zkp::{GhostConsolidateVerifier, GhostNoteSpendPublicInputs, GhostNoteVerifier, GhostUnshieldVerifier};
+use ghost_zkp::{
+    GhostConsolidateVerifier, GhostNoteSpendPublicInputs, GhostNoteVerifier, GhostUnshieldVerifier,
+};
 
 use crate::epoch_manager::{EpochManager, PROPOSER_GRACE_SECS};
 use crate::mesh::MessageHandler;
@@ -393,10 +395,7 @@ impl NullifierRouteHandler {
     /// transaction. Always validates locally (bypasses deterministic routing) since
     /// ghost-pay already verified the proof. Broadcasts signed confirmation + transfer
     /// to the network. Other nodes verify the proof via handle_transfer_broadcast().
-    pub fn submit_external_transfer(
-        &self,
-        msg: &L2ConfidentialTransferMessage,
-    ) -> GhostResult<()> {
+    pub fn submit_external_transfer(&self, msg: &L2ConfidentialTransferMessage) -> GhostResult<()> {
         let tx = &msg.transaction;
 
         // Validate root and nullifier locally (no deterministic routing needed —
@@ -408,14 +407,10 @@ impl NullifierRouteHandler {
                 our_current_root = %hex::encode(&our_root[..8]),
                 "submit_external_transfer: commitment root not in valid roots window"
             );
-            return Err(GhostError::InvalidInput(
-                "Invalid commitment root".into(),
-            ));
+            return Err(GhostError::InvalidInput("Invalid commitment root".into()));
         }
         if self.epoch_manager.is_nullifier_spent(&tx.nullifier) {
-            return Err(GhostError::InvalidInput(
-                "Nullifier already spent".into(),
-            ));
+            return Err(GhostError::InvalidInput("Nullifier already spent".into()));
         }
 
         // Verify Groth16 proof
@@ -431,9 +426,7 @@ impl NullifierRouteHandler {
                 .verify_raw(&tx.proof, &public_inputs)
                 .map_err(|e| GhostError::Internal(format!("Proof verification error: {}", e)))?;
             if !valid {
-                return Err(GhostError::InvalidInput(
-                    "Proof verification failed".into(),
-                ));
+                return Err(GhostError::InvalidInput("Proof verification failed".into()));
             }
         } else {
             return Err(GhostError::Internal(
@@ -487,8 +480,8 @@ impl NullifierRouteHandler {
             };
             let sign_msg = bcast.signing_message();
             bcast.signature = self.sign(&sign_msg);
-            let payload = serde_json::to_vec(&bcast)
-                .map_err(|e| GhostError::Serialization(e.to_string()))?;
+            let payload =
+                serde_json::to_vec(&bcast).map_err(|e| GhostError::Serialization(e.to_string()))?;
             broadcast(MessageType::L2TransferBroadcast, payload)?;
         }
 
@@ -756,9 +749,9 @@ impl NullifierRouteHandler {
         // Ensures our tree includes shield commitments that the transfer's proof
         // was built against. insert_commitment_at is idempotent (INSERT OR IGNORE).
         for p in &msg.prerequisites {
-            let _ = self
-                .epoch_manager
-                .insert_commitment_at(p.note_index, p.commitment, p.block_height);
+            let _ =
+                self.epoch_manager
+                    .insert_commitment_at(p.note_index, p.commitment, p.block_height);
             if let Ok(root) = self.epoch_manager.current_root() {
                 let _ = self.epoch_manager.add_valid_root(root, p.block_height);
             }
@@ -925,12 +918,14 @@ impl NullifierRouteHandler {
             let current_height = self.epoch_manager.current_height();
             let mut pending = self.pending_shields.write();
             let before = pending.len();
-            pending.retain(|sc| {
-                current_height.saturating_sub(sc.block_height) < 15
-            });
+            pending.retain(|sc| current_height.saturating_sub(sc.block_height) < 15);
             let expired = before - pending.len();
             if expired > 0 {
-                info!(expired, remaining = pending.len(), "Expired stale pending shields (>15 checkpoints old)");
+                info!(
+                    expired,
+                    remaining = pending.len(),
+                    "Expired stale pending shields (>15 checkpoints old)"
+                );
                 // Also clean expired shields from the staging table
                 if let Err(e) = self.db.delete_stale_pending_shields() {
                     warn!(error = %e, "Failed to clean expired shields from staging table");
@@ -942,8 +937,7 @@ impl NullifierRouteHandler {
         // shields are only removed from pending_shields when they are finalized in
         // finalize_checkpoint(). If this proposal loses to a competing proposal,
         // the shields remain queued for the next checkpoint attempt.
-        let shield_commitments: Vec<ShieldCommitment> =
-            self.pending_shields.read().clone();
+        let shield_commitments: Vec<ShieldCommitment> = self.pending_shields.read().clone();
 
         // Use checkpoint base root (stable across shield insertions) instead of current_root()
         let prev_root = *self.checkpoint_base_root.read();
@@ -962,7 +956,9 @@ impl NullifierRouteHandler {
                 let idx2 = scratch.next_index();
                 scratch.insert(idx2, tx.recipient_commitment);
             }
-            scratch.root().map_err(|e| GhostError::Internal(format!("scratch root: {}", e)))?
+            scratch
+                .root()
+                .map_err(|e| GhostError::Internal(format!("scratch root: {}", e)))?
         };
 
         let mut proposal = L2CheckpointBlockMessage {
@@ -1147,7 +1143,10 @@ impl NullifierRouteHandler {
                 if !pending.is_empty() {
                     let flushed = pending.len();
                     pending.clear();
-                    info!(flushed, "Flushed all pending shields to resolve root divergence");
+                    info!(
+                        flushed,
+                        "Flushed all pending shields to resolve root divergence"
+                    );
                     if let Err(e) = self.db.delete_stale_pending_shields() {
                         warn!(error = %e, "Failed to clean pending shields from staging table");
                     }
@@ -1197,10 +1196,7 @@ impl NullifierRouteHandler {
     /// 2. Validates and votes on our own proposal (handle_checkpoint_proposal)
     /// 3. Records our own vote locally (handle_checkpoint_vote)
     /// 4. Broadcasts our vote to all peers (L2CheckpointVote)
-    pub fn propose_and_broadcast(
-        &self,
-        proposal: &L2CheckpointBlockMessage,
-    ) -> GhostResult<()> {
+    pub fn propose_and_broadcast(&self, proposal: &L2CheckpointBlockMessage) -> GhostResult<()> {
         // 1. Broadcast proposal to network
         if let Some(ref broadcast) = *self.broadcast_fn.read() {
             let payload = serde_json::to_vec(proposal)
@@ -1260,13 +1256,19 @@ impl NullifierRouteHandler {
             // IS stored, the hash is authoritative and mismatched votes are rejected.
             if state.checkpoint_hash != msg.checkpoint_hash {
                 if state.proposal.is_some() {
-                    debug!(height, "Vote for different checkpoint hash (proposal stored), ignoring");
+                    debug!(
+                        height,
+                        "Vote for different checkpoint hash (proposal stored), ignoring"
+                    );
                     return Ok(false);
                 }
                 // No proposal stored — hash was set by an earlier vote. Don't reject;
                 // this vote will be re-evaluated when the proposal arrives and resets state.
                 // For now, skip counting it (it may be for the correct primary proposal).
-                debug!(height, "Vote for different checkpoint hash (no proposal yet), deferring");
+                debug!(
+                    height,
+                    "Vote for different checkpoint hash (no proposal yet), deferring"
+                );
                 return Ok(false);
             }
 
@@ -1421,8 +1423,7 @@ impl NullifierRouteHandler {
                     .iter()
                     .map(|sc| sc.note_index)
                     .collect();
-                let finalized_set: HashSet<u64> =
-                    finalized_indices.iter().copied().collect();
+                let finalized_set: HashSet<u64> = finalized_indices.iter().copied().collect();
                 self.pending_shields
                     .write()
                     .retain(|sc| !finalized_set.contains(&sc.note_index));
@@ -1437,11 +1438,8 @@ impl NullifierRouteHandler {
 
             // Remove finalized transactions from confirmed_pool + staging table
             if !block.transactions.is_empty() {
-                let finalized_nullifiers: HashSet<[u8; 32]> = block
-                    .transactions
-                    .iter()
-                    .map(|tx| tx.nullifier)
-                    .collect();
+                let finalized_nullifiers: HashSet<[u8; 32]> =
+                    block.transactions.iter().map(|tx| tx.nullifier).collect();
                 {
                     let mut pool = self.confirmed_pool.write();
                     pool.retain(|tx| !finalized_nullifiers.contains(&tx.nullifier));
@@ -1468,10 +1466,10 @@ impl NullifierRouteHandler {
         // (shields don't pay fees, only NoteSpend transfers do)
         let transfer_count = proposal.map(|p| p.transactions.len()).unwrap_or(0);
         if transfer_count > 0 {
-            if let Err(e) = self.db.increment_epoch_fee(
-                self.epoch_manager.current_epoch(),
-                transfer_count as u64,
-            ) {
+            if let Err(e) = self
+                .db
+                .increment_epoch_fee(self.epoch_manager.current_epoch(), transfer_count as u64)
+            {
                 warn!(epoch = self.epoch_manager.current_epoch(), error = %e,
                     "Failed to increment epoch fee counter — fees will be under-counted");
             }
@@ -1733,7 +1731,10 @@ impl NullifierRouteHandler {
         // Pagination follow-up: if peer has more checkpoints, request next batch
         if response.has_more {
             let new_height = self.epoch_manager.current_height();
-            info!(from_height = new_height, "Tree sync has more checkpoints — requesting next batch");
+            info!(
+                from_height = new_height,
+                "Tree sync has more checkpoints — requesting next batch"
+            );
             // Clear rate limit for responding peer so follow-up isn't throttled
             self.sync_requests.write().remove(&response.responding_node);
             let _ = self.request_tree_sync();
@@ -1811,7 +1812,10 @@ impl NullifierRouteHandler {
                 .map_err(|e| GhostError::Serialization(e.to_string()))?;
             broadcast(MessageType::L2TreeSync, payload)?;
             *self.last_sync_request_sent.write() = Some(Instant::now());
-            info!(from_height = current_height, "Requested L2 tree sync from peers");
+            info!(
+                from_height = current_height,
+                "Requested L2 tree sync from peers"
+            );
         }
 
         Ok(())
@@ -1819,7 +1823,10 @@ impl NullifierRouteHandler {
 
     /// Handle note gap request — peer is missing notes after tree sync, respond with
     /// the notes they don't have.
-    fn handle_note_gap_request(&self, request: &L2NoteGapRequest) -> GhostResult<Option<L2NoteGapResponse>> {
+    fn handle_note_gap_request(
+        &self,
+        request: &L2NoteGapRequest,
+    ) -> GhostResult<Option<L2NoteGapResponse>> {
         // Don't respond to our own requests
         if request.requesting_node == self.our_id {
             return Ok(None);
@@ -1832,7 +1839,8 @@ impl NullifierRouteHandler {
         let their_indices: HashSet<u64> = request.our_note_indices.iter().copied().collect();
 
         // Find notes we have that they don't, starting from the pagination cursor
-        let mut missing: Vec<ShieldCommitment> = our_notes.iter()
+        let mut missing: Vec<ShieldCommitment> = our_notes
+            .iter()
             .filter(|(idx, _)| *idx >= request.from_index && !their_indices.contains(idx))
             .map(|(idx, commitment)| ShieldCommitment {
                 note_index: *idx,
@@ -1894,10 +1902,13 @@ impl NullifierRouteHandler {
         // If peer has more missing notes, request the next batch
         if response.has_more {
             // Pagination cursor: continue from after the last note we received
-            let next_index = response.missing_notes.iter()
+            let next_index = response
+                .missing_notes
+                .iter()
                 .map(|n| n.note_index)
                 .max()
-                .unwrap_or(0) + 1;
+                .unwrap_or(0)
+                + 1;
 
             let epoch = self.epoch_manager.current_epoch();
             if let Ok(our_notes) = self.db.load_all_l2_notes_for_epoch(epoch) {
@@ -2072,11 +2083,7 @@ impl MessageHandler for NullifierRouteHandler {
                     return Ok(());
                 }
                 let signable = msg.to_signable_bytes();
-                if !self.verify_peer_signature(
-                    &msg.proposer,
-                    &signable,
-                    &msg.proposer_signature,
-                ) {
+                if !self.verify_peer_signature(&msg.proposer, &signable, &msg.proposer_signature) {
                     warn!(
                         proposer = %hex::encode(&msg.proposer[..8]),
                         height = msg.height,
@@ -2125,8 +2132,7 @@ impl MessageHandler for NullifierRouteHandler {
 
             MessageType::L2TreeSync => {
                 // Tree sync request/response + note gap recovery
-                if let Ok(request) =
-                    serde_json::from_slice::<L2TreeSyncRequest>(&envelope.payload)
+                if let Ok(request) = serde_json::from_slice::<L2TreeSyncRequest>(&envelope.payload)
                 {
                     if let Some(response) = self.handle_tree_sync_request(&request)? {
                         if let Some(ref broadcast) = *self.broadcast_fn.read() {
@@ -2649,9 +2655,7 @@ mod tests {
         assert_eq!(epoch_mgr.note_count(), 6); // 3 txs * 2 commitments each
 
         // Verify DB persisted the checkpoint
-        let checkpoints = db
-            .get_l2_checkpoints_from_height(0, 10)
-            .unwrap();
+        let checkpoints = db.get_l2_checkpoints_from_height(0, 10).unwrap();
         assert!(
             !checkpoints.is_empty(),
             "Checkpoint should be persisted to DB"
@@ -2764,7 +2768,10 @@ mod tests {
         handler_a.handle_checkpoint_vote(&vote).unwrap();
 
         let root_after_a = epoch_mgr_a.current_root().unwrap();
-        assert_ne!(root_after_a, root_a, "A's root should change after checkpoint");
+        assert_ne!(
+            root_after_a, root_a,
+            "A's root should change after checkpoint"
+        );
 
         // === Peer B: sync from A ===
         let identity_b = NodeIdentity::generate();
@@ -2890,11 +2897,8 @@ mod tests {
         };
         let epoch_mgr_b = Arc::new(EpochManager::new(db_b.clone(), config_b));
         epoch_mgr_b.initialize_genesis().unwrap();
-        let handler_b = NullifierRouteHandler::with_defaults(
-            node_id_b,
-            epoch_mgr_b.clone(),
-            db_b.clone(),
-        );
+        let handler_b =
+            NullifierRouteHandler::with_defaults(node_id_b, epoch_mgr_b.clone(), db_b.clone());
         handler_b.set_sign_fn(Arc::new(move |msg: &[u8]| identity_b.sign(msg)));
         // B knows about A so it can verify signatures
         epoch_mgr_b.update_active_nodes(vec![node_id_a, node_id_b]);
@@ -2943,7 +2947,9 @@ mod tests {
         };
 
         // This should NOT reset the vote state because height 1 is already finalized
-        let vote_result = handler_b.handle_checkpoint_proposal(&late_proposal).unwrap();
+        let vote_result = handler_b
+            .handle_checkpoint_proposal(&late_proposal)
+            .unwrap();
 
         // Verify vote state is still finalized with the synced hash (not reset)
         {
@@ -2999,7 +3005,10 @@ mod tests {
         let result = handler.handle_transfer(&msg);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("Invalid commitment root"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid commitment root"),
             "Should reject wrong root"
         );
     }
@@ -3038,10 +3047,7 @@ mod tests {
         };
 
         let result = handler.handle_transfer(&msg);
-        assert!(
-            result.is_err(),
-            "Corrupted proof should be rejected"
-        );
+        assert!(result.is_err(), "Corrupted proof should be rejected");
     }
 
     #[test]
@@ -3260,8 +3266,15 @@ mod tests {
 
         // Only heights > 100 should remain
         let votes = handler.votes.read();
-        assert_eq!(votes.len(), 100, "S-5: Should have pruned vote states <= 100");
-        assert!(!votes.contains_key(&100), "S-5: Height 100 should be pruned");
+        assert_eq!(
+            votes.len(),
+            100,
+            "S-5: Should have pruned vote states <= 100"
+        );
+        assert!(
+            !votes.contains_key(&100),
+            "S-5: Height 100 should be pruned"
+        );
         assert!(votes.contains_key(&101), "S-5: Height 101 should remain");
         assert!(votes.contains_key(&200), "S-5: Height 200 should remain");
     }
@@ -3355,7 +3368,9 @@ mod tests {
         assert_ne!(fallback_hash, primary_hash);
 
         // Step 1: Fallback proposal arrives first
-        let vote1 = handler.handle_checkpoint_proposal(&fallback_proposal).unwrap();
+        let vote1 = handler
+            .handle_checkpoint_proposal(&fallback_proposal)
+            .unwrap();
         // We should get a vote (approve, since roots match)
         assert!(vote1.is_some());
         let vote1 = vote1.unwrap();
@@ -3369,7 +3384,9 @@ mod tests {
         }
 
         // Step 2: Primary proposal arrives (should supersede fallback)
-        let vote2 = handler.handle_checkpoint_proposal(&primary_proposal).unwrap();
+        let vote2 = handler
+            .handle_checkpoint_proposal(&primary_proposal)
+            .unwrap();
         // We should get a vote for the PRIMARY hash
         assert!(vote2.is_some());
         let vote2 = vote2.unwrap();
@@ -3464,7 +3481,9 @@ mod tests {
         };
 
         // Fallback is NOT the primary, so it should NOT supersede
-        let vote_result = handler.handle_checkpoint_proposal(&fallback_proposal).unwrap();
+        let vote_result = handler
+            .handle_checkpoint_proposal(&fallback_proposal)
+            .unwrap();
         assert!(
             vote_result.is_none(),
             "Fallback proposal with different hash should return no vote"
@@ -3652,10 +3671,7 @@ mod tests {
             };
             let result = handler.handle_checkpoint_vote(&vote).unwrap();
             // Should NOT finalize because no proposal is stored
-            assert!(
-                !result,
-                "Should not finalize without proposal data"
-            );
+            assert!(!result, "Should not finalize without proposal data");
         }
 
         // Vote state should have been un-finalized

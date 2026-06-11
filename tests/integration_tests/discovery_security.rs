@@ -125,7 +125,11 @@ fn test_942_gossip_upsert_creates_real_peer() {
     manager.upsert_peer(peer_v2);
 
     // Still only one peer (same node_id)
-    assert_eq!(manager.peer_count(), 1, "Upsert should update, not duplicate");
+    assert_eq!(
+        manager.peer_count(),
+        1,
+        "Upsert should update, not duplicate"
+    );
 
     // Address should be updated to the new value
     let retrieved = manager.get_peer(&node_id).unwrap();

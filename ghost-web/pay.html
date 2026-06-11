@@ -6,6 +6,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ghost Pay · Bitcoin Ghost</title>
   <meta name="description" content="Instant Bitcoin payments on Ghost's L2. Shielded notes, Wraith mixing, self-custody.">
+  <meta property="og:site_name" content="Bitcoin Ghost">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Ghost Pay · Bitcoin Ghost">
+  <meta property="og:description" content="Instant Bitcoin payments on Ghost's L2. Shielded notes, Wraith mixing, self-custodial. No custodian, no API keys.">
+  <meta property="og:url" content="https://bitcoinghost.org/pay.html">
+  <meta property="og:image" content="https://bitcoinghost.org/logo.png">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:site" content="@defenwycke">
+  <meta name="twitter:creator" content="@defenwycke">
+  <meta name="twitter:title" content="Ghost Pay · Bitcoin Ghost">
+  <meta name="twitter:description" content="Instant Bitcoin payments on Ghost's L2. Shielded notes, Wraith mixing, self-custodial. No custodian, no API keys.">
+  <meta name="twitter:image" content="https://bitcoinghost.org/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -125,6 +137,66 @@
         <div class="pr-body">Ghost Pay moves Bitcoin, not tokens. L2 notes are one-to-one-backed by L1 sats locked in a timelocked vault. Unshield any time.</div>
       </li>
     </ul>
+  </div>
+</section>
+
+<!-- ───────── L2 lifecycle ───────── -->
+<section class="block pay-lifecycle-section">
+  <div class="container">
+    <div class="section-label">payment lifecycle</div>
+    <h2 class="section-title">How the L2 actually works.</h2>
+    <p class="section-lead">
+      Ghost Pay is a shielded L2 on top of Bitcoin Ghost — a thin layer
+      of cryptographic commitments that moves Bitcoin privately and
+      instantly, then settles on L1 on a predictable cadence. Five
+      stages in the lifecycle of any payment.
+    </p>
+
+    <ol class="quickstart-steps lifecycle-steps">
+      <li>
+        <div class="qs-n">1</div>
+        <div class="qs-body">
+          <div class="qs-title">Lock</div>
+          <div class="qs-desc">Send BTC to a Ghost Pay vault address on L1 — a P2TR output protected by a timelocked script. The sats are now held in a contract only spendable by verified L2 state transitions.</div>
+        </div>
+      </li>
+      <li>
+        <div class="qs-n">2</div>
+        <div class="qs-body">
+          <div class="qs-title">Mint shielded notes</div>
+          <div class="qs-desc">The lock transaction triggers the mint of fixed-denomination shielded notes on L2. Each note is a Pedersen commitment — the amount is hidden, only the commitment sits on-chain.</div>
+        </div>
+      </li>
+      <li>
+        <div class="qs-n">3</div>
+        <div class="qs-body">
+          <div class="qs-title">Spend, split, merge</div>
+          <div class="qs-desc">Transfer notes to other recipients instantly. Each spend is a zero-knowledge proof that you own the note and that inputs equal outputs — without ever revealing amounts or sender. Confirmation is sub-second.</div>
+        </div>
+      </li>
+      <li>
+        <div class="qs-n">4</div>
+        <div class="qs-body">
+          <div class="qs-title">Mix through Wraith (optional)</div>
+          <div class="qs-desc">Join a Wraith round. Participants pool shielded inputs, run a coordinator-free protocol, and receive unlinkable outputs. Breaks the transaction graph whenever the user wants to — no one else's business.</div>
+        </div>
+      </li>
+      <li>
+        <div class="qs-n">5</div>
+        <div class="qs-body">
+          <div class="qs-title">Unshield to L1</div>
+          <div class="qs-desc">When a holder wants to exit the L2, they burn their notes and claim the underlying BTC at a destination L1 address. The claim is included in the next epoch's settlement batch, which Ghost Pool nodes sign and broadcast to Bitcoin Ghost mainnet.</div>
+        </div>
+      </li>
+    </ol>
+
+    <div class="pending-note">
+      Settlement runs continuously — every L2 epoch (~1000 seconds by
+      default) the batch of unshields gets assembled into a single L1
+      transaction, BFT-signed by node operators, and broadcast. Fees
+      from the batch feed the node reward pool on the same decay
+      schedule as block subsidy.
+    </div>
   </div>
 </section>
 
@@ -266,6 +338,48 @@
     });
   })();
 
+  // ─── Sliding-window smoothers ──────────────────────────────────────────
+  // Damp poll-cycle jitter on numeric metrics. Each `smooth(key, raw)` call
+  // appends `raw` to the named ring buffer (default 8 samples ≈ 4 min at
+  // 30s polls) and returns a smoothed value:
+  //   • mode 'ema' (default)    — exponential moving average, alpha=0.35
+  //   • mode 'median'           — middle of the buffer, ideal for discrete
+  //                               counts where fractional EMAs look silly
+  // Drop-in: replace `raw` with `smooth('hashrate', raw)` at render time.
+  // The buffers live only in-memory — page refresh resets them, which keeps
+  // the smoothing honest after a real outage.
+  var __smoothers = {};
+  function smooth(key, raw, opts) {
+    opts = opts || {};
+    var maxN = opts.window || 8;
+    var mode = opts.mode || 'ema';
+    var alpha = opts.alpha != null ? opts.alpha : 0.35;
+    var s = __smoothers[key] || (__smoothers[key] = []);
+    if (raw != null && isFinite(raw)) s.push(raw);
+    while (s.length > maxN) s.shift();
+    if (!s.length) return null;
+    if (mode === 'median') {
+      var sorted = s.slice().sort(function (a, b) { return a - b; });
+      var mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+    var v = s[0];
+    for (var i = 1; i < s.length; i++) v = alpha * s[i] + (1 - alpha) * v;
+    return v;
+  }
+  // Smooth a stored history series of [t, v] points into a new EMA series
+  // for charting. Same alpha as point-wise smoother so headline tile and
+  // chart line agree visually.
+  function smoothSeries(series, alpha) {
+    if (!series || !series.length) return [];
+    alpha = alpha != null ? alpha : 0.35;
+    var out = [series[0].slice()];
+    for (var i = 1; i < series.length; i++) {
+      out.push([series[i][0], alpha * series[i][1] + (1 - alpha) * out[i - 1][1]]);
+    }
+    return out;
+  }
+
   var PAY_VMS = ['vm1', 'vm2', 'vm3', 'vm4'];
 
   function fmtBtc(sats) {
@@ -304,11 +418,15 @@
     });
     if (okCount === 0) return;
 
-    // Top bar
-    document.getElementById('py-24h-payments').textContent   = agg.payments_24h.toLocaleString();
-    document.getElementById('py-24h-wraith').textContent     = agg.wraith_rounds_24h.toLocaleString();
-    document.getElementById('py-24h-settlements').textContent = agg.settlements_24h.toLocaleString();
-    document.getElementById('py-fee-pool').innerHTML         = fmtBtc(agg.epoch_fee_pool_sats);
+    // Top bar (24h tiles smoothed with median — rate-derived counts that fluctuate)
+    var sm24Pay = smooth('py-24h-payments', agg.payments_24h, { mode: 'median' });
+    document.getElementById('py-24h-payments').textContent   = Math.round(sm24Pay != null ? sm24Pay : agg.payments_24h).toLocaleString();
+    var sm24Wr = smooth('py-24h-wraith', agg.wraith_rounds_24h, { mode: 'median' });
+    document.getElementById('py-24h-wraith').textContent     = Math.round(sm24Wr != null ? sm24Wr : agg.wraith_rounds_24h).toLocaleString();
+    var sm24Set = smooth('py-24h-settlements', agg.settlements_24h, { mode: 'median' });
+    document.getElementById('py-24h-settlements').textContent = Math.round(sm24Set != null ? sm24Set : agg.settlements_24h).toLocaleString();
+    var smFeePool = smooth('py-fee-pool', agg.epoch_fee_pool_sats, { mode: 'median' });
+    document.getElementById('py-fee-pool').innerHTML         = fmtBtc(smFeePool != null ? Math.round(smFeePool) : agg.epoch_fee_pool_sats);
 
     // Lifetime tiles
     document.getElementById('py-total-payments').textContent    = agg.payments_total.toLocaleString();

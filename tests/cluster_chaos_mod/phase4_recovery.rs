@@ -129,10 +129,7 @@ async fn recovery_05_no_panics_in_logs() {
         let panic_count =
             SshController::count_log_matches(node, config.service_name, "panic", "10 min ago")
                 .unwrap_or_else(|e| {
-                    println!(
-                        "  WARNING: Could not check {} logs: {}",
-                        node.name, e
-                    );
+                    println!("  WARNING: Could not check {} logs: {}", node.name, e);
                     0
                 });
 
@@ -185,11 +182,7 @@ async fn recovery_06_mpc_consistent() {
 #[ignore]
 async fn recovery_07_response_times_acceptable() {
     let client = setup();
-    let endpoints = [
-        "/health",
-        "/api/v1/node/status",
-        "/api/v1/network/peers",
-    ];
+    let endpoints = ["/health", "/api/v1/node/status", "/api/v1/network/peers"];
     let rounds = 5;
     let ips = client.config.all_ips();
 

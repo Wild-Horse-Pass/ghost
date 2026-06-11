@@ -407,7 +407,8 @@ export default function OverviewPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Overview"
+        eyebrow="overview"
+        title="Your node, at a glance."
         subtitle={nickname?.nickname ? `${nickname.nickname} \u00b7 v${info?.version ?? ''}` : info?.version ? `v${info.version}` : undefined}
         actions={
           status?.is_synced != null && (

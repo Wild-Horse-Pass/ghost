@@ -78,9 +78,7 @@ fn get_keychain() -> Arc<dyn PlatformKeychain> {
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         KEYCHAIN
-            .get_or_init(|| {
-                Arc::new(DesktopFallbackKeychain::new()) as Arc<dyn PlatformKeychain>
-            })
+            .get_or_init(|| Arc::new(DesktopFallbackKeychain::new()) as Arc<dyn PlatformKeychain>)
             .clone()
     }
 }
@@ -200,7 +198,8 @@ mod tests {
     #[test]
     fn test_desktop_fallback_roundtrip() {
         let kc = DesktopFallbackKeychain::new();
-        kc.store("test_key", b"secret_value", KeychainAccess::WhenUnlocked).unwrap();
+        kc.store("test_key", b"secret_value", KeychainAccess::WhenUnlocked)
+            .unwrap();
         let retrieved = kc.retrieve("test_key").unwrap();
         assert_eq!(retrieved, b"secret_value");
         kc.delete("test_key").unwrap();

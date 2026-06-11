@@ -588,7 +588,9 @@ fn test_010_wraith_split_with_fair_remainder_distribution() {
             assert!(
                 max_output - min_output <= 1,
                 "OPP {}: Outputs not fairly distributed: max={}, min={}",
-                opp, max_output, min_output
+                opp,
+                max_output,
+                min_output
             );
         }
     }
@@ -678,7 +680,14 @@ fn test_012_settlements_have_zero_protocol_fee() {
     use ghost_reconciliation::Settlement;
 
     // Verify that settlements across various amounts all have zero fees
-    let test_amounts = [10_000u64, 50_000, 100_000, 1_000_000, 10_000_000, 100_000_000];
+    let test_amounts = [
+        10_000u64,
+        50_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        100_000_000,
+    ];
 
     for &amount in &test_amounts {
         let settlement = Settlement::new(

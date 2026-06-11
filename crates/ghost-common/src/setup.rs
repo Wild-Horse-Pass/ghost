@@ -3,9 +3,7 @@
 //! Provides `apply_*` functions that modify `NodeConfig` based on wizard field values.
 //! Used by both the TUI wizard dispatch and the headless `ghost-setup` CLI.
 
-use crate::config::{
-    GhostPayConfig, HazeMode, NodeConfig, PolicyProfile,
-};
+use crate::config::{GhostPayConfig, HazeMode, NodeConfig, PolicyProfile};
 use crate::identity::NodeIdentity;
 use crate::types::TreasuryAddress;
 use std::collections::HashMap;
@@ -56,8 +54,8 @@ fn load_and_modify(
 ) -> Result<String, String> {
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Load config {}: {e}", config_path.display()))?;
-    let mut config: NodeConfig = toml::from_str(&content)
-        .map_err(|e| format!("Parse config: {e}"))?;
+    let mut config: NodeConfig =
+        toml::from_str(&content).map_err(|e| format!("Parse config: {e}"))?;
     modify(&mut config);
     config
         .save_atomic(config_path)
@@ -75,7 +73,10 @@ pub fn apply_initial_setup(
         .get("nickname")
         .map(|v| v.as_text().to_string())
         .unwrap_or_default();
-    let public_mining = fields
+    // The wizard's "public_mining" toggle maps to mining_mode = PublicPool.
+    // Disabled → keeps the default mining_mode (PublicPool unless overridden
+    // elsewhere). Operators choosing private modes use a different setup flow.
+    let public_mining_intent = fields
         .get("public_mining")
         .map(|v| v.as_bool())
         .unwrap_or(false);
@@ -87,14 +88,8 @@ pub fn apply_initial_setup(
         .get("archive_mode")
         .map(|v| v.as_bool())
         .unwrap_or(true);
-    let ghost_pay_enabled = fields
-        .get("ghost_pay")
-        .map(|v| v.as_bool())
-        .unwrap_or(true);
-    let reaper_enabled = fields
-        .get("reaper")
-        .map(|v| v.as_bool())
-        .unwrap_or(true);
+    let ghost_pay_enabled = fields.get("ghost_pay").map(|v| v.as_bool()).unwrap_or(true);
+    let reaper_enabled = fields.get("reaper").map(|v| v.as_bool()).unwrap_or(true);
     let mempool_idx = fields
         .get("mempool_profile")
         .map(|v| v.as_selected())
@@ -137,7 +132,11 @@ pub fn apply_initial_setup(
     if !nickname.is_empty() {
         config.identity.display_name = Some(nickname);
     }
-    config.network.public_mining = public_mining;
+    config.network.mining_mode = if public_mining_intent {
+        crate::config::MiningMode::PublicPool
+    } else {
+        crate::config::MiningMode::PrivatePool
+    };
     config.network.noise_enabled = true;
     config.network.internal_api_secret = Some(api_secret);
     config.storage.archive_mode = archive_mode;
@@ -180,7 +179,11 @@ pub fn apply_change_setup(
             }
         }
         if let Some(v) = fields.get("public_mining") {
-            config.network.public_mining = v.as_bool();
+            config.network.mining_mode = if v.as_bool() {
+                crate::config::MiningMode::PublicPool
+            } else {
+                crate::config::MiningMode::PrivatePool
+            };
         }
         if let Some(v) = fields.get("payout_address") {
             let addr = v.as_text().to_string();
@@ -214,31 +217,83 @@ pub fn apply_change_setup(
     })
 }
 
-/// Reaper — toggle reaper + configure custom policy filters
+/// Reaper — master switch plus per-vector detector selection.
+///
+/// Only the keys actually present in `fields` are applied, so partial updates
+/// (e.g. a single detector toggled from the dashboard) leave the rest intact.
+/// Field keys match the canonical `[reaper]` config keys; `"reaper"` is kept as
+/// the master-switch key for the existing setup contract.
 pub fn apply_reaper(
     fields: &HashMap<String, FieldValue>,
     config_path: &Path,
 ) -> Result<String, String> {
     load_and_modify(config_path, |config| {
+        let r = &mut config.reaper;
         if let Some(v) = fields.get("reaper") {
-            config.reaper.enabled = v.as_bool();
+            r.enabled = v.as_bool();
         }
-        if config.reaper.enabled {
-            let mut custom = config.policy.custom.clone().unwrap_or_default();
-            if let Some(v) = fields.get("filter_inscriptions") {
-                custom.allow_inscriptions = !v.as_bool();
+        // Per-vector detector toggles.
+        for (key, slot) in [
+            ("reject_inscription", &mut r.reject_inscription),
+            ("reject_dropstuffing", &mut r.reject_dropstuffing),
+            ("reject_fakepubkey", &mut r.reject_fakepubkey),
+            ("reject_annex", &mut r.reject_annex),
+            ("reject_opreturn", &mut r.reject_opreturn),
+            ("reject_runestone", &mut r.reject_runestone),
+            ("reject_unreachable_code", &mut r.reject_unreachable_code),
+            ("reject_excess_witness", &mut r.reject_excess_witness),
+            (
+                "reject_legacy_data_stuffing",
+                &mut r.reject_legacy_data_stuffing,
+            ),
+            (
+                "validate_pubkey_curve_point",
+                &mut r.validate_pubkey_curve_point,
+            ),
+        ] {
+            if let Some(v) = fields.get(key) {
+                *slot = v.as_bool();
             }
-            if let Some(v) = fields.get("filter_runes") {
-                custom.allow_runes = !v.as_bool();
-            }
-            if let Some(v) = fields.get("max_witness_size") {
+        }
+        // Thresholds.
+        for (key, slot) in [
+            ("max_op_return_bytes", &mut r.max_op_return_bytes),
+            ("min_drop_size", &mut r.min_drop_size),
+            ("min_excess_witness_bytes", &mut r.min_excess_witness_bytes),
+            ("legacy_max_push_bytes", &mut r.legacy_max_push_bytes),
+        ] {
+            if let Some(v) = fields.get(key) {
                 if let Ok(n) = v.as_text().parse::<usize>() {
-                    custom.max_witness_per_input = n;
+                    *slot = n;
                 }
             }
-            config.policy.custom = Some(custom);
         }
     })
+}
+
+/// Render a systemd drop-in for ghostd that applies the per-vector reaper
+/// settings to the node mempool reaper.
+///
+/// `exec_argv` is the daemon's resolved command line (e.g. the `argv[]` from
+/// `systemctl show ghostd -p ExecStart --value`). Any existing `-ghostreaper*`
+/// flags are stripped and the full set from `settings` is appended, wrapped in
+/// a drop-in that resets and replaces `ExecStart` (the systemd override idiom:
+/// an empty `ExecStart=` clears the inherited value before the new one is set).
+pub fn ghostd_reaper_dropin(exec_argv: &str, settings: &crate::config::ReaperSettings) -> String {
+    let base: Vec<&str> = exec_argv
+        .split_whitespace()
+        .filter(|tok| !tok.starts_with("-ghostreaper"))
+        .collect();
+    let flags = settings.ghostd_flags();
+    format!(
+        "# Managed by `ghost-setup apply-reaper` — per-vector Ghost Reaper flags.\n\
+         # Do not edit by hand; regenerate from pool.toml [reaper].\n\
+         [Service]\n\
+         ExecStart=\n\
+         ExecStart={} {}\n",
+        base.join(" "),
+        flags.join(" ")
+    )
 }
 
 /// Pool setup — configure mining pool settings
@@ -248,7 +303,11 @@ pub fn apply_pool_setup(
 ) -> Result<String, String> {
     load_and_modify(config_path, |config| {
         if let Some(v) = fields.get("public_mining") {
-            config.network.public_mining = v.as_bool();
+            config.network.mining_mode = if v.as_bool() {
+                crate::config::MiningMode::PublicPool
+            } else {
+                crate::config::MiningMode::PrivatePool
+            };
         }
         if let Some(v) = fields.get("payout_address") {
             let addr = v.as_text().to_string();
@@ -313,4 +372,31 @@ pub fn apply_mempool_policy(
             };
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ReaperSettings;
+
+    #[test]
+    fn test_ghostd_reaper_dropin_strips_and_appends() {
+        let exec = "/opt/ghost/bin/ghostd -signet -datadir=/var/lib/bitcoin -ghostreaper=enabled -port=38333";
+        let s = ReaperSettings {
+            reject_annex: false,
+            ..Default::default()
+        };
+        let dropin = ghostd_reaper_dropin(exec, &s);
+
+        // resets ExecStart then re-emits the base (minus any -ghostreaper*)
+        assert!(dropin.contains("[Service]\nExecStart=\nExecStart="));
+        assert!(dropin.contains("/opt/ghost/bin/ghostd"));
+        assert!(dropin.contains("-signet"));
+        assert!(dropin.contains("-port=38333"));
+        // the old hardcoded master flag is stripped, replaced by the managed set
+        assert_eq!(dropin.matches("-ghostreaper=").count(), 1);
+        assert!(dropin.contains("-ghostreaper=enabled"));
+        assert!(dropin.contains("-ghostreaper-rejectannex=0"));
+        assert!(dropin.contains("-ghostreaper-rejectinscription=1"));
+    }
 }

@@ -350,7 +350,9 @@ impl NoiseSession {
     ) -> Result<(NoiseTransport<S>, [u8; 32]), NoiseError> {
         tokio::time::timeout(Self::HANDSHAKE_TIMEOUT, self.handshake_inner(stream))
             .await
-            .map_err(|_| NoiseError::Handshake("B-2: Handshake timed out after 10 seconds".into()))?
+            .map_err(|_| {
+                NoiseError::Handshake("B-2: Handshake timed out after 10 seconds".into())
+            })?
     }
 
     async fn handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
@@ -785,8 +787,14 @@ mod tests {
     #[tokio::test]
     async fn test_noise_manager_handshake() {
         // Tests use allow_unknown_peers since there's no pre-shared trusted key list
-        let config1 = NoiseConfig { allow_unknown_peers: true, ..NoiseConfig::default() };
-        let config2 = NoiseConfig { allow_unknown_peers: true, ..NoiseConfig::default() };
+        let config1 = NoiseConfig {
+            allow_unknown_peers: true,
+            ..NoiseConfig::default()
+        };
+        let config2 = NoiseConfig {
+            allow_unknown_peers: true,
+            ..NoiseConfig::default()
+        };
 
         let manager1 = NoiseManager::new(config1).unwrap();
         let manager2 = NoiseManager::new(config2).unwrap();
@@ -868,7 +876,11 @@ mod tests {
             Ok(_) => panic!("Expected handshake to fail with timeout"),
         }
         // Should complete within ~10s (with some slack for CI)
-        assert!(elapsed.as_secs() <= 15, "Timeout took too long: {:?}", elapsed);
+        assert!(
+            elapsed.as_secs() <= 15,
+            "Timeout took too long: {:?}",
+            elapsed
+        );
     }
 
     // ==========================================================================
